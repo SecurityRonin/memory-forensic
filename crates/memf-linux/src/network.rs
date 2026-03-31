@@ -34,10 +34,11 @@ pub fn walk_connections<P: PhysicalMemoryProvider>(
             .unwrap_or(8);
         let bucket_addr = ehash_ptr + i * bucket_size;
 
-        let chain_first: u64 = match reader.read_field(bucket_addr, "inet_ehash_bucket", "chain") {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let chain_first: u64 =
+            match reader.read_field(bucket_addr, "inet_ehash_bucket", "chain") {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
         // hlist_nulls terminates with low bit set
         if chain_first == 0 || chain_first & 1 != 0 {
