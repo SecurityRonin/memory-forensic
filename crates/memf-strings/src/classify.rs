@@ -15,12 +15,7 @@ inventory::collect!(&'static dyn StringClassifier);
 
 /// Run all registered classifiers on a list of strings, populating their categories.
 pub fn classify_strings(strings: &mut [ClassifiedString]) {
-    for s in strings.iter_mut() {
-        for classifier in inventory::iter::<&'static dyn StringClassifier> {
-            let matches = classifier.classify(&s.value);
-            s.categories.extend(matches);
-        }
-    }
+    todo!()
 }
 
 #[cfg(test)]

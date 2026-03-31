@@ -13,50 +13,16 @@ use std::path::Path;
 /// Each line becomes one `ClassifiedString` with empty categories
 /// (to be classified later by the pipeline).
 pub fn from_strings_file(path: &Path) -> Result<Vec<ClassifiedString>> {
-    let file = std::fs::File::open(path)?;
-    let reader = std::io::BufReader::new(file);
-    let mut results = Vec::new();
-
-    for (line_num, line) in reader.lines().enumerate() {
-        let line = line?;
-        let trimmed = line.trim_end();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let (offset, value) = parse_line(trimmed, line_num as u64);
-        results.push(ClassifiedString {
-            value,
-            physical_offset: offset,
-            encoding: StringEncoding::Ascii,
-            categories: Vec::new(),
-        });
-    }
-
-    Ok(results)
+    todo!()
 }
 
 /// Parse a single line, detecting offset-prefixed format.
 fn parse_line(line: &str, line_num: u64) -> (u64, String) {
-    // Try offset-prefixed format: "1234: some string" or "0x1234: some string"
-    if let Some(colon_pos) = line.find(": ") {
-        let prefix = &line[..colon_pos];
-        let prefix = prefix.trim();
-        if let Some(offset) = parse_offset(prefix) {
-            let value = line[colon_pos + 2..].to_string();
-            return (offset, value);
-        }
-    }
-    // Raw format: use line number as pseudo-offset
-    (line_num, line.to_string())
+    todo!()
 }
 
 fn parse_offset(s: &str) -> Option<u64> {
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        u64::from_str_radix(hex, 16).ok()
-    } else {
-        s.parse::<u64>().ok()
-    }
+    todo!()
 }
 
 #[cfg(test)]

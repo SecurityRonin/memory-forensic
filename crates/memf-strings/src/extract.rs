@@ -50,114 +50,17 @@ pub fn extract_strings(
     provider: &dyn PhysicalMemoryProvider,
     config: &ExtractConfig,
 ) -> Vec<ClassifiedString> {
-    let mut results: Vec<ClassifiedString> = Vec::new();
-
-    for range in provider.ranges() {
-        let mut addr = range.start;
-
-        // carry-over buffer for ASCII across chunk boundaries
-        let mut ascii_carry: Vec<u8> = Vec::new();
-        let mut ascii_carry_offset: u64 = range.start;
-
-        // carry-over for UTF-16LE (we may have an odd byte left from previous chunk)
-        let mut utf16_odd_byte: Option<(u8, u64)> = None; // (byte, its physical addr)
-
-        while addr < range.end {
-            let chunk_len = CHUNK_SIZE.min((range.end - addr) as usize);
-            let mut buf = vec![0u8; chunk_len];
-            let n = provider.read_phys(addr, &mut buf).unwrap_or(0);
-            if n == 0 {
-                // Flush any pending ASCII carry — gap acts as a terminator
-                if ascii_carry.len() >= config.min_length && config.ascii {
-                    emit_ascii(&ascii_carry, ascii_carry_offset, &mut results);
-                }
-                ascii_carry.clear();
-                utf16_odd_byte = None;
-                addr += chunk_len as u64;
-                continue;
-            }
-            let chunk = &buf[..n];
-
-            // ── ASCII pass ────────────────────────────────────────────────
-            if config.ascii {
-                for (i, &b) in chunk.iter().enumerate() {
-                    let phys = addr + i as u64;
-                    if is_printable_ascii(b) {
-                        if ascii_carry.is_empty() {
-                            ascii_carry_offset = phys;
-                        }
-                        ascii_carry.push(b);
-                    } else {
-                        if ascii_carry.len() >= config.min_length {
-                            emit_ascii(&ascii_carry, ascii_carry_offset, &mut results);
-                        }
-                        ascii_carry.clear();
-                    }
-                }
-                // Don't flush yet — carry continues to next chunk
-            }
-
-            // ── UTF-16LE pass ─────────────────────────────────────────────
-            if config.utf16le {
-                // Reassemble with leftover odd byte from previous chunk
-                let (pairs, new_odd) = build_utf16_pairs(chunk, addr, utf16_odd_byte.take());
-
-                let mut run: Vec<char> = Vec::new();
-                let mut run_offset: u64 = 0;
-
-                for (cp, phys) in pairs {
-                    if is_printable_utf16(cp) {
-                        if run.is_empty() {
-                            run_offset = phys;
-                        }
-                        run.push(cp as u8 as char);
-                    } else {
-                        if run.len() >= config.min_length {
-                            emit_utf16(&run, run_offset, &mut results);
-                        }
-                        run.clear();
-                    }
-                }
-                if run.len() >= config.min_length {
-                    emit_utf16(&run, run_offset, &mut results);
-                }
-                utf16_odd_byte = new_odd;
-            }
-
-            addr += n as u64;
-        }
-
-        // ── End-of-range flushes ──────────────────────────────────────────
-        if config.ascii && ascii_carry.len() >= config.min_length {
-            emit_ascii(&ascii_carry, ascii_carry_offset, &mut results);
-        }
-        // utf16 trailing run already flushed inside the last chunk loop
-    }
-
-    results
+    todo!()
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn emit_ascii(run: &[u8], offset: u64, out: &mut Vec<ClassifiedString>) {
-    // SAFETY: all bytes were checked by is_printable_ascii
-    let value = String::from_utf8_lossy(run).into_owned();
-    out.push(ClassifiedString {
-        value,
-        physical_offset: offset,
-        encoding: StringEncoding::Ascii,
-        categories: vec![],
-    });
+    todo!()
 }
 
 fn emit_utf16(run: &[char], offset: u64, out: &mut Vec<ClassifiedString>) {
-    let value: String = run.iter().collect();
-    out.push(ClassifiedString {
-        value,
-        physical_offset: offset,
-        encoding: StringEncoding::Utf16Le,
-        categories: vec![],
-    });
+    todo!()
 }
 
 /// Pair up bytes into (u16 code-unit, physical_address) tuples, handling an
@@ -167,34 +70,7 @@ fn build_utf16_pairs(
     chunk_base: u64,
     odd: Option<(u8, u64)>,
 ) -> (Vec<(u16, u64)>, Option<(u8, u64)>) {
-    let mut pairs = Vec::new();
-
-    let mut i = if let Some((lo, addr)) = odd {
-        if chunk.is_empty() {
-            return (pairs, Some((lo, addr)));
-        }
-        let hi = chunk[0];
-        let cp = u16::from_le_bytes([lo, hi]);
-        pairs.push((cp, addr));
-        1usize
-    } else {
-        0usize
-    };
-
-    while i + 1 < chunk.len() {
-        let addr = chunk_base + i as u64;
-        let cp = u16::from_le_bytes([chunk[i], chunk[i + 1]]);
-        pairs.push((cp, addr));
-        i += 2;
-    }
-
-    let new_odd = if i < chunk.len() {
-        Some((chunk[i], chunk_base + i as u64))
-    } else {
-        None
-    };
-
-    (pairs, new_odd)
+    todo!()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
