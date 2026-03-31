@@ -1,0 +1,16 @@
+[package]
+name = "memf-format"
+version = "0.1.0"
+description = "Physical memory dump format parsers for the memf forensics framework"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+inventory.workspace = true
+memmap2.workspace = true
+snap.workspace = true
+
+[lints]
+workspace = true

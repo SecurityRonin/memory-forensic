@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/memf-format",
+    "crates/memf-strings",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/h4x0r/memory-forensic"
+
+[workspace.dependencies]
+memf-format  = { path = "crates/memf-format" }
+memf-strings = { path = "crates/memf-strings" }
+thiserror = "2"
+anyhow = "1"
+inventory = "0.3"
+memmap2 = "0.9"
+snap = "1"
+regex = "1"
+aho-corasick = "1"
+yara-x = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[package]
+name = "memf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "memf"
+path = "src/main.rs"
+
+[dependencies]
+memf-format.workspace = true
+memf-strings.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+comfy-table.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
