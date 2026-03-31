@@ -22,12 +22,12 @@ pub struct ObjectReader<P: PhysicalMemoryProvider> {
 impl<P: PhysicalMemoryProvider> ObjectReader<P> {
     /// Create a new object reader.
     pub fn new(vas: VirtualAddressSpace<P>, symbols: Box<dyn SymbolResolver>) -> Self {
-        todo!()
+        Self { vas, symbols }
     }
 
     /// Access the underlying symbol resolver.
     pub fn symbols(&self) -> &dyn SymbolResolver {
-        todo!()
+        self.symbols.as_ref()
     }
 
     /// Read a field from a struct at `base_vaddr` and interpret it as type `T`.
@@ -40,7 +40,24 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         struct_name: &str,
         field_name: &str,
     ) -> Result<T> {
-        todo!()
+        let offset = self
+            .symbols
+            .field_offset(struct_name, field_name)
+            .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{field_name}")))?;
+
+        let size = std::mem::size_of::<T>();
+        let mut buf = vec![0u8; size];
+        self.vas
+            .read_virt(base_vaddr.wrapping_add(offset), &mut buf)?;
+
+        if buf.len() != size {
+            return Err(Error::SizeMismatch {
+                expected: size,
+                got: buf.len(),
+            });
+        }
+
+        Ok(*bytemuck::from_bytes::<T>(&buf))
     }
 
     /// Read a pointer (u64) from a struct field.
@@ -50,12 +67,16 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         struct_name: &str,
         field_name: &str,
     ) -> Result<u64> {
-        todo!()
+        self.read_field::<u64>(base_vaddr, struct_name, field_name)
     }
 
     /// Read a null-terminated string from virtual memory, up to `max_len` bytes.
     pub fn read_string(&self, vaddr: u64, max_len: usize) -> Result<String> {
-        todo!()
+        let mut buf = vec![0u8; max_len];
+        self.vas.read_virt(vaddr, &mut buf)?;
+
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        Ok(String::from_utf8_lossy(&buf[..end]).into_owned())
     }
 
     /// Read a string from a struct field (the field contains inline char data, not a pointer).
@@ -66,7 +87,12 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         field_name: &str,
         max_len: usize,
     ) -> Result<String> {
-        todo!()
+        let offset = self
+            .symbols
+            .field_offset(struct_name, field_name)
+            .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{field_name}")))?;
+
+        self.read_string(base_vaddr.wrapping_add(offset), max_len)
     }
 
     /// Walk a Linux `list_head` doubly-linked list.
@@ -82,11 +108,42 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         struct_name: &str,
         list_field: &str,
     ) -> Result<Vec<u64>> {
-        todo!()
+        let list_offset = self
+            .symbols
+            .field_offset(struct_name, list_field)
+            .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{list_field}")))?;
+
+        let next_offset = self
+            .symbols
+            .field_offset("list_head", "next")
+            .ok_or_else(|| Error::MissingSymbol("list_head.next".into()))?;
+
+        // Read the first `next` pointer from head
+        let mut current = self.read_u64_at(head_vaddr.wrapping_add(next_offset))?;
+
+        let mut result = Vec::new();
+
+        for _ in 0..MAX_LIST_ITERATIONS {
+            // If we've looped back to head, the walk is complete
+            if current == head_vaddr {
+                return Ok(result);
+            }
+
+            // container_of: subtract list_offset to get the containing struct base
+            let container = current.wrapping_sub(list_offset);
+            result.push(container);
+
+            // Follow next pointer
+            current = self.read_u64_at(current.wrapping_add(next_offset))?;
+        }
+
+        Err(Error::ListCycle(MAX_LIST_ITERATIONS))
     }
 
     fn read_u64_at(&self, vaddr: u64) -> Result<u64> {
-        todo!()
+        let mut buf = [0u8; 8];
+        self.vas.read_virt(vaddr, &mut buf)?;
+        Ok(u64::from_le_bytes(buf))
     }
 }
 
