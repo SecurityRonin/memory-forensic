@@ -15,17 +15,57 @@ pub struct YaraClassifier {
 impl YaraClassifier {
     /// Compile YARA rules from source text.
     pub fn from_source(source: &str) -> crate::Result<Self> {
-        todo!()
+        let rules = yara_x::compile(source).map_err(|e| Error::Yara(e.to_string()))?;
+        Ok(Self { rules })
     }
 
     /// Load and compile all `.yar` / `.yara` files from a directory.
     pub fn from_rules_dir(dir: &Path) -> crate::Result<Self> {
-        todo!()
+        let mut compiler = yara_x::Compiler::new();
+        let mut found = false;
+
+        if dir.is_dir() {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if let Some(ext) = path.extension() {
+                    if ext == "yar" || ext == "yara" {
+                        let source = std::fs::read_to_string(&path)?;
+                        compiler
+                            .add_source(source.as_str())
+                            .map_err(|e| Error::Yara(e.to_string()))?;
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        if !found {
+            return Err(Error::Yara(format!(
+                "no .yar/.yara files found in {}",
+                dir.display()
+            )));
+        }
+
+        let rules = compiler.build();
+        Ok(Self { rules })
     }
 
     /// Scan a single string against the compiled rules.
     pub fn scan_string(&self, input: &str) -> Vec<(StringCategory, f32)> {
-        todo!()
+        let mut scanner = yara_x::Scanner::new(&self.rules);
+        match scanner.scan(input.as_bytes()) {
+            Ok(scan_results) => scan_results
+                .matching_rules()
+                .map(|rule| {
+                    (
+                        StringCategory::YaraMatch(rule.identifier().to_string()),
+                        0.85,
+                    )
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
     }
 }
 
