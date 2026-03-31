@@ -25,27 +25,48 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         Self { vas, symbols }
     }
 
+    /// Access the underlying symbol resolver.
+    pub fn symbols(&self) -> &dyn SymbolResolver {
+        self.symbols.as_ref()
+    }
+
     /// Read a field from a struct at `base_vaddr` and interpret it as type `T`.
     ///
     /// Looks up the field offset from the symbol resolver, reads `size_of::<T>()`
     /// bytes from virtual memory, and casts via `bytemuck::from_bytes`.
-    pub fn read_field<T: Pod + Default>(&self, base_vaddr: u64, struct_name: &str, field_name: &str) -> Result<T> {
-        let offset = self.symbols.field_offset(struct_name, field_name)
+    pub fn read_field<T: Pod + Default>(
+        &self,
+        base_vaddr: u64,
+        struct_name: &str,
+        field_name: &str,
+    ) -> Result<T> {
+        let offset = self
+            .symbols
+            .field_offset(struct_name, field_name)
             .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{field_name}")))?;
 
         let size = std::mem::size_of::<T>();
         let mut buf = vec![0u8; size];
-        self.vas.read_virt(base_vaddr.wrapping_add(offset), &mut buf)?;
+        self.vas
+            .read_virt(base_vaddr.wrapping_add(offset), &mut buf)?;
 
         if buf.len() != size {
-            return Err(Error::SizeMismatch { expected: size, got: buf.len() });
+            return Err(Error::SizeMismatch {
+                expected: size,
+                got: buf.len(),
+            });
         }
 
         Ok(*bytemuck::from_bytes::<T>(&buf))
     }
 
     /// Read a pointer (u64) from a struct field.
-    pub fn read_pointer(&self, base_vaddr: u64, struct_name: &str, field_name: &str) -> Result<u64> {
+    pub fn read_pointer(
+        &self,
+        base_vaddr: u64,
+        struct_name: &str,
+        field_name: &str,
+    ) -> Result<u64> {
         self.read_field::<u64>(base_vaddr, struct_name, field_name)
     }
 
@@ -59,8 +80,16 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
     }
 
     /// Read a string from a struct field (the field contains inline char data, not a pointer).
-    pub fn read_field_string(&self, base_vaddr: u64, struct_name: &str, field_name: &str, max_len: usize) -> Result<String> {
-        let offset = self.symbols.field_offset(struct_name, field_name)
+    pub fn read_field_string(
+        &self,
+        base_vaddr: u64,
+        struct_name: &str,
+        field_name: &str,
+        max_len: usize,
+    ) -> Result<String> {
+        let offset = self
+            .symbols
+            .field_offset(struct_name, field_name)
             .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{field_name}")))?;
 
         self.read_string(base_vaddr.wrapping_add(offset), max_len)
@@ -73,11 +102,20 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
     /// of each containing struct (using container_of logic with `list_field` offset).
     ///
     /// Stops when the walk loops back to `head_vaddr` or hits `MAX_LIST_ITERATIONS`.
-    pub fn walk_list(&self, head_vaddr: u64, struct_name: &str, list_field: &str) -> Result<Vec<u64>> {
-        let list_offset = self.symbols.field_offset(struct_name, list_field)
+    pub fn walk_list(
+        &self,
+        head_vaddr: u64,
+        struct_name: &str,
+        list_field: &str,
+    ) -> Result<Vec<u64>> {
+        let list_offset = self
+            .symbols
+            .field_offset(struct_name, list_field)
             .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{list_field}")))?;
 
-        let next_offset = self.symbols.field_offset("list_head", "next")
+        let next_offset = self
+            .symbols
+            .field_offset("list_head", "next")
             .ok_or_else(|| Error::MissingSymbol("list_head.next".into()))?;
 
         // Read the first `next` pointer from head
@@ -130,9 +168,12 @@ mod tests {
 
     #[test]
     fn read_field_u32() {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "int");
+        let isf = IsfBuilder::new().add_struct("task_struct", 128).add_field(
+            "task_struct",
+            "pid",
+            0,
+            "int",
+        );
 
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
@@ -148,9 +189,12 @@ mod tests {
 
     #[test]
     fn read_field_u64() {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "mm", 8, "pointer");
+        let isf = IsfBuilder::new().add_struct("task_struct", 128).add_field(
+            "task_struct",
+            "mm",
+            8,
+            "pointer",
+        );
 
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
@@ -167,14 +211,12 @@ mod tests {
 
     #[test]
     fn read_field_missing_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128);
+        let isf = IsfBuilder::new().add_struct("task_struct", 128);
 
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(vaddr, paddr, flags::WRITABLE);
+        let ptb = PageTableBuilder::new().map_4k(vaddr, paddr, flags::WRITABLE);
 
         let reader = make_reader(&isf, ptb);
         let result = reader.read_field::<u32>(vaddr, "task_struct", "nonexistent");
@@ -187,9 +229,12 @@ mod tests {
 
     #[test]
     fn read_field_string_test() {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "comm", 16, "char");
+        let isf = IsfBuilder::new().add_struct("task_struct", 128).add_field(
+            "task_struct",
+            "comm",
+            16,
+            "char",
+        );
 
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
@@ -199,15 +244,20 @@ mod tests {
             .write_phys(paddr + 16, b"systemd\0");
 
         let reader = make_reader(&isf, ptb);
-        let comm = reader.read_field_string(vaddr, "task_struct", "comm", 16).unwrap();
+        let comm = reader
+            .read_field_string(vaddr, "task_struct", "comm", 16)
+            .unwrap();
         assert_eq!(comm, "systemd");
     }
 
     #[test]
     fn read_string_with_null() {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "comm", 16, "char");
+        let isf = IsfBuilder::new().add_struct("task_struct", 128).add_field(
+            "task_struct",
+            "comm",
+            16,
+            "char",
+        );
 
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
@@ -273,7 +323,9 @@ mod tests {
 
         let reader = make_reader(&isf, ptb);
 
-        let containers = reader.walk_list(head_vaddr + list_offset, "task_struct", "tasks").unwrap();
+        let containers = reader
+            .walk_list(head_vaddr + list_offset, "task_struct", "tasks")
+            .unwrap();
         assert_eq!(containers.len(), 2);
         assert_eq!(containers[0], a_vaddr);
         assert_eq!(containers[1], b_vaddr);
