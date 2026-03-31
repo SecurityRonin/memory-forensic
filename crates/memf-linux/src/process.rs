@@ -28,7 +28,7 @@ pub fn walk_processes<P: PhysicalMemoryProvider>(
 
     let mut processes = Vec::new();
 
-    // Include init_task itself (it's the head, not in the walk results)
+    // Include init_task itself (it's the list head, not in walk results)
     if let Ok(info) = read_process_info(reader, init_task_addr) {
         processes.push(info);
     }
