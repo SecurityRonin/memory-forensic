@@ -6,8 +6,8 @@
 //! - ISF JSON (Volatility 3-compatible symbol tables)
 //! - BTF (Linux BPF Type Format, kernel 5.2+)
 
-pub mod isf;
 pub mod btf;
+pub mod isf;
 pub mod test_builders;
 
 use std::collections::HashMap;

@@ -26,7 +26,11 @@ const PS: u64 = 1 << 7;
 impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     /// Create a new virtual address space.
     pub fn new(physical: P, page_table_root: u64, mode: TranslationMode) -> Self {
-        Self { physical, page_table_root, mode }
+        Self {
+            physical,
+            page_table_root,
+            mode,
+        }
     }
 
     /// Translate a virtual address to a physical address.
@@ -54,7 +58,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             let remaining_to_read = buf.len() - offset;
             let chunk = remaining_to_read.min(remaining_in_page);
 
-            let n = self.physical.read_phys(paddr, &mut buf[offset..offset + chunk])?;
+            let n = self
+                .physical
+                .read_phys(paddr, &mut buf[offset..offset + chunk])?;
             if n == 0 {
                 return Err(Error::PartialRead {
                     addr: vaddr,

@@ -7,9 +7,9 @@
 //!   AArch64, and x86 PAE/non-PAE modes
 //! - [`ObjectReader`] — high-level kernel struct traversal using symbol information
 
-pub mod vas;
 pub mod object_reader;
 pub mod test_builders;
+pub mod vas;
 
 /// Error type for memf-core operations.
 #[derive(Debug, thiserror::Error)]

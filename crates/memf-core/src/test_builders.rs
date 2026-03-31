@@ -11,7 +11,9 @@ pub struct SyntheticPhysMem {
 impl SyntheticPhysMem {
     /// Create a new synthetic image of `size` bytes, zero-filled.
     pub fn new(size: usize) -> Self {
-        Self { data: vec![0u8; size] }
+        Self {
+            data: vec![0u8; size],
+        }
     }
 
     /// Write bytes at a physical address.
@@ -39,17 +41,25 @@ impl SyntheticPhysMem {
 
 impl PhysicalMemoryProvider for SyntheticPhysMem {
     fn read_phys(&self, addr: u64, buf: &mut [u8]) -> memf_format::Result<usize> {
-        if buf.is_empty() { return Ok(0); }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let start = addr as usize;
-        if start >= self.data.len() { return Ok(0); }
+        if start >= self.data.len() {
+            return Ok(0);
+        }
         let available = self.data.len() - start;
         let to_read = buf.len().min(available);
         buf[..to_read].copy_from_slice(&self.data[start..start + to_read]);
         Ok(to_read)
     }
 
-    fn ranges(&self) -> &[PhysicalRange] { &[] }
-    fn format_name(&self) -> &str { "Synthetic" }
+    fn ranges(&self) -> &[PhysicalRange] {
+        &[]
+    }
+    fn format_name(&self) -> &str {
+        "Synthetic"
+    }
 }
 
 /// Page table entry flags for x86_64.
@@ -81,14 +91,22 @@ impl PageTableBuilder {
         let mut mem = SyntheticPhysMem::new(16 * 1024 * 1024);
         let cr3 = Self::CR3;
         let next_page = 0x1000;
-        for i in 0..512 { mem.write_u64(cr3 + i * 8, 0); }
-        Self { mem, next_page, cr3 }
+        for i in 0..512 {
+            mem.write_u64(cr3 + i * 8, 0);
+        }
+        Self {
+            mem,
+            next_page,
+            cr3,
+        }
     }
 
     fn alloc_page(&mut self) -> u64 {
         let addr = self.next_page;
         self.next_page += 0x1000;
-        for i in 0..512 { self.mem.write_u64(addr + i * 8, 0); }
+        for i in 0..512 {
+            self.mem.write_u64(addr + i * 8, 0);
+        }
         addr
     }
 
@@ -201,7 +219,9 @@ impl PageTableBuilder {
 }
 
 impl Default for PageTableBuilder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -229,7 +249,9 @@ mod tests {
     fn page_table_builder_creates_pml4() {
         let (cr3, mem) = PageTableBuilder::new().build();
         assert_eq!(cr3, 0);
-        for i in 0..512 { assert_eq!(mem.read_u64(cr3 + i * 8), 0); }
+        for i in 0..512 {
+            assert_eq!(mem.read_u64(cr3 + i * 8), 0);
+        }
     }
 
     #[test]

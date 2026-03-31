@@ -108,7 +108,11 @@ pub struct ElfCoreBuilder {
 
 impl ElfCoreBuilder {
     /// Create a new empty builder.
-    pub fn new() -> Self { Self { segments: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+        }
+    }
 
     /// Add a PT_LOAD segment at the given physical address with the given data.
     pub fn add_segment(mut self, paddr: u64, data: &[u8]) -> Self {
@@ -143,7 +147,8 @@ impl ElfCoreBuilder {
             let phdr_off = ehdr_size + i * phdr_size;
             out[phdr_off..phdr_off + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
             out[phdr_off + 4..phdr_off + 8].copy_from_slice(&6u32.to_le_bytes()); // PF_R|PF_W
-            out[phdr_off + 8..phdr_off + 16].copy_from_slice(&(current_offset as u64).to_le_bytes());
+            out[phdr_off + 8..phdr_off + 16]
+                .copy_from_slice(&(current_offset as u64).to_le_bytes());
             out[phdr_off + 24..phdr_off + 32].copy_from_slice(&paddr.to_le_bytes());
             out[phdr_off + 32..phdr_off + 40].copy_from_slice(&(data.len() as u64).to_le_bytes());
             out[phdr_off + 40..phdr_off + 48].copy_from_slice(&(data.len() as u64).to_le_bytes());

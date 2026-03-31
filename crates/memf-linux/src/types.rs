@@ -249,7 +249,10 @@ mod tests {
     fn process_state_from_raw() {
         assert_eq!(ProcessState::from_raw(0), ProcessState::Running);
         assert_eq!(ProcessState::from_raw(32), ProcessState::Zombie);
-        assert!(matches!(ProcessState::from_raw(99), ProcessState::Unknown(99)));
+        assert!(matches!(
+            ProcessState::from_raw(99),
+            ProcessState::Unknown(99)
+        ));
     }
 
     #[test]
@@ -262,7 +265,10 @@ mod tests {
     fn connection_state_from_raw() {
         assert_eq!(ConnectionState::from_raw(1), ConnectionState::Established);
         assert_eq!(ConnectionState::from_raw(10), ConnectionState::Listen);
-        assert!(matches!(ConnectionState::from_raw(99), ConnectionState::Unknown(99)));
+        assert!(matches!(
+            ConnectionState::from_raw(99),
+            ConnectionState::Unknown(99)
+        ));
     }
 
     #[test]

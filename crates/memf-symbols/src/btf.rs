@@ -247,12 +247,9 @@ fn parse_type_section(data: &[u8]) -> Result<Vec<BtfType>> {
                     if pos + 12 > data.len() {
                         return Err(Error::Malformed("truncated BTF struct member".into()));
                     }
-                    let m_name_off =
-                        u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-                    let m_type_id =
-                        u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-                    let m_offset =
-                        u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+                    let m_name_off = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+                    let m_type_id = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+                    let m_offset = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
                     pos += 12;
 
                     // BTF member offsets are always in bits; convert to bytes.

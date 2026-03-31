@@ -42,7 +42,13 @@ impl IsfBuilder {
     }
 
     /// Add a field to a struct.
-    pub fn add_field(mut self, struct_name: &str, field_name: &str, offset: u64, type_name: &str) -> Self {
+    pub fn add_field(
+        mut self,
+        struct_name: &str,
+        field_name: &str,
+        offset: u64,
+        type_name: &str,
+    ) -> Self {
         self.structs
             .get_mut(struct_name)
             .unwrap_or_else(|| panic!("struct {struct_name} not found"))
@@ -155,7 +161,10 @@ mod tests {
 
         assert_eq!(json["metadata"]["format"], "6.2.0");
         assert_eq!(json["user_types"]["task_struct"]["size"], 100);
-        assert_eq!(json["user_types"]["task_struct"]["fields"]["pid"]["offset"], 8);
+        assert_eq!(
+            json["user_types"]["task_struct"]["fields"]["pid"]["offset"],
+            8
+        );
         assert_eq!(json["symbols"]["init_task"]["address"], 0xFFFF_0000u64);
     }
 

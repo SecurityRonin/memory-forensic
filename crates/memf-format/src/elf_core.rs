@@ -56,7 +56,11 @@ impl ElfCoreProvider {
             })
             .collect();
 
-        Ok(Self { data, segments, ranges })
+        Ok(Self {
+            data,
+            segments,
+            ranges,
+        })
     }
 }
 
@@ -74,7 +78,8 @@ impl PhysicalMemoryProvider for ElfCoreProvider {
                 let to_read = buf.len().min(available);
                 let file_pos = seg.file_offset + offset_in_seg;
                 let file_pos_usize = file_pos as usize;
-                buf[..to_read].copy_from_slice(&self.data[file_pos_usize..file_pos_usize + to_read]);
+                buf[..to_read]
+                    .copy_from_slice(&self.data[file_pos_usize..file_pos_usize + to_read]);
                 return Ok(to_read);
             }
         }
@@ -162,9 +167,7 @@ mod tests {
     #[test]
     fn single_segment() {
         let payload = vec![0xBB; 256];
-        let dump = ElfCoreBuilder::new()
-            .add_segment(0x1000, &payload)
-            .build();
+        let dump = ElfCoreBuilder::new().add_segment(0x1000, &payload).build();
         let provider = ElfCoreProvider::from_bytes(dump).unwrap();
 
         assert_eq!(provider.format_name(), "ELF Core");

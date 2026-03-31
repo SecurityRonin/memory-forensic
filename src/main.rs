@@ -152,9 +152,7 @@ fn cmd_info(dump: &Path) -> Result<()> {
 fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
     let files = memf_symbols::isf::discover_isf_files(path);
     if files.is_empty() {
-        anyhow::bail!(
-            "no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH"
-        );
+        anyhow::bail!("no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH");
     }
     let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
         .with_context(|| format!("failed to load symbols from {}", files[0].display()))?;
@@ -168,8 +166,7 @@ fn cmd_ps(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Re
     let resolver = load_symbols(symbols_path)?;
 
     let kaslr_offset =
-        memf_linux::kaslr::detect_kaslr_offset(provider.as_ref(), resolver.as_ref())
-            .unwrap_or(0);
+        memf_linux::kaslr::detect_kaslr_offset(provider.as_ref(), resolver.as_ref()).unwrap_or(0);
     if kaslr_offset != 0 {
         eprintln!("KASLR offset detected: {kaslr_offset:#x}");
     }

@@ -5,11 +5,11 @@
 //! Provides process, network connection, and kernel module enumeration
 //! by walking kernel data structures in physical memory dumps.
 
-pub mod types;
-pub mod process;
-pub mod network;
-pub mod modules;
 pub mod kaslr;
+pub mod modules;
+pub mod network;
+pub mod process;
+pub mod types;
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
