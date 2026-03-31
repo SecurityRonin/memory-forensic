@@ -151,19 +151,28 @@ mod tests {
 
     #[test]
     fn physical_range_len() {
-        let r = PhysicalRange { start: 0x1000, end: 0x2000 };
+        let r = PhysicalRange {
+            start: 0x1000,
+            end: 0x2000,
+        };
         assert_eq!(r.len(), 0x1000);
     }
 
     #[test]
     fn physical_range_empty() {
-        let r = PhysicalRange { start: 0x1000, end: 0x1000 };
+        let r = PhysicalRange {
+            start: 0x1000,
+            end: 0x1000,
+        };
         assert!(r.is_empty());
     }
 
     #[test]
     fn physical_range_contains() {
-        let r = PhysicalRange { start: 0x1000, end: 0x2000 };
+        let r = PhysicalRange {
+            start: 0x1000,
+            end: 0x2000,
+        };
         assert!(r.contains_addr(0x1000));
         assert!(r.contains_addr(0x1FFF));
         assert!(!r.contains_addr(0x2000));
@@ -173,9 +182,7 @@ mod tests {
     #[test]
     fn open_dump_lime() {
         use crate::test_builders::LimeBuilder;
-        let dump = LimeBuilder::new()
-            .add_range(0, &[0xAA; 128])
-            .build();
+        let dump = LimeBuilder::new().add_range(0, &[0xAA; 128]).build();
         let dir = std::env::temp_dir().join("memf_test_lime");
         std::fs::write(&dir, &dump).unwrap();
         let provider = open_dump(&dir).unwrap();
@@ -187,9 +194,7 @@ mod tests {
     #[test]
     fn open_dump_avml() {
         use crate::test_builders::AvmlBuilder;
-        let dump = AvmlBuilder::new()
-            .add_range(0, &[0xBB; 128])
-            .build();
+        let dump = AvmlBuilder::new().add_range(0, &[0xBB; 128]).build();
         let dir = std::env::temp_dir().join("memf_test_avml");
         std::fs::write(&dir, &dump).unwrap();
         let provider = open_dump(&dir).unwrap();

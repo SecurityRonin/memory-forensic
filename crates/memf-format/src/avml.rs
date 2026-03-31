@@ -58,14 +58,10 @@ fn parse_blocks(data: &[u8]) -> Result<Vec<AvmlBlock>> {
             )));
         }
 
-        let magic =
-            u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-        let version =
-            u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-        let start =
-            u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap());
-        let end =
-            u64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap());
+        let magic = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let version = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+        let start = u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap());
+        let end = u64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap());
         // bytes [24..32] are reserved — ignored.
 
         if magic != AVML_MAGIC {
@@ -99,8 +95,7 @@ fn parse_blocks(data: &[u8]) -> Result<Vec<AvmlBlock>> {
 
         // Upper bound: we won't search more than uncompressed_size + 32 bytes
         // of compressed data (snappy is never larger than input + small overhead).
-        let search_end =
-            (payload_start + expected_uncompressed as usize + 64).min(data.len());
+        let search_end = (payload_start + expected_uncompressed as usize + 64).min(data.len());
 
         if search_end < payload_start + 8 {
             return Err(Error::Corrupt(format!(
@@ -118,19 +113,19 @@ fn parse_blocks(data: &[u8]) -> Result<Vec<AvmlBlock>> {
         // one that, when used as the trailer boundary, produces valid Snappy data.
         let mut i = scan_start;
         while i <= scan_end {
-            let val =
-                u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+            let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
             if val == expected_uncompressed {
                 // Try to decompress data[payload_start..i].
                 let compressed = &data[payload_start..i];
                 let mut decoder = snap::raw::Decoder::new();
                 match decoder.decompress_vec(compressed) {
-                    Ok(decompressed)
-                        if decompressed.len() as u64 == expected_uncompressed =>
-                    {
+                    Ok(decompressed) if decompressed.len() as u64 == expected_uncompressed => {
                         trailer_pos = Some(i);
                         let range = PhysicalRange { start, end };
-                        blocks.push(AvmlBlock { range, data: decompressed });
+                        blocks.push(AvmlBlock {
+                            range,
+                            data: decompressed,
+                        });
                         pos = i + 8; // advance past trailer
                         break;
                     }
@@ -166,9 +161,8 @@ impl PhysicalMemoryProvider for AvmlProvider {
                 let offset_in_block = (addr - block.range.start) as usize;
                 let available = block.data.len().saturating_sub(offset_in_block);
                 let to_read = buf.len().min(available);
-                buf[..to_read].copy_from_slice(
-                    &block.data[offset_in_block..offset_in_block + to_read],
-                );
+                buf[..to_read]
+                    .copy_from_slice(&block.data[offset_in_block..offset_in_block + to_read]);
                 return Ok(to_read);
             }
         }
@@ -224,9 +218,7 @@ mod tests {
     // ---------------------------------------------------------------------------
     #[test]
     fn probe_avml_magic() {
-        let data = AvmlBuilder::new()
-            .add_range(0x1000, &[0u8; 64])
-            .build();
+        let data = AvmlBuilder::new().add_range(0x1000, &[0u8; 64]).build();
         let plugin = AvmlPlugin;
         assert_eq!(plugin.probe(&data), 90);
     }
@@ -247,9 +239,7 @@ mod tests {
     #[test]
     fn single_range_roundtrip() {
         let payload: Vec<u8> = (0u8..=255).collect();
-        let dump = AvmlBuilder::new()
-            .add_range(0x1000, &payload)
-            .build();
+        let dump = AvmlBuilder::new().add_range(0x1000, &payload).build();
 
         let provider = AvmlProvider::from_bytes(&dump).expect("parse");
 
@@ -294,8 +284,20 @@ mod tests {
 
         let ranges = provider.ranges();
         assert_eq!(ranges.len(), 2);
-        assert_eq!(ranges[0], PhysicalRange { start: 0x0000, end: 0x0100 });
-        assert_eq!(ranges[1], PhysicalRange { start: 0x1000, end: 0x1100 });
+        assert_eq!(
+            ranges[0],
+            PhysicalRange {
+                start: 0x0000,
+                end: 0x0100
+            }
+        );
+        assert_eq!(
+            ranges[1],
+            PhysicalRange {
+                start: 0x1000,
+                end: 0x1100
+            }
+        );
         assert_eq!(provider.total_size(), 512);
 
         let mut buf = vec![0u8; 256];
@@ -313,9 +315,7 @@ mod tests {
     // ---------------------------------------------------------------------------
     #[test]
     fn gap_returns_zero() {
-        let dump = AvmlBuilder::new()
-            .add_range(0x1000, &[0xCCu8; 256])
-            .build();
+        let dump = AvmlBuilder::new().add_range(0x1000, &[0xCCu8; 256]).build();
 
         let provider = AvmlProvider::from_bytes(&dump).expect("parse");
 

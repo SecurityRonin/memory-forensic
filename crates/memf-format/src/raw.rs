@@ -24,7 +24,10 @@ impl RawProvider {
         let ranges = if data.is_empty() {
             vec![]
         } else {
-            vec![PhysicalRange { start: 0, end: data.len() as u64 }]
+            vec![PhysicalRange {
+                start: 0,
+                end: data.len() as u64,
+            }]
         };
         Self { data, ranges }
     }
@@ -76,7 +79,11 @@ impl FormatPlugin for RawPlugin {
     }
 
     fn probe(&self, header: &[u8]) -> u8 {
-        if header.is_empty() { 0 } else { 5 }
+        if header.is_empty() {
+            0
+        } else {
+            5
+        }
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {

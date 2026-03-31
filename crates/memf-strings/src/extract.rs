@@ -18,7 +18,11 @@ pub struct ExtractConfig {
 
 impl Default for ExtractConfig {
     fn default() -> Self {
-        Self { min_length: 4, ascii: true, utf16le: true }
+        Self {
+            min_length: 4,
+            ascii: true,
+            utf16le: true,
+        }
     }
 }
 
@@ -96,8 +100,7 @@ pub fn extract_strings(
             // ── UTF-16LE pass ─────────────────────────────────────────────
             if config.utf16le {
                 // Reassemble with leftover odd byte from previous chunk
-                let (pairs, new_odd) =
-                    build_utf16_pairs(chunk, addr, utf16_odd_byte.take());
+                let (pairs, new_odd) = build_utf16_pairs(chunk, addr, utf16_odd_byte.take());
 
                 let mut run: Vec<char> = Vec::new();
                 let mut run_offset: u64 = 0;
@@ -167,14 +170,13 @@ fn build_utf16_pairs(
     let mut pairs = Vec::new();
 
     let mut i = if let Some((lo, addr)) = odd {
-        if !chunk.is_empty() {
-            let hi = chunk[0];
-            let cp = u16::from_le_bytes([lo, hi]);
-            pairs.push((cp, addr));
-            1usize
-        } else {
+        if chunk.is_empty() {
             return (pairs, Some((lo, addr)));
         }
+        let hi = chunk[0];
+        let cp = u16::from_le_bytes([lo, hi]);
+        pairs.push((cp, addr));
+        1usize
     } else {
         0usize
     };
@@ -205,11 +207,19 @@ mod tests {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     fn cfg_ascii_only(min: usize) -> ExtractConfig {
-        ExtractConfig { min_length: min, ascii: true, utf16le: false }
+        ExtractConfig {
+            min_length: min,
+            ascii: true,
+            utf16le: false,
+        }
     }
 
     fn cfg_utf16_only(min: usize) -> ExtractConfig {
-        ExtractConfig { min_length: min, ascii: false, utf16le: true }
+        ExtractConfig {
+            min_length: min,
+            ascii: false,
+            utf16le: true,
+        }
     }
 
     // ── Test 1: basic ASCII extraction ────────────────────────────────────────
@@ -227,13 +237,24 @@ mod tests {
         let cfg = cfg_ascii_only(4);
         let strings = extract_strings(&provider, &cfg);
 
-        assert_eq!(strings.len(), 2, "expected exactly 2 strings, got {:?}", strings);
+        assert_eq!(
+            strings.len(),
+            2,
+            "expected exactly 2 strings, got {:?}",
+            strings
+        );
 
-        let hello = strings.iter().find(|s| s.value == "Hello").expect("Hello not found");
+        let hello = strings
+            .iter()
+            .find(|s| s.value == "Hello")
+            .expect("Hello not found");
         assert_eq!(hello.physical_offset, 0x08);
         assert_eq!(hello.encoding, StringEncoding::Ascii);
 
-        let world = strings.iter().find(|s| s.value == "World").expect("World not found");
+        let world = strings
+            .iter()
+            .find(|s| s.value == "World")
+            .expect("World not found");
         assert_eq!(world.physical_offset, 0x20);
         assert_eq!(world.encoding, StringEncoding::Ascii);
     }
@@ -267,9 +288,7 @@ mod tests {
     fn extract_utf16le() {
         // Encode "Test" as UTF-16LE: T\0 e\0 s\0 t\0 = 8 bytes
         let mut data = vec![0u8; 32];
-        let utf16_bytes: &[u8] = &[
-            b'T', 0x00, b'e', 0x00, b's', 0x00, b't', 0x00,
-        ];
+        let utf16_bytes: &[u8] = &[b'T', 0x00, b'e', 0x00, b's', 0x00, b't', 0x00];
         let offset = 0x08usize;
         data[offset..offset + utf16_bytes.len()].copy_from_slice(utf16_bytes);
 
@@ -278,7 +297,11 @@ mod tests {
         let strings = extract_strings(&provider, &cfg);
 
         let found = strings.iter().find(|s| s.value == "Test");
-        assert!(found.is_some(), "expected UTF-16LE \"Test\", got {:?}", strings);
+        assert!(
+            found.is_some(),
+            "expected UTF-16LE \"Test\", got {:?}",
+            strings
+        );
         assert_eq!(found.unwrap().encoding, StringEncoding::Utf16Le);
         assert_eq!(found.unwrap().physical_offset, offset as u64);
     }

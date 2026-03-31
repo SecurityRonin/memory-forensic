@@ -71,8 +71,11 @@ mod tests {
         std::thread::current().name().hash(&mut h);
         content.len().hash(&mut h);
         let unique = h.finish();
-        let path = std::env::temp_dir()
-            .join(format!("memf_test_strings_{}_{}", std::process::id(), unique));
+        let path = std::env::temp_dir().join(format!(
+            "memf_test_strings_{}_{}",
+            std::process::id(),
+            unique
+        ));
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(content.as_bytes()).unwrap();
         path

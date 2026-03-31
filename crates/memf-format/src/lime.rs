@@ -37,7 +37,11 @@ impl LimeProvider {
         let data = bytes.to_vec();
         let records = parse_records(&data)?;
         let ranges = records.iter().map(|r| r.range.clone()).collect();
-        Ok(Self { data, records, ranges })
+        Ok(Self {
+            data,
+            records,
+            ranges,
+        })
     }
 
     /// Parse a LiME dump from a file path.
@@ -45,7 +49,11 @@ impl LimeProvider {
         let data = std::fs::read(path)?;
         let records = parse_records(&data)?;
         let ranges = records.iter().map(|r| r.range.clone()).collect();
-        Ok(Self { data, records, ranges })
+        Ok(Self {
+            data,
+            records,
+            ranges,
+        })
     }
 }
 
@@ -181,9 +189,7 @@ mod tests {
 
     #[test]
     fn probe_lime_magic() {
-        let dump = LimeBuilder::new()
-            .add_range(0x1000, &[0u8; 0x1000])
-            .build();
+        let dump = LimeBuilder::new().add_range(0x1000, &[0u8; 0x1000]).build();
         let plugin = LimePlugin;
         assert_eq!(plugin.probe(&dump), 90);
     }
@@ -252,13 +258,14 @@ mod tests {
 
     #[test]
     fn corrupt_magic_errors() {
-        let mut dump = LimeBuilder::new()
-            .add_range(0x1000, &[0u8; 64])
-            .build();
+        let mut dump = LimeBuilder::new().add_range(0x1000, &[0u8; 64]).build();
         // Corrupt first byte of the magic.
         dump[0] = 0xFF;
         let err = parse(&dump).unwrap_err();
-        assert!(matches!(err, Error::Corrupt(_)), "expected Corrupt, got {err:?}");
+        assert!(
+            matches!(err, Error::Corrupt(_)),
+            "expected Corrupt, got {err:?}"
+        );
     }
 
     #[test]
@@ -266,6 +273,9 @@ mod tests {
         // Only 4 bytes — not enough for a full 32-byte header.
         let truncated = vec![0x45u8, 0x4D, 0x69, 0x4C]; // just the magic bytes
         let err = parse(&truncated).unwrap_err();
-        assert!(matches!(err, Error::Corrupt(_)), "expected Corrupt, got {err:?}");
+        assert!(
+            matches!(err, Error::Corrupt(_)),
+            "expected Corrupt, got {err:?}"
+        );
     }
 }

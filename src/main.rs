@@ -125,9 +125,7 @@ fn cmd_strings(
     // Optionally classify with YARA
     if let Some(rules_dir) = rules {
         let yara = memf_strings::yara_classifier::YaraClassifier::from_rules_dir(&rules_dir)
-            .with_context(|| {
-                format!("failed to load YARA rules from {}", rules_dir.display())
-            })?;
+            .with_context(|| format!("failed to load YARA rules from {}", rules_dir.display()))?;
         for s in &mut strings {
             let matches = yara.scan_string(&s.value);
             s.categories.extend(matches);
