@@ -71,93 +71,53 @@ struct IsfSymbol {
 impl IsfResolver {
     /// Parse an ISF JSON document from a byte slice.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let doc: IsfDocument = serde_json::from_slice(data)?;
-        Ok(Self::from_document(doc))
+        todo!()
     }
 
     /// Parse an ISF JSON document from a file path.
     pub fn from_path(path: &Path) -> Result<Self> {
-        let data = std::fs::read(path)?;
-        Self::from_bytes(&data)
+        todo!()
     }
 
     /// Parse an ISF JSON document from a `serde_json::Value`.
     pub fn from_value(value: &serde_json::Value) -> Result<Self> {
-        let doc: IsfDocument = serde_json::from_value(value.clone())?;
-        Ok(Self::from_document(doc))
+        todo!()
     }
 
     fn from_document(doc: IsfDocument) -> Self {
-        let mut structs = HashMap::new();
-
-        for (name, user_type) in doc.user_types {
-            let mut fields = HashMap::new();
-            for (fname, field) in user_type.fields {
-                let type_name = field
-                    .field_type
-                    .as_ref()
-                    .map(|t| t.name.clone())
-                    .unwrap_or_default();
-                fields.insert(
-                    fname,
-                    FieldInfo {
-                        offset: field.offset,
-                        type_name,
-                    },
-                );
-            }
-            structs.insert(
-                name,
-                StructInfo {
-                    size: user_type.size,
-                    fields,
-                },
-            );
-        }
-
-        let symbols: HashMap<String, u64> = doc
-            .symbols
-            .into_iter()
-            .map(|(name, sym)| (name, sym.address))
-            .collect();
-
-        Self { structs, symbols }
+        todo!()
     }
 
     /// Return the number of structs loaded.
     pub fn struct_count(&self) -> usize {
-        self.structs.len()
+        todo!()
     }
 
     /// Return the number of symbols loaded.
     pub fn symbol_count(&self) -> usize {
-        self.symbols.len()
+        todo!()
     }
 }
 
 impl SymbolResolver for IsfResolver {
     fn field_offset(&self, struct_name: &str, field_name: &str) -> Option<u64> {
-        self.structs
-            .get(struct_name)?
-            .fields
-            .get(field_name)
-            .map(|f| f.offset)
+        todo!()
     }
 
     fn struct_size(&self, struct_name: &str) -> Option<u64> {
-        self.structs.get(struct_name).map(|s| s.size)
+        todo!()
     }
 
     fn symbol_address(&self, symbol_name: &str) -> Option<u64> {
-        self.symbols.get(symbol_name).copied()
+        todo!()
     }
 
     fn struct_info(&self, struct_name: &str) -> Option<StructInfo> {
-        self.structs.get(struct_name).cloned()
+        todo!()
     }
 
     fn backend_name(&self) -> &str {
-        "ISF JSON"
+        todo!()
     }
 }
 
@@ -170,57 +130,15 @@ impl SymbolResolver for IsfResolver {
 ///
 /// Returns all `.json` files found, sorted by name.
 pub fn discover_isf_files(explicit_path: Option<&Path>) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
-
-    if let Some(path) = explicit_path {
-        if path.is_file() {
-            files.push(path.to_path_buf());
-            return files;
-        }
-        if path.is_dir() {
-            collect_json_files(path, &mut files);
-            files.sort();
-            return files;
-        }
-    }
-
-    if let Ok(env_path) = std::env::var("MEMF_SYMBOLS_PATH") {
-        for dir in env_path.split(':') {
-            let p = Path::new(dir);
-            if p.is_dir() {
-                collect_json_files(p, &mut files);
-            }
-        }
-        if !files.is_empty() {
-            files.sort();
-            return files;
-        }
-    }
-
-    if let Some(home) = home_dir() {
-        let default_dir = home.join(".memf").join("symbols");
-        if default_dir.is_dir() {
-            collect_json_files(&default_dir, &mut files);
-        }
-    }
-
-    files.sort();
-    files
+    todo!()
 }
 
 fn collect_json_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "json") && path.is_file() {
-                files.push(path);
-            }
-        }
-    }
+    todo!()
 }
 
 fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
+    todo!()
 }
 
 #[cfg(test)]
