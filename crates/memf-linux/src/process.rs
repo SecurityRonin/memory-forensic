@@ -1,2 +1,217 @@
 //! Linux process walker.
-// Stub -- implemented in Task 13.
+//!
+//! Enumerates processes by walking the `task_struct` linked list starting
+//! from `init_task`. Each `task_struct` is connected via `tasks` (`list_head`)
+//! to form a circular doubly-linked list of all processes.
+
+use memf_core::object_reader::ObjectReader;
+use memf_format::PhysicalMemoryProvider;
+
+use crate::{Error, ProcessInfo, ProcessState, Result};
+
+/// Walk the Linux process list starting from `init_task`.
+pub fn walk_processes<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+) -> Result<Vec<ProcessInfo>> {
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut processes = Vec::new();
+
+    // Include init_task itself (it's the head, not in the walk results)
+    if let Ok(info) = read_process_info(reader, init_task_addr) {
+        processes.push(info);
+    }
+
+    for &task_addr in &task_addrs {
+        if let Ok(info) = read_process_info(reader, task_addr) {
+            processes.push(info);
+        }
+    }
+
+    processes.sort_by_key(|p| p.pid);
+    Ok(processes)
+}
+
+fn read_process_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Result<ProcessInfo> {
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
+    let state: i64 = reader.read_field(task_addr, "task_struct", "state")?;
+    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
+    let ppid = read_parent_pid(reader, task_addr).unwrap_or(0);
+    let cr3 = read_cr3(reader, task_addr).ok();
+
+    Ok(ProcessInfo {
+        pid: u64::from(pid),
+        ppid,
+        comm,
+        state: ProcessState::from_raw(state),
+        vaddr: task_addr,
+        cr3,
+    })
+}
+
+fn read_parent_pid<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Result<u64> {
+    let parent_ptr: u64 = reader.read_field(task_addr, "task_struct", "real_parent")?;
+    if parent_ptr == 0 {
+        return Ok(0);
+    }
+    let ppid: u32 = reader.read_field(parent_ptr, "task_struct", "pid")?;
+    Ok(u64::from(ppid))
+}
+
+fn read_cr3<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, task_addr: u64) -> Result<u64> {
+    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
+    if mm_ptr == 0 {
+        return Err(Error::Walker("mm is NULL (kernel thread)".into()));
+    }
+    let pgd: u64 = reader.read_field(mm_ptr, "mm_struct", "pgd")?;
+    Ok(pgd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    fn make_test_reader(data: &[u8], vaddr: u64, paddr: u64) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "state", 4, "long")
+            .add_field("task_struct", "tasks", 16, "list_head")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_field("task_struct", "real_parent", 56, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "pgd", 0, "pointer")
+            .add_symbol("init_task", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    #[test]
+    fn walk_single_process() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        data[0..4].copy_from_slice(&0u32.to_le_bytes());
+        data[4..12].copy_from_slice(&0i64.to_le_bytes());
+        let tasks_addr = vaddr + 16;
+        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[32..41].copy_from_slice(b"swapper/0");
+        data[56..64].copy_from_slice(&vaddr.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let procs = walk_processes(&reader).unwrap();
+
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].pid, 0);
+        assert_eq!(procs[0].comm, "swapper/0");
+        assert_eq!(procs[0].state, ProcessState::Running);
+        assert_eq!(procs[0].cr3, None);
+    }
+
+    #[test]
+    fn walk_three_processes() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        let init_addr = vaddr;
+        let a_addr = vaddr + 0x200;
+        let b_addr = vaddr + 0x400;
+        let init_tasks = init_addr + 16;
+        let a_tasks = a_addr + 16;
+        let b_tasks = b_addr + 16;
+
+        // init_task (PID 0)
+        data[0..4].copy_from_slice(&0u32.to_le_bytes());
+        data[4..12].copy_from_slice(&0i64.to_le_bytes());
+        data[16..24].copy_from_slice(&a_tasks.to_le_bytes());
+        data[24..32].copy_from_slice(&b_tasks.to_le_bytes());
+        data[32..41].copy_from_slice(b"swapper/0");
+        data[56..64].copy_from_slice(&init_addr.to_le_bytes());
+
+        // Task A (PID 1)
+        data[0x200..0x204].copy_from_slice(&1u32.to_le_bytes());
+        data[0x204..0x20C].copy_from_slice(&1i64.to_le_bytes());
+        data[0x210..0x218].copy_from_slice(&b_tasks.to_le_bytes());
+        data[0x218..0x220].copy_from_slice(&init_tasks.to_le_bytes());
+        data[0x220..0x227].copy_from_slice(b"systemd");
+        data[0x238..0x240].copy_from_slice(&init_addr.to_le_bytes());
+
+        // Task B (PID 42)
+        data[0x400..0x404].copy_from_slice(&42u32.to_le_bytes());
+        data[0x404..0x40C].copy_from_slice(&0i64.to_le_bytes());
+        data[0x410..0x418].copy_from_slice(&init_tasks.to_le_bytes());
+        data[0x418..0x420].copy_from_slice(&a_tasks.to_le_bytes());
+        data[0x420..0x424].copy_from_slice(b"bash");
+        data[0x438..0x440].copy_from_slice(&a_addr.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let procs = walk_processes(&reader).unwrap();
+
+        assert_eq!(procs.len(), 3);
+        assert_eq!(procs[0].pid, 0);
+        assert_eq!(procs[0].comm, "swapper/0");
+        assert_eq!(procs[1].pid, 1);
+        assert_eq!(procs[1].comm, "systemd");
+        assert_eq!(procs[1].state, ProcessState::Sleeping);
+        assert_eq!(procs[1].ppid, 0);
+        assert_eq!(procs[2].pid, 42);
+        assert_eq!(procs[2].comm, "bash");
+        assert_eq!(procs[2].state, ProcessState::Running);
+        assert_eq!(procs[2].ppid, 1);
+    }
+
+    #[test]
+    fn missing_init_task_symbol() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 8, "list_head")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_processes(&reader);
+        assert!(result.is_err());
+    }
+}
