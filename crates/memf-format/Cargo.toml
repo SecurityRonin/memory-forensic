@@ -11,6 +11,7 @@ thiserror.workspace = true
 inventory.workspace = true
 memmap2.workspace = true
 snap.workspace = true
+goblin.workspace = true
 
 [lints]
 workspace = true
