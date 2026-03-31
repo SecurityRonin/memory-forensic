@@ -19,6 +19,45 @@ enum Commands {
         /// Path to the memory dump file.
         dump: PathBuf,
     },
+    /// List processes from a memory dump.
+    Ps {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+    },
+    /// List loaded kernel modules from a memory dump.
+    Modules {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+    },
+    /// List network connections from a memory dump.
+    Netstat {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+    },
     /// Extract and classify strings from a memory dump or strings file.
     Strings {
         /// Path to the memory dump file (mutually exclusive with --from-file).
@@ -54,6 +93,21 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Info { dump } => cmd_info(&dump),
+        Commands::Ps {
+            dump,
+            symbols,
+            output,
+        } => cmd_ps(&dump, symbols.as_deref(), output),
+        Commands::Modules {
+            dump,
+            symbols,
+            output,
+        } => cmd_modules(&dump, symbols.as_deref(), output),
+        Commands::Netstat {
+            dump,
+            symbols,
+            output,
+        } => cmd_netstat(&dump, symbols.as_deref(), output),
         Commands::Strings {
             dump,
             from_file,
@@ -93,6 +147,61 @@ fn cmd_info(dump: &Path) -> Result<()> {
     println!("{table}");
 
     Ok(())
+}
+
+fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
+    let files = memf_symbols::isf::discover_isf_files(path);
+    if files.is_empty() {
+        anyhow::bail!(
+            "no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH"
+        );
+    }
+    let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
+        .with_context(|| format!("failed to load symbols from {}", files[0].display()))?;
+    Ok(Box::new(resolver))
+}
+
+fn cmd_ps(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    let provider = memf_format::open_dump(dump)
+        .with_context(|| format!("failed to open {}", dump.display()))?;
+
+    let resolver = load_symbols(symbols_path)?;
+
+    let kaslr_offset =
+        memf_linux::kaslr::detect_kaslr_offset(provider.as_ref(), resolver.as_ref())
+            .unwrap_or(0);
+    if kaslr_offset != 0 {
+        eprintln!("KASLR offset detected: {kaslr_offset:#x}");
+    }
+
+    anyhow::bail!(
+        "memf ps requires kernel page table root (CR3) auto-detection, \
+         which is scheduled for Phase 2.1. Use `memf ps --cr3 <addr>` when available."
+    );
+}
+
+fn cmd_modules(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    let _provider = memf_format::open_dump(dump)
+        .with_context(|| format!("failed to open {}", dump.display()))?;
+
+    let _resolver = load_symbols(symbols_path)?;
+
+    anyhow::bail!(
+        "memf modules requires kernel page table root (CR3) auto-detection, \
+         which is scheduled for Phase 2.1."
+    );
+}
+
+fn cmd_netstat(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    let _provider = memf_format::open_dump(dump)
+        .with_context(|| format!("failed to open {}", dump.display()))?;
+
+    let _resolver = load_symbols(symbols_path)?;
+
+    anyhow::bail!(
+        "memf netstat requires kernel page table root (CR3) auto-detection, \
+         which is scheduled for Phase 2.1."
+    );
 }
 
 fn cmd_strings(
