@@ -33,31 +33,133 @@ pub struct AvmlProvider {
 impl AvmlProvider {
     /// Parse an AVML v2 dump from an in-memory byte slice (used in tests).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        todo!()
+        let blocks = parse_blocks(bytes)?;
+        let ranges = blocks.iter().map(|b| b.range.clone()).collect();
+        Ok(Self { blocks, ranges })
     }
 
     /// Parse an AVML v2 dump from a file path.
     pub fn from_path(path: &Path) -> Result<Self> {
-        todo!()
+        let bytes = std::fs::read(path)?;
+        Self::from_bytes(&bytes)
     }
 }
 
 /// Parse all AVML v2 blocks from `data`, returning validated `AvmlBlock`s.
 fn parse_blocks(data: &[u8]) -> Result<Vec<AvmlBlock>> {
-    todo!()
+    let mut blocks = Vec::new();
+    let mut pos = 0usize;
+
+    while pos < data.len() {
+        // Need at least a 32-byte header.
+        if pos + HEADER_SIZE > data.len() {
+            return Err(Error::Corrupt(format!(
+                "truncated header at offset {pos:#x}"
+            )));
+        }
+
+        let magic = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let version = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+        let start = u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap());
+        let end = u64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap());
+        // bytes [24..32] are reserved — ignored.
+
+        if magic != AVML_MAGIC {
+            return Err(Error::Corrupt(format!(
+                "bad magic {magic:#010x} at offset {pos:#x}"
+            )));
+        }
+        if version != AVML_VERSION {
+            return Err(Error::Corrupt(format!(
+                "unsupported AVML version {version} at offset {pos:#x}"
+            )));
+        }
+        if start >= end {
+            return Err(Error::Corrupt(format!(
+                "invalid range start={start:#x} end={end:#x} at offset {pos:#x}"
+            )));
+        }
+
+        let expected_uncompressed = end - start;
+
+        let payload_start = pos + HEADER_SIZE;
+
+        let search_end = (payload_start + expected_uncompressed as usize + 64).min(data.len());
+
+        if search_end < payload_start + 8 {
+            return Err(Error::Corrupt(format!(
+                "block at {pos:#x}: not enough data for trailer"
+            )));
+        }
+
+        let mut trailer_pos: Option<usize> = None;
+        let scan_start = payload_start;
+        let scan_end = search_end - 8;
+
+        let mut i = scan_start;
+        while i <= scan_end {
+            let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+            if val == expected_uncompressed {
+                let compressed = &data[payload_start..i];
+                let mut decoder = snap::raw::Decoder::new();
+                match decoder.decompress_vec(compressed) {
+                    Ok(decompressed) if decompressed.len() as u64 == expected_uncompressed => {
+                        trailer_pos = Some(i);
+                        let range = PhysicalRange { start, end };
+                        blocks.push(AvmlBlock {
+                            range,
+                            data: decompressed,
+                        });
+                        pos = i + 8; // advance past trailer
+                        break;
+                    }
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        if trailer_pos.is_none() {
+            return Err(Error::Corrupt(format!(
+                "block at {pos:#x}: could not locate valid Snappy trailer \
+                 (expected uncompressed size {expected_uncompressed})"
+            )));
+        }
+    }
+
+    Ok(blocks)
 }
 
 impl PhysicalMemoryProvider for AvmlProvider {
     fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
-        todo!()
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        for block in &self.blocks {
+            if block.range.contains_addr(addr) {
+                let offset_in_block = (addr - block.range.start) as usize;
+                let available = block.data.len().saturating_sub(offset_in_block);
+                let to_read = buf.len().min(available);
+                buf[..to_read]
+                    .copy_from_slice(&block.data[offset_in_block..offset_in_block + to_read]);
+                return Ok(to_read);
+            }
+        }
+
+        // Address not in any mapped block — gap.
+        Ok(0)
     }
 
     fn ranges(&self) -> &[PhysicalRange] {
-        todo!()
+        &self.ranges
     }
 
     fn format_name(&self) -> &str {
-        todo!()
+        "AVML v2"
     }
 }
 
@@ -66,15 +168,24 @@ pub struct AvmlPlugin;
 
 impl FormatPlugin for AvmlPlugin {
     fn name(&self) -> &str {
-        todo!()
+        "AVML v2"
     }
 
     fn probe(&self, header: &[u8]) -> u8 {
-        todo!()
+        if header.len() < 8 {
+            return 0;
+        }
+        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        if magic == AVML_MAGIC && version == AVML_VERSION {
+            90
+        } else {
+            0
+        }
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        todo!()
+        Ok(Box::new(AvmlProvider::from_path(path)?))
     }
 }
 

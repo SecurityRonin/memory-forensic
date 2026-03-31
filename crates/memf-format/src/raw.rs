@@ -20,26 +20,49 @@ pub struct RawProvider {
 impl RawProvider {
     /// Construct a `RawProvider` from an in-memory byte slice (infallible).
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        todo!()
+        let data = bytes.to_vec();
+        let ranges = if data.is_empty() {
+            vec![]
+        } else {
+            vec![PhysicalRange {
+                start: 0,
+                end: data.len() as u64,
+            }]
+        };
+        Self { data, ranges }
     }
 
     /// Construct a `RawProvider` by reading a file from the given path.
     pub fn from_path(path: &Path) -> Result<Self> {
-        todo!()
+        let data = std::fs::read(path)?;
+        Ok(Self::from_bytes(&data))
     }
 }
 
 impl PhysicalMemoryProvider for RawProvider {
     fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
-        todo!()
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let data_len = self.data.len() as u64;
+        if addr >= data_len {
+            return Ok(0);
+        }
+
+        let src_start = addr as usize;
+        let available = self.data.len() - src_start;
+        let to_read = buf.len().min(available);
+        buf[..to_read].copy_from_slice(&self.data[src_start..src_start + to_read]);
+        Ok(to_read)
     }
 
     fn ranges(&self) -> &[PhysicalRange] {
-        todo!()
+        &self.ranges
     }
 
     fn format_name(&self) -> &str {
-        todo!()
+        "Raw"
     }
 }
 
@@ -51,15 +74,19 @@ pub struct RawPlugin;
 
 impl FormatPlugin for RawPlugin {
     fn name(&self) -> &str {
-        todo!()
+        "Raw"
     }
 
     fn probe(&self, header: &[u8]) -> u8 {
-        todo!()
+        if header.is_empty() {
+            0
+        } else {
+            5
+        }
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        todo!()
+        Ok(Box::new(RawProvider::from_path(path)?))
     }
 }
 
