@@ -149,56 +149,20 @@ fn cmd_info(dump: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
-    let files = memf_symbols::isf::discover_isf_files(path);
-    if files.is_empty() {
-        anyhow::bail!("no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH");
-    }
-    let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
-        .with_context(|| format!("failed to load symbols from {}", files[0].display()))?;
-    Ok(Box::new(resolver))
+fn load_symbols(_path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
+    todo!("TDD: implement load_symbols")
 }
 
-fn cmd_ps(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    let provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
-
-    let resolver = load_symbols(symbols_path)?;
-
-    let kaslr_offset =
-        memf_linux::kaslr::detect_kaslr_offset(provider.as_ref(), resolver.as_ref()).unwrap_or(0);
-    if kaslr_offset != 0 {
-        eprintln!("KASLR offset detected: {kaslr_offset:#x}");
-    }
-
-    anyhow::bail!(
-        "memf ps requires kernel page table root (CR3) auto-detection, \
-         which is scheduled for Phase 2.1. Use `memf ps --cr3 <addr>` when available."
-    );
+fn cmd_ps(_dump: &Path, _symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    todo!("TDD: implement cmd_ps")
 }
 
-fn cmd_modules(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    let _provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
-
-    let _resolver = load_symbols(symbols_path)?;
-
-    anyhow::bail!(
-        "memf modules requires kernel page table root (CR3) auto-detection, \
-         which is scheduled for Phase 2.1."
-    );
+fn cmd_modules(_dump: &Path, _symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    todo!("TDD: implement cmd_modules")
 }
 
-fn cmd_netstat(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    let _provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
-
-    let _resolver = load_symbols(symbols_path)?;
-
-    anyhow::bail!(
-        "memf netstat requires kernel page table root (CR3) auto-detection, \
-         which is scheduled for Phase 2.1."
-    );
+fn cmd_netstat(_dump: &Path, _symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    todo!("TDD: implement cmd_netstat")
 }
 
 fn cmd_strings(
@@ -327,5 +291,104 @@ fn format_size(bytes: u64) -> String {
         format!("{:.2} KB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_temp_lime_dump() -> std::path::PathBuf {
+        use memf_format::test_builders::LimeBuilder;
+
+        let dump = LimeBuilder::new()
+            .add_range(0x1000, &[0xAA; 4096])
+            .build();
+        let path = std::env::temp_dir().join("memf_tdd_cli_test.lime");
+        std::fs::write(&path, &dump).unwrap();
+        path
+    }
+
+    fn make_temp_isf_file() -> std::path::PathBuf {
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::linux_process_preset().build_bytes();
+        let path = std::env::temp_dir().join("memf_tdd_cli_test.json");
+        std::fs::write(&path, &isf).unwrap();
+        path
+    }
+
+    #[test]
+    fn load_symbols_no_files_errors() {
+        let dir = std::env::temp_dir().join("memf_tdd_cli_empty_symbols");
+        std::fs::create_dir_all(&dir).ok();
+        // Remove any stale .json files from prior runs
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.path().extension().map_or(false, |e| e == "json") {
+                std::fs::remove_file(entry.path()).ok();
+            }
+        }
+
+        let result = load_symbols(Some(&dir));
+        let err = result.err().expect("should fail with no symbol files");
+        let err_msg = format!("{err}");
+        assert!(
+            err_msg.contains("no symbol files found"),
+            "expected 'no symbol files found', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn load_symbols_valid_file_succeeds() {
+        let isf_path = make_temp_isf_file();
+        let result = load_symbols(Some(&isf_path));
+        assert!(result.is_ok(), "load_symbols should succeed with valid ISF");
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_ps_bails_with_cr3_message() {
+        let dump_path = make_temp_lime_dump();
+        let isf_path = make_temp_isf_file();
+        let result = cmd_ps(&dump_path, Some(&isf_path), OutputFormat::Table);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("CR3"),
+            "expected CR3 bail message, got: {err_msg}"
+        );
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_modules_bails_with_cr3_message() {
+        let dump_path = make_temp_lime_dump();
+        let isf_path = make_temp_isf_file();
+        let result = cmd_modules(&dump_path, Some(&isf_path), OutputFormat::Table);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("CR3"),
+            "expected CR3 bail message, got: {err_msg}"
+        );
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_netstat_bails_with_cr3_message() {
+        let dump_path = make_temp_lime_dump();
+        let isf_path = make_temp_isf_file();
+        let result = cmd_netstat(&dump_path, Some(&isf_path), OutputFormat::Table);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("CR3"),
+            "expected CR3 bail message, got: {err_msg}"
+        );
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
     }
 }
