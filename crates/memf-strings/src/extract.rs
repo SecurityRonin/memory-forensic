@@ -310,4 +310,71 @@ mod tests {
         let strings = extract_strings(&provider, &cfg);
         assert!(strings.is_empty(), "empty dump should yield no strings");
     }
+
+    #[test]
+    fn extract_config_default_values() {
+        let cfg = ExtractConfig::default();
+        assert_eq!(cfg.min_length, 4);
+        assert!(cfg.ascii);
+        assert!(cfg.utf16le);
+    }
+
+    #[test]
+    fn cross_boundary_ascii_detection() {
+        // Build a buffer where a string spans the 64KB chunk boundary.
+        // CHUNK_SIZE is 64 * 1024 = 65536.
+        let total_size = 65536 + 128;
+        let mut data = vec![0u8; total_size];
+        // Place "ABCDEFGHIJ" (10 chars) starting 5 bytes before the 64K boundary
+        let start = 65536 - 5;
+        data[start..start + 10].copy_from_slice(b"ABCDEFGHIJ");
+
+        let provider = RawProvider::from_bytes(&data);
+        let cfg = cfg_ascii_only(4);
+        let strings = extract_strings(&provider, &cfg);
+
+        // The carry mechanism should produce "ABCDEFGHIJ" as a single string
+        let found = strings.iter().find(|s| s.value.contains("ABCDE"));
+        assert!(
+            found.is_some(),
+            "expected cross-boundary string, got {:?}",
+            strings.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+        let s = found.unwrap();
+        assert_eq!(s.value, "ABCDEFGHIJ");
+        assert_eq!(s.physical_offset, start as u64);
+    }
+
+    #[test]
+    fn ascii_only_mode_skips_utf16() {
+        // Build UTF-16LE "Test" but only enable ASCII mode
+        let mut data = vec![0u8; 32];
+        data[0..8].copy_from_slice(&[b'T', 0x00, b'e', 0x00, b's', 0x00, b't', 0x00]);
+
+        let provider = RawProvider::from_bytes(&data);
+        let cfg = cfg_ascii_only(4);
+        let strings = extract_strings(&provider, &cfg);
+
+        // Should NOT find "Test" as a UTF-16 string
+        assert!(
+            !strings.iter().any(|s| s.value == "Test" && s.encoding == StringEncoding::Utf16Le),
+            "UTF-16 strings should not be extracted in ASCII-only mode"
+        );
+    }
+
+    #[test]
+    fn utf16_only_mode_skips_ascii() {
+        let mut data = vec![0u8; 32];
+        data[0..5].copy_from_slice(b"Hello");
+
+        let provider = RawProvider::from_bytes(&data);
+        let cfg = cfg_utf16_only(4);
+        let strings = extract_strings(&provider, &cfg);
+
+        // Should NOT find "Hello" as an ASCII string
+        assert!(
+            !strings.iter().any(|s| s.value == "Hello" && s.encoding == StringEncoding::Ascii),
+            "ASCII strings should not be extracted in UTF-16-only mode"
+        );
+    }
 }

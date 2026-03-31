@@ -141,4 +141,71 @@ rule has_http {
         let result = YaraClassifier::from_source("not valid yara");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn from_rules_dir_with_yar_files() {
+        let dir = std::env::temp_dir().join("memf_test_yara_rules_dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let rule_path = dir.join("test_rule.yar");
+        std::fs::write(
+            &rule_path,
+            r#"
+rule detect_hello {
+    strings:
+        $hello = "HELLO_MARKER"
+    condition:
+        $hello
+}
+"#,
+        )
+        .unwrap();
+
+        let classifier = YaraClassifier::from_rules_dir(&dir).unwrap();
+        let matches = classifier.scan_string("HELLO_MARKER is here");
+        assert_eq!(matches.len(), 1);
+        assert!(
+            matches!(matches[0].0, StringCategory::YaraMatch(ref name) if name == "detect_hello")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_rules_dir_empty_directory() {
+        let dir = std::env::temp_dir().join("memf_test_yara_empty_dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Remove any stale .yar files
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.path().extension().map_or(false, |e| e == "yar" || e == "yara") {
+                std::fs::remove_file(entry.path()).ok();
+            }
+        }
+
+        let result = YaraClassifier::from_rules_dir(&dir);
+        assert!(result.is_err());
+        match result {
+            Err(e) => {
+                let err_msg = format!("{e}");
+                assert!(err_msg.contains("no .yar/.yara files found"));
+            }
+            Ok(_) => panic!("expected error for empty directory"),
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn classifier_name() {
+        let source = r#"
+rule dummy {
+    strings:
+        $x = "dummy"
+    condition:
+        $x
+}
+"#;
+        let classifier = YaraClassifier::from_source(source).unwrap();
+        assert_eq!(classifier.name(), "yara");
+    }
 }

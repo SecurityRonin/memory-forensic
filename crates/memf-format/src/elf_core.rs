@@ -210,4 +210,42 @@ mod tests {
         // buf should be unchanged since nothing was read
         assert_eq!(buf, [0xFF; 8]);
     }
+
+    #[test]
+    fn from_path_via_plugin_open() {
+        let payload = vec![0xDD; 256];
+        let dump = ElfCoreBuilder::new().add_segment(0x3000, &payload).build();
+        let path = std::env::temp_dir().join("memf_test_elf_core_from_path.core");
+        std::fs::write(&path, &dump).unwrap();
+        let plugin = ElfCorePlugin;
+        let provider = plugin.open(&path).unwrap();
+        assert_eq!(provider.format_name(), "ELF Core");
+        assert_eq!(provider.ranges().len(), 1);
+        assert_eq!(provider.total_size(), 256);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn plugin_name() {
+        let plugin = ElfCorePlugin;
+        assert_eq!(plugin.name(), "ELF Core");
+    }
+
+    #[test]
+    fn probe_too_short_returns_zero() {
+        let plugin = ElfCorePlugin;
+        assert_eq!(plugin.probe(&[0x7F, b'E', b'L', b'F']), 0); // only 4 bytes, need 18
+        assert_eq!(plugin.probe(&[]), 0);
+    }
+
+    #[test]
+    fn read_phys_empty_buffer() {
+        let dump = ElfCoreBuilder::new()
+            .add_segment(0x1000, &[0xAA; 128])
+            .build();
+        let provider = ElfCoreProvider::from_bytes(dump).unwrap();
+        let mut buf = [];
+        let n = provider.read_phys(0x1000, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
 }

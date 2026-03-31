@@ -130,4 +130,36 @@ mod tests {
         assert_eq!(strings[0].value, "http://example.com:8080/path");
         std::fs::remove_file(&path).ok();
     }
+
+    #[test]
+    fn malformed_offset_line() {
+        // "notanumber: some text" — the prefix "notanumber" is not a valid offset,
+        // so the whole line should be treated as raw format.
+        let path = write_temp_file("notanumber: some text\n");
+        let strings = from_strings_file(&path).unwrap();
+        assert_eq!(strings.len(), 1);
+        // Since "notanumber" can't be parsed as u64, the entire line is the value
+        assert_eq!(strings[0].value, "notanumber: some text");
+        assert_eq!(strings[0].physical_offset, 0); // line_num 0
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn offset_prefixed_hex_uppercase() {
+        let path = write_temp_file("0XFF00: uppercase hex\n");
+        let strings = from_strings_file(&path).unwrap();
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].physical_offset, 0xFF00);
+        assert_eq!(strings[0].value, "uppercase hex");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parse_offset_helper() {
+        assert_eq!(parse_offset("0x1234"), Some(0x1234));
+        assert_eq!(parse_offset("0X1234"), Some(0x1234));
+        assert_eq!(parse_offset("42"), Some(42));
+        assert_eq!(parse_offset("abc"), None);
+        assert_eq!(parse_offset(""), None);
+    }
 }

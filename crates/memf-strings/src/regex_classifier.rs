@@ -185,4 +185,48 @@ mod tests {
         let r = classify("xyzq");
         assert!(r.is_empty());
     }
+
+    #[test]
+    fn classifies_btc_legacy_address() {
+        // BTC legacy addresses start with 1 or 3
+        let r = classify("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
+        assert!(r.iter().any(|(c, _)| *c == StringCategory::CryptoAddress));
+    }
+
+    #[test]
+    fn classifies_btc_bech32_address() {
+        // BTC bech32 addresses start with bc1
+        let r = classify("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert!(r.iter().any(|(c, _)| *c == StringCategory::CryptoAddress));
+    }
+
+    #[test]
+    fn classifies_base64_blob() {
+        let r = classify("SGVsbG8gV29ybGQhIFRoaXMgaXMgYSBiYXNlNjQgdGVzdA==");
+        assert!(r.iter().any(|(c, _)| *c == StringCategory::Base64Blob));
+    }
+
+    #[test]
+    fn classifier_name() {
+        let classifier = RegexClassifier;
+        assert_eq!(classifier.name(), "regex");
+    }
+
+    #[test]
+    fn classifies_http_url() {
+        let r = classify("http://example.com/page");
+        assert!(r.iter().any(|(c, _)| *c == StringCategory::Url));
+    }
+
+    #[test]
+    fn classifies_private_key_variants() {
+        let r = classify("-----BEGIN PRIVATE KEY-----");
+        assert!(r.iter().any(|(c, _)| *c == StringCategory::PrivateKey));
+
+        let r2 = classify("-----BEGIN EC PRIVATE KEY-----");
+        assert!(r2.iter().any(|(c, _)| *c == StringCategory::PrivateKey));
+
+        let r3 = classify("-----BEGIN OPENSSH PRIVATE KEY-----");
+        assert!(r3.iter().any(|(c, _)| *c == StringCategory::PrivateKey));
+    }
 }

@@ -306,4 +306,43 @@ mod tests {
         let n = provider.read_phys(0x5000, &mut buf).expect("read gap");
         assert_eq!(n, 0);
     }
+
+    #[test]
+    fn from_path_roundtrip() {
+        let payload: Vec<u8> = (0u8..=127).collect();
+        let dump = AvmlBuilder::new().add_range(0x2000, &payload).build();
+        let path = std::env::temp_dir().join("memf_test_avml_from_path.avml");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = AvmlProvider::from_path(&path).unwrap();
+        assert_eq!(provider.ranges().len(), 1);
+        assert_eq!(provider.total_size(), 128);
+        assert_eq!(provider.format_name(), "AVML v2");
+        let mut buf = [0u8; 4];
+        let n = provider.read_phys(0x2000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf, &[0, 1, 2, 3]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn plugin_name() {
+        let plugin = AvmlPlugin;
+        assert_eq!(plugin.name(), "AVML v2");
+    }
+
+    #[test]
+    fn probe_short_header_returns_zero() {
+        let plugin = AvmlPlugin;
+        assert_eq!(plugin.probe(&[0x41, 0x56, 0x4D]), 0); // only 3 bytes
+        assert_eq!(plugin.probe(&[]), 0);
+    }
+
+    #[test]
+    fn read_phys_empty_buffer() {
+        let dump = AvmlBuilder::new().add_range(0x1000, &[0xBB; 64]).build();
+        let provider = AvmlProvider::from_bytes(&dump).expect("parse");
+        let mut buf = [];
+        let n = provider.read_phys(0x1000, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
 }

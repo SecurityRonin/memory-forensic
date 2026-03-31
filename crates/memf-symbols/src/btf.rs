@@ -515,4 +515,57 @@ mod tests {
         assert_eq!(dyn_ref.field_offset("task_struct", "pid"), Some(0));
         assert_eq!(dyn_ref.symbol_address("anything"), None);
     }
+
+    #[test]
+    fn from_path_with_non_btf_file() {
+        let path = std::env::temp_dir().join("memf_test_btf_non_btf.bin");
+        std::fs::write(&path, b"this is not BTF data at all").unwrap();
+        let result = BtfResolver::from_path(&path);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Malformed(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn from_path_with_valid_btf() {
+        let btf = build_test_btf();
+        let path = std::env::temp_dir().join("memf_test_btf_from_path.btf");
+        std::fs::write(&path, &btf).unwrap();
+        let resolver = BtfResolver::from_path(&path).unwrap();
+        assert_eq!(resolver.struct_size("task_struct"), Some(16));
+        assert_eq!(resolver.field_offset("task_struct", "pid"), Some(0));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn btf_unsupported_version() {
+        let mut btf = build_test_btf();
+        // Change version byte from 1 to 2
+        btf[2] = 2;
+        let result = BtfResolver::from_bytes(&btf);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("unsupported BTF version"));
+    }
+
+    #[test]
+    fn btf_struct_info_unknown_returns_none() {
+        let btf = build_test_btf();
+        let resolver = BtfResolver::from_bytes(&btf).unwrap();
+        assert!(resolver.struct_info("nonexistent_struct").is_none());
+    }
+
+    #[test]
+    fn btf_field_offset_unknown_struct() {
+        let btf = build_test_btf();
+        let resolver = BtfResolver::from_bytes(&btf).unwrap();
+        assert_eq!(resolver.field_offset("unknown", "pid"), None);
+    }
+
+    #[test]
+    fn btf_field_offset_unknown_field() {
+        let btf = build_test_btf();
+        let resolver = BtfResolver::from_bytes(&btf).unwrap();
+        assert_eq!(resolver.field_offset("task_struct", "nonexistent"), None);
+    }
 }

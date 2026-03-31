@@ -430,4 +430,114 @@ mod tests {
         std::fs::remove_file(&dump_path).ok();
         std::fs::remove_file(&isf_path).ok();
     }
+
+    #[test]
+    fn format_size_gb() {
+        let result = format_size(2 * 1024 * 1024 * 1024);
+        assert!(result.contains("GB"), "expected GB, got: {result}");
+        assert!(result.contains("2.00"));
+    }
+
+    #[test]
+    fn format_size_mb() {
+        let result = format_size(5 * 1024 * 1024);
+        assert!(result.contains("MB"), "expected MB, got: {result}");
+        assert!(result.contains("5.00"));
+    }
+
+    #[test]
+    fn format_size_kb() {
+        let result = format_size(8 * 1024);
+        assert!(result.contains("KB"), "expected KB, got: {result}");
+        assert!(result.contains("8.00"));
+    }
+
+    #[test]
+    fn format_size_bytes() {
+        let result = format_size(512);
+        assert!(result.contains("B"), "expected B, got: {result}");
+        assert!(result.contains("512"));
+    }
+
+    #[test]
+    fn format_size_zero() {
+        let result = format_size(0);
+        assert_eq!(result, "0 B");
+    }
+
+    #[test]
+    fn cmd_info_produces_output() {
+        let dump_path = make_temp_lime_dump("info");
+        let result = cmd_info(&dump_path);
+        assert!(result.is_ok(), "cmd_info should succeed: {:?}", result.err());
+        std::fs::remove_file(&dump_path).ok();
+    }
+
+    #[test]
+    fn cmd_strings_from_file() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("memf_tdd_cli_strings_file.txt");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "https://evil.com/malware.exe").unwrap();
+        writeln!(f, "192.168.1.100").unwrap();
+        writeln!(f, "just some text").unwrap();
+
+        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Table, None);
+        assert!(
+            result.is_ok(),
+            "cmd_strings --from-file should succeed: {:?}",
+            result.err()
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cmd_strings_with_dump() {
+        let dump_path = make_temp_lime_dump("strings_dump");
+        let result = cmd_strings(
+            Some(dump_path.clone()),
+            None,
+            4,
+            OutputFormat::Table,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "cmd_strings with dump should succeed: {:?}",
+            result.err()
+        );
+        std::fs::remove_file(&dump_path).ok();
+    }
+
+    #[test]
+    fn cmd_strings_no_source_errors() {
+        let result = cmd_strings(None, None, 4, OutputFormat::Table, None);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("provide either"));
+    }
+
+    #[test]
+    fn cmd_strings_json_output() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("memf_tdd_cli_strings_json.txt");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "https://evil.com/malware.exe").unwrap();
+
+        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Json, None);
+        assert!(result.is_ok());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cmd_strings_csv_output() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("memf_tdd_cli_strings_csv.txt");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "192.168.1.1").unwrap();
+
+        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Csv, None);
+        assert!(result.is_ok());
+        std::fs::remove_file(&path).ok();
+    }
 }

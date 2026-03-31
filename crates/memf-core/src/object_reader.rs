@@ -330,4 +330,91 @@ mod tests {
         assert_eq!(containers[0], a_vaddr);
         assert_eq!(containers[1], b_vaddr);
     }
+
+    #[test]
+    fn read_pointer_test() {
+        let isf = IsfBuilder::new().add_struct("task_struct", 128).add_field(
+            "task_struct",
+            "mm",
+            8,
+            "pointer",
+        );
+
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mm_value: u64 = 0xFFFF_8000_CAFE_BABE;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys_u64(paddr + 8, mm_value);
+
+        let reader = make_reader(&isf, ptb);
+        let ptr = reader.read_pointer(vaddr, "task_struct", "mm").unwrap();
+        assert_eq!(ptr, mm_value);
+    }
+
+    #[test]
+    fn read_field_invalid_struct_name() {
+        let isf = IsfBuilder::new().add_struct("task_struct", 128).add_field(
+            "task_struct",
+            "pid",
+            0,
+            "int",
+        );
+
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+
+        let ptb = PageTableBuilder::new().map_4k(vaddr, paddr, flags::WRITABLE);
+
+        let reader = make_reader(&isf, ptb);
+        let result = reader.read_field::<u32>(vaddr, "nonexistent_struct", "pid");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::MissingSymbol(s) => assert_eq!(s, "nonexistent_struct.pid"),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn walk_list_empty_list() {
+        // A list where head.next points back to head (empty list)
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "tasks", 8, "list_head")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer");
+
+        let head_paddr: u64 = 0x0080_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let list_offset: u64 = 8;
+
+        // head.tasks.next = head.tasks (points back to itself -> empty list)
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr + list_offset, head_vaddr + list_offset);
+
+        let reader = make_reader(&isf, ptb);
+        let containers = reader
+            .walk_list(head_vaddr + list_offset, "task_struct", "tasks")
+            .unwrap();
+        assert!(containers.is_empty());
+    }
+
+    #[test]
+    fn symbols_accessor() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_symbol("init_task", 0xFFFF_0000);
+
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let ptb = PageTableBuilder::new().map_4k(vaddr, paddr, flags::WRITABLE);
+
+        let reader = make_reader(&isf, ptb);
+        assert_eq!(reader.symbols().backend_name(), "ISF JSON");
+        assert_eq!(reader.symbols().field_offset("task_struct", "pid"), Some(0));
+    }
 }

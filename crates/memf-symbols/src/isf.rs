@@ -346,4 +346,23 @@ mod tests {
         let found = discover_isf_files(Some(Path::new("/nonexistent/path")));
         assert!(found.is_empty());
     }
+
+    #[test]
+    fn from_path_roundtrip() {
+        let bytes = IsfBuilder::linux_process_preset().build_bytes();
+        let path = std::env::temp_dir().join("memf_test_isf_from_path.json");
+        std::fs::write(&path, &bytes).unwrap();
+        let resolver = IsfResolver::from_path(&path).unwrap();
+        assert!(resolver.struct_count() >= 3);
+        assert!(resolver.symbol_count() >= 2);
+        assert_eq!(resolver.field_offset("task_struct", "pid"), Some(1128));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn struct_info_returns_none_for_unknown() {
+        let json = IsfBuilder::linux_process_preset().build_json();
+        let resolver = IsfResolver::from_value(&json).unwrap();
+        assert!(resolver.struct_info("completely_unknown_struct").is_none());
+    }
 }

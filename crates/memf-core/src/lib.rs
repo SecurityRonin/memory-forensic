@@ -83,4 +83,45 @@ mod tests {
         let e = Error::ListCycle(10000);
         assert!(e.to_string().contains("10000"));
     }
+
+    #[test]
+    fn error_display_missing_symbol() {
+        let e = Error::MissingSymbol("task_struct.pid".into());
+        assert!(e.to_string().contains("task_struct.pid"));
+    }
+
+    #[test]
+    fn error_display_size_mismatch() {
+        let e = Error::SizeMismatch {
+            expected: 8,
+            got: 4,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("8"));
+        assert!(msg.contains("4"));
+    }
+
+    #[test]
+    fn error_from_physical() {
+        let phys_err = memf_format::Error::UnknownFormat;
+        let e: Error = Error::from(phys_err);
+        assert!(matches!(e, Error::Physical(_)));
+        assert!(e.to_string().contains("unknown dump format"));
+    }
+
+    #[test]
+    fn error_from_symbol() {
+        let sym_err = memf_symbols::Error::NotFound("init_task".into());
+        let e: Error = Error::from(sym_err);
+        assert!(matches!(e, Error::Symbol(_)));
+        assert!(e.to_string().contains("init_task"));
+    }
+
+    #[test]
+    fn error_from_io_via_physical() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file gone");
+        let phys_err = memf_format::Error::from(io_err);
+        let e: Error = Error::from(phys_err);
+        assert!(matches!(e, Error::Physical(_)));
+    }
 }

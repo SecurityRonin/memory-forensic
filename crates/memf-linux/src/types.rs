@@ -248,6 +248,11 @@ mod tests {
     #[test]
     fn process_state_from_raw() {
         assert_eq!(ProcessState::from_raw(0), ProcessState::Running);
+        assert_eq!(ProcessState::from_raw(1), ProcessState::Sleeping);
+        assert_eq!(ProcessState::from_raw(2), ProcessState::DiskSleep);
+        assert_eq!(ProcessState::from_raw(4), ProcessState::Stopped);
+        assert_eq!(ProcessState::from_raw(8), ProcessState::Traced);
+        assert_eq!(ProcessState::from_raw(16), ProcessState::Dead);
         assert_eq!(ProcessState::from_raw(32), ProcessState::Zombie);
         assert!(matches!(
             ProcessState::from_raw(99),
@@ -258,13 +263,28 @@ mod tests {
     #[test]
     fn process_state_display() {
         assert_eq!(ProcessState::Running.to_string(), "R (running)");
+        assert_eq!(ProcessState::Sleeping.to_string(), "S (sleeping)");
+        assert_eq!(ProcessState::DiskSleep.to_string(), "D (disk sleep)");
+        assert_eq!(ProcessState::Stopped.to_string(), "T (stopped)");
+        assert_eq!(ProcessState::Traced.to_string(), "t (traced)");
+        assert_eq!(ProcessState::Dead.to_string(), "X (dead)");
         assert_eq!(ProcessState::Zombie.to_string(), "Z (zombie)");
+        assert_eq!(ProcessState::Unknown(42).to_string(), "? (42)");
     }
 
     #[test]
     fn connection_state_from_raw() {
         assert_eq!(ConnectionState::from_raw(1), ConnectionState::Established);
+        assert_eq!(ConnectionState::from_raw(2), ConnectionState::SynSent);
+        assert_eq!(ConnectionState::from_raw(3), ConnectionState::SynRecv);
+        assert_eq!(ConnectionState::from_raw(4), ConnectionState::FinWait1);
+        assert_eq!(ConnectionState::from_raw(5), ConnectionState::FinWait2);
+        assert_eq!(ConnectionState::from_raw(6), ConnectionState::TimeWait);
+        assert_eq!(ConnectionState::from_raw(7), ConnectionState::Close);
+        assert_eq!(ConnectionState::from_raw(8), ConnectionState::CloseWait);
+        assert_eq!(ConnectionState::from_raw(9), ConnectionState::LastAck);
         assert_eq!(ConnectionState::from_raw(10), ConnectionState::Listen);
+        assert_eq!(ConnectionState::from_raw(11), ConnectionState::Closing);
         assert!(matches!(
             ConnectionState::from_raw(99),
             ConnectionState::Unknown(99)
@@ -272,14 +292,49 @@ mod tests {
     }
 
     #[test]
+    fn connection_state_display() {
+        assert_eq!(ConnectionState::Established.to_string(), "ESTABLISHED");
+        assert_eq!(ConnectionState::SynSent.to_string(), "SYN_SENT");
+        assert_eq!(ConnectionState::SynRecv.to_string(), "SYN_RECV");
+        assert_eq!(ConnectionState::FinWait1.to_string(), "FIN_WAIT1");
+        assert_eq!(ConnectionState::FinWait2.to_string(), "FIN_WAIT2");
+        assert_eq!(ConnectionState::TimeWait.to_string(), "TIME_WAIT");
+        assert_eq!(ConnectionState::Close.to_string(), "CLOSE");
+        assert_eq!(ConnectionState::CloseWait.to_string(), "CLOSE_WAIT");
+        assert_eq!(ConnectionState::LastAck.to_string(), "LAST_ACK");
+        assert_eq!(ConnectionState::Listen.to_string(), "LISTEN");
+        assert_eq!(ConnectionState::Closing.to_string(), "CLOSING");
+        assert_eq!(ConnectionState::Unknown(42).to_string(), "UNKNOWN(42)");
+    }
+
+    #[test]
     fn module_state_from_raw() {
         assert_eq!(ModuleState::from_raw(0), ModuleState::Live);
+        assert_eq!(ModuleState::from_raw(1), ModuleState::Coming);
         assert_eq!(ModuleState::from_raw(2), ModuleState::Going);
+        assert_eq!(ModuleState::from_raw(3), ModuleState::Unformed);
+        assert!(matches!(
+            ModuleState::from_raw(99),
+            ModuleState::Unknown(99)
+        ));
+    }
+
+    #[test]
+    fn module_state_display() {
+        assert_eq!(ModuleState::Live.to_string(), "Live");
+        assert_eq!(ModuleState::Coming.to_string(), "Coming");
+        assert_eq!(ModuleState::Going.to_string(), "Going");
+        assert_eq!(ModuleState::Unformed.to_string(), "Unformed");
+        assert_eq!(ModuleState::Unknown(42).to_string(), "Unknown(42)");
     }
 
     #[test]
     fn protocol_display() {
         assert_eq!(Protocol::Tcp.to_string(), "TCP");
+        assert_eq!(Protocol::Udp.to_string(), "UDP");
+        assert_eq!(Protocol::Tcp6.to_string(), "TCP6");
         assert_eq!(Protocol::Udp6.to_string(), "UDP6");
+        assert_eq!(Protocol::Unix.to_string(), "UNIX");
+        assert_eq!(Protocol::Raw.to_string(), "RAW");
     }
 }

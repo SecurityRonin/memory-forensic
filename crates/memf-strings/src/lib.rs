@@ -98,4 +98,47 @@ mod tests {
         assert_eq!(cs.physical_offset, 0x1234);
         assert_eq!(cs.categories.len(), 1);
     }
+
+    #[test]
+    fn error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let err: Error = Error::from(io_err);
+        assert!(matches!(err, Error::Io(_)));
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn error_from_format() {
+        let fmt_err = memf_format::Error::UnknownFormat;
+        let err: Error = Error::from(fmt_err);
+        assert!(matches!(err, Error::Format(_)));
+        assert!(err.to_string().contains("unknown dump format"));
+    }
+
+    #[test]
+    fn error_yara_display() {
+        let err = Error::Yara("compilation failed".into());
+        assert!(err.to_string().contains("compilation failed"));
+    }
+
+    #[test]
+    fn string_encoding_variants() {
+        assert_ne!(StringEncoding::Ascii, StringEncoding::Utf16Le);
+        assert_ne!(StringEncoding::Ascii, StringEncoding::Utf8);
+        assert_ne!(StringEncoding::Utf8, StringEncoding::Utf16Le);
+    }
+
+    #[test]
+    fn string_category_equality() {
+        assert_eq!(StringCategory::Url, StringCategory::Url);
+        assert_ne!(StringCategory::Url, StringCategory::Email);
+        assert_eq!(
+            StringCategory::YaraMatch("test".into()),
+            StringCategory::YaraMatch("test".into())
+        );
+        assert_ne!(
+            StringCategory::YaraMatch("a".into()),
+            StringCategory::YaraMatch("b".into())
+        );
+    }
 }

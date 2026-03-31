@@ -99,4 +99,44 @@ mod tests {
         let f2 = f.clone();
         assert_eq!(f2.offset, 8);
     }
+
+    #[test]
+    fn error_io_from_impl() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let err: Error = Error::from(io_err);
+        assert!(matches!(err, Error::Io(_)));
+        assert!(err.to_string().contains("gone"));
+    }
+
+    #[test]
+    fn error_json_from_impl() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err: Error = Error::from(json_err);
+        assert!(matches!(err, Error::Json(_)));
+    }
+
+    #[test]
+    fn error_malformed_display() {
+        let err = Error::Malformed("bad data".into());
+        assert!(err.to_string().contains("bad data"));
+    }
+
+    #[test]
+    fn struct_info_clone() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "pid".into(),
+            FieldInfo {
+                offset: 0,
+                type_name: "int".into(),
+            },
+        );
+        let info = StructInfo {
+            size: 128,
+            fields,
+        };
+        let info2 = info.clone();
+        assert_eq!(info2.size, 128);
+        assert!(info2.fields.contains_key("pid"));
+    }
 }

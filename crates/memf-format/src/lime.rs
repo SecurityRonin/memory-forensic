@@ -278,4 +278,43 @@ mod tests {
             "expected Corrupt, got {err:?}"
         );
     }
+
+    #[test]
+    fn from_path_roundtrip() {
+        let data: Vec<u8> = (0u8..=127).collect();
+        let dump = LimeBuilder::new().add_range(0x2000, &data).build();
+        let path = std::env::temp_dir().join("memf_test_lime_from_path.lime");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = LimeProvider::from_path(&path).unwrap();
+        assert_eq!(provider.ranges().len(), 1);
+        assert_eq!(provider.total_size(), 128);
+        assert_eq!(provider.format_name(), "LiME");
+        let mut buf = [0u8; 4];
+        let n = provider.read_phys(0x2000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf, &[0, 1, 2, 3]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn plugin_name() {
+        let plugin = LimePlugin;
+        assert_eq!(plugin.name(), "LiME");
+    }
+
+    #[test]
+    fn probe_short_header_returns_zero() {
+        let plugin = LimePlugin;
+        assert_eq!(plugin.probe(&[0x45, 0x4D, 0x69]), 0); // only 3 bytes
+        assert_eq!(plugin.probe(&[]), 0);
+    }
+
+    #[test]
+    fn read_phys_empty_buffer() {
+        let dump = LimeBuilder::new().add_range(0x1000, &[0xAA; 64]).build();
+        let provider = parse(&dump).unwrap();
+        let mut buf = [];
+        let n = provider.read_phys(0x1000, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
 }

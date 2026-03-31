@@ -154,4 +154,35 @@ mod tests {
         assert_eq!(provider.ranges().len(), 0);
         assert_eq!(provider.total_size(), 0);
     }
+
+    #[test]
+    fn from_path_roundtrip() {
+        let data: Vec<u8> = (0u8..=127).collect();
+        let path = std::env::temp_dir().join("memf_test_raw_from_path.raw");
+        std::fs::write(&path, &data).unwrap();
+        let provider = RawProvider::from_path(&path).unwrap();
+        assert_eq!(provider.ranges().len(), 1);
+        assert_eq!(provider.total_size(), 128);
+        assert_eq!(provider.format_name(), "Raw");
+        let mut buf = [0u8; 4];
+        let n = provider.read_phys(0, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf, &[0, 1, 2, 3]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn plugin_name() {
+        let plugin = RawPlugin;
+        assert_eq!(plugin.name(), "Raw");
+    }
+
+    #[test]
+    fn read_phys_empty_buffer() {
+        let data = vec![0xFFu8; 64];
+        let provider = RawProvider::from_bytes(&data);
+        let mut buf = [];
+        let n = provider.read_phys(0, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
 }

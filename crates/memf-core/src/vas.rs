@@ -264,6 +264,32 @@ mod tests {
     }
 
     #[test]
+    fn virt_to_phys_4k_direct() {
+        // Test virt_to_phys as the public API (not just internal translate)
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.virt_to_phys(vaddr).unwrap(), paddr);
+        assert_eq!(vas.virt_to_phys(vaddr + 0x42).unwrap(), paddr + 0x42);
+    }
+
+    #[test]
+    fn physical_accessor() {
+        let (cr3, mem) = PageTableBuilder::new()
+            .write_phys(0x5000, &[0xAB; 8])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let phys = vas.physical();
+        let mut buf = [0u8; 4];
+        let n = phys.read_phys(0x5000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0xAB; 4]);
+    }
+
+    #[test]
     fn multiple_mappings_same_pml4() {
         let vaddr1: u64 = 0xFFFF_8000_0010_0000;
         let vaddr2: u64 = 0xFFFF_8000_0010_1000;
