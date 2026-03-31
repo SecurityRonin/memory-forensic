@@ -149,20 +149,56 @@ fn cmd_info(dump: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_symbols(_path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
-    todo!("TDD: implement load_symbols")
+fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
+    let files = memf_symbols::isf::discover_isf_files(path);
+    if files.is_empty() {
+        anyhow::bail!("no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH");
+    }
+    let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
+        .with_context(|| format!("failed to load symbols from {}", files[0].display()))?;
+    Ok(Box::new(resolver))
 }
 
-fn cmd_ps(_dump: &Path, _symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    todo!("TDD: implement cmd_ps")
+fn cmd_ps(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    let provider = memf_format::open_dump(dump)
+        .with_context(|| format!("failed to open {}", dump.display()))?;
+
+    let resolver = load_symbols(symbols_path)?;
+
+    let kaslr_offset =
+        memf_linux::kaslr::detect_kaslr_offset(provider.as_ref(), resolver.as_ref()).unwrap_or(0);
+    if kaslr_offset != 0 {
+        eprintln!("KASLR offset detected: {kaslr_offset:#x}");
+    }
+
+    anyhow::bail!(
+        "memf ps requires kernel page table root (CR3) auto-detection, \
+         which is scheduled for Phase 2.1. Use `memf ps --cr3 <addr>` when available."
+    );
 }
 
-fn cmd_modules(_dump: &Path, _symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    todo!("TDD: implement cmd_modules")
+fn cmd_modules(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    let _provider = memf_format::open_dump(dump)
+        .with_context(|| format!("failed to open {}", dump.display()))?;
+
+    let _resolver = load_symbols(symbols_path)?;
+
+    anyhow::bail!(
+        "memf modules requires kernel page table root (CR3) auto-detection, \
+         which is scheduled for Phase 2.1."
+    );
 }
 
-fn cmd_netstat(_dump: &Path, _symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    todo!("TDD: implement cmd_netstat")
+fn cmd_netstat(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
+    let _provider = memf_format::open_dump(dump)
+        .with_context(|| format!("failed to open {}", dump.display()))?;
+
+    let _resolver = load_symbols(symbols_path)?;
+
+    anyhow::bail!(
+        "memf netstat requires kernel page table root (CR3) auto-detection, \
+         which is scheduled for Phase 2.1."
+    );
 }
 
 fn cmd_strings(
