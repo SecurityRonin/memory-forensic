@@ -122,7 +122,7 @@ impl ElfCoreBuilder {
         let phdr_size: usize = 56;
         let phdr_count = self.segments.len();
         let phdr_total = phdr_count * phdr_size;
-        let data_start = ((ehdr_size + phdr_total + 0xFFF) / 0x1000) * 0x1000;
+        let data_start = (ehdr_size + phdr_total).div_ceil(0x1000) * 0x1000;
         let mut out = vec![0u8; data_start];
 
         // ELF header

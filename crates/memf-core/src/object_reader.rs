@@ -4,7 +4,7 @@ use bytemuck::Pod;
 use memf_format::PhysicalMemoryProvider;
 use memf_symbols::SymbolResolver;
 
-use crate::vas::{TranslationMode, VirtualAddressSpace};
+use crate::vas::VirtualAddressSpace;
 use crate::{Error, Result};
 
 /// Maximum number of iterations when walking a linked list (cycle protection).
@@ -113,6 +113,7 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
 mod tests {
     use super::*;
     use crate::test_builders::{flags, PageTableBuilder};
+    use crate::vas::TranslationMode;
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
