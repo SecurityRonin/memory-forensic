@@ -142,6 +142,7 @@ pub fn open_dump(path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
 
 pub mod avml;
 pub mod lime;
+pub mod raw;
 pub mod test_builders;
 
 #[cfg(test)]
@@ -167,5 +168,44 @@ mod tests {
         assert!(r.contains_addr(0x1FFF));
         assert!(!r.contains_addr(0x2000));
         assert!(!r.contains_addr(0x0FFF));
+    }
+
+    #[test]
+    fn open_dump_lime() {
+        use crate::test_builders::LimeBuilder;
+        let dump = LimeBuilder::new()
+            .add_range(0, &[0xAA; 128])
+            .build();
+        let dir = std::env::temp_dir().join("memf_test_lime");
+        std::fs::write(&dir, &dump).unwrap();
+        let provider = open_dump(&dir).unwrap();
+        assert_eq!(provider.format_name(), "LiME");
+        assert_eq!(provider.total_size(), 128);
+        std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn open_dump_avml() {
+        use crate::test_builders::AvmlBuilder;
+        let dump = AvmlBuilder::new()
+            .add_range(0, &[0xBB; 128])
+            .build();
+        let dir = std::env::temp_dir().join("memf_test_avml");
+        std::fs::write(&dir, &dump).unwrap();
+        let provider = open_dump(&dir).unwrap();
+        assert_eq!(provider.format_name(), "AVML v2");
+        assert_eq!(provider.total_size(), 128);
+        std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn open_dump_unknown_is_error() {
+        let data = vec![0x00; 1024];
+        let dir = std::env::temp_dir().join("memf_test_raw");
+        std::fs::write(&dir, &data).unwrap();
+        // Raw plugin scores 5 which is < 20, so open_dump returns UnknownFormat
+        let result = open_dump(&dir);
+        assert!(result.is_err());
+        std::fs::remove_file(&dir).ok();
     }
 }
