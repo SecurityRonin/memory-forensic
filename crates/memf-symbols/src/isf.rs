@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::{Error, FieldInfo, Result, StructInfo, SymbolResolver};
+use crate::{FieldInfo, Result, StructInfo, SymbolResolver};
 
 /// ISF JSON symbol resolver.
 #[derive(Debug)]
@@ -20,6 +20,7 @@ pub struct IsfResolver {
 #[derive(Deserialize)]
 struct IsfDocument {
     #[serde(default)]
+    #[allow(dead_code)]
     base_types: HashMap<String, IsfBaseType>,
     #[serde(default)]
     user_types: HashMap<String, IsfUserType>,
@@ -28,6 +29,7 @@ struct IsfDocument {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct IsfBaseType {
     size: u64,
     #[serde(default)]
@@ -55,6 +57,7 @@ struct IsfField {
 #[derive(Deserialize)]
 struct IsfFieldType {
     #[serde(default)]
+    #[allow(dead_code)]
     kind: String,
     #[serde(default)]
     name: String,

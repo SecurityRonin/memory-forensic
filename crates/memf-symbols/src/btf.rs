@@ -236,7 +236,6 @@ fn parse_type_section(data: &[u8]) -> Result<Vec<BtfType>> {
 
         let kind_val = ((info >> 24) & 0x1F) as u8;
         let vlen = (info & 0xFFFF) as usize;
-        let kind_flag = (info >> 31) != 0;
 
         let kind = BtfKind::from_u8(kind_val).unwrap_or(BtfKind::Void);
 
@@ -256,11 +255,10 @@ fn parse_type_section(data: &[u8]) -> Result<Vec<BtfType>> {
                         u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
                     pos += 12;
 
-                    let offset_bytes = if kind_flag {
-                        m_offset / 8
-                    } else {
-                        m_offset / 8 // BTF member offsets are always in bits
-                    };
+                    // BTF member offsets are always in bits; convert to bytes.
+                    // When kind_flag is set, offsets can be bitfield-level,
+                    // but we still store byte granularity here.
+                    let offset_bytes = m_offset / 8;
 
                     members.push(BtfMember {
                         name_off: m_name_off,
@@ -269,28 +267,16 @@ fn parse_type_section(data: &[u8]) -> Result<Vec<BtfType>> {
                     });
                 }
             }
-            BtfKind::Enum => {
+            BtfKind::Enum | BtfKind::FuncProto => {
                 pos += vlen * 8;
             }
-            BtfKind::Enum64 => {
+            BtfKind::Enum64 | BtfKind::DataSec => {
                 pos += vlen * 12;
             }
             BtfKind::Array => {
                 pos += 12;
             }
-            BtfKind::FuncProto => {
-                pos += vlen * 8;
-            }
-            BtfKind::Var => {
-                pos += 4;
-            }
-            BtfKind::DataSec => {
-                pos += vlen * 12;
-            }
-            BtfKind::DeclTag => {
-                pos += 4;
-            }
-            BtfKind::Int => {
+            BtfKind::Int | BtfKind::Var | BtfKind::DeclTag => {
                 pos += 4;
             }
             _ => {}
