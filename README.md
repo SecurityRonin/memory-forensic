@@ -2,7 +2,7 @@
 
 A pure-Rust memory forensics framework. Reads physical memory dumps, walks Linux kernel structures, extracts strings, and classifies indicators of compromise.
 
-Zero `unsafe` code. Apache-2.0 licensed. 140+ tests.
+Zero `unsafe` code. Apache-2.0 licensed. 237 tests.
 
 ## Why memf
 
