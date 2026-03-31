@@ -47,6 +47,7 @@ unnecessary_literal_bound = "allow"
 return_self_not_must_use = "allow"
 unreadable_literal = "allow"
 type_complexity = "allow"
+similar_names = "allow"
 
 [package]
 name = "memf"
