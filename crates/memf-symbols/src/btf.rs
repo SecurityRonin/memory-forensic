@@ -82,39 +82,122 @@ pub struct BtfResolver {
 impl BtfResolver {
     /// Parse BTF data from a raw byte slice.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        todo!()
+        if data.len() < BTF_HEADER_SIZE {
+            return Err(Error::Malformed("BTF data too short for header".into()));
+        }
+
+        let magic = u16::from_le_bytes(data[0..2].try_into().unwrap());
+        if magic != BTF_MAGIC {
+            return Err(Error::Malformed(format!(
+                "bad BTF magic: expected 0x{BTF_MAGIC:04X}, got 0x{magic:04X}"
+            )));
+        }
+
+        let version = data[2];
+        if version != 1 {
+            return Err(Error::Malformed(format!(
+                "unsupported BTF version: {version}"
+            )));
+        }
+
+        let _hdr_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+        let type_off = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let type_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
+        let str_off = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let str_len = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
+
+        let type_start = BTF_HEADER_SIZE + type_off;
+        let type_end = type_start + type_len;
+        let str_start = BTF_HEADER_SIZE + str_off;
+        let str_end = str_start + str_len;
+
+        if type_end > data.len() || str_end > data.len() {
+            return Err(Error::Malformed("BTF sections exceed data length".into()));
+        }
+
+        let type_section = &data[type_start..type_end];
+        let str_section = &data[str_start..str_end];
+
+        let types = parse_type_section(type_section)?;
+
+        let mut structs = HashMap::new();
+        for ty in &types {
+            if ty.kind == BtfKind::Struct || ty.kind == BtfKind::Union {
+                let name = read_btf_string(str_section, ty.name_off);
+                if name.is_empty() {
+                    continue;
+                }
+
+                let mut fields = HashMap::new();
+                for member in &ty.members {
+                    let fname = read_btf_string(str_section, member.name_off);
+                    if fname.is_empty() {
+                        continue;
+                    }
+                    let type_name = resolve_type_name(&types, str_section, member.type_id);
+                    fields.insert(
+                        fname,
+                        FieldInfo {
+                            offset: u64::from(member.offset_bytes),
+                            type_name,
+                        },
+                    );
+                }
+
+                structs.insert(
+                    name,
+                    StructInfo {
+                        size: u64::from(ty.size),
+                        fields,
+                    },
+                );
+            }
+        }
+
+        Ok(Self { structs })
     }
 
     /// Parse BTF from a file path (raw BTF or vmlinux ELF with .BTF section).
     pub fn from_path(path: &Path) -> Result<Self> {
-        todo!()
+        let data = std::fs::read(path)?;
+
+        if data.len() >= 4 && &data[0..4] == b"\x7FELF" {
+            let btf_section = extract_btf_from_elf(&data)?;
+            Self::from_bytes(&btf_section)
+        } else {
+            Self::from_bytes(&data)
+        }
     }
 
     /// Return the number of structs loaded.
     pub fn struct_count(&self) -> usize {
-        todo!()
+        self.structs.len()
     }
 }
 
 impl SymbolResolver for BtfResolver {
     fn field_offset(&self, struct_name: &str, field_name: &str) -> Option<u64> {
-        todo!()
+        self.structs
+            .get(struct_name)?
+            .fields
+            .get(field_name)
+            .map(|f| f.offset)
     }
 
     fn struct_size(&self, struct_name: &str) -> Option<u64> {
-        todo!()
+        self.structs.get(struct_name).map(|s| s.size)
     }
 
     fn symbol_address(&self, _symbol_name: &str) -> Option<u64> {
-        todo!()
+        None // BTF does not contain symbol addresses
     }
 
     fn struct_info(&self, struct_name: &str) -> Option<StructInfo> {
-        todo!()
+        self.structs.get(struct_name).cloned()
     }
 
     fn backend_name(&self) -> &str {
-        todo!()
+        "BTF"
     }
 }
 
@@ -136,23 +219,181 @@ struct BtfMember {
 }
 
 fn parse_type_section(data: &[u8]) -> Result<Vec<BtfType>> {
-    todo!()
+    let mut types = Vec::new();
+    // Type ID 0 is always void
+    types.push(BtfType {
+        name_off: 0,
+        kind: BtfKind::Void,
+        size: 0,
+        members: Vec::new(),
+    });
+
+    let mut pos = 0;
+    while pos + 12 <= data.len() {
+        let name_off = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let info = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+        let size_or_type = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+        pos += 12;
+
+        let kind_val = ((info >> 24) & 0x1F) as u8;
+        let vlen = (info & 0xFFFF) as usize;
+
+        let kind = BtfKind::from_u8(kind_val).unwrap_or(BtfKind::Void);
+
+        let mut members = Vec::new();
+
+        match kind {
+            BtfKind::Struct | BtfKind::Union => {
+                for _ in 0..vlen {
+                    if pos + 12 > data.len() {
+                        return Err(Error::Malformed("truncated BTF struct member".into()));
+                    }
+                    let m_name_off = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+                    let m_type_id = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+                    let m_offset = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+                    pos += 12;
+
+                    // BTF member offsets are always in bits; convert to bytes.
+                    let offset_bytes = m_offset / 8;
+
+                    members.push(BtfMember {
+                        name_off: m_name_off,
+                        type_id: m_type_id,
+                        offset_bytes,
+                    });
+                }
+            }
+            BtfKind::Enum | BtfKind::FuncProto => {
+                pos += vlen * 8;
+            }
+            BtfKind::Enum64 | BtfKind::DataSec => {
+                pos += vlen * 12;
+            }
+            BtfKind::Array => {
+                pos += 12;
+            }
+            BtfKind::Int | BtfKind::Var | BtfKind::DeclTag => {
+                pos += 4;
+            }
+            _ => {}
+        }
+
+        types.push(BtfType {
+            name_off,
+            kind,
+            size: size_or_type,
+            members,
+        });
+    }
+
+    Ok(types)
 }
 
 fn read_btf_string(str_section: &[u8], offset: u32) -> String {
-    todo!()
+    let start = offset as usize;
+    if start >= str_section.len() {
+        return String::new();
+    }
+    let end = str_section[start..]
+        .iter()
+        .position(|&b| b == 0)
+        .map_or(str_section.len(), |p| start + p);
+    String::from_utf8_lossy(&str_section[start..end]).into_owned()
 }
 
 fn resolve_type_name(types: &[BtfType], str_section: &[u8], type_id: u32) -> String {
-    todo!()
+    let id = type_id as usize;
+    if id >= types.len() {
+        return "unknown".into();
+    }
+    let ty = &types[id];
+    match ty.kind {
+        BtfKind::Void => "void".into(),
+        BtfKind::Ptr => {
+            let pointee = resolve_type_name(types, str_section, ty.size);
+            format!("*{pointee}")
+        }
+        BtfKind::Typedef | BtfKind::Volatile | BtfKind::Const | BtfKind::Restrict => {
+            resolve_type_name(types, str_section, ty.size)
+        }
+        _ => {
+            let name = read_btf_string(str_section, ty.name_off);
+            if name.is_empty() {
+                format!("{:?}", ty.kind)
+            } else {
+                name
+            }
+        }
+    }
 }
 
 fn extract_btf_from_elf(data: &[u8]) -> Result<Vec<u8>> {
-    todo!()
+    if data.len() < 64 {
+        return Err(Error::Malformed("ELF too short".into()));
+    }
+
+    let is_64bit = data[4] == 2;
+    let is_le = data[5] == 1;
+
+    if !is_le {
+        return Err(Error::Malformed("only little-endian ELF supported".into()));
+    }
+
+    if is_64bit {
+        extract_btf_from_elf64(data)
+    } else {
+        Err(Error::Malformed("only 64-bit ELF supported for BTF".into()))
+    }
 }
 
 fn extract_btf_from_elf64(data: &[u8]) -> Result<Vec<u8>> {
-    todo!()
+    let e_shoff = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
+    let e_shentsize = u16::from_le_bytes(data[58..60].try_into().unwrap()) as usize;
+    let e_shnum = u16::from_le_bytes(data[60..62].try_into().unwrap()) as usize;
+    let e_shstrndx = u16::from_le_bytes(data[62..64].try_into().unwrap()) as usize;
+
+    if e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 {
+        return Err(Error::Malformed("no ELF section headers".into()));
+    }
+
+    let shstr_off = e_shoff + e_shstrndx * e_shentsize;
+    if shstr_off + 64 > data.len() {
+        return Err(Error::Malformed(
+            "section header string table out of bounds".into(),
+        ));
+    }
+    let shstr_offset =
+        u64::from_le_bytes(data[shstr_off + 24..shstr_off + 32].try_into().unwrap()) as usize;
+    let shstr_size =
+        u64::from_le_bytes(data[shstr_off + 32..shstr_off + 40].try_into().unwrap()) as usize;
+
+    if shstr_offset + shstr_size > data.len() {
+        return Err(Error::Malformed(
+            "section string table data out of bounds".into(),
+        ));
+    }
+    let shstrtab = &data[shstr_offset..shstr_offset + shstr_size];
+
+    for i in 0..e_shnum {
+        let sh_off = e_shoff + i * e_shentsize;
+        if sh_off + 64 > data.len() {
+            break;
+        }
+        let sh_name = u32::from_le_bytes(data[sh_off..sh_off + 4].try_into().unwrap());
+        let name = read_btf_string(shstrtab, sh_name);
+        if name == ".BTF" {
+            let sh_offset =
+                u64::from_le_bytes(data[sh_off + 24..sh_off + 32].try_into().unwrap()) as usize;
+            let sh_size =
+                u64::from_le_bytes(data[sh_off + 32..sh_off + 40].try_into().unwrap()) as usize;
+            if sh_offset + sh_size > data.len() {
+                return Err(Error::Malformed(".BTF section data out of bounds".into()));
+            }
+            return Ok(data[sh_offset..sh_offset + sh_size].to_vec());
+        }
+    }
+
+    Err(Error::Malformed("no .BTF section found in ELF".into()))
 }
 
 #[cfg(test)]
