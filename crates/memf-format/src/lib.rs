@@ -44,19 +44,19 @@ impl PhysicalRange {
     /// Number of bytes in this range.
     #[must_use]
     pub fn len(&self) -> u64 {
-        self.end.saturating_sub(self.start)
+        todo!()
     }
 
     /// Whether this range is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        todo!()
     }
 
     /// Whether the given address falls within this range.
     #[must_use]
     pub fn contains_addr(&self, addr: u64) -> bool {
-        addr >= self.start && addr < self.end
+        todo!()
     }
 }
 
@@ -98,46 +98,7 @@ inventory::collect!(&'static dyn FormatPlugin);
 /// Returns the provider from the highest-confidence plugin (>=80 returns
 /// immediately; otherwise the best score >=50 wins).
 pub fn open_dump(path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-    use std::io::Read as _;
-    let mut file = std::fs::File::open(path)?;
-    let mut header = [0u8; 4096];
-    let n = file.read(&mut header)?;
-    let header = &header[..n];
-
-    let mut best: Option<(&dyn FormatPlugin, u8)> = None;
-    let mut ambiguous = false;
-
-    for plugin in inventory::iter::<&dyn FormatPlugin> {
-        let score = plugin.probe(header);
-        if score >= 80 {
-            return plugin.open(path);
-        }
-        if score >= 50 {
-            if let Some((_, prev_score)) = best {
-                if score >= prev_score {
-                    if score == prev_score {
-                        ambiguous = true;
-                    } else {
-                        ambiguous = false;
-                        best = Some((*plugin, score));
-                    }
-                }
-            } else {
-                best = Some((*plugin, score));
-            }
-        } else if score >= 20 && best.is_none() {
-            best = Some((*plugin, score));
-        }
-    }
-
-    if ambiguous {
-        return Err(Error::AmbiguousFormat);
-    }
-
-    match best {
-        Some((plugin, _)) => plugin.open(path),
-        None => Err(Error::UnknownFormat),
-    }
+    todo!()
 }
 
 pub mod avml;

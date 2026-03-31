@@ -34,119 +34,31 @@ pub struct LimeProvider {
 impl LimeProvider {
     /// Parse a LiME dump from an in-memory byte slice (used in tests).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let data = bytes.to_vec();
-        let records = parse_records(&data)?;
-        let ranges = records.iter().map(|r| r.range.clone()).collect();
-        Ok(Self {
-            data,
-            records,
-            ranges,
-        })
+        todo!()
     }
 
     /// Parse a LiME dump from a file path.
     pub fn from_path(path: &Path) -> Result<Self> {
-        let data = std::fs::read(path)?;
-        let records = parse_records(&data)?;
-        let ranges = records.iter().map(|r| r.range.clone()).collect();
-        Ok(Self {
-            data,
-            records,
-            ranges,
-        })
+        todo!()
     }
 }
 
 /// Parse all LiME records from `data`, returning validated `LimeRecord`s.
 fn parse_records(data: &[u8]) -> Result<Vec<LimeRecord>> {
-    let mut records = Vec::new();
-    let mut pos = 0usize;
-
-    while pos < data.len() {
-        // Need at least a full 32-byte header.
-        if data.len() - pos < HEADER_SIZE {
-            return Err(Error::Corrupt(format!(
-                "truncated header at offset {pos}: only {} bytes remain",
-                data.len() - pos
-            )));
-        }
-
-        let magic = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-        if magic != LIME_MAGIC {
-            return Err(Error::Corrupt(format!(
-                "bad magic at offset {pos}: expected 0x{LIME_MAGIC:08X}, got 0x{magic:08X}"
-            )));
-        }
-
-        let version = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-        if version != LIME_VERSION {
-            return Err(Error::Corrupt(format!(
-                "unsupported LiME version {version} at offset {pos}"
-            )));
-        }
-
-        let s_addr = u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap());
-        let e_addr = u64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap());
-        // reserved bytes at [pos+24..pos+32] — ignored
-
-        if s_addr > e_addr {
-            return Err(Error::Corrupt(format!(
-                "record at offset {pos}: s_addr 0x{s_addr:016X} > e_addr 0x{e_addr:016X}"
-            )));
-        }
-
-        // e_addr is INCLUSIVE, so payload length = e_addr - s_addr + 1.
-        let payload_len = (e_addr - s_addr + 1) as usize;
-        let data_offset = pos + HEADER_SIZE;
-
-        if data.len() - data_offset < payload_len {
-            return Err(Error::Corrupt(format!(
-                "record at offset {pos}: payload truncated (need {payload_len}, have {})",
-                data.len() - data_offset
-            )));
-        }
-
-        records.push(LimeRecord {
-            range: PhysicalRange {
-                start: s_addr,
-                end: e_addr + 1, // convert inclusive e_addr to exclusive end
-            },
-            data_offset,
-        });
-
-        pos = data_offset + payload_len;
-    }
-
-    Ok(records)
+    todo!()
 }
 
 impl PhysicalMemoryProvider for LimeProvider {
     fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        for record in &self.records {
-            if record.range.contains_addr(addr) {
-                let offset_in_range = (addr - record.range.start) as usize;
-                let available = (record.range.end - addr) as usize;
-                let to_read = buf.len().min(available);
-                let src_start = record.data_offset + offset_in_range;
-                buf[..to_read].copy_from_slice(&self.data[src_start..src_start + to_read]);
-                return Ok(to_read);
-            }
-        }
-
-        // Address not in any mapped range — gap.
-        Ok(0)
+        todo!()
     }
 
     fn ranges(&self) -> &[PhysicalRange] {
-        &self.ranges
+        todo!()
     }
 
     fn format_name(&self) -> &str {
-        "LiME"
+        todo!()
     }
 }
 
@@ -155,24 +67,15 @@ pub struct LimePlugin;
 
 impl FormatPlugin for LimePlugin {
     fn name(&self) -> &str {
-        "LiME"
+        todo!()
     }
 
     fn probe(&self, header: &[u8]) -> u8 {
-        if header.len() < 8 {
-            return 0;
-        }
-        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
-        if magic == LIME_MAGIC && version == LIME_VERSION {
-            90
-        } else {
-            0
-        }
+        todo!()
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        Ok(Box::new(LimeProvider::from_path(path)?))
+        todo!()
     }
 }
 

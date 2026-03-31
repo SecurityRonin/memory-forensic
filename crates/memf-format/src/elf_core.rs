@@ -28,72 +28,21 @@ pub struct ElfCoreProvider {
 impl ElfCoreProvider {
     /// Parse an ELF core dump from a byte slice.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
-        let elf = goblin::elf::Elf::parse(&data)
-            .map_err(|e| Error::Corrupt(format!("ELF parse error: {e}")))?;
-
-        if elf.header.e_type != goblin::elf::header::ET_CORE {
-            return Err(Error::Corrupt("not an ELF core dump".into()));
-        }
-
-        let mut segments = Vec::new();
-        for phdr in &elf.program_headers {
-            if phdr.p_type == goblin::elf::program_header::PT_LOAD && phdr.p_filesz > 0 {
-                segments.push(LoadSegment {
-                    paddr: phdr.p_paddr,
-                    file_offset: phdr.p_offset,
-                    file_size: phdr.p_filesz,
-                });
-            }
-        }
-
-        segments.sort_by_key(|s| s.paddr);
-
-        let ranges: Vec<PhysicalRange> = segments
-            .iter()
-            .map(|s| PhysicalRange {
-                start: s.paddr,
-                end: s.paddr + s.file_size,
-            })
-            .collect();
-
-        Ok(Self {
-            data,
-            segments,
-            ranges,
-        })
+        todo!()
     }
 }
 
 impl PhysicalMemoryProvider for ElfCoreProvider {
     fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        for seg in &self.segments {
-            let seg_end = seg.paddr + seg.file_size;
-            if addr >= seg.paddr && addr < seg_end {
-                let offset_in_seg = addr - seg.paddr;
-                let available = (seg.file_size - offset_in_seg) as usize;
-                let to_read = buf.len().min(available);
-                let file_pos = seg.file_offset + offset_in_seg;
-                let file_pos_usize = file_pos as usize;
-                buf[..to_read]
-                    .copy_from_slice(&self.data[file_pos_usize..file_pos_usize + to_read]);
-                return Ok(to_read);
-            }
-        }
-
-        // Address not in any segment -- fill with zeros, return 0 bytes
-        Ok(0)
+        todo!()
     }
 
     fn ranges(&self) -> &[PhysicalRange] {
-        &self.ranges
+        todo!()
     }
 
     fn format_name(&self) -> &str {
-        "ELF Core"
+        todo!()
     }
 }
 
@@ -102,30 +51,15 @@ struct ElfCorePlugin;
 
 impl FormatPlugin for ElfCorePlugin {
     fn name(&self) -> &str {
-        "ELF Core"
+        todo!()
     }
 
     fn probe(&self, header: &[u8]) -> u8 {
-        if header.len() < 18 {
-            return 0;
-        }
-        // Check ELF magic
-        if header[0..4] != [0x7F, b'E', b'L', b'F'] {
-            return 0;
-        }
-        // Check ET_CORE (e_type at offset 16, little-endian u16)
-        let e_type = u16::from_le_bytes([header[16], header[17]]);
-        if e_type == 4 {
-            90
-        } else {
-            0
-        }
+        todo!()
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        let data = std::fs::read(path)?;
-        let provider = ElfCoreProvider::from_bytes(data)?;
-        Ok(Box::new(provider))
+        todo!()
     }
 }
 
