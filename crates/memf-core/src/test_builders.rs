@@ -177,7 +177,7 @@ impl PageTableBuilder {
         let pdpt_base = pml4e & Self::ADDR_MASK;
 
         let pdpte_addr = pdpt_base + pdpt_idx * 8;
-        let pdpte = (paddr & 0x000F_FFFC_0000_0000) | page_flags | flags::PRESENT | flags::PS;
+        let pdpte = (paddr & 0x000F_FFFF_C000_0000) | page_flags | flags::PRESENT | flags::PS;
         self.mem.write_u64(pdpte_addr, pdpte);
         self
     }
