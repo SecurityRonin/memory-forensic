@@ -214,4 +214,66 @@ mod tests {
         assert!(result.is_err());
         std::fs::remove_file(&dir).ok();
     }
+
+    #[test]
+    fn physical_range_zero_length() {
+        let r = PhysicalRange {
+            start: 0x5000,
+            end: 0x5000,
+        };
+        assert_eq!(r.len(), 0);
+        assert!(r.is_empty());
+        assert!(!r.contains_addr(0x5000));
+    }
+
+    #[test]
+    fn physical_range_saturating_sub() {
+        // Test the saturating_sub path: start > end should yield 0
+        let r = PhysicalRange {
+            start: 0x2000,
+            end: 0x1000,
+        };
+        assert_eq!(r.len(), 0);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn error_io_from_impl() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: Error = Error::from(io_err);
+        assert!(matches!(err, Error::Io(_)));
+        assert!(err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn error_unknown_format_display() {
+        let err = Error::UnknownFormat;
+        assert_eq!(err.to_string(), "unknown dump format");
+    }
+
+    #[test]
+    fn error_ambiguous_format_display() {
+        let err = Error::AmbiguousFormat;
+        assert_eq!(err.to_string(), "ambiguous format: multiple plugins scored >= 50");
+    }
+
+    #[test]
+    fn error_corrupt_display() {
+        let err = Error::Corrupt("truncated header".into());
+        assert!(err.to_string().contains("truncated header"));
+    }
+
+    #[test]
+    fn error_decompression_display() {
+        let err = Error::Decompression("snappy failure".into());
+        assert!(err.to_string().contains("snappy failure"));
+    }
+
+    #[test]
+    fn open_dump_nonexistent_file() {
+        let result = open_dump(Path::new("/nonexistent/path/to/dump.lime"));
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(matches!(err, Error::Io(_)));
+    }
 }
