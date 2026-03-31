@@ -26,123 +26,30 @@ const PS: u64 = 1 << 7;
 impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     /// Create a new virtual address space.
     pub fn new(physical: P, page_table_root: u64, mode: TranslationMode) -> Self {
-        Self {
-            physical,
-            page_table_root,
-            mode,
-        }
+        todo!()
     }
 
     /// Translate a virtual address to a physical address.
     pub fn virt_to_phys(&self, vaddr: u64) -> Result<u64> {
-        match self.mode {
-            TranslationMode::X86_64FourLevel => self.walk_x86_64_4level(vaddr),
-        }
+        todo!()
     }
 
     /// Read `buf.len()` bytes from virtual address `vaddr`, handling page boundary crossings.
     pub fn read_virt(&self, vaddr: u64, buf: &mut [u8]) -> Result<()> {
-        if buf.is_empty() {
-            return Ok(());
-        }
-
-        let mut offset = 0usize;
-        let mut current_vaddr = vaddr;
-
-        while offset < buf.len() {
-            let paddr = self.virt_to_phys(current_vaddr)?;
-
-            // Calculate how many bytes until the next page boundary
-            let page_offset = current_vaddr & 0xFFF;
-            let remaining_in_page = 0x1000 - page_offset as usize;
-            let remaining_to_read = buf.len() - offset;
-            let chunk = remaining_to_read.min(remaining_in_page);
-
-            let n = self
-                .physical
-                .read_phys(paddr, &mut buf[offset..offset + chunk])?;
-            if n == 0 {
-                return Err(Error::PartialRead {
-                    addr: vaddr,
-                    requested: buf.len(),
-                    got: offset,
-                });
-            }
-            offset += n;
-            current_vaddr = current_vaddr.wrapping_add(n as u64);
-        }
-
-        Ok(())
+        todo!()
     }
 
     /// Return a reference to the underlying physical memory provider.
     pub fn physical(&self) -> &P {
-        &self.physical
+        todo!()
     }
 
     fn read_pte(&self, addr: u64) -> Result<u64> {
-        let mut buf = [0u8; 8];
-        let n = self.physical.read_phys(addr, &mut buf)?;
-        if n < 8 {
-            return Err(Error::PartialRead {
-                addr,
-                requested: 8,
-                got: n,
-            });
-        }
-        Ok(u64::from_le_bytes(buf))
+        todo!()
     }
 
     fn walk_x86_64_4level(&self, vaddr: u64) -> Result<u64> {
-        let pml4_idx = (vaddr >> 39) & 0x1FF;
-        let pdpt_idx = (vaddr >> 30) & 0x1FF;
-        let pd_idx = (vaddr >> 21) & 0x1FF;
-        let pt_idx = (vaddr >> 12) & 0x1FF;
-        let page_offset = vaddr & 0xFFF;
-
-        // PML4
-        let pml4e = self.read_pte(self.page_table_root + pml4_idx * 8)?;
-        if pml4e & PRESENT == 0 {
-            return Err(Error::PageNotPresent(vaddr));
-        }
-
-        // PDPT
-        let pdpt_base = pml4e & ADDR_MASK;
-        let pdpte = self.read_pte(pdpt_base + pdpt_idx * 8)?;
-        if pdpte & PRESENT == 0 {
-            return Err(Error::PageNotPresent(vaddr));
-        }
-
-        // 1GB huge page?
-        if pdpte & PS != 0 {
-            let phys_base = pdpte & 0x000F_FFFF_C000_0000;
-            let offset_1g = vaddr & 0x3FFF_FFFF;
-            return Ok(phys_base | offset_1g);
-        }
-
-        // PD
-        let pd_base = pdpte & ADDR_MASK;
-        let pde = self.read_pte(pd_base + pd_idx * 8)?;
-        if pde & PRESENT == 0 {
-            return Err(Error::PageNotPresent(vaddr));
-        }
-
-        // 2MB large page?
-        if pde & PS != 0 {
-            let phys_base = pde & 0x000F_FFFF_FFE0_0000;
-            let offset_2m = vaddr & 0x1F_FFFF;
-            return Ok(phys_base | offset_2m);
-        }
-
-        // PT (4K page)
-        let pt_base = pde & ADDR_MASK;
-        let pte = self.read_pte(pt_base + pt_idx * 8)?;
-        if pte & PRESENT == 0 {
-            return Err(Error::PageNotPresent(vaddr));
-        }
-
-        let phys_base = pte & ADDR_MASK;
-        Ok(phys_base | page_offset)
+        todo!()
     }
 }
 
