@@ -334,22 +334,22 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    fn make_temp_lime_dump() -> std::path::PathBuf {
+    fn make_temp_lime_dump(suffix: &str) -> std::path::PathBuf {
         use memf_format::test_builders::LimeBuilder;
 
         let dump = LimeBuilder::new()
             .add_range(0x1000, &[0xAA; 4096])
             .build();
-        let path = std::env::temp_dir().join("memf_tdd_cli_test.lime");
+        let path = std::env::temp_dir().join(format!("memf_tdd_cli_{suffix}.lime"));
         std::fs::write(&path, &dump).unwrap();
         path
     }
 
-    fn make_temp_isf_file() -> std::path::PathBuf {
+    fn make_temp_isf_file(suffix: &str) -> std::path::PathBuf {
         use memf_symbols::test_builders::IsfBuilder;
 
         let isf = IsfBuilder::linux_process_preset().build_bytes();
-        let path = std::env::temp_dir().join("memf_tdd_cli_test.json");
+        let path = std::env::temp_dir().join(format!("memf_tdd_cli_{suffix}.json"));
         std::fs::write(&path, &isf).unwrap();
         path
     }
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn load_symbols_valid_file_succeeds() {
-        let isf_path = make_temp_isf_file();
+        let isf_path = make_temp_isf_file("load_ok");
         let result = load_symbols(Some(&isf_path));
         assert!(result.is_ok(), "load_symbols should succeed with valid ISF");
         std::fs::remove_file(&isf_path).ok();
@@ -385,11 +385,12 @@ mod tests {
 
     #[test]
     fn cmd_ps_bails_with_cr3_message() {
-        let dump_path = make_temp_lime_dump();
-        let isf_path = make_temp_isf_file();
+        let dump_path = make_temp_lime_dump("ps");
+        let isf_path = make_temp_isf_file("ps");
         let result = cmd_ps(&dump_path, Some(&isf_path), OutputFormat::Table);
         assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
+        let err = result.err().unwrap();
+        let err_msg = format!("{err}");
         assert!(
             err_msg.contains("CR3"),
             "expected CR3 bail message, got: {err_msg}"
@@ -400,11 +401,12 @@ mod tests {
 
     #[test]
     fn cmd_modules_bails_with_cr3_message() {
-        let dump_path = make_temp_lime_dump();
-        let isf_path = make_temp_isf_file();
+        let dump_path = make_temp_lime_dump("modules");
+        let isf_path = make_temp_isf_file("modules");
         let result = cmd_modules(&dump_path, Some(&isf_path), OutputFormat::Table);
         assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
+        let err = result.err().unwrap();
+        let err_msg = format!("{err}");
         assert!(
             err_msg.contains("CR3"),
             "expected CR3 bail message, got: {err_msg}"
@@ -415,11 +417,12 @@ mod tests {
 
     #[test]
     fn cmd_netstat_bails_with_cr3_message() {
-        let dump_path = make_temp_lime_dump();
-        let isf_path = make_temp_isf_file();
+        let dump_path = make_temp_lime_dump("netstat");
+        let isf_path = make_temp_isf_file("netstat");
         let result = cmd_netstat(&dump_path, Some(&isf_path), OutputFormat::Table);
         assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
+        let err = result.err().unwrap();
+        let err_msg = format!("{err}");
         assert!(
             err_msg.contains("CR3"),
             "expected CR3 bail message, got: {err_msg}"
