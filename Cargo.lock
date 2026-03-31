@@ -246,6 +246,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "bytemuck"
+version = "1.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9abbd1bc6865053c427f7198e6af43bfdedc55ab791faed4fbd361d789575ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1247,9 +1267,22 @@ dependencies = [
  "anyhow",
  "clap",
  "comfy-table",
+ "memf-core",
  "memf-format",
+ "memf-linux",
  "memf-strings",
+ "memf-symbols",
  "serde_json",
+]
+
+[[package]]
+name = "memf-core"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "memf-format",
+ "memf-symbols",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1263,6 +1296,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "memf-linux"
+version = "0.1.0"
+dependencies = [
+ "inventory",
+ "memf-core",
+ "memf-format",
+ "memf-symbols",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "memf-strings"
 version = "0.1.0"
 dependencies = [
@@ -1272,6 +1316,15 @@ dependencies = [
  "regex",
  "thiserror 2.0.18",
  "yara-x",
+]
+
+[[package]]
+name = "memf-symbols"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
