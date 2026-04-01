@@ -47,6 +47,12 @@ pub enum Error {
     Cache(String),
 }
 
+impl From<pdb::Error> for Error {
+    fn from(e: pdb::Error) -> Self {
+        Self::Pdb(e.to_string())
+    }
+}
+
 /// A Result alias for memf-symbols.
 pub type Result<T> = std::result::Result<T, Error>;
 
