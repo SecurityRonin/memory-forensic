@@ -360,4 +360,97 @@ mod tests {
         let provider = crate::lime::LimeProvider::from_bytes(&dump).unwrap();
         assert!(provider.metadata().is_none());
     }
+
+    #[test]
+    fn open_dump_crashdump() {
+        use crate::test_builders::CrashDumpBuilder;
+        let page = vec![0xAA; 4096];
+        let dump = CrashDumpBuilder::new().add_run(0, &page).build();
+        let path = std::env::temp_dir().join("memf_test_open_crashdump.dmp");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = open_dump(&path).unwrap();
+        assert_eq!(provider.format_name(), "Windows Crash Dump");
+        assert_eq!(provider.total_size(), 4096);
+        let mut buf = [0u8; 2];
+        let n = provider.read_phys(0, &mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(buf, [0xAA, 0xAA]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_dump_hiberfil() {
+        use crate::test_builders::HiberfilBuilder;
+        let page = [0xBB; 4096];
+        let dump = HiberfilBuilder::new().add_page(0, &page).build();
+        let path = std::env::temp_dir().join("memf_test_open_hiberfil.sys");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = open_dump(&path).unwrap();
+        assert_eq!(provider.format_name(), "Hiberfil.sys");
+        let mut buf = [0u8; 2];
+        let n = provider.read_phys(0, &mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(buf, [0xBB, 0xBB]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_dump_vmware() {
+        use crate::test_builders::VmwareStateBuilder;
+        let dump = VmwareStateBuilder::new()
+            .add_region(0, &[0xCC; 128])
+            .build();
+        let path = std::env::temp_dir().join("memf_test_open_vmware.vmss");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = open_dump(&path).unwrap();
+        assert_eq!(provider.format_name(), "VMware State");
+        let mut buf = [0u8; 2];
+        let n = provider.read_phys(0, &mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(buf, [0xCC, 0xCC]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_dump_kdump() {
+        use crate::test_builders::KdumpBuilder;
+        let page = vec![0xDD; 4096];
+        let dump = KdumpBuilder::new()
+            .compression(0x04)
+            .add_page(0, &page)
+            .build();
+        let path = std::env::temp_dir().join("memf_test_open_kdump.dump");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = open_dump(&path).unwrap();
+        assert_eq!(provider.format_name(), "kdump");
+        let mut buf = [0u8; 2];
+        let n = provider.read_phys(0, &mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(buf, [0xDD, 0xDD]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn metadata_returns_none_for_legacy_formats() {
+        use crate::test_builders::LimeBuilder;
+        let dump = LimeBuilder::new().add_range(0, &[0xAA; 64]).build();
+        let path = std::env::temp_dir().join("memf_test_meta_lime.lime");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = open_dump(&path).unwrap();
+        assert!(provider.metadata().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn metadata_returns_some_for_crashdump() {
+        use crate::test_builders::CrashDumpBuilder;
+        let page = vec![0u8; 4096];
+        let dump = CrashDumpBuilder::new().cr3(0x1ab000).add_run(0, &page).build();
+        let path = std::env::temp_dir().join("memf_test_meta_crash.dmp");
+        std::fs::write(&path, &dump).unwrap();
+        let provider = open_dump(&path).unwrap();
+        let meta = provider.metadata().expect("crash dump should have metadata");
+        assert_eq!(meta.cr3, Some(0x1ab000));
+        std::fs::remove_file(&path).ok();
+    }
 }
