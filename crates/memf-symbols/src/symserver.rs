@@ -1,10 +1,109 @@
 //! Symbol server client.
 //!
 //! Provides pure functions for URL construction and cache path computation,
-//! plus an optional `SymbolServerClient` (behind the `symserver` feature)
+//! plus an optional [`SymbolServerClient`] (behind the `symserver` feature)
 //! that downloads PDBs from Microsoft's symbol server with local caching.
 
 use std::path::{Path, PathBuf};
+
+/// Construct the symbol server download URL for a PDB file.
+///
+/// The GUID is formatted uppercase, no dashes, concatenated with the age in hex.
+/// Example: GUID `"1B72224D-37B8-1792-2820-0ED8994498B2"`, age 1
+/// produces URL: `{server}/ntkrnlmp.pdb/1B72224D37B8179228200ED8994498B21/ntkrnlmp.pdb`
+pub fn download_url(server: &str, pdb_name: &str, guid: &str, age: u32) -> String {
+    let guid_clean = guid.replace('-', "").to_uppercase();
+    let index = format!("{guid_clean}{age:X}");
+    format!("{server}/{pdb_name}/{index}/{pdb_name}")
+}
+
+/// Construct the local cache path for a PDB file.
+///
+/// Layout: `{cache_dir}/{pdb_name}/{GUID_CLEAN}{AGE_HEX}/{pdb_name}`
+pub fn cache_path(cache_dir: &Path, pdb_name: &str, guid: &str, age: u32) -> PathBuf {
+    let guid_clean = guid.replace('-', "").to_uppercase();
+    let index = format!("{guid_clean}{age:X}");
+    cache_dir.join(pdb_name).join(index).join(pdb_name)
+}
+
+/// Return the default symbol server URL (Microsoft public server).
+pub fn default_server_url() -> &'static str {
+    "https://msdl.microsoft.com/download/symbols"
+}
+
+/// Return the default local cache directory (`~/.memf/symbols/`).
+pub fn default_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".memf").join("symbols"))
+}
+
+// ── SymbolServerClient (only with `symserver` feature) ──
+
+/// A client for downloading PDB files from a symbol server with local caching.
+#[cfg(feature = "symserver")]
+pub struct SymbolServerClient {
+    server_url: String,
+    cache_dir: PathBuf,
+}
+
+#[cfg(feature = "symserver")]
+impl SymbolServerClient {
+    /// Create a new client with custom server URL and cache directory.
+    pub fn new(server_url: impl Into<String>, cache_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            server_url: server_url.into(),
+            cache_dir: cache_dir.into(),
+        }
+    }
+
+    /// Create a client using Microsoft's public symbol server and default cache dir.
+    pub fn microsoft() -> crate::Result<Self> {
+        let cache_dir =
+            default_cache_dir().ok_or_else(|| crate::Error::Cache("HOME not set".into()))?;
+        Ok(Self::new(default_server_url(), cache_dir))
+    }
+
+    /// Get a PDB file, downloading from the symbol server if not cached.
+    ///
+    /// Returns the path to the cached PDB file.
+    pub fn get_pdb(&self, pdb_name: &str, guid: &str, age: u32) -> crate::Result<PathBuf> {
+        let cached = cache_path(&self.cache_dir, pdb_name, guid, age);
+        if cached.exists() {
+            return Ok(cached);
+        }
+
+        let url = download_url(&self.server_url, pdb_name, guid, age);
+        let response = ureq::get(&url)
+            .call()
+            .map_err(|e| crate::Error::Network(format!("download failed: {e}")))?;
+
+        // Create parent directories
+        if let Some(parent) = cached.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| crate::Error::Cache(format!("create cache dir: {e}")))?;
+        }
+
+        // Write to temp file then rename for atomicity
+        let tmp = cached.with_extension("tmp");
+        let mut file = std::fs::File::create(&tmp)
+            .map_err(|e| crate::Error::Cache(format!("create temp file: {e}")))?;
+        std::io::copy(&mut response.into_body().into_reader(), &mut file)
+            .map_err(|e| crate::Error::Cache(format!("write cache: {e}")))?;
+        std::fs::rename(&tmp, &cached)
+            .map_err(|e| crate::Error::Cache(format!("rename temp: {e}")))?;
+
+        Ok(cached)
+    }
+
+    /// Return the server URL.
+    pub fn server_url(&self) -> &str {
+        &self.server_url
+    }
+
+    /// Return the cache directory.
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+}
 
 #[cfg(test)]
 mod tests {
