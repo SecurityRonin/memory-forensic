@@ -431,6 +431,7 @@ impl ElfCoreBuilder {
 /// - value: u64
 ///
 /// Tag terminator: flags byte = 0
+#[derive(Default)]
 pub struct VmwareStateBuilder {
     memory_regions: Vec<(u64, Vec<u8>)>,
     cr3: Option<u64>,

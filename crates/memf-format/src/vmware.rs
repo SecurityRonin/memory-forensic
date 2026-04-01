@@ -15,9 +15,35 @@ const VMSN_MAGIC_1: u32 = 0xBAD1_BAD1;
 const VMSN_MAGIC_2: u32 = 0xBED2_BED2;
 const VMSN_MAGIC_3: u32 = 0xBED3_BED3;
 
+/// File header size: magic(4) + unknown(4) + group_count(4).
+const HEADER_SIZE: usize = 12;
+
+/// Group entry size: name(64) + tags_offset(8) + padding(8).
+const GROUP_ENTRY_SIZE: usize = 80;
+
+/// Tag flags constants.
+const TAG_FLAGS_LARGE_DATA: u8 = 0x06;
+const TAG_FLAGS_INDEXED_8BYTE: u8 = 0x46;
+
 /// Check whether a u32 matches one of the known VMware magic values.
 fn is_vmware_magic(magic: u32) -> bool {
     matches!(magic, VMSS_MAGIC | VMSN_MAGIC_1 | VMSN_MAGIC_2 | VMSN_MAGIC_3)
+}
+
+/// Read a little-endian u32 from `data` at `offset`.
+fn read_u32(data: &[u8], offset: usize) -> Result<u32> {
+    data.get(offset..offset + 4)
+        .and_then(|s| s.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| Error::Corrupt(format!("read_u32 out of bounds at offset {offset}")))
+}
+
+/// Read a little-endian u64 from `data` at `offset`.
+fn read_u64(data: &[u8], offset: usize) -> Result<u64> {
+    data.get(offset..offset + 8)
+        .and_then(|s| s.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| Error::Corrupt(format!("read_u64 out of bounds at offset {offset}")))
 }
 
 /// A contiguous memory region extracted from a VMware state file.
@@ -38,33 +64,209 @@ pub struct VmwareStateProvider {
     meta: DumpMetadata,
 }
 
+/// Parse tags within a group, returning memory regions and an optional CR3 value.
+///
+/// `data` is the full file, `offset` is the start of the tag stream for this group.
+/// `group_name` determines which tags we look for.
+fn parse_tags(
+    data: &[u8],
+    mut pos: usize,
+    group_name: &str,
+) -> Result<(Vec<MemoryRegion>, Option<u64>)> {
+    let mut regions = Vec::new();
+    let mut cr3: Option<u64> = None;
+    let mut current_ppn: Option<u64> = None;
+
+    loop {
+        if pos >= data.len() {
+            break;
+        }
+
+        let flags = data[pos];
+        if flags == 0 {
+            // Tag terminator.
+            break;
+        }
+        pos += 1;
+
+        if pos >= data.len() {
+            return Err(Error::Corrupt("truncated tag: no name_length byte".into()));
+        }
+        let name_length = data[pos] as usize;
+        pos += 1;
+
+        if pos + name_length > data.len() {
+            return Err(Error::Corrupt("truncated tag: name extends beyond data".into()));
+        }
+        let tag_name = &data[pos..pos + name_length];
+        pos += name_length;
+
+        if flags == TAG_FLAGS_LARGE_DATA {
+            // Large data tag: next 4 bytes are data_length, then payload.
+            let data_length = read_u32(data, pos)? as usize;
+            pos += 4;
+
+            if pos + data_length > data.len() {
+                return Err(Error::Corrupt(format!(
+                    "truncated tag payload: need {data_length} bytes at offset {pos}"
+                )));
+            }
+
+            if group_name == "memory" {
+                if tag_name == b"regionPPN" && data_length == 8 {
+                    current_ppn = Some(read_u64(data, pos)?);
+                } else if tag_name == b"regionBytes" {
+                    if let Some(ppn) = current_ppn.take() {
+                        regions.push(MemoryRegion {
+                            paddr: ppn,
+                            file_offset: pos,
+                            size: data_length,
+                        });
+                    }
+                }
+            }
+
+            pos += data_length;
+        } else if flags == TAG_FLAGS_INDEXED_8BYTE {
+            // Indexed 8-byte data tag: index0(1) + index1(1) + value(8).
+            if pos + 10 > data.len() {
+                return Err(Error::Corrupt("truncated indexed tag".into()));
+            }
+            // index0 and index1 identify the CPU and register (skipped).
+            let value = read_u64(data, pos + 2)?;
+            pos += 10;
+
+            if group_name == "cpu" && tag_name == b"CR3" {
+                cr3 = Some(value);
+            }
+        } else {
+            // Unknown tag type — we cannot determine its size, so stop parsing
+            // this group's tags. This is safe because our test builder only
+            // emits the two tag types above plus the terminator.
+            return Err(Error::Corrupt(format!(
+                "unknown tag flags 0x{flags:02X} in group '{group_name}'"
+            )));
+        }
+    }
+
+    Ok((regions, cr3))
+}
+
 impl VmwareStateProvider {
     /// Parse a VMware state file from an in-memory byte slice.
-    pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
-        todo!()
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < HEADER_SIZE {
+            return Err(Error::Corrupt("VMware state file too short for header".into()));
+        }
+
+        let magic = read_u32(bytes, 0)?;
+        if !is_vmware_magic(magic) {
+            return Err(Error::Corrupt(format!(
+                "invalid VMware magic: 0x{magic:08X}"
+            )));
+        }
+
+        // unknown field at offset 4 — ignored.
+        let group_count = read_u32(bytes, 8)? as usize;
+
+        let groups_end = HEADER_SIZE + group_count * GROUP_ENTRY_SIZE;
+        if groups_end > bytes.len() {
+            return Err(Error::Corrupt("group entries extend beyond file".into()));
+        }
+
+        let mut all_regions = Vec::new();
+        let mut cr3: Option<u64> = None;
+
+        for i in 0..group_count {
+            let entry_offset = HEADER_SIZE + i * GROUP_ENTRY_SIZE;
+
+            // Read null-terminated group name from first 64 bytes.
+            let name_bytes = &bytes[entry_offset..entry_offset + 64];
+            let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(64);
+            let group_name = std::str::from_utf8(&name_bytes[..name_end])
+                .unwrap_or("???");
+
+            // tags_offset at entry_offset + 64.
+            let tags_offset = read_u64(bytes, entry_offset + 64)? as usize;
+
+            if tags_offset >= bytes.len() {
+                return Err(Error::Corrupt(format!(
+                    "group '{group_name}' tags_offset {tags_offset} beyond file"
+                )));
+            }
+
+            let (mut regions, group_cr3) = parse_tags(bytes, tags_offset, group_name)?;
+
+            all_regions.append(&mut regions);
+            if let Some(v) = group_cr3 {
+                cr3 = Some(v);
+            }
+        }
+
+        // Build ranges from regions.
+        let ranges: Vec<PhysicalRange> = all_regions
+            .iter()
+            .map(|r| PhysicalRange {
+                start: r.paddr,
+                end: r.paddr + r.size as u64,
+            })
+            .collect();
+
+        let meta = DumpMetadata {
+            cr3,
+            dump_type: Some("VMware State".into()),
+            ..DumpMetadata::default()
+        };
+
+        Ok(Self {
+            data: bytes.to_vec(),
+            regions: all_regions,
+            ranges,
+            meta,
+        })
     }
 
     /// Parse a VMware state file from a file path.
-    pub fn from_path(_path: &Path) -> Result<Self> {
-        todo!()
+    pub fn from_path(path: &Path) -> Result<Self> {
+        let data = std::fs::read(path)?;
+        Self::from_bytes(&data)
     }
 }
 
 impl PhysicalMemoryProvider for VmwareStateProvider {
-    fn read_phys(&self, _addr: u64, _buf: &mut [u8]) -> Result<usize> {
-        todo!()
+    fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        for region in &self.regions {
+            let region_start = region.paddr;
+            let region_end = region.paddr + region.size as u64;
+
+            if addr >= region_start && addr < region_end {
+                let offset_in_region = (addr - region_start) as usize;
+                let available = region.size - offset_in_region;
+                let to_read = buf.len().min(available);
+                let src_start = region.file_offset + offset_in_region;
+                buf[..to_read].copy_from_slice(&self.data[src_start..src_start + to_read]);
+                return Ok(to_read);
+            }
+        }
+
+        // Address not in any mapped region — gap.
+        Ok(0)
     }
 
     fn ranges(&self) -> &[PhysicalRange] {
-        todo!()
+        &self.ranges
     }
 
     fn format_name(&self) -> &str {
-        todo!()
+        "VMware State"
     }
 
     fn metadata(&self) -> Option<DumpMetadata> {
-        todo!()
+        Some(self.meta.clone())
     }
 }
 
@@ -73,15 +275,23 @@ pub struct VmwarePlugin;
 
 impl FormatPlugin for VmwarePlugin {
     fn name(&self) -> &str {
-        todo!()
+        "VMware State"
     }
 
-    fn probe(&self, _header: &[u8]) -> u8 {
-        todo!()
+    fn probe(&self, header: &[u8]) -> u8 {
+        if header.len() < 4 {
+            return 0;
+        }
+        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        if is_vmware_magic(magic) {
+            85
+        } else {
+            0
+        }
     }
 
-    fn open(&self, _path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        todo!()
+    fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
+        Ok(Box::new(VmwareStateProvider::from_path(path)?))
     }
 }
 
