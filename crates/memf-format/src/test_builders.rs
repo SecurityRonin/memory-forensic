@@ -294,7 +294,7 @@ impl CrashDumpBuilder {
 
         // Bitmap: one bit per page up to max_pfn, rounded up to 8 bytes.
         let bitmap_bits = max_pfn as usize;
-        let bitmap_bytes = (bitmap_bits + 7) / 8;
+        let bitmap_bytes = bitmap_bits.div_ceil(8);
         // Align bitmap_bytes up to multiple of 8.
         let bitmap_bytes_aligned = (bitmap_bytes + 7) & !7;
 
