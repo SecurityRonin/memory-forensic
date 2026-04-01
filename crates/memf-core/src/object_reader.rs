@@ -108,17 +108,42 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         struct_name: &str,
         list_field: &str,
     ) -> Result<Vec<u64>> {
+        self.walk_list_with(head_vaddr, "list_head", "next", struct_name, list_field)
+    }
+
+    /// Walk a doubly-linked list with configurable list struct and field names.
+    ///
+    /// This is a generalized version of [`walk_list`](Self::walk_list) that works
+    /// with any linked-list structure, not just Linux `list_head`.
+    ///
+    /// For example, Windows uses `_LIST_ENTRY` with `Flink`/`Blink` fields
+    /// instead of `list_head` with `next`/`prev`.
+    ///
+    /// # Arguments
+    /// * `head_vaddr` — virtual address of the list head (sentinel node)
+    /// * `list_struct` — name of the list-link struct (e.g., `"list_head"`, `"_LIST_ENTRY"`)
+    /// * `next_field` — name of the forward pointer field (e.g., `"next"`, `"Flink"`)
+    /// * `container_struct` — name of the containing struct (e.g., `"_EPROCESS"`)
+    /// * `list_field` — name of the list-link field in the container struct (e.g., `"ActiveProcessLinks"`)
+    pub fn walk_list_with(
+        &self,
+        head_vaddr: u64,
+        list_struct: &str,
+        next_field: &str,
+        container_struct: &str,
+        list_field: &str,
+    ) -> Result<Vec<u64>> {
         let list_offset = self
             .symbols
-            .field_offset(struct_name, list_field)
-            .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{list_field}")))?;
+            .field_offset(container_struct, list_field)
+            .ok_or_else(|| Error::MissingSymbol(format!("{container_struct}.{list_field}")))?;
 
         let next_offset = self
             .symbols
-            .field_offset("list_head", "next")
-            .ok_or_else(|| Error::MissingSymbol("list_head.next".into()))?;
+            .field_offset(list_struct, next_field)
+            .ok_or_else(|| Error::MissingSymbol(format!("{list_struct}.{next_field}")))?;
 
-        // Read the first `next` pointer from head
+        // Read the first forward pointer from head
         let mut current = self.read_u64_at(head_vaddr.wrapping_add(next_offset))?;
 
         let mut result = Vec::new();
@@ -133,7 +158,7 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
             let container = current.wrapping_sub(list_offset);
             result.push(container);
 
-            // Follow next pointer
+            // Follow next/Flink pointer
             current = self.read_u64_at(current.wrapping_add(next_offset))?;
         }
 

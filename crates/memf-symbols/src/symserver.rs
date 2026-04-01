@@ -147,10 +147,16 @@ mod tests {
         let guid = "AAAA";
 
         let url10 = download_url(base, name, guid, 10);
-        assert!(url10.contains("AAAAA/"), "age 10 should be 'A', got: {url10}");
+        assert!(
+            url10.contains("AAAAA/"),
+            "age 10 should be 'A', got: {url10}"
+        );
 
         let url255 = download_url(base, name, guid, 255);
-        assert!(url255.contains("AAAAFF/"), "age 255 should be 'FF', got: {url255}");
+        assert!(
+            url255.contains("AAAAFF/"),
+            "age 255 should be 'FF', got: {url255}"
+        );
 
         let url1 = download_url(base, name, guid, 1);
         assert!(url1.contains("AAAA1/"), "age 1 should be '1', got: {url1}");
@@ -165,7 +171,10 @@ mod tests {
     #[test]
     fn cache_path_basic() {
         let p = cache_path(Path::new("/tmp/cache"), "ntkrnlmp.pdb", "AABB", 1);
-        assert_eq!(p, PathBuf::from("/tmp/cache/ntkrnlmp.pdb/AABB1/ntkrnlmp.pdb"));
+        assert_eq!(
+            p,
+            PathBuf::from("/tmp/cache/ntkrnlmp.pdb/AABB1/ntkrnlmp.pdb")
+        );
     }
 
     #[test]
@@ -196,7 +205,10 @@ mod tests {
         // This test relies on HOME being set (true in CI and dev).
         if let Some(dir) = default_cache_dir() {
             let s = dir.to_string_lossy();
-            assert!(s.ends_with(".memf/symbols"), "expected .memf/symbols suffix, got: {s}");
+            assert!(
+                s.ends_with(".memf/symbols"),
+                "expected .memf/symbols suffix, got: {s}"
+            );
         }
         // If HOME is not set we just skip — no panic.
     }
@@ -243,11 +255,7 @@ mod tests {
 
         let client = SymbolServerClient::new(default_server_url(), &dir);
         // A known small PDB: wntdll.pdb from a Win10 build
-        let result = client.get_pdb(
-            "ntkrnlmp.pdb",
-            "1B72224D-37B8-1792-2820-0ED8994498B2",
-            1,
-        );
+        let result = client.get_pdb("ntkrnlmp.pdb", "1B72224D-37B8-1792-2820-0ED8994498B2", 1);
         // We don't assert success because the GUID may not exist;
         // we just verify it doesn't panic and returns a proper Result.
         match result {

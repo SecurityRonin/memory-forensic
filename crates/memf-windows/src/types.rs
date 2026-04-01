@@ -160,7 +160,10 @@ mod tests {
         assert_eq!(ThreadState::from_raw(6), ThreadState::Transition);
         assert_eq!(ThreadState::from_raw(7), ThreadState::DeferredReady);
         assert_eq!(ThreadState::from_raw(8), ThreadState::GateWaitObsolete);
-        assert_eq!(ThreadState::from_raw(9), ThreadState::WaitingForProcessInSwap);
+        assert_eq!(
+            ThreadState::from_raw(9),
+            ThreadState::WaitingForProcessInSwap
+        );
         assert_eq!(ThreadState::from_raw(42), ThreadState::Unknown(42));
         assert_eq!(ThreadState::from_raw(255), ThreadState::Unknown(255));
     }
@@ -175,7 +178,10 @@ mod tests {
         assert_eq!(ThreadState::Waiting.to_string(), "Waiting");
         assert_eq!(ThreadState::Transition.to_string(), "Transition");
         assert_eq!(ThreadState::DeferredReady.to_string(), "DeferredReady");
-        assert_eq!(ThreadState::GateWaitObsolete.to_string(), "GateWaitObsolete");
+        assert_eq!(
+            ThreadState::GateWaitObsolete.to_string(),
+            "GateWaitObsolete"
+        );
         assert_eq!(
             ThreadState::WaitingForProcessInSwap.to_string(),
             "WaitingForProcessInSwap"

@@ -189,6 +189,55 @@ impl IsfBuilder {
             .add_struct("_CLIENT_ID", 16)
             .add_field("_CLIENT_ID", "UniqueProcess", 0, "pointer")
             .add_field("_CLIENT_ID", "UniqueThread", 8, "pointer")
+            // _KLDR_DATA_TABLE_ENTRY for driver walking
+            .add_struct("_KLDR_DATA_TABLE_ENTRY", 256)
+            .add_field(
+                "_KLDR_DATA_TABLE_ENTRY",
+                "InLoadOrderLinks",
+                0,
+                "_LIST_ENTRY",
+            )
+            .add_field("_KLDR_DATA_TABLE_ENTRY", "DllBase", 48, "pointer")
+            .add_field("_KLDR_DATA_TABLE_ENTRY", "SizeOfImage", 64, "unsigned int")
+            .add_field(
+                "_KLDR_DATA_TABLE_ENTRY",
+                "FullDllName",
+                72,
+                "_UNICODE_STRING",
+            )
+            .add_field(
+                "_KLDR_DATA_TABLE_ENTRY",
+                "BaseDllName",
+                88,
+                "_UNICODE_STRING",
+            )
+            // _PEB_LDR_DATA for DLL walking
+            .add_struct("_PEB_LDR_DATA", 64)
+            .add_field("_PEB_LDR_DATA", "Length", 0, "unsigned int")
+            .add_field("_PEB_LDR_DATA", "Initialized", 4, "unsigned char")
+            .add_field("_PEB_LDR_DATA", "InLoadOrderModuleList", 16, "_LIST_ENTRY")
+            // _LDR_DATA_TABLE_ENTRY for DLL list entries
+            .add_struct("_LDR_DATA_TABLE_ENTRY", 256)
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "InLoadOrderLinks",
+                0,
+                "_LIST_ENTRY",
+            )
+            .add_field("_LDR_DATA_TABLE_ENTRY", "DllBase", 48, "pointer")
+            .add_field("_LDR_DATA_TABLE_ENTRY", "SizeOfImage", 64, "unsigned int")
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "FullDllName",
+                72,
+                "_UNICODE_STRING",
+            )
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "BaseDllName",
+                88,
+                "_UNICODE_STRING",
+            )
             // Kernel symbols
             .add_symbol("PsActiveProcessHead", 0xFFFFF805_5A400000)
             .add_symbol("PsLoadedModuleList", 0xFFFFF805_5A410000)
