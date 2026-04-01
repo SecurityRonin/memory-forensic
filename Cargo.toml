@@ -6,6 +6,7 @@ members = [
     "crates/memf-symbols",
     "crates/memf-core",
     "crates/memf-linux",
+    "crates/memf-windows",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ memf-strings = { path = "crates/memf-strings" }
 memf-symbols = { path = "crates/memf-symbols" }
 memf-core    = { path = "crates/memf-core" }
 memf-linux   = { path = "crates/memf-linux" }
+memf-windows = { path = "crates/memf-windows" }
 thiserror = "2"
 anyhow = "1"
 inventory = "0.3"

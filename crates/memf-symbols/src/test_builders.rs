@@ -271,6 +271,41 @@ mod tests {
     }
 
     #[test]
+    fn windows_kernel_preset_has_driver_structs() {
+        let json = IsfBuilder::windows_kernel_preset().build_json();
+
+        // _KLDR_DATA_TABLE_ENTRY for driver walking
+        let kldr = &json["user_types"]["_KLDR_DATA_TABLE_ENTRY"];
+        assert_eq!(kldr["size"], 256);
+        assert_eq!(kldr["fields"]["InLoadOrderLinks"]["offset"], 0);
+        assert_eq!(kldr["fields"]["DllBase"]["offset"], 48);
+        assert_eq!(kldr["fields"]["SizeOfImage"]["offset"], 64);
+        assert_eq!(kldr["fields"]["FullDllName"]["offset"], 72);
+        assert_eq!(kldr["fields"]["BaseDllName"]["offset"], 88);
+    }
+
+    #[test]
+    fn windows_kernel_preset_has_ldr_structs() {
+        let json = IsfBuilder::windows_kernel_preset().build_json();
+
+        // _PEB_LDR_DATA
+        let peb_ldr = &json["user_types"]["_PEB_LDR_DATA"];
+        assert_eq!(peb_ldr["size"], 64);
+        assert_eq!(peb_ldr["fields"]["Length"]["offset"], 0);
+        assert_eq!(peb_ldr["fields"]["Initialized"]["offset"], 4);
+        assert_eq!(peb_ldr["fields"]["InLoadOrderModuleList"]["offset"], 16);
+
+        // _LDR_DATA_TABLE_ENTRY
+        let ldr = &json["user_types"]["_LDR_DATA_TABLE_ENTRY"];
+        assert_eq!(ldr["size"], 256);
+        assert_eq!(ldr["fields"]["InLoadOrderLinks"]["offset"], 0);
+        assert_eq!(ldr["fields"]["DllBase"]["offset"], 48);
+        assert_eq!(ldr["fields"]["SizeOfImage"]["offset"], 64);
+        assert_eq!(ldr["fields"]["FullDllName"]["offset"], 72);
+        assert_eq!(ldr["fields"]["BaseDllName"]["offset"], 88);
+    }
+
+    #[test]
     fn build_bytes_is_valid_json() {
         let bytes = IsfBuilder::linux_process_preset().build_bytes();
         let parsed: Value = serde_json::from_slice(&bytes).unwrap();

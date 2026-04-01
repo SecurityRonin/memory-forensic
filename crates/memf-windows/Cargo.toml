@@ -1,0 +1,16 @@
+[package]
+name = "memf-windows"
+version = "0.1.0"
+description = "Windows kernel memory forensic walkers (processes, threads, drivers, DLLs)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+memf-format.workspace = true
+memf-symbols.workspace = true
+memf-core.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

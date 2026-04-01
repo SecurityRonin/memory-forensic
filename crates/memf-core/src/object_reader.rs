@@ -403,6 +403,134 @@ mod tests {
     }
 
     #[test]
+    fn walk_list_with_windows_list_entry() {
+        // Test walk_list_with using Windows _LIST_ENTRY / Flink naming.
+        // Layout: _EPROCESS with ActiveProcessLinks at offset 0x10.
+        // _LIST_ENTRY with Flink at offset 0, Blink at offset 8.
+        let isf = IsfBuilder::new()
+            .add_struct("_EPROCESS", 256)
+            .add_field("_EPROCESS", "UniqueProcessId", 0, "pointer")
+            .add_field("_EPROCESS", "ActiveProcessLinks", 0x10, "_LIST_ENTRY")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer");
+
+        // Physical layout:
+        //   head (sentinel list head at some vaddr)
+        //   proc_a at paddr 0x0080_1000
+        //   proc_b at paddr 0x0080_2000
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+        let b_paddr: u64 = 0x0080_2000;
+
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000; // sentinel list head
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let b_vaddr: u64 = 0xFFFF_8000_0010_2000;
+
+        let list_offset: u64 = 0x10; // ActiveProcessLinks offset in _EPROCESS
+
+        // Circular: head.Flink -> A.ActiveProcessLinks -> B.ActiveProcessLinks -> head
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .map_4k(b_vaddr, b_paddr, flags::WRITABLE)
+            // head sentinel: Flink -> A.ActiveProcessLinks
+            .write_phys_u64(head_paddr, a_vaddr + list_offset) // Flink
+            // A: pid=4, ActiveProcessLinks.Flink -> B.ActiveProcessLinks
+            .write_phys_u64(a_paddr, 4) // UniqueProcessId
+            .write_phys_u64(a_paddr + list_offset, b_vaddr + list_offset) // Flink
+            // B: pid=100, ActiveProcessLinks.Flink -> head (loop back)
+            .write_phys_u64(b_paddr, 100) // UniqueProcessId
+            .write_phys_u64(b_paddr + list_offset, head_vaddr); // Flink -> head
+
+        let reader = make_reader(&isf, ptb);
+
+        let containers = reader
+            .walk_list_with(
+                head_vaddr,
+                "_LIST_ENTRY",
+                "Flink",
+                "_EPROCESS",
+                "ActiveProcessLinks",
+            )
+            .unwrap();
+
+        assert_eq!(containers.len(), 2);
+        assert_eq!(containers[0], a_vaddr);
+        assert_eq!(containers[1], b_vaddr);
+    }
+
+    #[test]
+    fn walk_list_with_empty() {
+        // Empty list: head.Flink points back to head.
+        let isf = IsfBuilder::new()
+            .add_struct("_EPROCESS", 256)
+            .add_field("_EPROCESS", "ActiveProcessLinks", 0x10, "_LIST_ENTRY")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer");
+
+        let head_paddr: u64 = 0x0080_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+
+        // head.Flink = head (empty circular list)
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, head_vaddr); // Flink -> self
+
+        let reader = make_reader(&isf, ptb);
+
+        let containers = reader
+            .walk_list_with(
+                head_vaddr,
+                "_LIST_ENTRY",
+                "Flink",
+                "_EPROCESS",
+                "ActiveProcessLinks",
+            )
+            .unwrap();
+
+        assert!(containers.is_empty());
+    }
+
+    #[test]
+    fn walk_list_still_works_after_refactor() {
+        // Ensure the existing walk_list (Linux list_head/next) still works
+        // after the refactor to call walk_list_with internally.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 8, "list_head")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer");
+
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+
+        let list_offset: u64 = 8;
+
+        // Single-element list: head.next -> A.tasks -> head.tasks
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr + list_offset, a_vaddr + list_offset)
+            .write_phys_u64(a_paddr, 42) // pid
+            .write_phys_u64(a_paddr + list_offset, head_vaddr + list_offset);
+
+        let reader = make_reader(&isf, ptb);
+
+        let containers = reader
+            .walk_list(head_vaddr + list_offset, "task_struct", "tasks")
+            .unwrap();
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0], a_vaddr);
+    }
+
+    #[test]
     fn symbols_accessor() {
         let isf = IsfBuilder::new()
             .add_struct("task_struct", 128)
