@@ -190,6 +190,7 @@ pub mod elf_core;
 pub mod lime;
 pub mod raw;
 pub mod test_builders;
+pub mod win_crashdump;
 
 #[cfg(test)]
 mod tests {

@@ -100,6 +100,252 @@ impl AvmlBuilder {
     }
 }
 
+/// Build a synthetic Windows 64-bit crash dump (`_DUMP_HEADER64`).
+///
+/// Produces an 8192-byte header followed by physical memory page data.
+/// Supports both run-based (DumpType 0x01) and bitmap (DumpType 0x02/0x05) layouts.
+///
+/// Header layout (little-endian, key offsets):
+/// - 0x000: "PAGE" magic (u32 = 0x4547_4150)
+/// - 0x004: "DU64" signature (u32 = 0x3436_5544)
+/// - 0x010: DirectoryTableBase / CR3 (u64)
+/// - 0x020: PsLoadedModuleList (u64)
+/// - 0x028: PsActiveProcessHead (u64)
+/// - 0x030: MachineImageType (u32)
+/// - 0x034: NumberProcessors (u32)
+/// - 0x080: KdDebuggerDataBlock (u64)
+/// - 0x088: PhysicalMemoryBlockBuffer — NumberOfRuns(u32) + pad(u32) + NumberOfPages(u64) + Runs[]
+/// - 0xF98: DumpType (u32)
+/// - 0xFA8: SystemTime (u64)
+pub struct CrashDumpBuilder {
+    runs: Vec<(u64, Vec<u8>)>,
+    cr3: u64,
+    ps_active_process_head: u64,
+    ps_loaded_module_list: u64,
+    kd_debugger_data_block: u64,
+    machine_type: u32,
+    num_processors: u32,
+    dump_type: u32,
+    system_time: u64,
+}
+
+impl Default for CrashDumpBuilder {
+    fn default() -> Self {
+        Self {
+            runs: Vec::new(),
+            cr3: 0x0018_7000,
+            ps_active_process_head: 0xFFFFF802_1A2B3C40,
+            ps_loaded_module_list: 0xFFFFF802_1A2B3D60,
+            kd_debugger_data_block: 0xFFFFF802_1A000000,
+            machine_type: 0x8664, // AMD64
+            num_processors: 4,
+            dump_type: 0x01, // Full (run-based)
+            system_time: 0x01DA_5678_9ABC_DEF0,
+        }
+    }
+}
+
+impl CrashDumpBuilder {
+    /// Create a builder with sensible AMD64 defaults (DumpType = Full / run-based).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a physical memory run starting at `base_page` (PFN) with the given page `data`.
+    /// `data.len()` must be a multiple of 4096.
+    pub fn add_run(mut self, base_page: u64, data: &[u8]) -> Self {
+        assert!(
+            data.len() % 4096 == 0,
+            "run data length must be a multiple of 4096"
+        );
+        self.runs.push((base_page, data.to_vec()));
+        self
+    }
+
+    /// Set the CR3 / DirectoryTableBase value.
+    pub fn cr3(mut self, val: u64) -> Self {
+        self.cr3 = val;
+        self
+    }
+
+    /// Set the PsActiveProcessHead virtual address.
+    pub fn ps_active_process_head(mut self, val: u64) -> Self {
+        self.ps_active_process_head = val;
+        self
+    }
+
+    /// Set the PsLoadedModuleList virtual address.
+    pub fn ps_loaded_module_list(mut self, val: u64) -> Self {
+        self.ps_loaded_module_list = val;
+        self
+    }
+
+    /// Set the KdDebuggerDataBlock virtual address.
+    pub fn kd_debugger_data_block(mut self, val: u64) -> Self {
+        self.kd_debugger_data_block = val;
+        self
+    }
+
+    /// Set the MachineImageType (0x8664=AMD64, 0x014C=I386, 0xAA64=AArch64).
+    pub fn machine_type(mut self, val: u32) -> Self {
+        self.machine_type = val;
+        self
+    }
+
+    /// Set the number of processors.
+    pub fn num_processors(mut self, val: u32) -> Self {
+        self.num_processors = val;
+        self
+    }
+
+    /// Set the DumpType (0x01=Full, 0x02=Kernel/Bitmap, 0x05=Bitmap).
+    pub fn dump_type(mut self, val: u32) -> Self {
+        self.dump_type = val;
+        self
+    }
+
+    /// Set the SystemTime value.
+    pub fn system_time(mut self, val: u64) -> Self {
+        self.system_time = val;
+        self
+    }
+
+    /// Build the complete crash dump as a byte vector.
+    pub fn build(self) -> Vec<u8> {
+        const PAGE_MAGIC: u32 = 0x4547_4150; // "PAGE"
+        const DU64_SIG: u32 = 0x3436_5544; // "DU64"
+        const HEADER_SIZE: usize = 0x2000; // 8192 bytes
+        const PAGE_SIZE: usize = 4096;
+
+        let mut header = vec![0u8; HEADER_SIZE];
+
+        // 0x000: PAGE magic
+        header[0x000..0x004].copy_from_slice(&PAGE_MAGIC.to_le_bytes());
+        // 0x004: DU64 signature
+        header[0x004..0x008].copy_from_slice(&DU64_SIG.to_le_bytes());
+        // 0x010: CR3 / DirectoryTableBase
+        header[0x010..0x018].copy_from_slice(&self.cr3.to_le_bytes());
+        // 0x020: PsLoadedModuleList
+        header[0x020..0x028].copy_from_slice(&self.ps_loaded_module_list.to_le_bytes());
+        // 0x028: PsActiveProcessHead
+        header[0x028..0x030].copy_from_slice(&self.ps_active_process_head.to_le_bytes());
+        // 0x030: MachineImageType
+        header[0x030..0x034].copy_from_slice(&self.machine_type.to_le_bytes());
+        // 0x034: NumberProcessors
+        header[0x034..0x038].copy_from_slice(&self.num_processors.to_le_bytes());
+        // 0x080: KdDebuggerDataBlock
+        header[0x080..0x088].copy_from_slice(&self.kd_debugger_data_block.to_le_bytes());
+
+        // 0x088: PhysicalMemoryBlockBuffer
+        let num_runs = self.runs.len() as u32;
+        let total_pages: u64 = self
+            .runs
+            .iter()
+            .map(|(_, d)| (d.len() / PAGE_SIZE) as u64)
+            .sum();
+        // NumberOfRuns (u32) at 0x088
+        header[0x088..0x08C].copy_from_slice(&num_runs.to_le_bytes());
+        // Padding (u32) at 0x08C
+        header[0x08C..0x090].copy_from_slice(&0u32.to_le_bytes());
+        // NumberOfPages (u64) at 0x090
+        header[0x090..0x098].copy_from_slice(&total_pages.to_le_bytes());
+        // Runs[] starting at 0x098, each run is 16 bytes: base_page(u64) + page_count(u64)
+        for (i, (base_page, data)) in self.runs.iter().enumerate() {
+            let page_count = (data.len() / PAGE_SIZE) as u64;
+            let off = 0x098 + i * 16;
+            header[off..off + 8].copy_from_slice(&base_page.to_le_bytes());
+            header[off + 8..off + 16].copy_from_slice(&page_count.to_le_bytes());
+        }
+
+        // 0xF98: DumpType
+        header[0xF98..0xF9C].copy_from_slice(&self.dump_type.to_le_bytes());
+        // 0xFA8: SystemTime
+        header[0xFA8..0xFB0].copy_from_slice(&self.system_time.to_le_bytes());
+
+        let is_bitmap = self.dump_type == 0x02 || self.dump_type == 0x05;
+
+        if is_bitmap {
+            self.build_bitmap(header)
+        } else {
+            self.build_run_based(header)
+        }
+    }
+
+    /// Build run-based layout: data pages follow header sequentially at offset 0x2000.
+    fn build_run_based(self, mut out: Vec<u8>) -> Vec<u8> {
+        for (_, data) in &self.runs {
+            out.extend_from_slice(data);
+        }
+        out
+    }
+
+    /// Build bitmap layout: summary header + bitmap + data pages at offset 0x2000.
+    fn build_bitmap(self, mut out: Vec<u8>) -> Vec<u8> {
+        const DUMP_VALID: u32 = 0x504D_5544; // "DUMP"
+        const PAGE_SIZE: usize = 4096;
+
+        // Find the highest PFN to determine bitmap size.
+        let max_pfn: u64 = self
+            .runs
+            .iter()
+            .map(|(base, data)| base + (data.len() / PAGE_SIZE) as u64)
+            .max()
+            .unwrap_or(0);
+
+        // Bitmap: one bit per page up to max_pfn, rounded up to 8 bytes.
+        let bitmap_bits = max_pfn as usize;
+        let bitmap_bytes = (bitmap_bits + 7) / 8;
+        // Align bitmap_bytes up to multiple of 8.
+        let bitmap_bytes_aligned = (bitmap_bytes + 7) & !7;
+
+        let mut bitmap = vec![0u8; bitmap_bytes_aligned];
+        for (base_page, data) in &self.runs {
+            let page_count = data.len() / PAGE_SIZE;
+            for p in 0..page_count {
+                let pfn = *base_page as usize + p;
+                bitmap[pfn / 8] |= 1 << (pfn % 8);
+            }
+        }
+
+        // Summary header at 0x2000:
+        // ValidDump (u32) = "DUMP"
+        // HeaderSize (u32) = offset from 0x2000 to start of page data
+        // BitmapSize (u32) = bitmap size in bytes
+        // Pages (u32) = total number of set bits
+        let total_set_pages: u32 = self
+            .runs
+            .iter()
+            .map(|(_, d)| (d.len() / PAGE_SIZE) as u32)
+            .sum();
+        let summary_header_size: u32 = 16; // 4 fields * 4 bytes
+        let data_offset = summary_header_size as usize + bitmap_bytes_aligned;
+
+        out.extend_from_slice(&DUMP_VALID.to_le_bytes());
+        out.extend_from_slice(&(data_offset as u32).to_le_bytes());
+        out.extend_from_slice(&(bitmap_bytes_aligned as u32).to_le_bytes());
+        out.extend_from_slice(&total_set_pages.to_le_bytes());
+        out.extend_from_slice(&bitmap);
+
+        // Write page data in PFN order.
+        // Build a map from PFN to page data for ordered output.
+        let mut pfn_data: Vec<(u64, &[u8])> = Vec::new();
+        for (base_page, data) in &self.runs {
+            let page_count = data.len() / PAGE_SIZE;
+            for p in 0..page_count {
+                let pfn = base_page + p as u64;
+                let start = p * PAGE_SIZE;
+                pfn_data.push((pfn, &data[start..start + PAGE_SIZE]));
+            }
+        }
+        pfn_data.sort_by_key(|(pfn, _)| *pfn);
+        for (_, page) in &pfn_data {
+            out.extend_from_slice(page);
+        }
+
+        out
+    }
+}
+
 /// Build a synthetic ELF core dump for testing.
 #[derive(Default)]
 pub struct ElfCoreBuilder {
