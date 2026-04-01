@@ -419,9 +419,7 @@ mod tests {
 
     #[test]
     fn probe_kdump_signature() {
-        let dump = KdumpBuilder::new()
-            .add_page(0, &[0xAAu8; 4096])
-            .build();
+        let dump = KdumpBuilder::new().add_page(0, &[0xAAu8; 4096]).build();
         let plugin = KdumpPlugin;
         assert_eq!(plugin.probe(&dump), 90);
     }
@@ -429,9 +427,7 @@ mod tests {
     #[test]
     fn probe_diskdump_signature() {
         // Build a kdump and overwrite signature to "DISKDUMP"
-        let mut dump = KdumpBuilder::new()
-            .add_page(0, &[0xAAu8; 4096])
-            .build();
+        let mut dump = KdumpBuilder::new().add_page(0, &[0xAAu8; 4096]).build();
         dump[0..8].copy_from_slice(b"DISKDUMP");
         let plugin = KdumpPlugin;
         assert_eq!(plugin.probe(&dump), 90);
@@ -639,9 +635,7 @@ mod tests {
 
     #[test]
     fn builder_produces_kdump_signature() {
-        let dump = KdumpBuilder::new()
-            .add_page(0, &[0u8; 4096])
-            .build();
+        let dump = KdumpBuilder::new().add_page(0, &[0u8; 4096]).build();
         assert_eq!(&dump[0..8], b"KDUMP   ");
     }
 }

@@ -511,8 +511,7 @@ impl VmwareStateBuilder {
             out[entry_offset..entry_offset + name.len()].copy_from_slice(name);
             // name is null-terminated, rest of 64 bytes is already zero
             let tags_off_pos = entry_offset + 64;
-            out[tags_off_pos..tags_off_pos + 8]
-                .copy_from_slice(&memory_tags_offset.to_le_bytes());
+            out[tags_off_pos..tags_off_pos + 8].copy_from_slice(&memory_tags_offset.to_le_bytes());
             // padding 8 bytes already zero
         }
 
@@ -537,8 +536,7 @@ impl VmwareStateBuilder {
             let name = b"cpu";
             out[entry_offset..entry_offset + name.len()].copy_from_slice(name);
             let tags_off_pos = entry_offset + 64;
-            out[tags_off_pos..tags_off_pos + 8]
-                .copy_from_slice(&cpu_tags_offset.to_le_bytes());
+            out[tags_off_pos..tags_off_pos + 8].copy_from_slice(&cpu_tags_offset.to_le_bytes());
         }
 
         out
@@ -837,15 +835,14 @@ impl KdumpBuilder {
         // utsname: 390 bytes of zeros (already zero)
         // Aligned offset after utsname: (0x0C + 390 + 3) & !3 = 0x19C
         let fields_off = (0x0C + 390 + 3) & !3; // 0x19C
-        // block_size (i32)
+                                                // block_size (i32)
         #[allow(clippy::cast_possible_wrap)]
         let block_size_i32 = self.block_size as i32;
         out[fields_off..fields_off + 4].copy_from_slice(&block_size_i32.to_le_bytes());
         // sub_hdr_size (i32) = 1
         out[fields_off + 4..fields_off + 8].copy_from_slice(&1i32.to_le_bytes());
         // bitmap_blocks (u32)
-        out[fields_off + 8..fields_off + 12]
-            .copy_from_slice(&(bitmap_blocks as u32).to_le_bytes());
+        out[fields_off + 8..fields_off + 12].copy_from_slice(&(bitmap_blocks as u32).to_le_bytes());
         // max_mapnr (u32)
         out[fields_off + 12..fields_off + 16].copy_from_slice(&(max_pfn as u32).to_le_bytes());
 
@@ -864,12 +861,14 @@ impl KdumpBuilder {
             let d_off = desc_start + desc_idx * 24;
             let (flags, ref compressed) = compressed_pages[*orig_idx];
             // offset: i64
-            out[d_off..d_off + 8]
-                .copy_from_slice(&{
+            out[d_off..d_off + 8].copy_from_slice(
+                &{
                     #[allow(clippy::cast_possible_wrap)]
                     let offset_i64 = data_offsets[desc_idx] as i64;
                     offset_i64
-                }.to_le_bytes());
+                }
+                .to_le_bytes(),
+            );
             // size: u32
             out[d_off + 8..d_off + 12].copy_from_slice(&(compressed.len() as u32).to_le_bytes());
             // flags: u32

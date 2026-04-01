@@ -27,7 +27,10 @@ const TAG_FLAGS_INDEXED_8BYTE: u8 = 0x46;
 
 /// Check whether a u32 matches one of the known VMware magic values.
 fn is_vmware_magic(magic: u32) -> bool {
-    matches!(magic, VMSS_MAGIC | VMSN_MAGIC_1 | VMSN_MAGIC_2 | VMSN_MAGIC_3)
+    matches!(
+        magic,
+        VMSS_MAGIC | VMSN_MAGIC_1 | VMSN_MAGIC_2 | VMSN_MAGIC_3
+    )
 }
 
 /// Read a little-endian u32 from `data` at `offset`.
@@ -96,7 +99,9 @@ fn parse_tags(
         pos += 1;
 
         if pos + name_length > data.len() {
-            return Err(Error::Corrupt("truncated tag: name extends beyond data".into()));
+            return Err(Error::Corrupt(
+                "truncated tag: name extends beyond data".into(),
+            ));
         }
         let tag_name = &data[pos..pos + name_length];
         pos += name_length;
@@ -156,7 +161,9 @@ impl VmwareStateProvider {
     /// Parse a VMware state file from an in-memory byte slice.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < HEADER_SIZE {
-            return Err(Error::Corrupt("VMware state file too short for header".into()));
+            return Err(Error::Corrupt(
+                "VMware state file too short for header".into(),
+            ));
         }
 
         let magic = read_u32(bytes, 0)?;
@@ -183,8 +190,7 @@ impl VmwareStateProvider {
             // Read null-terminated group name from first 64 bytes.
             let name_bytes = &bytes[entry_offset..entry_offset + 64];
             let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(64);
-            let group_name = std::str::from_utf8(&name_bytes[..name_end])
-                .unwrap_or("???");
+            let group_name = std::str::from_utf8(&name_bytes[..name_end]).unwrap_or("???");
 
             // tags_offset at entry_offset + 64.
             let tags_offset = read_u64(bytes, entry_offset + 64)? as usize;
@@ -328,9 +334,7 @@ mod tests {
     #[test]
     fn single_region_read() {
         let data: Vec<u8> = (0u8..=255).collect();
-        let dump = VmwareStateBuilder::new()
-            .add_region(0x1000, &data)
-            .build();
+        let dump = VmwareStateBuilder::new().add_region(0x1000, &data).build();
         let provider = VmwareStateProvider::from_bytes(&dump).unwrap();
 
         assert_eq!(provider.ranges().len(), 1);
@@ -368,9 +372,7 @@ mod tests {
     #[test]
     fn read_gap_returns_zero() {
         let data = vec![0xCCu8; 64];
-        let dump = VmwareStateBuilder::new()
-            .add_region(0x1000, &data)
-            .build();
+        let dump = VmwareStateBuilder::new().add_region(0x1000, &data).build();
         let provider = VmwareStateProvider::from_bytes(&dump).unwrap();
 
         // Address 0x0000 is not mapped.
@@ -425,9 +427,7 @@ mod tests {
     #[test]
     fn from_path_roundtrip() {
         let data: Vec<u8> = (0u8..=127).collect();
-        let dump = VmwareStateBuilder::new()
-            .add_region(0x2000, &data)
-            .build();
+        let dump = VmwareStateBuilder::new().add_region(0x2000, &data).build();
         let path = std::env::temp_dir().join("memf_test_vmware_roundtrip.vmss");
         std::fs::write(&path, &dump).unwrap();
         let provider = VmwareStateProvider::from_path(&path).unwrap();

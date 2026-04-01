@@ -131,10 +131,7 @@ mod tests {
                 type_name: "int".into(),
             },
         );
-        let info = StructInfo {
-            size: 128,
-            fields,
-        };
+        let info = StructInfo { size: 128, fields };
         let info2 = info.clone();
         assert_eq!(info2.size, 128);
         assert!(info2.fields.contains_key("pid"));

@@ -445,11 +445,16 @@ mod tests {
     fn metadata_returns_some_for_crashdump() {
         use crate::test_builders::CrashDumpBuilder;
         let page = vec![0u8; 4096];
-        let dump = CrashDumpBuilder::new().cr3(0x1ab000).add_run(0, &page).build();
+        let dump = CrashDumpBuilder::new()
+            .cr3(0x1ab000)
+            .add_run(0, &page)
+            .build();
         let path = std::env::temp_dir().join("memf_test_meta_crash.dmp");
         std::fs::write(&path, &dump).unwrap();
         let provider = open_dump(&path).unwrap();
-        let meta = provider.metadata().expect("crash dump should have metadata");
+        let meta = provider
+            .metadata()
+            .expect("crash dump should have metadata");
         assert_eq!(meta.cr3, Some(0x1ab000));
         std::fs::remove_file(&path).ok();
     }

@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use crate::{DumpMetadata, Error, FormatPlugin, MachineType, PhysicalMemoryProvider, PhysicalRange, Result};
+use crate::{
+    DumpMetadata, Error, FormatPlugin, MachineType, PhysicalMemoryProvider, PhysicalRange, Result,
+};
 
 /// PAGE magic: "PAGE" as little-endian u32 = 0x4547_4150.
 const PAGE_MAGIC: u32 = 0x4547_4150;
@@ -224,10 +226,7 @@ impl CrashDumpProvider {
         let bitmap = data[bitmap_start..bitmap_start + bitmap_size].to_vec();
         let data_start = (summary_offset + header_size) as u64;
 
-        Ok(CrashDumpLayout::Bitmap {
-            bitmap,
-            data_start,
-        })
+        Ok(CrashDumpLayout::Bitmap { bitmap, data_start })
     }
 
     /// Read physical memory using run-based layout.
@@ -287,7 +286,9 @@ impl CrashDumpProvider {
         let to_read = buf.len().min(remaining_in_page);
         let src = file_offset as usize;
         if src + to_read > self.data.len() {
-            return Err(Error::Corrupt("bitmap page data extends beyond file".into()));
+            return Err(Error::Corrupt(
+                "bitmap page data extends beyond file".into(),
+            ));
         }
         buf[..to_read].copy_from_slice(&self.data[src..src + to_read]);
         Ok(to_read)
@@ -322,10 +323,9 @@ impl PhysicalMemoryProvider for CrashDumpProvider {
                 runs,
                 run_file_offsets,
             } => self.read_run_based(addr, buf, runs, run_file_offsets),
-            CrashDumpLayout::Bitmap {
-                bitmap,
-                data_start,
-            } => self.read_bitmap(addr, buf, bitmap, *data_start),
+            CrashDumpLayout::Bitmap { bitmap, data_start } => {
+                self.read_bitmap(addr, buf, bitmap, *data_start)
+            }
         }
     }
 
@@ -478,18 +478,9 @@ mod tests {
         assert_eq!(meta.machine_type, Some(MachineType::Amd64));
         assert_eq!(meta.num_processors, Some(4));
         assert_eq!(meta.dump_type.as_deref(), Some("Full"));
-        assert_eq!(
-            meta.ps_active_process_head,
-            Some(0xFFFFF802_1A2B3C40)
-        );
-        assert_eq!(
-            meta.ps_loaded_module_list,
-            Some(0xFFFFF802_1A2B3D60)
-        );
-        assert_eq!(
-            meta.kd_debugger_data_block,
-            Some(0xFFFFF802_1A000000)
-        );
+        assert_eq!(meta.ps_active_process_head, Some(0xFFFFF802_1A2B3C40));
+        assert_eq!(meta.ps_loaded_module_list, Some(0xFFFFF802_1A2B3D60));
+        assert_eq!(meta.kd_debugger_data_block, Some(0xFFFFF802_1A000000));
         assert_eq!(meta.system_time, Some(0x01DA_5678_9ABC_DEF0));
     }
 

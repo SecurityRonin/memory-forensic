@@ -357,7 +357,9 @@ mod tests {
 
         // Should NOT find "Test" as a UTF-16 string
         assert!(
-            !strings.iter().any(|s| s.value == "Test" && s.encoding == StringEncoding::Utf16Le),
+            !strings
+                .iter()
+                .any(|s| s.value == "Test" && s.encoding == StringEncoding::Utf16Le),
             "UTF-16 strings should not be extracted in ASCII-only mode"
         );
     }
@@ -373,7 +375,9 @@ mod tests {
 
         // Should NOT find "Hello" as an ASCII string
         assert!(
-            !strings.iter().any(|s| s.value == "Hello" && s.encoding == StringEncoding::Ascii),
+            !strings
+                .iter()
+                .any(|s| s.value == "Hello" && s.encoding == StringEncoding::Ascii),
             "ASCII strings should not be extracted in UTF-16-only mode"
         );
     }

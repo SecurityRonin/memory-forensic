@@ -351,12 +351,12 @@ fn process_walker_with_parent_tracking() {
     let b_tasks = task_b + 16;
 
     // init_task (PID 0, swapper): tasks -> task_a, real_parent -> self
-    data[0..4].copy_from_slice(&0u32.to_le_bytes());         // pid
-    data[4..12].copy_from_slice(&0i64.to_le_bytes());        // state
-    data[16..24].copy_from_slice(&a_tasks.to_le_bytes());    // tasks.next
-    data[24..32].copy_from_slice(&b_tasks.to_le_bytes());    // tasks.prev
-    data[32..41].copy_from_slice(b"swapper/0");              // comm
-    data[56..64].copy_from_slice(&init.to_le_bytes());       // real_parent -> self
+    data[0..4].copy_from_slice(&0u32.to_le_bytes()); // pid
+    data[4..12].copy_from_slice(&0i64.to_le_bytes()); // state
+    data[16..24].copy_from_slice(&a_tasks.to_le_bytes()); // tasks.next
+    data[24..32].copy_from_slice(&b_tasks.to_le_bytes()); // tasks.prev
+    data[32..41].copy_from_slice(b"swapper/0"); // comm
+    data[56..64].copy_from_slice(&init.to_le_bytes()); // real_parent -> self
 
     // task_a (PID 1, systemd): tasks -> task_b, real_parent -> init
     data[0x200..0x204].copy_from_slice(&1u32.to_le_bytes());

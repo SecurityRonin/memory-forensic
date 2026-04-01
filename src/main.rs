@@ -337,9 +337,7 @@ mod tests {
     fn make_temp_lime_dump(suffix: &str) -> std::path::PathBuf {
         use memf_format::test_builders::LimeBuilder;
 
-        let dump = LimeBuilder::new()
-            .add_range(0x1000, &[0xAA; 4096])
-            .build();
+        let dump = LimeBuilder::new().add_range(0x1000, &[0xAA; 4096]).build();
         let path = std::env::temp_dir().join(format!("memf_tdd_cli_{suffix}.lime"));
         std::fs::write(&path, &dump).unwrap();
         path
@@ -469,7 +467,11 @@ mod tests {
     fn cmd_info_produces_output() {
         let dump_path = make_temp_lime_dump("info");
         let result = cmd_info(&dump_path);
-        assert!(result.is_ok(), "cmd_info should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "cmd_info should succeed: {:?}",
+            result.err()
+        );
         std::fs::remove_file(&dump_path).ok();
     }
 
@@ -494,13 +496,7 @@ mod tests {
     #[test]
     fn cmd_strings_with_dump() {
         let dump_path = make_temp_lime_dump("strings_dump");
-        let result = cmd_strings(
-            Some(dump_path.clone()),
-            None,
-            4,
-            OutputFormat::Table,
-            None,
-        );
+        let result = cmd_strings(Some(dump_path.clone()), None, 4, OutputFormat::Table, None);
         assert!(
             result.is_ok(),
             "cmd_strings with dump should succeed: {:?}",

@@ -177,7 +177,11 @@ rule detect_hello {
         // Remove any stale .yar files
         for entry in std::fs::read_dir(&dir).unwrap() {
             let entry = entry.unwrap();
-            if entry.path().extension().map_or(false, |e| e == "yar" || e == "yara") {
+            if entry
+                .path()
+                .extension()
+                .map_or(false, |e| e == "yar" || e == "yara")
+            {
                 std::fs::remove_file(entry.path()).ok();
             }
         }
