@@ -17,14 +17,55 @@ pub fn walk_processes<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinProcessInfo>> {
-    todo!("implement walk_processes")
+    let eproc_addrs = reader.walk_list_with(
+        ps_head_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_EPROCESS",
+        "ActiveProcessLinks",
+    )?;
+
+    let mut procs = Vec::with_capacity(eproc_addrs.len());
+    for addr in eproc_addrs {
+        procs.push(read_process_info(reader, addr)?);
+    }
+
+    procs.sort_by_key(|p| p.pid);
+    Ok(procs)
 }
 
 fn read_process_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     eproc_addr: u64,
 ) -> Result<WinProcessInfo> {
-    todo!("implement read_process_info")
+    let pid: u64 = reader.read_field(eproc_addr, "_EPROCESS", "UniqueProcessId")?;
+    let ppid: u64 = reader.read_field(eproc_addr, "_EPROCESS", "InheritedFromUniqueProcessId")?;
+    let image_name = reader.read_field_string(eproc_addr, "_EPROCESS", "ImageFileName", 15)?;
+    let create_time: u64 = reader.read_field(eproc_addr, "_EPROCESS", "CreateTime")?;
+    let exit_time: u64 = reader.read_field(eproc_addr, "_EPROCESS", "ExitTime")?;
+    let peb_addr: u64 = reader.read_field(eproc_addr, "_EPROCESS", "Peb")?;
+
+    // Pcb is at offset 0 within _EPROCESS, which IS the _KPROCESS.
+    // We need the offset of Pcb within _EPROCESS to compute the _KPROCESS base.
+    let pcb_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "Pcb")
+        .ok_or_else(|| Error::Walker("missing _EPROCESS.Pcb offset".into()))?;
+    let kproc_addr = eproc_addr.wrapping_add(pcb_offset);
+    let cr3: u64 = reader.read_field(kproc_addr, "_KPROCESS", "DirectoryTableBase")?;
+
+    Ok(WinProcessInfo {
+        pid,
+        ppid,
+        image_name,
+        create_time,
+        exit_time,
+        cr3,
+        peb_addr,
+        vaddr: eproc_addr,
+        thread_count: 0,
+        is_wow64: false,
+    })
 }
 
 #[cfg(test)]
@@ -65,9 +106,7 @@ mod tests {
 
     /// Build an ObjectReader with the windows_kernel_preset symbols and a
     /// configured page table mapping.
-    fn make_win_reader(
-        ptb: PageTableBuilder,
-    ) -> ObjectReader<SyntheticPhysMem> {
+    fn make_win_reader(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::windows_kernel_preset();
         let json = isf.build_json();
         let resolver = IsfResolver::from_value(&json).unwrap();
@@ -80,7 +119,7 @@ mod tests {
     fn write_eprocess(
         ptb: PageTableBuilder,
         paddr: u64,
-        eproc_vaddr: u64,
+        _eproc_vaddr: u64,
         pid: u64,
         ppid: u64,
         image_name: &str,
@@ -145,15 +184,15 @@ mod tests {
             ptb,
             eproc_paddr,
             eproc_vaddr,
-            4,              // pid = 4 (System)
-            0,              // ppid = 0
+            4, // pid = 4 (System)
+            0, // ppid = 0
             "System",
             132800000000000000, // create_time
-            0,              // exit_time (still running)
-            0x1ab000,       // CR3
-            0,              // PEB = 0 (System has no PEB)
-            head_vaddr,     // Flink → back to head
-            head_vaddr,     // Blink → back to head
+            0,                  // exit_time (still running)
+            0x1ab000,           // CR3
+            0,                  // PEB = 0 (System has no PEB)
+            head_vaddr,         // Flink → back to head
+            head_vaddr,         // Blink → back to head
         );
 
         let reader = make_win_reader(ptb);
@@ -202,32 +241,50 @@ mod tests {
 
         // Process A: System, pid=4
         let ptb = write_eprocess(
-            ptb, a_paddr, a_vaddr,
-            4, 0, "System",
-            132800000000000000, 0,
-            0x1ab000, 0,
-            b_links,       // Flink → B
-            head_vaddr,    // Blink → head
+            ptb,
+            a_paddr,
+            a_vaddr,
+            4,
+            0,
+            "System",
+            132800000000000000,
+            0,
+            0x1ab000,
+            0,
+            b_links,    // Flink → B
+            head_vaddr, // Blink → head
         );
 
         // Process B: csrss.exe, pid=528
         let ptb = write_eprocess(
-            ptb, b_paddr, b_vaddr,
-            528, 4, "csrss.exe",
-            132800000100000000, 0,
-            0x2cd000, 0x0000_0040_0000_0000,
-            c_links,       // Flink → C
-            a_links,       // Blink → A
+            ptb,
+            b_paddr,
+            b_vaddr,
+            528,
+            4,
+            "csrss.exe",
+            132800000100000000,
+            0,
+            0x2cd000,
+            0x0000_0040_0000_0000,
+            c_links, // Flink → C
+            a_links, // Blink → A
         );
 
         // Process C: svchost.exe, pid=700
         let ptb = write_eprocess(
-            ptb, c_paddr, c_vaddr,
-            700, 528, "svchost.exe",
-            132800000200000000, 0,
-            0x3ef000, 0x0000_0050_0000_0000,
-            head_vaddr,    // Flink → head (loop back)
-            b_links,       // Blink → B
+            ptb,
+            c_paddr,
+            c_vaddr,
+            700,
+            528,
+            "svchost.exe",
+            132800000200000000,
+            0,
+            0x3ef000,
+            0x0000_0050_0000_0000,
+            head_vaddr, // Flink → head (loop back)
+            b_links,    // Blink → B
         );
 
         let reader = make_win_reader(ptb);
@@ -295,15 +352,15 @@ mod tests {
             ptb,
             eproc_paddr,
             eproc_vaddr,
-            1234,                // pid
-            567,                 // ppid
+            1234, // pid
+            567,  // ppid
             "notepad.exe",
             specific_create_time,
             specific_exit_time,
             specific_cr3,
             specific_peb,
-            head_vaddr,          // Flink → head
-            head_vaddr,          // Blink → head
+            head_vaddr, // Flink → head
+            head_vaddr, // Blink → head
         );
 
         let reader = make_win_reader(ptb);
