@@ -838,7 +838,9 @@ impl KdumpBuilder {
         // Aligned offset after utsname: (0x0C + 390 + 3) & !3 = 0x19C
         let fields_off = (0x0C + 390 + 3) & !3; // 0x19C
         // block_size (i32)
-        out[fields_off..fields_off + 4].copy_from_slice(&(self.block_size as i32).to_le_bytes());
+        #[allow(clippy::cast_possible_wrap)]
+        let block_size_i32 = self.block_size as i32;
+        out[fields_off..fields_off + 4].copy_from_slice(&block_size_i32.to_le_bytes());
         // sub_hdr_size (i32) = 1
         out[fields_off + 4..fields_off + 8].copy_from_slice(&1i32.to_le_bytes());
         // bitmap_blocks (u32)
@@ -863,7 +865,11 @@ impl KdumpBuilder {
             let (flags, ref compressed) = compressed_pages[*orig_idx];
             // offset: i64
             out[d_off..d_off + 8]
-                .copy_from_slice(&(data_offsets[desc_idx] as i64).to_le_bytes());
+                .copy_from_slice(&{
+                    #[allow(clippy::cast_possible_wrap)]
+                    let offset_i64 = data_offsets[desc_idx] as i64;
+                    offset_i64
+                }.to_le_bytes());
             // size: u32
             out[d_off + 8..d_off + 12].copy_from_slice(&(compressed.len() as u32).to_le_bytes());
             // flags: u32
