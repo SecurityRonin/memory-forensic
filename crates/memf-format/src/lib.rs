@@ -188,6 +188,7 @@ pub fn open_dump(path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
 pub mod avml;
 pub mod elf_core;
 pub mod hiberfil;
+pub mod kdump;
 pub mod lime;
 pub mod raw;
 pub mod test_builders;

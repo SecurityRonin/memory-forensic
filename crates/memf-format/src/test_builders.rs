@@ -689,3 +689,257 @@ impl HiberfilBuilder {
         out
     }
 }
+
+/// Build a synthetic kdump (makedumpfile) dump for testing.
+///
+/// Produces the `disk_dump_header` + `kdump_sub_header` + bitmaps + page
+/// descriptors + compressed page data layout used by makedumpfile and
+/// crash-utility.
+///
+/// File layout (block_size = 4096 by default):
+/// - Block 0: `disk_dump_header`
+/// - Block 1: `kdump_sub_header` (mostly zeros for test)
+/// - Blocks 2..2+N: 1st bitmap (valid PFNs)
+/// - Blocks 2+N..2+2N: 2nd bitmap (dumped PFNs)
+/// - After bitmaps: `page_desc[]` array (24 bytes each, block-aligned)
+/// - After descs: compressed page data
+///
+/// `disk_dump_header` (Block 0):
+/// - 0x00: signature "KDUMP   " (8 bytes, 3 trailing spaces)
+/// - 0x08: header_version = 6 (i32)
+/// - 0x0C: utsname (390 bytes = 6 fields * 65, zeros)
+/// - Aligned to 4 after utsname: block_size(i32) + sub_hdr_size(i32=1) +
+///   bitmap_blocks(u32) + max_mapnr(u32)
+///
+/// `page_desc` (24 bytes each):
+/// - offset: i64 (file offset of compressed data)
+/// - size: u32 (compressed size)
+/// - flags: u32 (compression method)
+/// - page_flags: u64 (kernel flags, 0 for test)
+pub struct KdumpBuilder {
+    pages: Vec<(u64, Vec<u8>)>,
+    compression: u32,
+    block_size: u32,
+}
+
+impl Default for KdumpBuilder {
+    fn default() -> Self {
+        Self {
+            pages: Vec::new(),
+            compression: 0x04, // snappy
+            block_size: 4096,
+        }
+    }
+}
+
+impl KdumpBuilder {
+    /// Create a new builder with defaults: block_size=4096, compression=snappy (0x04).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the block size (must be a power of 2, typically 4096).
+    pub fn block_size(mut self, bs: u32) -> Self {
+        self.block_size = bs;
+        self
+    }
+
+    /// Set the compression flags for page data.
+    /// - 0x00: uncompressed
+    /// - 0x01: zlib
+    /// - 0x04: snappy
+    /// - 0x20: zstd (stored as minimal zstd frame)
+    pub fn compression(mut self, flags: u32) -> Self {
+        self.compression = flags;
+        self
+    }
+
+    /// Add a physical page at the given PFN with `data` (must be exactly block_size bytes).
+    pub fn add_page(mut self, pfn: u64, data: &[u8]) -> Self {
+        self.pages.push((pfn, data.to_vec()));
+        self
+    }
+
+    /// Build the complete kdump file as a byte vector.
+    pub fn build(self) -> Vec<u8> {
+        let bs = self.block_size as usize;
+
+        // Determine max PFN for bitmap sizing.
+        let max_pfn = self
+            .pages
+            .iter()
+            .map(|(pfn, _)| *pfn)
+            .max()
+            .map_or(0, |p| p + 1);
+
+        // Bitmap: one bit per PFN up to max_pfn, padded to block_size.
+        let bitmap_bits = max_pfn as usize;
+        let bitmap_bytes_raw = bitmap_bits.div_ceil(8);
+        let bitmap_blocks = bitmap_bytes_raw.div_ceil(bs);
+        let bitmap_bytes = bitmap_blocks * bs;
+
+        // Build bitmaps: both bitmaps are identical (valid == dumped).
+        let mut bitmap = vec![0u8; bitmap_bytes];
+        for (pfn, _) in &self.pages {
+            let pfn = *pfn as usize;
+            if pfn / 8 < bitmap.len() {
+                bitmap[pfn / 8] |= 1 << (pfn % 8);
+            }
+        }
+
+        // Compress each page.
+        let mut compressed_pages: Vec<(u32, Vec<u8>)> = Vec::new(); // (flags, data)
+        for (_, page_data) in &self.pages {
+            let (flags, compressed) = self.compress_page(page_data);
+            compressed_pages.push((flags, compressed));
+        }
+
+        // Layout calculation:
+        // Block 0: disk_dump_header
+        // Block 1: kdump_sub_header
+        // Blocks 2..2+bitmap_blocks: 1st bitmap
+        // Blocks 2+bitmap_blocks..2+2*bitmap_blocks: 2nd bitmap
+        let desc_start_block = 2 + 2 * bitmap_blocks;
+        let desc_start = desc_start_block * bs;
+
+        // Sort pages by PFN for descriptor ordering.
+        let mut indexed_pages: Vec<(usize, u64)> = self
+            .pages
+            .iter()
+            .enumerate()
+            .map(|(i, (pfn, _))| (i, *pfn))
+            .collect();
+        indexed_pages.sort_by_key(|(_, pfn)| *pfn);
+
+        // page_desc array: 24 bytes each, block-aligned total.
+        let num_descs = indexed_pages.len();
+        let descs_raw_size = num_descs * 24;
+        let descs_padded = descs_raw_size.div_ceil(bs) * bs;
+        let data_start = desc_start + descs_padded;
+
+        // Compute file offsets for each page's compressed data.
+        let mut data_offsets: Vec<usize> = Vec::new();
+        let mut cur_offset = data_start;
+        for (orig_idx, _) in &indexed_pages {
+            data_offsets.push(cur_offset);
+            cur_offset += compressed_pages[*orig_idx].1.len();
+        }
+
+        // --- Assemble the file ---
+        let total_size = cur_offset;
+        let mut out = vec![0u8; total_size];
+
+        // Block 0: disk_dump_header
+        // Signature "KDUMP   " (8 bytes)
+        out[0x00..0x08].copy_from_slice(b"KDUMP   ");
+        // header_version = 6 (i32 LE)
+        out[0x08..0x0C].copy_from_slice(&6i32.to_le_bytes());
+        // utsname: 390 bytes of zeros (already zero)
+        // Aligned offset after utsname: (0x0C + 390 + 3) & !3 = 0x19C
+        let fields_off = (0x0C + 390 + 3) & !3; // 0x19C
+        // block_size (i32)
+        out[fields_off..fields_off + 4].copy_from_slice(&(self.block_size as i32).to_le_bytes());
+        // sub_hdr_size (i32) = 1
+        out[fields_off + 4..fields_off + 8].copy_from_slice(&1i32.to_le_bytes());
+        // bitmap_blocks (u32)
+        out[fields_off + 8..fields_off + 12]
+            .copy_from_slice(&(bitmap_blocks as u32).to_le_bytes());
+        // max_mapnr (u32)
+        out[fields_off + 12..fields_off + 16].copy_from_slice(&(max_pfn as u32).to_le_bytes());
+
+        // Block 1: kdump_sub_header (all zeros, already done)
+
+        // Blocks 2..2+N: 1st bitmap
+        let bm1_start = 2 * bs;
+        out[bm1_start..bm1_start + bitmap.len()].copy_from_slice(&bitmap);
+
+        // Blocks 2+N..2+2N: 2nd bitmap (same as 1st)
+        let bm2_start = (2 + bitmap_blocks) * bs;
+        out[bm2_start..bm2_start + bitmap.len()].copy_from_slice(&bitmap);
+
+        // Page descriptors
+        for (desc_idx, (orig_idx, _)) in indexed_pages.iter().enumerate() {
+            let d_off = desc_start + desc_idx * 24;
+            let (flags, ref compressed) = compressed_pages[*orig_idx];
+            // offset: i64
+            out[d_off..d_off + 8]
+                .copy_from_slice(&(data_offsets[desc_idx] as i64).to_le_bytes());
+            // size: u32
+            out[d_off + 8..d_off + 12].copy_from_slice(&(compressed.len() as u32).to_le_bytes());
+            // flags: u32
+            out[d_off + 12..d_off + 16].copy_from_slice(&flags.to_le_bytes());
+            // page_flags: u64 = 0 (already zero)
+        }
+
+        // Compressed page data
+        for (desc_idx, (orig_idx, _)) in indexed_pages.iter().enumerate() {
+            let offset = data_offsets[desc_idx];
+            let data = &compressed_pages[*orig_idx].1;
+            out[offset..offset + data.len()].copy_from_slice(data);
+        }
+
+        out
+    }
+
+    /// Compress a single page based on the configured compression method.
+    /// Returns (flags, compressed_data).
+    fn compress_page(&self, data: &[u8]) -> (u32, Vec<u8>) {
+        match self.compression {
+            0x00 => {
+                // Uncompressed: flags=0, data is raw
+                (0x00, data.to_vec())
+            }
+            0x01 => {
+                // Zlib
+                use std::io::Write;
+                let mut encoder =
+                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(data).expect("zlib compress write");
+                let compressed = encoder.finish().expect("zlib compress finish");
+                (0x01, compressed)
+            }
+            0x04 => {
+                // Snappy
+                let mut encoder = snap::raw::Encoder::new();
+                let compressed = encoder.compress_vec(data).expect("snappy compress");
+                (0x04, compressed)
+            }
+            0x20 => {
+                // Zstd: produce a minimal valid zstd frame.
+                let compressed = Self::zstd_compress_minimal(data);
+                (0x20, compressed)
+            }
+            _ => (0x00, data.to_vec()),
+        }
+    }
+
+    /// Produce a minimal valid zstd frame that stores raw (uncompressed) data.
+    ///
+    /// Zstd frame format (minimal raw block):
+    /// - 4-byte magic: 0xFD2FB528
+    /// - Frame header descriptor byte
+    /// - Window descriptor byte
+    /// - Block header: 3 bytes (last_block=1, block_type=raw, block_size)
+    /// - Raw data
+    fn zstd_compress_minimal(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        // Magic number
+        out.extend_from_slice(&0xFD2FB528u32.to_le_bytes());
+        // Frame header descriptor: 0x00
+        // single_segment=0, so window descriptor is present
+        // no checksum, no dict_id, fcs_field_size=0
+        out.push(0x00);
+        // Window descriptor: exponent=0, mantissa=0 => window_size = 1 << 10 = 1024
+        out.push(0x00);
+        // Block header: 3 bytes LE
+        // bit 0: last_block = 1
+        // bits 2-1: block_type = 0 (raw)
+        // bits 23-3: block_size = data.len()
+        let block_header: u32 = 1 | ((data.len() as u32) << 3);
+        let bh_bytes = block_header.to_le_bytes();
+        out.extend_from_slice(&bh_bytes[..3]);
+        // Raw data
+        out.extend_from_slice(data);
+        out
+    }
+}
