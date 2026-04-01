@@ -57,12 +57,182 @@ pub struct PdbParsedData {
     pub symbols: Vec<PdbSymbol>,
 }
 
+/// Resolve a `TypeIndex` to a human-readable type name string.
+fn resolve_pdb_type_name(finder: &pdb::TypeFinder<'_>, type_index: pdb::TypeIndex) -> String {
+    let Ok(item) = finder.find(type_index) else {
+        return "unknown".into();
+    };
+    let Ok(type_data) = item.parse() else {
+        return "unknown".into();
+    };
+    match type_data {
+        pdb::TypeData::Primitive(prim) => {
+            let base = match prim.kind {
+                pdb::PrimitiveKind::Void => "void",
+                pdb::PrimitiveKind::Char | pdb::PrimitiveKind::RChar => "char",
+                pdb::PrimitiveKind::UChar => "unsigned char",
+                pdb::PrimitiveKind::WChar => "wchar_t",
+                pdb::PrimitiveKind::RChar16 => "char16_t",
+                pdb::PrimitiveKind::RChar32 => "char32_t",
+                pdb::PrimitiveKind::I8 => "int8_t",
+                pdb::PrimitiveKind::U8 => "uint8_t",
+                pdb::PrimitiveKind::Short => "short",
+                pdb::PrimitiveKind::UShort => "unsigned short",
+                pdb::PrimitiveKind::I16 => "int16_t",
+                pdb::PrimitiveKind::U16 => "uint16_t",
+                pdb::PrimitiveKind::Long => "long",
+                pdb::PrimitiveKind::ULong => "unsigned long",
+                pdb::PrimitiveKind::I32 => "int32_t",
+                pdb::PrimitiveKind::U32 => "uint32_t",
+                pdb::PrimitiveKind::Quad => "__int64",
+                pdb::PrimitiveKind::UQuad => "unsigned __int64",
+                pdb::PrimitiveKind::I64 => "int64_t",
+                pdb::PrimitiveKind::U64 => "uint64_t",
+                pdb::PrimitiveKind::Octa => "__int128",
+                pdb::PrimitiveKind::UOcta => "unsigned __int128",
+                pdb::PrimitiveKind::I128 => "int128_t",
+                pdb::PrimitiveKind::U128 => "uint128_t",
+                pdb::PrimitiveKind::F32 => "float",
+                pdb::PrimitiveKind::F64 => "double",
+                pdb::PrimitiveKind::F80 => "long double",
+                pdb::PrimitiveKind::Bool8 => "bool",
+                pdb::PrimitiveKind::Bool16 => "bool16",
+                pdb::PrimitiveKind::Bool32 => "bool32",
+                pdb::PrimitiveKind::Bool64 => "bool64",
+                pdb::PrimitiveKind::HRESULT => "HRESULT",
+                _ => "unknown",
+            };
+            if prim.indirection.is_some() {
+                format!("*{base}")
+            } else {
+                base.into()
+            }
+        }
+        pdb::TypeData::Class(class) => class.name.to_string().into_owned(),
+        pdb::TypeData::Union(union_type) => union_type.name.to_string().into_owned(),
+        pdb::TypeData::Enumeration(enum_type) => enum_type.name.to_string().into_owned(),
+        pdb::TypeData::Pointer(ptr) => {
+            format!("*{}", resolve_pdb_type_name(finder, ptr.underlying_type))
+        }
+        pdb::TypeData::Modifier(modifier) => {
+            resolve_pdb_type_name(finder, modifier.underlying_type)
+        }
+        pdb::TypeData::Array(_) => "array".into(),
+        _ => "unknown".into(),
+    }
+}
+
+/// Resolve a field list from the TPI stream, following continuation chains.
+fn resolve_field_list(finder: &pdb::TypeFinder<'_>, fields_index: pdb::TypeIndex) -> Vec<PdbField> {
+    let mut result = Vec::new();
+    let mut current = Some(fields_index);
+
+    while let Some(idx) = current {
+        current = None;
+        let Ok(item) = finder.find(idx) else { break };
+        let Ok(type_data) = item.parse() else { break };
+
+        if let pdb::TypeData::FieldList(field_list) = type_data {
+            for field in &field_list.fields {
+                if let pdb::TypeData::Member(member) = field {
+                    result.push(PdbField {
+                        name: member.name.to_string().into_owned(),
+                        offset: member.offset,
+                        type_name: resolve_pdb_type_name(finder, member.field_type),
+                    });
+                }
+            }
+            current = field_list.continuation;
+        }
+    }
+
+    result
+}
+
 /// Parse a PDB from a source implementing the required traits.
 fn parse_pdb<'s, S: pdb::Source<'s> + 's>(
-    _source: S,
+    source: S,
 ) -> crate::Result<(PdbParsedData, Option<PdbInfo>)> {
-    // Stub: will be implemented in GREEN phase
-    Err(crate::Error::Pdb("not yet implemented".into()))
+    use pdb::FallibleIterator;
+
+    let mut pdb_file = pdb::PDB::open(source)?;
+
+    // Extract PDB info (GUID + age)
+    let pdb_info = pdb_file.pdb_information().ok().map(|info| PdbInfo {
+        guid: info.guid.to_string().to_uppercase(),
+        age: info.age,
+    });
+
+    // Parse type information
+    let type_info = pdb_file.type_information()?;
+    let mut type_finder = type_info.finder();
+
+    // First pass: populate the TypeFinder for random access
+    {
+        let mut iter = type_info.iter();
+        while iter.next()?.is_some() {
+            type_finder.update(&iter);
+        }
+    }
+
+    // Second pass: extract struct/union definitions
+    let mut structs = Vec::new();
+    {
+        let mut iter = type_info.iter();
+        while let Some(item) = iter.next()? {
+            let Ok(type_data) = item.parse() else {
+                continue;
+            };
+            match type_data {
+                pdb::TypeData::Class(class) => {
+                    if class.properties.forward_reference() {
+                        continue;
+                    }
+                    let fields = class
+                        .fields
+                        .map(|fi| resolve_field_list(&type_finder, fi))
+                        .unwrap_or_default();
+                    structs.push(PdbStruct {
+                        name: class.name.to_string().into_owned(),
+                        size: class.size,
+                        fields,
+                    });
+                }
+                pdb::TypeData::Union(union_type) => {
+                    if union_type.properties.forward_reference() {
+                        continue;
+                    }
+                    let fields = resolve_field_list(&type_finder, union_type.fields);
+                    structs.push(PdbStruct {
+                        name: union_type.name.to_string().into_owned(),
+                        size: union_type.size,
+                        fields,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Parse global symbols
+    let symbol_table = pdb_file.global_symbols()?;
+    let address_map = pdb_file.address_map()?;
+    let mut symbols = Vec::new();
+    {
+        let mut sym_iter = symbol_table.iter();
+        while let Some(symbol) = sym_iter.next()? {
+            if let Ok(pdb::SymbolData::Public(pub_sym)) = symbol.parse() {
+                if let Some(rva) = pub_sym.offset.to_rva(&address_map) {
+                    symbols.push(PdbSymbol {
+                        name: pub_sym.name.to_string().into_owned(),
+                        rva: rva.0,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok((PdbParsedData { structs, symbols }, pdb_info))
 }
 
 /// PDB symbol resolver.
@@ -376,9 +546,8 @@ mod tests {
 
     #[test]
     fn from_path_nonexistent() {
-        let err =
-            PdbResolver::from_path(Path::new("/tmp/this_pdb_file_does_not_exist_12345.pdb"))
-                .unwrap_err();
+        let err = PdbResolver::from_path(Path::new("/tmp/this_pdb_file_does_not_exist_12345.pdb"))
+            .unwrap_err();
         assert!(
             matches!(err, crate::Error::Io(_)),
             "expected Io error, got: {err:?}"
@@ -428,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires real PDB file at /tmp/test.pdb"]
     fn from_path_real_pdb() {
         // Integration test: requires a real PDB file at /tmp/test.pdb
         let path = Path::new("/tmp/test.pdb");
