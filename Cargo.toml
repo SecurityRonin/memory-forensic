@@ -38,6 +38,8 @@ rust-lzxpress = "0.7"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 ruzstd = "0.8"
 lru = "0.16"
+pdb = "0.8"
+ureq = "3"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

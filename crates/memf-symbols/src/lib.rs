@@ -8,6 +8,9 @@
 
 pub mod btf;
 pub mod isf;
+pub mod pdb_resolver;
+pub mod pe_debug;
+pub mod symserver;
 pub mod test_builders;
 
 use std::collections::HashMap;
@@ -30,6 +33,18 @@ pub enum Error {
     /// Requested symbol or type not found.
     #[error("symbol not found: {0}")]
     NotFound(String),
+
+    /// PDB parsing error.
+    #[error("PDB error: {0}")]
+    Pdb(String),
+
+    /// Network/download error.
+    #[error("network error: {0}")]
+    Network(String),
+
+    /// Cache I/O error.
+    #[error("cache error: {0}")]
+    Cache(String),
 }
 
 /// A Result alias for memf-symbols.
@@ -119,6 +134,31 @@ mod tests {
     fn error_malformed_display() {
         let err = Error::Malformed("bad data".into());
         assert!(err.to_string().contains("bad data"));
+    }
+
+    #[test]
+    fn error_pdb_display() {
+        let err = Error::Pdb("invalid type index".into());
+        assert_eq!(err.to_string(), "PDB error: invalid type index");
+        // Verify Debug impl
+        let debug = format!("{err:?}");
+        assert!(debug.contains("Pdb"));
+    }
+
+    #[test]
+    fn error_network_display() {
+        let err = Error::Network("connection refused".into());
+        assert_eq!(err.to_string(), "network error: connection refused");
+        let debug = format!("{err:?}");
+        assert!(debug.contains("Network"));
+    }
+
+    #[test]
+    fn error_cache_display() {
+        let err = Error::Cache("disk full".into());
+        assert_eq!(err.to_string(), "cache error: disk full");
+        let debug = format!("{err:?}");
+        assert!(debug.contains("Cache"));
     }
 
     #[test]

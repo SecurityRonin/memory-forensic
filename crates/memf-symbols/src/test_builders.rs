@@ -127,6 +127,14 @@ impl IsfBuilder {
         serde_json::to_vec_pretty(&self.build_json()).expect("JSON serialization")
     }
 
+    /// Build a minimal ISF JSON for Windows kernel analysis tests.
+    ///
+    /// Includes common NT kernel structures with realistic field offsets
+    /// matching a typical Windows 10 22H2 kernel (ntkrnlmp.pdb).
+    pub fn windows_kernel_preset() -> Self {
+        todo!("RED phase: not implemented yet")
+    }
+
     /// Build a minimal ISF JSON for Linux process walking tests.
     pub fn linux_process_preset() -> Self {
         Self::new()
@@ -184,6 +192,20 @@ mod tests {
 
         assert!(json["symbols"]["init_task"]["address"].is_number());
         assert!(json["symbols"]["linux_banner"]["address"].is_number());
+    }
+
+    #[test]
+    fn windows_kernel_preset_has_required_structures() {
+        let json = IsfBuilder::windows_kernel_preset().build_json();
+        let ep = &json["user_types"]["_EPROCESS"];
+        assert_eq!(ep["size"], 2048);
+        assert!(ep["fields"]["UniqueProcessId"]["offset"].is_number());
+        assert!(ep["fields"]["ActiveProcessLinks"]["offset"].is_number());
+        assert!(ep["fields"]["ImageFileName"]["offset"].is_number());
+        let le = &json["user_types"]["_LIST_ENTRY"];
+        assert_eq!(le["size"], 16);
+        assert!(json["symbols"]["PsActiveProcessHead"]["address"].is_number());
+        assert!(json["symbols"]["PsLoadedModuleList"]["address"].is_number());
     }
 
     #[test]
