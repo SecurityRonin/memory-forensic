@@ -406,3 +406,116 @@ impl ElfCoreBuilder {
         out
     }
 }
+
+/// Build a synthetic Windows hibernation file (`hiberfil.sys`).
+///
+/// Produces a `PO_MEMORY_IMAGE` header with "hibr" magic, processor state
+/// page with CR3, a page table page with PFN entries, and Xpress LZ77
+/// compressed data blocks.
+///
+/// Layout:
+/// - Page 0 (offset 0x0000): PO\_MEMORY\_IMAGE header with "hibr" magic at 0x00,
+///   `LengthSelf` at 0x0C (256 = 64-bit), `FirstTablePage` at 0x68 (value 2).
+/// - Page 1 (offset 0x1000): Processor state page with CR3 at offset 0x28.
+/// - Page 2 (offset 0x2000): Page table -- array of PFN entries (u64),
+///   terminated by `0xFFFF_FFFF_FFFF_FFFF`.
+/// - After header pages: Xpress LZ77 compressed blocks.
+///   Block header: sig(8) + num\_pages\_minus\_1(1) + compressed\_size\_field(3 bytes)
+///   + padding to 0x20 + compressed data.
+pub struct HiberfilBuilder {
+    pages: Vec<(u64, [u8; 4096])>,
+    cr3: u64,
+}
+
+impl Default for HiberfilBuilder {
+    fn default() -> Self {
+        Self {
+            pages: Vec::new(),
+            cr3: 0x1ab000,
+        }
+    }
+}
+
+impl HiberfilBuilder {
+    /// Create a new builder with default CR3 (`0x1ab000`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the CR3 / `DirectoryTableBase` value stored in the processor state page.
+    pub fn cr3(mut self, cr3: u64) -> Self {
+        self.cr3 = cr3;
+        self
+    }
+
+    /// Add a physical memory page at the given PFN.
+    pub fn add_page(mut self, pfn: u64, data: &[u8; 4096]) -> Self {
+        self.pages.push((pfn, *data));
+        self
+    }
+
+    /// Build the complete hibernation file as a byte vector.
+    pub fn build(self) -> Vec<u8> {
+        const PAGE_SIZE: usize = 4096;
+        const HIBR_MAGIC: u32 = 0x7262_6968; // "hibr" LE
+        const LENGTH_SELF_64: u32 = 256;
+        const XPRESS_SIG: [u8; 8] = [0x81, 0x81, b'x', b'p', b'r', b'e', b's', b's'];
+        const BLOCK_HEADER_SIZE: usize = 0x20;
+
+        let mut out = vec![0u8; 3 * PAGE_SIZE]; // pages 0, 1, 2
+
+        // --- Page 0: PO_MEMORY_IMAGE header ---
+        // Magic "hibr" at offset 0x00
+        out[0x00..0x04].copy_from_slice(&HIBR_MAGIC.to_le_bytes());
+        // LengthSelf at offset 0x0C: 256 indicates 64-bit
+        out[0x0C..0x10].copy_from_slice(&LENGTH_SELF_64.to_le_bytes());
+        // FirstTablePage at offset 0x68: page 2
+        out[0x68..0x70].copy_from_slice(&2u64.to_le_bytes());
+
+        // --- Page 1: Processor state ---
+        // CR3 at offset 0x28 within page 1
+        let cr3_offset = PAGE_SIZE + 0x28;
+        out[cr3_offset..cr3_offset + 8].copy_from_slice(&self.cr3.to_le_bytes());
+
+        // --- Page 2: Page table ---
+        // Array of PFN entries (u64), terminated by sentinel 0xFFFFFFFFFFFFFFFF
+        let table_base = 2 * PAGE_SIZE;
+        let mut table_offset = 0usize;
+        for (pfn, _) in &self.pages {
+            out[table_base + table_offset..table_base + table_offset + 8]
+                .copy_from_slice(&pfn.to_le_bytes());
+            table_offset += 8;
+        }
+        // Sentinel terminator
+        out[table_base + table_offset..table_base + table_offset + 8]
+            .copy_from_slice(&u64::MAX.to_le_bytes());
+
+        // --- Compressed data blocks ---
+        // Each page gets its own Xpress block.
+        for (_, page_data) in &self.pages {
+            let compressed = lzxpress::data::compress(page_data).expect("lzxpress compress");
+
+            // compressed_size_field = (compressed_len * 4) - 1, stored as 3 bytes LE
+            let compressed_size_field = (compressed.len() * 4 - 1) as u32;
+            let num_pages_minus_1: u8 = 0; // single page per block
+
+            let mut block = Vec::new();
+            // 8-byte signature
+            block.extend_from_slice(&XPRESS_SIG);
+            // 1 byte: num_pages_minus_1
+            block.push(num_pages_minus_1);
+            // 3 bytes: compressed_size_field (LE)
+            block.push(compressed_size_field as u8);
+            block.push((compressed_size_field >> 8) as u8);
+            block.push((compressed_size_field >> 16) as u8);
+            // Pad to BLOCK_HEADER_SIZE (0x20 = 32 bytes)
+            block.resize(BLOCK_HEADER_SIZE, 0);
+            // Compressed data
+            block.extend_from_slice(&compressed);
+
+            out.extend_from_slice(&block);
+        }
+
+        out
+    }
+}

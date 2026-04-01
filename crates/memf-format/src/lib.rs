@@ -187,6 +187,7 @@ pub fn open_dump(path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
 
 pub mod avml;
 pub mod elf_core;
+pub mod hiberfil;
 pub mod lime;
 pub mod raw;
 pub mod test_builders;
@@ -300,7 +301,10 @@ mod tests {
     #[test]
     fn error_ambiguous_format_display() {
         let err = Error::AmbiguousFormat;
-        assert_eq!(err.to_string(), "ambiguous format: multiple plugins scored >= 50");
+        assert_eq!(
+            err.to_string(),
+            "ambiguous format: multiple plugins scored >= 50"
+        );
     }
 
     #[test]
