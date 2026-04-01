@@ -63,8 +63,32 @@ impl PdbResolver {
     /// This is the primary constructor for testing -- it takes already-extracted
     /// struct/symbol data and converts to the SymbolResolver format.
     pub fn from_parsed(data: PdbParsedData) -> Self {
-        let _ = data;
-        todo!("RED phase: not implemented yet")
+        let mut structs = HashMap::new();
+        for s in data.structs {
+            let mut fields = HashMap::new();
+            for f in s.fields {
+                fields.insert(
+                    f.name,
+                    FieldInfo {
+                        offset: f.offset,
+                        type_name: f.type_name,
+                    },
+                );
+            }
+            structs.insert(
+                s.name,
+                StructInfo {
+                    size: s.size,
+                    fields,
+                },
+            );
+        }
+        let symbols = data
+            .symbols
+            .into_iter()
+            .map(|s| (s.name, u64::from(s.rva)))
+            .collect();
+        Self { structs, symbols }
     }
 
     /// Return the number of structs loaded.
@@ -80,27 +104,27 @@ impl PdbResolver {
 
 impl SymbolResolver for PdbResolver {
     fn field_offset(&self, struct_name: &str, field_name: &str) -> Option<u64> {
-        let _ = (struct_name, field_name);
-        todo!("RED phase: not implemented yet")
+        self.structs
+            .get(struct_name)?
+            .fields
+            .get(field_name)
+            .map(|f| f.offset)
     }
 
     fn struct_size(&self, struct_name: &str) -> Option<u64> {
-        let _ = struct_name;
-        todo!("RED phase: not implemented yet")
+        self.structs.get(struct_name).map(|s| s.size)
     }
 
     fn symbol_address(&self, symbol_name: &str) -> Option<u64> {
-        let _ = symbol_name;
-        todo!("RED phase: not implemented yet")
+        self.symbols.get(symbol_name).copied()
     }
 
     fn struct_info(&self, struct_name: &str) -> Option<StructInfo> {
-        let _ = struct_name;
-        todo!("RED phase: not implemented yet")
+        self.structs.get(struct_name).cloned()
     }
 
     fn backend_name(&self) -> &str {
-        todo!("RED phase: not implemented yet")
+        "PDB"
     }
 }
 

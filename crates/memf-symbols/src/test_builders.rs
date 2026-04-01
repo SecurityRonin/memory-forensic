@@ -24,7 +24,10 @@ impl IsfBuilder {
         b.base_types.insert("unsigned int".into(), (4, false));
         b.base_types.insert("long".into(), (8, true));
         b.base_types.insert("unsigned long".into(), (8, false));
+        b.base_types.insert("short".into(), (2, true));
+        b.base_types.insert("unsigned short".into(), (2, false));
         b.base_types.insert("char".into(), (1, true));
+        b.base_types.insert("unsigned char".into(), (1, false));
         b.base_types.insert("pointer".into(), (8, false));
         b
     }
@@ -132,7 +135,66 @@ impl IsfBuilder {
     /// Includes common NT kernel structures with realistic field offsets
     /// matching a typical Windows 10 22H2 kernel (ntkrnlmp.pdb).
     pub fn windows_kernel_preset() -> Self {
-        todo!("RED phase: not implemented yet")
+        Self::new()
+            // _EPROCESS — Windows process object
+            .add_struct("_EPROCESS", 2048)
+            .add_field("_EPROCESS", "UniqueProcessId", 0x440, "pointer")
+            .add_field("_EPROCESS", "ActiveProcessLinks", 0x448, "_LIST_ENTRY")
+            .add_field("_EPROCESS", "ImageFileName", 0x5A8, "char")
+            .add_field("_EPROCESS", "Pcb", 0x0, "_KPROCESS")
+            .add_field(
+                "_EPROCESS",
+                "InheritedFromUniqueProcessId",
+                0x540,
+                "pointer",
+            )
+            .add_field("_EPROCESS", "ObjectTable", 0x570, "pointer")
+            .add_field("_EPROCESS", "Token", 0x4B8, "_EX_FAST_REF")
+            .add_field("_EPROCESS", "Peb", 0x550, "pointer")
+            .add_field("_EPROCESS", "VadRoot", 0x7D8, "_RTL_AVL_TREE")
+            .add_field("_EPROCESS", "CreateTime", 0x430, "_LARGE_INTEGER")
+            .add_field("_EPROCESS", "ExitTime", 0x438, "_LARGE_INTEGER")
+            // _KPROCESS
+            .add_struct("_KPROCESS", 896)
+            .add_field("_KPROCESS", "DirectoryTableBase", 0x28, "unsigned long")
+            .add_field("_KPROCESS", "ThreadListHead", 0x30, "_LIST_ENTRY")
+            // _KTHREAD
+            .add_struct("_KTHREAD", 1536)
+            .add_field("_KTHREAD", "ThreadListEntry", 0x2F8, "_LIST_ENTRY")
+            .add_field("_KTHREAD", "Teb", 0xF0, "pointer")
+            .add_field("_KTHREAD", "Process", 0x220, "pointer")
+            .add_field("_KTHREAD", "Win32StartAddress", 0x680, "pointer")
+            .add_field("_KTHREAD", "CreateTime", 0x688, "_LARGE_INTEGER")
+            // _ETHREAD
+            .add_struct("_ETHREAD", 2048)
+            .add_field("_ETHREAD", "Tcb", 0x0, "_KTHREAD")
+            .add_field("_ETHREAD", "Cid", 0x620, "_CLIENT_ID")
+            .add_field("_ETHREAD", "ThreadListEntry", 0x6B8, "_LIST_ENTRY")
+            // _LIST_ENTRY
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
+            // _UNICODE_STRING
+            .add_struct("_UNICODE_STRING", 16)
+            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
+            .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
+            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
+            // _PEB
+            .add_struct("_PEB", 2048)
+            .add_field("_PEB", "ImageBaseAddress", 0x10, "pointer")
+            .add_field("_PEB", "Ldr", 0x18, "pointer")
+            .add_field("_PEB", "ProcessParameters", 0x20, "pointer")
+            .add_field("_PEB", "BeingDebugged", 0x02, "unsigned char")
+            // _CLIENT_ID
+            .add_struct("_CLIENT_ID", 16)
+            .add_field("_CLIENT_ID", "UniqueProcess", 0, "pointer")
+            .add_field("_CLIENT_ID", "UniqueThread", 8, "pointer")
+            // Kernel symbols
+            .add_symbol("PsActiveProcessHead", 0xFFFFF805_5A400000)
+            .add_symbol("PsLoadedModuleList", 0xFFFFF805_5A410000)
+            .add_symbol("KdDebuggerDataBlock", 0xFFFFF805_5A420000)
+            .add_symbol("PsInitialSystemProcess", 0xFFFFF805_5A430000)
+            .add_symbol("KeNumberProcessors", 0xFFFFF805_5A440000)
     }
 
     /// Build a minimal ISF JSON for Linux process walking tests.
