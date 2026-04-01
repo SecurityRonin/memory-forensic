@@ -23,7 +23,23 @@ pub struct PdbId {
 /// - Bytes 6-7: `Data3` (little-endian u16)
 /// - Bytes 8-15: `Data4` (big-endian, raw bytes)
 fn format_guid(bytes: &[u8; 16]) -> String {
-    todo!()
+    let d1 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let d2 = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let d3 = u16::from_le_bytes([bytes[6], bytes[7]]);
+    format!(
+        "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        d1,
+        d2,
+        d3,
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
 }
 
 /// Extract PDB identification from a PE binary.
@@ -32,7 +48,37 @@ fn format_guid(bytes: &[u8; 16]) -> String {
 /// the GUID, age, and PDB filename needed to download the matching PDB
 /// from a symbol server.
 pub fn extract_pdb_id(pe_bytes: &[u8]) -> crate::Result<PdbId> {
-    todo!()
+    use goblin::pe::PE;
+
+    let pe = PE::parse(pe_bytes).map_err(|e| crate::Error::Malformed(format!("PE parse: {e}")))?;
+
+    let debug_data = pe
+        .debug_data
+        .ok_or_else(|| crate::Error::Malformed("no debug data".into()))?;
+
+    let cv = debug_data
+        .codeview_pdb70_debug_info
+        .ok_or_else(|| crate::Error::Malformed("no CodeView PDB70 debug info".into()))?;
+
+    let guid = format_guid(&cv.signature);
+
+    // Convert filename bytes to string, stripping null terminator.
+    let raw_name = std::str::from_utf8(cv.filename)
+        .map_err(|e| crate::Error::Malformed(format!("PDB filename not UTF-8: {e}")))?
+        .trim_end_matches('\0');
+
+    // Extract just the filename component (strip any directory path).
+    let pdb_name = std::path::Path::new(raw_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(raw_name)
+        .to_string();
+
+    Ok(PdbId {
+        guid,
+        age: cv.age,
+        pdb_name,
+    })
 }
 
 #[cfg(test)]
@@ -75,8 +121,14 @@ mod tests {
         let opt_start = pos;
         buf[pos..pos + 2].copy_from_slice(&0x020Bu16.to_le_bytes()); // PE32+ magic
 
+        // SectionAlignment at offset 32 from opt_start
+        buf[opt_start + 32..opt_start + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        // FileAlignment at offset 36 from opt_start (must be power of 2)
+        buf[opt_start + 36..opt_start + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        // SizeOfImage at offset 56 from opt_start
+        buf[opt_start + 56..opt_start + 60].copy_from_slice(&0x2000u32.to_le_bytes());
         // SizeOfHeaders at offset 60 from opt_start
-        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x400u32.to_le_bytes());
+        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x200u32.to_le_bytes());
 
         // NumberOfRvaAndSizes at offset 108 from opt_start
         buf[opt_start + 108..opt_start + 112].copy_from_slice(&16u32.to_le_bytes());
@@ -104,14 +156,10 @@ mod tests {
         let cv_size: u32 = (24 + pdb_name_bytes.len() + 1) as u32;
 
         // Type field is at offset +12 in IMAGE_DEBUG_DIRECTORY
-        buf[debug_dir_offset + 12..debug_dir_offset + 16]
-            .copy_from_slice(&2u32.to_le_bytes()); // IMAGE_DEBUG_TYPE_CODEVIEW
-        buf[debug_dir_offset + 16..debug_dir_offset + 20]
-            .copy_from_slice(&cv_size.to_le_bytes()); // SizeOfData
-        buf[debug_dir_offset + 20..debug_dir_offset + 24]
-            .copy_from_slice(&cv_rva.to_le_bytes()); // AddressOfRawData
-        buf[debug_dir_offset + 24..debug_dir_offset + 28]
-            .copy_from_slice(&cv_rva.to_le_bytes()); // PointerToRawData (= RVA, 1:1 mapping)
+        buf[debug_dir_offset + 12..debug_dir_offset + 16].copy_from_slice(&2u32.to_le_bytes()); // IMAGE_DEBUG_TYPE_CODEVIEW
+        buf[debug_dir_offset + 16..debug_dir_offset + 20].copy_from_slice(&cv_size.to_le_bytes()); // SizeOfData
+        buf[debug_dir_offset + 20..debug_dir_offset + 24].copy_from_slice(&cv_rva.to_le_bytes()); // AddressOfRawData
+        buf[debug_dir_offset + 24..debug_dir_offset + 28].copy_from_slice(&cv_rva.to_le_bytes()); // PointerToRawData (= RVA, 1:1 mapping)
 
         // CodeView RSDS record at file offset 0x220
         let cv_offset = 0x220usize;
@@ -152,7 +200,14 @@ mod tests {
         // Optional header (PE32+)
         let opt_start = pos;
         buf[pos..pos + 2].copy_from_slice(&0x020Bu16.to_le_bytes());
-        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x400u32.to_le_bytes());
+        // SectionAlignment at offset 32
+        buf[opt_start + 32..opt_start + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        // FileAlignment at offset 36
+        buf[opt_start + 36..opt_start + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        // SizeOfImage at offset 56
+        buf[opt_start + 56..opt_start + 60].copy_from_slice(&0x2000u32.to_le_bytes());
+        // SizeOfHeaders at offset 60
+        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x200u32.to_le_bytes());
 
         // NumberOfRvaAndSizes = 0 => no data directories at all
         buf[opt_start + 108..opt_start + 112].copy_from_slice(&0u32.to_le_bytes());
