@@ -182,4 +182,124 @@ mod tests {
         assert_eq!(info2.size, 128);
         assert!(info2.fields.contains_key("pid"));
     }
+
+    #[test]
+    fn isf_and_pdb_resolvers_agree_on_windows_kernel() {
+        use crate::isf::IsfResolver;
+        use crate::pdb_resolver::{PdbField, PdbParsedData, PdbResolver, PdbStruct};
+        use crate::test_builders::IsfBuilder;
+
+        let isf =
+            IsfResolver::from_value(&IsfBuilder::windows_kernel_preset().build_json()).unwrap();
+        let pdb = PdbResolver::from_parsed(PdbParsedData {
+            structs: vec![PdbStruct {
+                name: "_EPROCESS".into(),
+                size: 2048,
+                fields: vec![
+                    PdbField {
+                        name: "UniqueProcessId".into(),
+                        offset: 0x440,
+                        type_name: "pointer".into(),
+                    },
+                    PdbField {
+                        name: "ActiveProcessLinks".into(),
+                        offset: 0x448,
+                        type_name: "_LIST_ENTRY".into(),
+                    },
+                    PdbField {
+                        name: "ImageFileName".into(),
+                        offset: 0x5A8,
+                        type_name: "char".into(),
+                    },
+                ],
+            }],
+            symbols: vec![],
+        });
+
+        // Both resolvers agree on _EPROCESS layout
+        assert_eq!(isf.struct_size("_EPROCESS"), pdb.struct_size("_EPROCESS"));
+        assert_eq!(
+            isf.field_offset("_EPROCESS", "UniqueProcessId"),
+            pdb.field_offset("_EPROCESS", "UniqueProcessId")
+        );
+        assert_eq!(
+            isf.field_offset("_EPROCESS", "ActiveProcessLinks"),
+            pdb.field_offset("_EPROCESS", "ActiveProcessLinks")
+        );
+        assert_eq!(
+            isf.field_offset("_EPROCESS", "ImageFileName"),
+            pdb.field_offset("_EPROCESS", "ImageFileName")
+        );
+    }
+
+    #[test]
+    fn all_three_backends_through_dyn_trait() {
+        use crate::pdb_resolver::{PdbField, PdbParsedData, PdbResolver, PdbStruct};
+
+        let resolvers: Vec<Box<dyn SymbolResolver>> = vec![
+            Box::new(
+                crate::isf::IsfResolver::from_value(
+                    &crate::test_builders::IsfBuilder::new()
+                        .add_struct("task_struct", 9024)
+                        .add_field("task_struct", "pid", 1128, "int")
+                        .add_symbol("init_task", 0xFFFF_0000)
+                        .build_json(),
+                )
+                .unwrap(),
+            ),
+            Box::new(PdbResolver::from_parsed(PdbParsedData {
+                structs: vec![PdbStruct {
+                    name: "_EPROCESS".into(),
+                    size: 2048,
+                    fields: vec![PdbField {
+                        name: "UniqueProcessId".into(),
+                        offset: 0x440,
+                        type_name: "pointer".into(),
+                    }],
+                }],
+                symbols: vec![],
+            })),
+        ];
+
+        assert_eq!(resolvers[0].backend_name(), "ISF JSON");
+        assert_eq!(resolvers[0].struct_size("task_struct"), Some(9024));
+        assert_eq!(resolvers[1].backend_name(), "PDB");
+        assert_eq!(resolvers[1].struct_size("_EPROCESS"), Some(2048));
+    }
+
+    #[test]
+    fn pdb_id_to_symserver_url_workflow() {
+        use crate::pe_debug::PdbId;
+        use crate::symserver;
+
+        // Simulate extracted PDB identity (PE parsing tested in pe_debug module)
+        let pdb_id = PdbId {
+            guid: "1B72224D-37B8-1792-2820-0ED8994498B2".into(),
+            age: 1,
+            pdb_name: "ntkrnlmp.pdb".into(),
+        };
+
+        // Use extracted info to construct download URL
+        let url = symserver::download_url(
+            symserver::default_server_url(),
+            &pdb_id.pdb_name,
+            &pdb_id.guid,
+            pdb_id.age,
+        );
+        assert!(url.starts_with("https://msdl.microsoft.com/download/symbols/ntkrnlmp.pdb/"));
+        assert!(url.contains("1B72224D37B8179228200ED8994498B2"));
+        assert!(url.ends_with("/ntkrnlmp.pdb"));
+
+        // Verify cache path construction
+        let cache = symserver::cache_path(
+            std::path::Path::new("/tmp/symbols"),
+            &pdb_id.pdb_name,
+            &pdb_id.guid,
+            pdb_id.age,
+        );
+        assert!(cache.ends_with("ntkrnlmp.pdb"));
+        assert!(cache
+            .to_string_lossy()
+            .contains("1B72224D37B8179228200ED8994498B2"));
+    }
 }
