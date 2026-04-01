@@ -407,6 +407,143 @@ impl ElfCoreBuilder {
     }
 }
 
+/// Build a synthetic VMware `.vmss`/`.vmsn` state file.
+///
+/// Produces the VMware group/tag binary format:
+/// - 12-byte file header: magic(u32=0xBED2BED0) + unknown(u32=0) + group_count(u32)
+/// - Group entries (80 bytes each): name(64 bytes null-terminated) + tags_offset(u64) + padding(8 bytes)
+/// - "memory" group with region tags containing paddr(u64) + data
+/// - Optional "cpu" group with CR3 tag
+///
+/// Tag format for memory regions:
+/// - flags: u8 (0x06 = large data with explicit size)
+/// - name_length: u8
+/// - name: bytes ("regionPPN", "regionBytes")
+/// - data_length: u32
+/// - payload: depends on tag name
+///
+/// Tag format for CPU CR3:
+/// - flags: u8 (0x46 = indexed + 8-byte data)
+/// - name_length: u8
+/// - name: "CR3"
+/// - index0: u8 (0 = CPU 0)
+/// - index1: u8 (3 = CR register 3)
+/// - value: u64
+///
+/// Tag terminator: flags byte = 0
+pub struct VmwareStateBuilder {
+    memory_regions: Vec<(u64, Vec<u8>)>,
+    cr3: Option<u64>,
+}
+
+impl VmwareStateBuilder {
+    /// Create a new empty builder.
+    pub fn new() -> Self {
+        Self {
+            memory_regions: Vec::new(),
+            cr3: None,
+        }
+    }
+
+    /// Add a physical memory region at the given physical address.
+    pub fn add_region(mut self, paddr: u64, data: &[u8]) -> Self {
+        self.memory_regions.push((paddr, data.to_vec()));
+        self
+    }
+
+    /// Set the CR3 / DirectoryTableBase value (adds a "cpu" group).
+    pub fn cr3(mut self, cr3: u64) -> Self {
+        self.cr3 = Some(cr3);
+        self
+    }
+
+    /// Build the complete VMware state file as a byte vector.
+    pub fn build(self) -> Vec<u8> {
+        let group_count: u32 = if self.cr3.is_some() { 2 } else { 1 };
+
+        // Header: 12 bytes
+        let header_size = 12usize;
+        let group_entry_size = 80usize;
+        let groups_size = group_count as usize * group_entry_size;
+
+        let mut out = Vec::new();
+
+        // File header
+        out.extend_from_slice(&0xBED2BED0u32.to_le_bytes()); // magic
+        out.extend_from_slice(&0u32.to_le_bytes()); // unknown
+        out.extend_from_slice(&group_count.to_le_bytes()); // group_count
+
+        // Reserve space for group entries — we'll fill tags_offset later
+        let groups_start = out.len();
+        out.resize(header_size + groups_size, 0);
+
+        // --- "memory" group tags ---
+        let memory_tags_offset = out.len() as u64;
+
+        // Write region tags: for each region, emit regionPPN + regionBytes pair
+        for (paddr, data) in &self.memory_regions {
+            // regionPPN tag: flags=0x06, name="regionPPN", data=paddr as u64
+            let name = b"regionPPN";
+            out.push(0x06); // flags: large data with explicit size
+            out.push(name.len() as u8);
+            out.extend_from_slice(name);
+            out.extend_from_slice(&8u32.to_le_bytes()); // data_length = 8
+            out.extend_from_slice(&paddr.to_le_bytes());
+
+            // regionBytes tag: flags=0x06, name="regionBytes", data=raw bytes
+            let name = b"regionBytes";
+            out.push(0x06); // flags: large data with explicit size
+            out.push(name.len() as u8);
+            out.extend_from_slice(name);
+            let data_len = data.len() as u32;
+            out.extend_from_slice(&data_len.to_le_bytes()); // data_length
+            out.extend_from_slice(data);
+        }
+
+        // Tag terminator
+        out.push(0x00);
+
+        // Fill "memory" group entry
+        {
+            let entry_offset = groups_start;
+            let name = b"memory";
+            out[entry_offset..entry_offset + name.len()].copy_from_slice(name);
+            // name is null-terminated, rest of 64 bytes is already zero
+            let tags_off_pos = entry_offset + 64;
+            out[tags_off_pos..tags_off_pos + 8]
+                .copy_from_slice(&memory_tags_offset.to_le_bytes());
+            // padding 8 bytes already zero
+        }
+
+        // --- Optional "cpu" group ---
+        if let Some(cr3_val) = self.cr3 {
+            let cpu_tags_offset = out.len() as u64;
+
+            // CR3 tag: flags=0x46 (indexed + 8-byte data)
+            let name = b"CR3";
+            out.push(0x46); // flags
+            out.push(name.len() as u8);
+            out.extend_from_slice(name);
+            out.push(0x00); // index0 = CPU 0
+            out.push(0x03); // index1 = CR register 3
+            out.extend_from_slice(&cr3_val.to_le_bytes());
+
+            // Tag terminator
+            out.push(0x00);
+
+            // Fill "cpu" group entry (second entry)
+            let entry_offset = groups_start + group_entry_size;
+            let name = b"cpu";
+            out[entry_offset..entry_offset + name.len()].copy_from_slice(name);
+            let tags_off_pos = entry_offset + 64;
+            out[tags_off_pos..tags_off_pos + 8]
+                .copy_from_slice(&cpu_tags_offset.to_le_bytes());
+        }
+
+        out
+    }
+}
+
 /// Compress data using `lzxpress::data::compress`, falling back to a
 /// literal-only Xpress encoding if the library's round-trip is broken
 /// for the given input.

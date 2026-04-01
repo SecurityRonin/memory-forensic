@@ -191,6 +191,7 @@ pub mod hiberfil;
 pub mod lime;
 pub mod raw;
 pub mod test_builders;
+pub mod vmware;
 pub mod win_crashdump;
 
 #[cfg(test)]
