@@ -407,6 +407,38 @@ impl ElfCoreBuilder {
     }
 }
 
+/// Compress data using `lzxpress::data::compress`, falling back to a
+/// literal-only Xpress encoding if the library's round-trip is broken
+/// for the given input.
+///
+/// The literal-only format is: every 32 bytes of input get a 4-byte flags
+/// word (all zeros = all literals) followed by the 32 raw bytes.
+fn xpress_compress_safe(data: &[u8]) -> Vec<u8> {
+    // Try the library compressor first.
+    if let Ok(compressed) = lzxpress::data::compress(data) {
+        // Verify round-trip; the library has known issues with certain patterns.
+        if let Ok(decompressed) = lzxpress::data::decompress(&compressed) {
+            if decompressed == data {
+                return compressed;
+            }
+        }
+    }
+
+    // Fallback: produce literal-only Xpress output.
+    // Format: repeated blocks of [flags_u32_le=0x00000000][32 literal bytes].
+    // A flags word of 0 means all 32 bits are 0, so all 32 symbols are literals.
+    let mut out = Vec::with_capacity(data.len() + data.len() / 32 * 4 + 8);
+    let mut pos = 0;
+    while pos < data.len() {
+        let chunk_len = (data.len() - pos).min(32);
+        // flags = 0 means every bit is 0 = literal
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&data[pos..pos + chunk_len]);
+        pos += chunk_len;
+    }
+    out
+}
+
 /// Build a synthetic Windows hibernation file (`hiberfil.sys`).
 ///
 /// Produces a `PO_MEMORY_IMAGE` header with "hibr" magic, processor state
@@ -493,7 +525,7 @@ impl HiberfilBuilder {
         // --- Compressed data blocks ---
         // Each page gets its own Xpress block.
         for (_, page_data) in &self.pages {
-            let compressed = lzxpress::data::compress(page_data).expect("lzxpress compress");
+            let compressed = xpress_compress_safe(page_data);
 
             // compressed_size_field = (compressed_len * 4) - 1, stored as 3 bytes LE
             let compressed_size_field = (compressed.len() * 4 - 1) as u32;

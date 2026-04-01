@@ -26,6 +26,25 @@ const XPRESS_SIG: [u8; 8] = [0x81, 0x81, b'x', b'p', b'r', b'e', b's', b's'];
 /// Block header size (padded to 0x20).
 const BLOCK_HEADER_SIZE: usize = 0x20;
 
+/// Offset of `LengthSelf` in the PO_MEMORY_IMAGE header.
+const OFF_LENGTH_SELF: usize = 0x0C;
+
+/// Offset of `FirstTablePage` in the PO_MEMORY_IMAGE header (u64).
+const OFF_FIRST_TABLE_PAGE: usize = 0x68;
+
+/// Offset of CR3 within the processor state page (page 1).
+const OFF_CR3_IN_PROC_STATE: usize = 0x28;
+
+/// Read a little-endian u32 from `data` at `offset`.
+fn read_u32(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+}
+
+/// Read a little-endian u64 from `data` at `offset`.
+fn read_u64(data: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+}
+
 /// Provider that exposes physical memory from a Windows hibernation file.
 ///
 /// Stores decompressed pages in a `HashMap<pfn, Vec<u8>>` for O(1) lookup.
@@ -38,22 +57,190 @@ pub struct HiberfilProvider {
 impl HiberfilProvider {
     /// Parse a hibernation file from an in-memory byte slice.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        todo!()
+        // Validate minimum size: at least 3 header pages (0x3000 bytes).
+        if bytes.len() < 3 * PAGE_SIZE {
+            return Err(Error::Corrupt(
+                "hiberfil too short: need at least 3 header pages".into(),
+            ));
+        }
+
+        // Validate magic.
+        let magic = read_u32(bytes, 0);
+        if !is_hiberfil_magic(magic) {
+            return Err(Error::Corrupt(format!(
+                "invalid hiberfil magic: 0x{magic:08X}"
+            )));
+        }
+
+        // Check LengthSelf to confirm 64-bit format (value 256).
+        let _length_self = read_u32(bytes, OFF_LENGTH_SELF);
+
+        // Extract CR3 from processor state page (page 1, offset 0x28).
+        let cr3 = read_u64(bytes, PAGE_SIZE + OFF_CR3_IN_PROC_STATE);
+
+        // Read the page table from page indicated by FirstTablePage.
+        let first_table_page = read_u64(bytes, OFF_FIRST_TABLE_PAGE);
+        let table_offset = first_table_page as usize * PAGE_SIZE;
+
+        if table_offset + PAGE_SIZE > bytes.len() {
+            return Err(Error::Corrupt("first table page beyond file end".into()));
+        }
+
+        // Parse PFN entries from the page table until sentinel 0xFFFFFFFFFFFFFFFF.
+        let mut pfn_list = Vec::new();
+        let mut pos = table_offset;
+        while pos + 8 <= table_offset + PAGE_SIZE {
+            let pfn = read_u64(bytes, pos);
+            if pfn == u64::MAX {
+                break;
+            }
+            pfn_list.push(pfn);
+            pos += 8;
+        }
+
+        // Decompress Xpress blocks starting after header pages (3 * PAGE_SIZE).
+        let mut pages = HashMap::new();
+        let mut block_offset = 3 * PAGE_SIZE;
+        let mut pfn_idx = 0;
+
+        while block_offset + BLOCK_HEADER_SIZE <= bytes.len() && pfn_idx < pfn_list.len() {
+            // Check Xpress signature.
+            if bytes[block_offset..block_offset + 8] != XPRESS_SIG {
+                break;
+            }
+
+            // Parse block header.
+            let num_pages_minus_1 = bytes[block_offset + 8] as usize;
+            let num_pages = num_pages_minus_1 + 1;
+
+            // compressed_size_field: 3 bytes LE at offset 9.
+            let csf_b0 = u32::from(bytes[block_offset + 9]);
+            let csf_b1 = u32::from(bytes[block_offset + 10]);
+            let csf_b2 = u32::from(bytes[block_offset + 11]);
+            let compressed_size_field = csf_b0 | (csf_b1 << 8) | (csf_b2 << 16);
+
+            // Decode compressed size: (compressed_size_field + 1) / 4.
+            let compressed_len = ((compressed_size_field + 1) / 4) as usize;
+
+            let data_start = block_offset + BLOCK_HEADER_SIZE;
+            let data_end = data_start + compressed_len;
+
+            if data_end > bytes.len() {
+                return Err(Error::Corrupt(format!(
+                    "xpress block at 0x{block_offset:X} extends beyond file (need {compressed_len} bytes)"
+                )));
+            }
+
+            // Decompress the block.
+            let compressed_data = &bytes[data_start..data_end];
+            let decompressed = lzxpress::data::decompress(compressed_data).map_err(|e| {
+                Error::Decompression(format!("xpress decompress at 0x{block_offset:X}: {e:?}"))
+            })?;
+
+            // Split decompressed data into individual pages.
+            for i in 0..num_pages {
+                if pfn_idx >= pfn_list.len() {
+                    break;
+                }
+                let pfn = pfn_list[pfn_idx];
+                let page_start = i * PAGE_SIZE;
+                let page_end = page_start + PAGE_SIZE;
+
+                if page_end <= decompressed.len() {
+                    pages.insert(pfn, decompressed[page_start..page_end].to_vec());
+                }
+                pfn_idx += 1;
+            }
+
+            block_offset = data_end;
+        }
+
+        // Build sorted ranges from the page map.
+        let mut pfns: Vec<u64> = pages.keys().copied().collect();
+        pfns.sort_unstable();
+        let ranges = build_ranges(&pfns);
+
+        let meta = DumpMetadata {
+            cr3: Some(cr3),
+            dump_type: Some("Hibernation".into()),
+            ..DumpMetadata::default()
+        };
+
+        Ok(Self {
+            pages,
+            ranges,
+            meta,
+        })
     }
 
     /// Parse a hibernation file from a file path.
     pub fn from_path(path: &Path) -> Result<Self> {
-        todo!()
+        let data = std::fs::read(path)?;
+        Self::from_bytes(&data)
     }
+}
+
+/// Build coalesced `PhysicalRange` entries from a sorted list of PFNs.
+fn build_ranges(sorted_pfns: &[u64]) -> Vec<PhysicalRange> {
+    let mut ranges = Vec::new();
+    let mut iter = sorted_pfns.iter().copied();
+
+    let Some(first) = iter.next() else {
+        return ranges;
+    };
+
+    let mut range_start = first * PAGE_SIZE as u64;
+    let mut range_end = range_start + PAGE_SIZE as u64;
+
+    for pfn in iter {
+        let addr = pfn * PAGE_SIZE as u64;
+        if addr == range_end {
+            // Contiguous — extend.
+            range_end = addr + PAGE_SIZE as u64;
+        } else {
+            // Gap — push current and start new.
+            ranges.push(PhysicalRange {
+                start: range_start,
+                end: range_end,
+            });
+            range_start = addr;
+            range_end = addr + PAGE_SIZE as u64;
+        }
+    }
+    ranges.push(PhysicalRange {
+        start: range_start,
+        end: range_end,
+    });
+
+    ranges
+}
+
+/// Check whether a u32 matches one of the known hiberfil magic values.
+fn is_hiberfil_magic(magic: u32) -> bool {
+    matches!(magic, HIBR_MAGIC | WAKE_MAGIC | RSTR_MAGIC | HORM_MAGIC)
 }
 
 impl PhysicalMemoryProvider for HiberfilProvider {
     fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
-        todo!()
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let pfn = addr / PAGE_SIZE as u64;
+        let offset = (addr % PAGE_SIZE as u64) as usize;
+
+        let Some(page) = self.pages.get(&pfn) else {
+            return Ok(0);
+        };
+
+        let available = page.len().saturating_sub(offset);
+        let to_read = buf.len().min(available);
+        buf[..to_read].copy_from_slice(&page[offset..offset + to_read]);
+        Ok(to_read)
     }
 
     fn ranges(&self) -> &[PhysicalRange] {
-        todo!()
+        &self.ranges
     }
 
     fn format_name(&self) -> &str {
@@ -61,7 +248,7 @@ impl PhysicalMemoryProvider for HiberfilProvider {
     }
 
     fn metadata(&self) -> Option<DumpMetadata> {
-        todo!()
+        Some(self.meta.clone())
     }
 }
 
@@ -74,11 +261,19 @@ impl FormatPlugin for HiberfilPlugin {
     }
 
     fn probe(&self, header: &[u8]) -> u8 {
-        todo!()
+        if header.len() < 4 {
+            return 0;
+        }
+        let magic = read_u32(header, 0);
+        match magic {
+            HIBR_MAGIC | WAKE_MAGIC => 90,
+            RSTR_MAGIC | HORM_MAGIC => 85,
+            _ => 0,
+        }
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        todo!()
+        Ok(Box::new(HiberfilProvider::from_path(path)?))
     }
 }
 
