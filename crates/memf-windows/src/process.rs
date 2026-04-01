@@ -1,0 +1,325 @@
+//! Windows process walker.
+//!
+//! Enumerates processes by walking the `_EPROCESS` linked list via
+//! `ActiveProcessLinks`. Each `_EPROCESS` is connected via `_LIST_ENTRY`
+//! to form a circular doubly-linked list starting from `PsActiveProcessHead`.
+
+use memf_core::object_reader::ObjectReader;
+use memf_format::PhysicalMemoryProvider;
+
+use crate::{Error, Result, WinProcessInfo};
+
+/// Walk the Windows process list starting from `PsActiveProcessHead`.
+///
+/// `ps_head_vaddr` is the virtual address of the `PsActiveProcessHead` symbol.
+/// This can come from dump metadata or symbol resolution.
+pub fn walk_processes<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    ps_head_vaddr: u64,
+) -> Result<Vec<WinProcessInfo>> {
+    todo!("implement walk_processes")
+}
+
+fn read_process_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    eproc_addr: u64,
+) -> Result<WinProcessInfo> {
+    todo!("implement read_process_info")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memf_core::object_reader::ObjectReader;
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    // Offsets from windows_kernel_preset:
+    // _EPROCESS:
+    //   Pcb (= _KPROCESS): 0x0
+    //   CreateTime: 0x430
+    //   ExitTime: 0x438
+    //   UniqueProcessId: 0x440
+    //   ActiveProcessLinks: 0x448 (_LIST_ENTRY, Flink@0, Blink@8)
+    //   Token: 0x4B8
+    //   InheritedFromUniqueProcessId: 0x540
+    //   Peb: 0x550
+    //   ImageFileName: 0x5A8  (char, 15 bytes max)
+    // _KPROCESS:
+    //   DirectoryTableBase: 0x28
+    // _LIST_ENTRY:
+    //   Flink: 0
+    //   Blink: 8
+
+    const EPROCESS_PCB: u64 = 0x0;
+    const KPROCESS_DTB: u64 = 0x28;
+    const EPROCESS_CREATE_TIME: u64 = 0x430;
+    const EPROCESS_EXIT_TIME: u64 = 0x438;
+    const EPROCESS_PID: u64 = 0x440;
+    const EPROCESS_LINKS: u64 = 0x448;
+    const EPROCESS_PPID: u64 = 0x540;
+    const EPROCESS_PEB: u64 = 0x550;
+    const EPROCESS_IMAGE_NAME: u64 = 0x5A8;
+
+    /// Build an ObjectReader with the windows_kernel_preset symbols and a
+    /// configured page table mapping.
+    fn make_win_reader(
+        ptb: PageTableBuilder,
+    ) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::windows_kernel_preset();
+        let json = isf.build_json();
+        let resolver = IsfResolver::from_value(&json).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// Write an _EPROCESS structure at the given physical address.
+    fn write_eprocess(
+        ptb: PageTableBuilder,
+        paddr: u64,
+        eproc_vaddr: u64,
+        pid: u64,
+        ppid: u64,
+        image_name: &str,
+        create_time: u64,
+        exit_time: u64,
+        cr3: u64,
+        peb: u64,
+        flink_vaddr: u64,
+        blink_vaddr: u64,
+    ) -> PageTableBuilder {
+        let name_bytes = image_name.as_bytes();
+        let mut ptb = ptb
+            // _KPROCESS.DirectoryTableBase at eproc + Pcb(0) + DTB(0x28)
+            .write_phys_u64(paddr + EPROCESS_PCB + KPROCESS_DTB, cr3)
+            // CreateTime
+            .write_phys_u64(paddr + EPROCESS_CREATE_TIME, create_time)
+            // ExitTime
+            .write_phys_u64(paddr + EPROCESS_EXIT_TIME, exit_time)
+            // UniqueProcessId
+            .write_phys_u64(paddr + EPROCESS_PID, pid)
+            // ActiveProcessLinks.Flink
+            .write_phys_u64(paddr + EPROCESS_LINKS, flink_vaddr)
+            // ActiveProcessLinks.Blink
+            .write_phys_u64(paddr + EPROCESS_LINKS + 8, blink_vaddr)
+            // InheritedFromUniqueProcessId
+            .write_phys_u64(paddr + EPROCESS_PPID, ppid)
+            // Peb
+            .write_phys_u64(paddr + EPROCESS_PEB, peb)
+            // ImageFileName (write bytes)
+            .write_phys(paddr + EPROCESS_IMAGE_NAME, name_bytes);
+        // Null-terminate the image name if shorter than 15 bytes
+        if name_bytes.len() < 15 {
+            ptb = ptb.write_phys(paddr + EPROCESS_IMAGE_NAME + name_bytes.len() as u64, &[0]);
+        }
+        ptb
+    }
+
+    #[test]
+    fn walk_single_process() {
+        // One _EPROCESS (System, pid=4) in the process list.
+        // PsActiveProcessHead is a sentinel _LIST_ENTRY.
+        // Circular: head.Flink → eproc.ActiveProcessLinks
+        //           eproc.ActiveProcessLinks.Flink → head
+
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+
+        // head.Flink → eproc.ActiveProcessLinks (eproc_vaddr + EPROCESS_LINKS)
+        // head.Blink → eproc.ActiveProcessLinks (circular, single entry)
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            // Sentinel head: Flink → eproc.ActiveProcessLinks
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            // Sentinel head: Blink → eproc.ActiveProcessLinks
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS);
+
+        let ptb = write_eprocess(
+            ptb,
+            eproc_paddr,
+            eproc_vaddr,
+            4,              // pid = 4 (System)
+            0,              // ppid = 0
+            "System",
+            132800000000000000, // create_time
+            0,              // exit_time (still running)
+            0x1ab000,       // CR3
+            0,              // PEB = 0 (System has no PEB)
+            head_vaddr,     // Flink → back to head
+            head_vaddr,     // Blink → back to head
+        );
+
+        let reader = make_win_reader(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].pid, 4);
+        assert_eq!(procs[0].ppid, 0);
+        assert_eq!(procs[0].image_name, "System");
+        assert_eq!(procs[0].cr3, 0x1ab000);
+        assert_eq!(procs[0].create_time, 132800000000000000);
+        assert_eq!(procs[0].exit_time, 0);
+        assert_eq!(procs[0].peb_addr, 0);
+        assert_eq!(procs[0].vaddr, eproc_vaddr);
+    }
+
+    #[test]
+    fn walk_three_processes() {
+        // Three processes: System(4), csrss.exe(528), svchost.exe(700)
+        // Circular list: head → A → B → C → head
+
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+        let b_paddr: u64 = 0x0080_2000;
+        let c_paddr: u64 = 0x0080_3000;
+
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let b_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let c_vaddr: u64 = 0xFFFF_8000_0010_3000;
+
+        let a_links = a_vaddr + EPROCESS_LINKS;
+        let b_links = b_vaddr + EPROCESS_LINKS;
+        let c_links = c_vaddr + EPROCESS_LINKS;
+
+        // Sentinel head
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .map_4k(b_vaddr, b_paddr, flags::WRITABLE)
+            .map_4k(c_vaddr, c_paddr, flags::WRITABLE)
+            // head.Flink → A.ActiveProcessLinks
+            .write_phys_u64(head_paddr, a_links)
+            // head.Blink → C.ActiveProcessLinks
+            .write_phys_u64(head_paddr + 8, c_links);
+
+        // Process A: System, pid=4
+        let ptb = write_eprocess(
+            ptb, a_paddr, a_vaddr,
+            4, 0, "System",
+            132800000000000000, 0,
+            0x1ab000, 0,
+            b_links,       // Flink → B
+            head_vaddr,    // Blink → head
+        );
+
+        // Process B: csrss.exe, pid=528
+        let ptb = write_eprocess(
+            ptb, b_paddr, b_vaddr,
+            528, 4, "csrss.exe",
+            132800000100000000, 0,
+            0x2cd000, 0x0000_0040_0000_0000,
+            c_links,       // Flink → C
+            a_links,       // Blink → A
+        );
+
+        // Process C: svchost.exe, pid=700
+        let ptb = write_eprocess(
+            ptb, c_paddr, c_vaddr,
+            700, 528, "svchost.exe",
+            132800000200000000, 0,
+            0x3ef000, 0x0000_0050_0000_0000,
+            head_vaddr,    // Flink → head (loop back)
+            b_links,       // Blink → B
+        );
+
+        let reader = make_win_reader(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        // Should be sorted by PID
+        assert_eq!(procs.len(), 3);
+
+        assert_eq!(procs[0].pid, 4);
+        assert_eq!(procs[0].image_name, "System");
+        assert_eq!(procs[0].ppid, 0);
+        assert_eq!(procs[0].cr3, 0x1ab000);
+
+        assert_eq!(procs[1].pid, 528);
+        assert_eq!(procs[1].image_name, "csrss.exe");
+        assert_eq!(procs[1].ppid, 4);
+        assert_eq!(procs[1].cr3, 0x2cd000);
+
+        assert_eq!(procs[2].pid, 700);
+        assert_eq!(procs[2].image_name, "svchost.exe");
+        assert_eq!(procs[2].ppid, 528);
+        assert_eq!(procs[2].cr3, 0x3ef000);
+    }
+
+    #[test]
+    fn walk_empty_list() {
+        // PsActiveProcessHead.Flink points to itself → empty list.
+        let head_paddr: u64 = 0x0080_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            // head.Flink → head (self-referential = empty)
+            .write_phys_u64(head_paddr, head_vaddr)
+            // head.Blink → head
+            .write_phys_u64(head_paddr + 8, head_vaddr);
+
+        let reader = make_win_reader(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        assert!(procs.is_empty());
+    }
+
+    #[test]
+    fn read_process_creates_correct_info() {
+        // Verify all fields are read correctly from a single _EPROCESS.
+        let eproc_paddr: u64 = 0x0080_1000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let head_paddr: u64 = 0x0080_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+
+        let specific_create_time: u64 = 132_900_000_000_000_000;
+        let specific_exit_time: u64 = 132_900_001_000_000_000;
+        let specific_cr3: u64 = 0x00AB_C000;
+        let specific_peb: u64 = 0x0000_0070_0000_0000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            // head → eproc → head (single process)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS);
+
+        let ptb = write_eprocess(
+            ptb,
+            eproc_paddr,
+            eproc_vaddr,
+            1234,                // pid
+            567,                 // ppid
+            "notepad.exe",
+            specific_create_time,
+            specific_exit_time,
+            specific_cr3,
+            specific_peb,
+            head_vaddr,          // Flink → head
+            head_vaddr,          // Blink → head
+        );
+
+        let reader = make_win_reader(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        assert_eq!(procs.len(), 1);
+        let p = &procs[0];
+        assert_eq!(p.pid, 1234);
+        assert_eq!(p.ppid, 567);
+        assert_eq!(p.image_name, "notepad.exe");
+        assert_eq!(p.create_time, specific_create_time);
+        assert_eq!(p.exit_time, specific_exit_time);
+        assert_eq!(p.cr3, specific_cr3);
+        assert_eq!(p.peb_addr, specific_peb);
+        assert_eq!(p.vaddr, eproc_vaddr);
+        assert_eq!(p.thread_count, 0);
+        assert!(!p.is_wow64);
+    }
+}
