@@ -60,6 +60,45 @@ impl PhysicalRange {
     }
 }
 
+/// Machine architecture identified from a dump header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineType {
+    /// x86_64 / AMD64 (machine image type 0x8664).
+    Amd64,
+    /// x86 / i386 (machine image type 0x014C).
+    I386,
+    /// AArch64 / ARM64 (machine image type 0xAA64).
+    Aarch64,
+}
+
+/// Optional metadata extracted from dump file headers.
+///
+/// Windows crash dumps embed analysis-critical fields directly in the header:
+/// CR3 (page table root), `PsActiveProcessHead` (EPROCESS list), and
+/// `PsLoadedModuleList` (driver list). These let downstream crates bootstrap
+/// kernel walking without symbol resolution.
+#[derive(Debug, Clone, Default)]
+pub struct DumpMetadata {
+    /// Page table root physical address (CR3 / DirectoryTableBase).
+    pub cr3: Option<u64>,
+    /// Machine architecture.
+    pub machine_type: Option<MachineType>,
+    /// OS major and minor version from the dump header.
+    pub os_version: Option<(u32, u32)>,
+    /// Number of processors.
+    pub num_processors: Option<u32>,
+    /// Virtual address of `PsActiveProcessHead` (EPROCESS linked list head).
+    pub ps_active_process_head: Option<u64>,
+    /// Virtual address of `PsLoadedModuleList` (loaded driver list head).
+    pub ps_loaded_module_list: Option<u64>,
+    /// Virtual address of `KdDebuggerDataBlock`.
+    pub kd_debugger_data_block: Option<u64>,
+    /// System time at dump creation (Windows FILETIME, 100ns intervals since 1601-01-01).
+    pub system_time: Option<u64>,
+    /// Human-readable dump sub-type (e.g., "Full", "Kernel", "Bitmap").
+    pub dump_type: Option<String>,
+}
+
 /// A provider of physical memory from a dump file.
 pub trait PhysicalMemoryProvider: Send + Sync {
     /// Read up to `buf.len()` bytes starting at physical address `addr`.
@@ -76,6 +115,12 @@ pub trait PhysicalMemoryProvider: Send + Sync {
 
     /// Human-readable format name (e.g., "LiME", "AVML v2").
     fn format_name(&self) -> &str;
+
+    /// Optional metadata extracted from the dump header.
+    /// Returns `None` for formats that carry no metadata (Raw, LiME, AVML).
+    fn metadata(&self) -> Option<DumpMetadata> {
+        None
+    }
 }
 
 /// A plugin that can detect and open a specific dump format.
@@ -275,5 +320,37 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn dump_metadata_default_is_all_none() {
+        let m = DumpMetadata::default();
+        assert!(m.cr3.is_none());
+        assert!(m.machine_type.is_none());
+        assert!(m.os_version.is_none());
+        assert!(m.num_processors.is_none());
+        assert!(m.ps_active_process_head.is_none());
+        assert!(m.ps_loaded_module_list.is_none());
+        assert!(m.kd_debugger_data_block.is_none());
+        assert!(m.system_time.is_none());
+        assert!(m.dump_type.is_none());
+    }
+
+    #[test]
+    fn machine_type_variants() {
+        assert_ne!(MachineType::Amd64, MachineType::I386);
+        assert_ne!(MachineType::Amd64, MachineType::Aarch64);
+        assert_ne!(MachineType::I386, MachineType::Aarch64);
+        let a = MachineType::Amd64;
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn metadata_default_method_returns_none() {
+        use crate::test_builders::LimeBuilder;
+        let dump = LimeBuilder::new().add_range(0, &[0xAA; 64]).build();
+        let provider = crate::lime::LimeProvider::from_bytes(&dump).unwrap();
+        assert!(provider.metadata().is_none());
     }
 }

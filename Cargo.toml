@@ -34,6 +34,10 @@ clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
 bytemuck = { version = "1", features = ["derive"] }
 goblin = "0.9"
+rust-lzxpress = "0.7"
+flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
+ruzstd = "0.8"
+lru = "0.16"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

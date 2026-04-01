@@ -12,6 +12,10 @@ inventory.workspace = true
 memmap2.workspace = true
 snap.workspace = true
 goblin.workspace = true
+rust-lzxpress.workspace = true
+flate2.workspace = true
+ruzstd.workspace = true
+lru.workspace = true
 
 [lints]
 workspace = true
