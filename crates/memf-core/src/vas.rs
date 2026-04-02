@@ -2,6 +2,7 @@
 
 use memf_format::PhysicalMemoryProvider;
 
+use crate::pagefile::PagefileSource;
 use crate::{Error, Result};
 
 /// Translation mode for virtual-to-physical address translation.
@@ -16,6 +17,7 @@ pub struct VirtualAddressSpace<P: PhysicalMemoryProvider> {
     physical: P,
     page_table_root: u64,
     mode: TranslationMode,
+    pagefiles: Vec<Box<dyn PagefileSource>>,
 }
 
 // x86_64 page table constants
@@ -45,7 +47,14 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             physical,
             page_table_root,
             mode,
+            pagefiles: Vec::new(),
         }
+    }
+
+    /// Attach a pagefile source for resolving paged-out memory.
+    pub fn with_pagefile(mut self, source: Box<dyn PagefileSource>) -> Self {
+        self.pagefiles.push(source);
+        self
     }
 
     /// Translate a virtual address to a physical address.
@@ -56,6 +65,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     }
 
     /// Read `buf.len()` bytes from virtual address `vaddr`, handling page boundary crossings.
+    ///
+    /// Uses `walk_x86_64_4level_internal()` to resolve each 4K chunk, transparently
+    /// handling physical, transition, demand-zero, and pagefile pages.
     pub fn read_virt(&self, vaddr: u64, buf: &mut [u8]) -> Result<()> {
         if buf.is_empty() {
             return Ok(());
@@ -65,29 +77,74 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         let mut current_vaddr = vaddr;
 
         while offset < buf.len() {
-            let paddr = self.virt_to_phys(current_vaddr)?;
-
-            // How many bytes remain until the next 4K page boundary
-            let page_offset = current_vaddr & 0xFFF;
-            let remaining_in_page = 0x1000 - page_offset as usize;
+            let page_off = (current_vaddr & 0xFFF) as usize;
+            let remaining_in_page = 0x1000 - page_off;
             let remaining_to_read = buf.len() - offset;
             let chunk = remaining_to_read.min(remaining_in_page);
 
-            let n = self
-                .physical
-                .read_phys(paddr, &mut buf[offset..offset + chunk])?;
-            if n == 0 {
-                return Err(Error::PartialRead {
-                    addr: vaddr,
-                    requested: buf.len(),
-                    got: offset,
-                });
+            let result = match self.mode {
+                TranslationMode::X86_64FourLevel => {
+                    self.walk_x86_64_4level_internal(current_vaddr)?
+                }
+            };
+
+            match result {
+                TranslationResult::Physical(paddr) | TranslationResult::Transition(paddr) => {
+                    let n = self
+                        .physical
+                        .read_phys(paddr, &mut buf[offset..offset + chunk])?;
+                    if n == 0 {
+                        return Err(Error::PartialRead {
+                            addr: vaddr,
+                            requested: buf.len(),
+                            got: offset,
+                        });
+                    }
+                    offset += n;
+                    current_vaddr = current_vaddr.wrapping_add(n as u64);
+                }
+                TranslationResult::DemandZero => {
+                    buf[offset..offset + chunk].fill(0);
+                    offset += chunk;
+                    current_vaddr = current_vaddr.wrapping_add(chunk as u64);
+                }
+                TranslationResult::PagefileEntry {
+                    pagefile_num,
+                    page_offset,
+                } => {
+                    let page = self.read_pagefile_page(current_vaddr, pagefile_num, page_offset)?;
+                    buf[offset..offset + chunk].copy_from_slice(&page[page_off..page_off + chunk]);
+                    offset += chunk;
+                    current_vaddr = current_vaddr.wrapping_add(chunk as u64);
+                }
+                TranslationResult::Prototype => {
+                    return Err(Error::PrototypePte(current_vaddr));
+                }
             }
-            offset += n;
-            current_vaddr = current_vaddr.wrapping_add(n as u64);
         }
 
         Ok(())
+    }
+
+    fn read_pagefile_page(
+        &self,
+        vaddr: u64,
+        pagefile_num: u8,
+        page_offset: u64,
+    ) -> Result<[u8; 4096]> {
+        for source in &self.pagefiles {
+            if source.pagefile_number() == pagefile_num {
+                if let Some(page) = source.read_page(page_offset)? {
+                    return Ok(page);
+                }
+                break;
+            }
+        }
+        Err(Error::PagedOut {
+            vaddr,
+            pagefile_num,
+            page_offset,
+        })
     }
 
     /// Return a reference to the underlying physical memory provider.
@@ -345,9 +402,7 @@ mod tests {
     #[test]
     fn demand_zero_pte_returns_page_not_present() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_demand_zero(vaddr)
-            .build();
+        let (cr3, mem) = PageTableBuilder::new().map_demand_zero(vaddr).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let result = vas.virt_to_phys(vaddr);
         assert!(result.is_err());
@@ -386,9 +441,7 @@ mod tests {
     #[test]
     fn prototype_pte_returns_error() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_prototype(vaddr)
-            .build();
+        let (cr3, mem) = PageTableBuilder::new().map_prototype(vaddr).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let result = vas.virt_to_phys(vaddr);
         assert!(result.is_err());
@@ -408,7 +461,11 @@ mod tests {
         let result = vas.virt_to_phys(vaddr);
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::PagedOut { vaddr: v, pagefile_num, page_offset } => {
+            Error::PagedOut {
+                vaddr: v,
+                pagefile_num,
+                page_offset,
+            } => {
                 assert_eq!(v, vaddr);
                 assert_eq!(pagefile_num, 0);
                 assert_eq!(page_offset, 0x1234);
@@ -426,12 +483,181 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let result = vas.virt_to_phys(vaddr);
         match result.unwrap_err() {
-            Error::PagedOut { pagefile_num, page_offset, .. } => {
+            Error::PagedOut {
+                pagefile_num,
+                page_offset,
+                ..
+            } => {
                 assert_eq!(pagefile_num, 2);
                 assert_eq!(page_offset, 0xABCD);
             }
             other => panic!("expected PagedOut, got: {other}"),
         }
+    }
+
+    use crate::test_builders::MockPagefileSource;
+
+    #[test]
+    fn read_virt_demand_zero_returns_zeroes() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new().map_demand_zero(vaddr).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let mut buf = [0xFFu8; 4096];
+        vas.read_virt(vaddr, &mut buf).unwrap();
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "demand-zero page must be all zeroes"
+        );
+    }
+
+    #[test]
+    fn read_virt_transition_reads_physical() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let pfn: u64 = 0x800;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_transition(vaddr, pfn)
+            .write_phys(pfn * 0x1000, &[0xCA, 0xFE, 0xBA, 0xBE])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let mut buf = [0u8; 4];
+        vas.read_virt(vaddr, &mut buf).unwrap();
+        assert_eq!(buf, [0xCA, 0xFE, 0xBA, 0xBE]);
+    }
+
+    #[test]
+    fn read_virt_pagefile_with_provider() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_offset: u64 = 0x10;
+        let mut page_data = [0u8; 4096];
+        page_data[0..4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_pagefile(vaddr, 0, page_offset)
+            .build();
+
+        let mock = MockPagefileSource::new(0, vec![(page_offset, page_data)]);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel)
+            .with_pagefile(Box::new(mock));
+
+        let mut buf = [0u8; 4];
+        vas.read_virt(vaddr, &mut buf).unwrap();
+        assert_eq!(buf, [0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn read_virt_pagefile_without_provider_errors() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new().map_pagefile(vaddr, 0, 0x10).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let mut buf = [0u8; 4];
+        let result = vas.read_virt(vaddr, &mut buf);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PagedOut {
+                pagefile_num: 0,
+                page_offset: 0x10,
+                ..
+            } => {}
+            other => panic!("expected PagedOut, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn read_virt_prototype_pte_errors() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new().map_prototype(vaddr).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let mut buf = [0u8; 4];
+        let result = vas.read_virt(vaddr, &mut buf);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PrototypePte(addr) => assert_eq!(addr, vaddr),
+            other => panic!("expected PrototypePte, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn read_virt_pagefile_number_routing() {
+        let vaddr1: u64 = 0xFFFF_8000_0010_0000;
+        let vaddr2: u64 = 0xFFFF_8000_0010_1000;
+
+        let mut page0_data = [0u8; 4096];
+        page0_data[0..4].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        let mut page1_data = [0u8; 4096];
+        page1_data[0..4].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_pagefile(vaddr1, 0, 0x10)
+            .map_pagefile(vaddr2, 1, 0x20)
+            .build();
+
+        let mock0 = MockPagefileSource::new(0, vec![(0x10, page0_data)]);
+        let mock1 = MockPagefileSource::new(1, vec![(0x20, page1_data)]);
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel)
+            .with_pagefile(Box::new(mock0))
+            .with_pagefile(Box::new(mock1));
+
+        let mut buf1 = [0u8; 4];
+        vas.read_virt(vaddr1, &mut buf1).unwrap();
+        assert_eq!(buf1, [0x11, 0x22, 0x33, 0x44]);
+
+        let mut buf2 = [0u8; 4];
+        vas.read_virt(vaddr2, &mut buf2).unwrap();
+        assert_eq!(buf2, [0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn read_virt_pagefile_out_of_range() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_pagefile(vaddr, 0, 0x9999)
+            .build();
+        let mock = MockPagefileSource::new(0, vec![]);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel)
+            .with_pagefile(Box::new(mock));
+        let mut buf = [0u8; 4];
+        let result = vas.read_virt(vaddr, &mut buf);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PagedOut {
+                page_offset: 0x9999,
+                ..
+            } => {}
+            other => panic!("expected PagedOut, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn read_virt_mixed_pages_cross_boundary() {
+        let vaddr1: u64 = 0xFFFF_8000_0010_0000;
+        let vaddr2: u64 = 0xFFFF_8000_0010_1000;
+        let vaddr3: u64 = 0xFFFF_8000_0010_2000;
+        let paddr1: u64 = 0x0080_0000;
+
+        let mut pf_page = [0u8; 4096];
+        pf_page[0..4].copy_from_slice(&[0xBB; 4]);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr1, paddr1, flags::WRITABLE)
+            .write_phys(paddr1 + 0xFFC, &[0xAA; 4])
+            .map_pagefile(vaddr2, 0, 0x10)
+            .map_demand_zero(vaddr3)
+            .build();
+
+        let mock = MockPagefileSource::new(0, vec![(0x10, pf_page)]);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel)
+            .with_pagefile(Box::new(mock));
+
+        // Read spanning: last 4 bytes of phys page + first 4 bytes of pagefile page
+        let mut buf = [0u8; 8];
+        vas.read_virt(vaddr1 + 0xFFC, &mut buf).unwrap();
+        assert_eq!(buf, [0xAA, 0xAA, 0xAA, 0xAA, 0xBB, 0xBB, 0xBB, 0xBB]);
+
+        // Read spanning: last 4 bytes of pagefile page + first 4 bytes of demand-zero page
+        let mut buf2 = [0u8; 8];
+        vas.read_virt(vaddr2 + 0xFFC, &mut buf2).unwrap();
+        assert_eq!(buf2, [0u8; 8]);
     }
 
     #[test]

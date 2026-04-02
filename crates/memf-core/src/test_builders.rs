@@ -417,9 +417,7 @@ mod tests {
     #[test]
     fn page_table_builder_map_demand_zero() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_demand_zero(vaddr)
-            .build();
+        let (cr3, mem) = PageTableBuilder::new().map_demand_zero(vaddr).build();
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
         assert_ne!(pml4e & flags::PRESENT, 0, "PML4 entry should be present");
@@ -441,9 +439,7 @@ mod tests {
     fn page_table_builder_map_transition_pte() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let pfn: u64 = 0x800;
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_transition(vaddr, pfn)
-            .build();
+        let (cr3, mem) = PageTableBuilder::new().map_transition(vaddr, pfn).build();
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
         let pdpt_base = pml4e & PageTableBuilder::ADDR_MASK;
@@ -489,9 +485,7 @@ mod tests {
     #[test]
     fn page_table_builder_map_prototype_pte() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_prototype(vaddr)
-            .build();
+        let (cr3, mem) = PageTableBuilder::new().map_prototype(vaddr).build();
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
         let pdpt_base = pml4e & PageTableBuilder::ADDR_MASK;

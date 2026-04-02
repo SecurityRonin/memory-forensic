@@ -8,9 +8,9 @@
 //! - [`ObjectReader`] — high-level kernel struct traversal using symbol information
 
 pub mod object_reader;
+pub mod pagefile;
 pub mod test_builders;
 pub mod vas;
-pub mod pagefile;
 
 /// Error type for memf-core operations.
 #[non_exhaustive]
