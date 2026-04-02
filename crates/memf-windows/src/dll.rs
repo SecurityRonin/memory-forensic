@@ -19,7 +19,38 @@ pub fn walk_dlls<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     peb_addr: u64,
 ) -> Result<Vec<WinDllInfo>> {
-    todo!()
+    // Read Ldr pointer from _PEB at offset 0x18
+    let ldr_addr: u64 = reader.read_field(peb_addr, "_PEB", "Ldr")?;
+
+    if ldr_addr == 0 {
+        return Err(Error::Walker("PEB.Ldr is NULL".into()));
+    }
+
+    // Get InLoadOrderModuleList offset from _PEB_LDR_DATA
+    let in_load_order_offset = reader
+        .symbols()
+        .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
+        .ok_or_else(|| {
+            Error::Core(memf_core::Error::MissingSymbol(
+                "_PEB_LDR_DATA.InLoadOrderModuleList".into(),
+            ))
+        })?;
+
+    let list_head_vaddr = ldr_addr.wrapping_add(in_load_order_offset);
+
+    let entries = reader.walk_list_with(
+        list_head_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_LDR_DATA_TABLE_ENTRY",
+        "InLoadOrderLinks",
+    )?;
+
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(idx, entry_addr)| read_dll_info(reader, entry_addr, idx as u32))
+        .collect()
 }
 
 /// Read DLL info from a single `_LDR_DATA_TABLE_ENTRY`.
@@ -28,7 +59,42 @@ fn read_dll_info<P: PhysicalMemoryProvider>(
     entry_addr: u64,
     load_order: u32,
 ) -> Result<WinDllInfo> {
-    todo!()
+    // DllBase (pointer at offset 48)
+    let base_addr: u64 = reader.read_field(entry_addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+
+    // SizeOfImage (u32 at offset 64)
+    let size_of_image: u32 =
+        reader.read_field(entry_addr, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage")?;
+
+    // FullDllName (_UNICODE_STRING at offset 72)
+    let full_dll_name_offset = reader
+        .symbols()
+        .field_offset("_LDR_DATA_TABLE_ENTRY", "FullDllName")
+        .ok_or_else(|| {
+            Error::Core(memf_core::Error::MissingSymbol(
+                "_LDR_DATA_TABLE_ENTRY.FullDllName".into(),
+            ))
+        })?;
+    let full_path = read_unicode_string(reader, entry_addr.wrapping_add(full_dll_name_offset))?;
+
+    // BaseDllName (_UNICODE_STRING at offset 88)
+    let base_dll_name_offset = reader
+        .symbols()
+        .field_offset("_LDR_DATA_TABLE_ENTRY", "BaseDllName")
+        .ok_or_else(|| {
+            Error::Core(memf_core::Error::MissingSymbol(
+                "_LDR_DATA_TABLE_ENTRY.BaseDllName".into(),
+            ))
+        })?;
+    let name = read_unicode_string(reader, entry_addr.wrapping_add(base_dll_name_offset))?;
+
+    Ok(WinDllInfo {
+        name,
+        full_path,
+        base_addr,
+        size: u64::from(size_of_image),
+        load_order,
+    })
 }
 
 #[cfg(test)]
@@ -81,8 +147,7 @@ mod tests {
         // DllBase (offset 48)
         buf[entry_offset + 48..entry_offset + 56].copy_from_slice(&dll_base.to_le_bytes());
         // SizeOfImage (offset 64)
-        buf[entry_offset + 64..entry_offset + 68]
-            .copy_from_slice(&size_of_image.to_le_bytes());
+        buf[entry_offset + 64..entry_offset + 68].copy_from_slice(&size_of_image.to_le_bytes());
         // FullDllName (offset 72) -- _UNICODE_STRING
         build_unicode_string_at(buf, entry_offset + 72, full_name_len, full_name_ptr);
         // BaseDllName (offset 88) -- _UNICODE_STRING
@@ -164,14 +229,14 @@ mod tests {
 
         build_ldr_entry(
             &mut page2,
-            0, // entry A at page2 offset 0
-            link_b,                                      // A.Flink -> B
-            list_head_vaddr,                             // A.Blink -> head
-            0x7FF8_0000_0000,                            // DllBase
-            0x001F_0000,                                 // SizeOfImage
-            vaddr_page2 + str_offset_a_full as u64,      // FullDllName buffer ptr
+            0,                                      // entry A at page2 offset 0
+            link_b,                                 // A.Flink -> B
+            list_head_vaddr,                        // A.Blink -> head
+            0x7FF8_0000_0000,                       // DllBase
+            0x001F_0000,                            // SizeOfImage
+            vaddr_page2 + str_offset_a_full as u64, // FullDllName buffer ptr
             full_a_len,
-            vaddr_page2 + str_offset_a_base as u64,      // BaseDllName buffer ptr
+            vaddr_page2 + str_offset_a_base as u64, // BaseDllName buffer ptr
             base_a_len,
         );
 
@@ -183,11 +248,11 @@ mod tests {
 
         build_ldr_entry(
             &mut page2,
-            256, // entry B at page2 offset 256
-            list_head_vaddr,                             // B.Flink -> head (end of list)
-            link_a,                                      // B.Blink -> A
-            0x7FF8_1000_0000,                            // DllBase
-            0x0012_0000,                                 // SizeOfImage
+            256,              // entry B at page2 offset 256
+            list_head_vaddr,  // B.Flink -> head (end of list)
+            link_a,           // B.Blink -> A
+            0x7FF8_1000_0000, // DllBase
+            0x0012_0000,      // SizeOfImage
             vaddr_page2 + str_offset_b_full as u64,
             full_b_len,
             vaddr_page2 + str_offset_b_base as u64,
@@ -297,10 +362,10 @@ mod tests {
         build_ldr_entry(
             &mut page2,
             0,
-            list_head_vaddr,                        // entry.Flink -> head
-            list_head_vaddr,                        // entry.Blink -> head
-            0x7FF8_2000_0000,                       // DllBase
-            0x0019_E000,                            // SizeOfImage
+            list_head_vaddr,  // entry.Flink -> head
+            list_head_vaddr,  // entry.Blink -> head
+            0x7FF8_2000_0000, // DllBase
+            0x0019_E000,      // SizeOfImage
             vaddr_page2 + str_offset_full as u64,
             full_len,
             vaddr_page2 + str_offset_base as u64,
