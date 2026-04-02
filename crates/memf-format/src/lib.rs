@@ -123,6 +123,28 @@ pub trait PhysicalMemoryProvider: Send + Sync {
     }
 }
 
+impl PhysicalMemoryProvider for Box<dyn PhysicalMemoryProvider> {
+    fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
+        (**self).read_phys(addr, buf)
+    }
+
+    fn ranges(&self) -> &[PhysicalRange] {
+        (**self).ranges()
+    }
+
+    fn total_size(&self) -> u64 {
+        (**self).total_size()
+    }
+
+    fn format_name(&self) -> &str {
+        (**self).format_name()
+    }
+
+    fn metadata(&self) -> Option<DumpMetadata> {
+        (**self).metadata()
+    }
+}
+
 /// A plugin that can detect and open a specific dump format.
 pub trait FormatPlugin: Send + Sync {
     /// Human-readable name for this format.

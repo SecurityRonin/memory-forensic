@@ -31,34 +31,91 @@ pub struct AnalysisContext {
 
 /// Detect the operating system from dump metadata and symbols.
 pub fn detect_os(
-    _metadata: Option<&DumpMetadata>,
-    _symbols: &dyn SymbolResolver,
+    metadata: Option<&DumpMetadata>,
+    symbols: &dyn SymbolResolver,
 ) -> Result<OsProfile> {
-    todo!()
+    // 1. Windows crash dumps always have machine_type + cr3
+    if let Some(meta) = metadata {
+        if meta.machine_type.is_some() && meta.cr3.is_some() {
+            return Ok(OsProfile::Windows);
+        }
+    }
+    // 2. Linux symbols contain init_task
+    if symbols.symbol_address("init_task").is_some() {
+        return Ok(OsProfile::Linux);
+    }
+    // 3. Windows symbols contain _EPROCESS
+    if symbols.struct_size("_EPROCESS").is_some() {
+        return Ok(OsProfile::Windows);
+    }
+    // 4. macOS symbols contain allproc
+    if symbols.symbol_address("allproc").is_some() {
+        return Ok(OsProfile::MacOs);
+    }
+    bail!("cannot determine OS from dump metadata or symbols; provide --os linux|windows")
 }
+
+/// x86_64 kernel virtual address base (`__START_KERNEL_map`).
+const KERNEL_MAP_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
 /// Extract the kernel page table root (CR3) physical address.
 pub fn extract_cr3(
-    _os: OsProfile,
-    _metadata: Option<&DumpMetadata>,
-    _symbols: &dyn SymbolResolver,
-    _provider: &dyn PhysicalMemoryProvider,
+    os: OsProfile,
+    metadata: Option<&DumpMetadata>,
+    symbols: &dyn SymbolResolver,
+    provider: &dyn PhysicalMemoryProvider,
 ) -> Result<u64> {
-    todo!()
+    match os {
+        OsProfile::Windows => metadata
+            .and_then(|m| m.cr3)
+            .context("Windows dump missing CR3 in metadata; provide --cr3"),
+        OsProfile::Linux => {
+            let swapper_vaddr = symbols
+                .symbol_address("swapper_pg_dir")
+                .context("symbol 'swapper_pg_dir' not found; provide --cr3")?;
+            let kaslr_offset =
+                memf_linux::kaslr::detect_kaslr_offset(provider, symbols).unwrap_or(0);
+            // Physical = virtual + KASLR_offset - __START_KERNEL_map
+            let cr3 = swapper_vaddr
+                .wrapping_add(kaslr_offset)
+                .wrapping_sub(KERNEL_MAP_BASE);
+            Ok(cr3)
+        }
+        OsProfile::MacOs => {
+            bail!("macOS CR3 extraction not yet implemented; provide --cr3")
+        }
+    }
 }
 
 /// Build a full analysis context from dump metadata, symbols, and physical memory.
 pub fn build_analysis_context(
-    _metadata: Option<&DumpMetadata>,
-    _symbols: &dyn SymbolResolver,
-    _provider: &dyn PhysicalMemoryProvider,
+    metadata: Option<&DumpMetadata>,
+    symbols: &dyn SymbolResolver,
+    provider: &dyn PhysicalMemoryProvider,
 ) -> Result<AnalysisContext> {
-    todo!()
+    let os = detect_os(metadata, symbols)?;
+    let cr3 = extract_cr3(os, metadata, symbols, provider)?;
+    let kaslr_offset = if os == OsProfile::Linux {
+        memf_linux::kaslr::detect_kaslr_offset(provider, symbols).unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(AnalysisContext {
+        os,
+        cr3,
+        kaslr_offset,
+        ps_active_process_head: metadata.and_then(|m| m.ps_active_process_head),
+        ps_loaded_module_list: metadata.and_then(|m| m.ps_loaded_module_list),
+    })
 }
 
 /// Parse a hex address string (with or without "0x" prefix).
-pub fn parse_hex_addr(_s: &str) -> Result<u64> {
-    todo!()
+pub fn parse_hex_addr(s: &str) -> Result<u64> {
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u64::from_str_radix(s, 16).context(format!("invalid hex address: {s}"))
 }
 
 #[cfg(test)]

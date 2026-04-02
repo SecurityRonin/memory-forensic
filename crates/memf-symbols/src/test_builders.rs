@@ -263,6 +263,7 @@ impl IsfBuilder {
             .add_field("mm_struct", "pgd", 80, "pointer")
             .add_symbol("init_task", 0xFFFF_FFFF_8260_0000)
             .add_symbol("linux_banner", 0xFFFF_FFFF_8200_0000)
+            .add_symbol("swapper_pg_dir", 0xFFFF_FFFF_8220_0000)
     }
 }
 

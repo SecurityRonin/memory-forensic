@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+#[allow(dead_code)] // Public API consumed by later Phase 3D tasks
 mod os_detect;
 
 use anyhow::{Context, Result};
