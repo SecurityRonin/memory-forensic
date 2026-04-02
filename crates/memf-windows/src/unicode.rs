@@ -12,7 +12,31 @@ pub fn read_unicode_string<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ustr_vaddr: u64,
 ) -> crate::Result<String> {
-    todo!()
+    // Read Length (u16 at offset 0 of _UNICODE_STRING)
+    let length: u16 = reader.read_field(ustr_vaddr, "_UNICODE_STRING", "Length")?;
+
+    // Read Buffer pointer (u64 at offset 8 of _UNICODE_STRING)
+    let buffer: u64 = reader.read_field(ustr_vaddr, "_UNICODE_STRING", "Buffer")?;
+
+    // Empty string: Length == 0 or null Buffer pointer
+    if length == 0 || buffer == 0 {
+        return Ok(String::new());
+    }
+
+    // Read `length` bytes of UTF-16LE data from the Buffer virtual address
+    let raw = reader.read_bytes(buffer, length as usize)?;
+
+    // Convert pairs of bytes to u16 (little-endian)
+    let u16_vec: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+
+    // Convert to Rust String, lossy for any invalid surrogates
+    let s = String::from_utf16_lossy(&u16_vec);
+
+    // Trim trailing null characters
+    Ok(s.trim_end_matches('\0').to_string())
 }
 
 #[cfg(test)]
@@ -40,11 +64,7 @@ mod tests {
         data
     }
 
-    fn make_unicode_reader(
-        data: &[u8],
-        vaddr: u64,
-        paddr: u64,
-    ) -> ObjectReader<SyntheticPhysMem> {
+    fn make_unicode_reader(data: &[u8], vaddr: u64, paddr: u64) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::windows_kernel_preset().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()

@@ -16,7 +16,18 @@ pub fn walk_drivers<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     module_list_vaddr: u64,
 ) -> Result<Vec<WinDriverInfo>> {
-    todo!()
+    let entries = reader.walk_list_with(
+        module_list_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_KLDR_DATA_TABLE_ENTRY",
+        "InLoadOrderLinks",
+    )?;
+
+    entries
+        .into_iter()
+        .map(|entry_addr| read_driver_info(reader, entry_addr))
+        .collect()
 }
 
 /// Read driver info from a single `_KLDR_DATA_TABLE_ENTRY`.
@@ -24,13 +35,48 @@ fn read_driver_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     entry_addr: u64,
 ) -> Result<WinDriverInfo> {
-    todo!()
+    // DllBase (pointer at offset 48)
+    let base_addr: u64 = reader.read_field(entry_addr, "_KLDR_DATA_TABLE_ENTRY", "DllBase")?;
+
+    // SizeOfImage (u32 at offset 64)
+    let size_of_image: u32 =
+        reader.read_field(entry_addr, "_KLDR_DATA_TABLE_ENTRY", "SizeOfImage")?;
+
+    // FullDllName (_UNICODE_STRING at offset 72)
+    let full_dll_name_offset = reader
+        .symbols()
+        .field_offset("_KLDR_DATA_TABLE_ENTRY", "FullDllName")
+        .ok_or_else(|| {
+            crate::Error::Core(memf_core::Error::MissingSymbol(
+                "_KLDR_DATA_TABLE_ENTRY.FullDllName".into(),
+            ))
+        })?;
+    let full_path = read_unicode_string(reader, entry_addr.wrapping_add(full_dll_name_offset))?;
+
+    // BaseDllName (_UNICODE_STRING at offset 88)
+    let base_dll_name_offset = reader
+        .symbols()
+        .field_offset("_KLDR_DATA_TABLE_ENTRY", "BaseDllName")
+        .ok_or_else(|| {
+            crate::Error::Core(memf_core::Error::MissingSymbol(
+                "_KLDR_DATA_TABLE_ENTRY.BaseDllName".into(),
+            ))
+        })?;
+    let name = read_unicode_string(reader, entry_addr.wrapping_add(base_dll_name_offset))?;
+
+    Ok(WinDriverInfo {
+        name,
+        full_path,
+        base_addr,
+        size: u64::from(size_of_image),
+        vaddr: entry_addr,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
@@ -136,11 +182,11 @@ mod tests {
 
         build_kldr_entry(
             &mut page,
-            256, // entry A at page offset 256
-            link_b,            // A.Flink → B
-            sentinel_vaddr,    // A.Blink → sentinel
-            0xFFFFF800_00000000, // DllBase
-            0x0080_0000,       // SizeOfImage = 8MB
+            256,                                   // entry A at page offset 256
+            link_b,                                // A.Flink → B
+            sentinel_vaddr,                        // A.Blink → sentinel
+            0xFFFFF800_00000000,                   // DllBase
+            0x0080_0000,                           // SizeOfImage = 8MB
             vaddr_base + str_offset_a_full as u64, // FullDllName buffer ptr
             full_a_len,
             vaddr_base + str_offset_a_base as u64, // BaseDllName buffer ptr
@@ -155,11 +201,11 @@ mod tests {
 
         build_kldr_entry(
             &mut page,
-            512, // entry B at page offset 512
-            sentinel_vaddr,    // B.Flink → sentinel (end of list)
-            link_a,            // B.Blink → A
+            512,                 // entry B at page offset 512
+            sentinel_vaddr,      // B.Flink → sentinel (end of list)
+            link_a,              // B.Blink → A
             0xFFFFF800_01000000, // DllBase
-            0x0010_0000,       // SizeOfImage = 1MB
+            0x0010_0000,         // SizeOfImage = 1MB
             vaddr_base + str_offset_b_full as u64,
             full_b_len,
             vaddr_base + str_offset_b_base as u64,
@@ -180,10 +226,7 @@ mod tests {
 
         // Driver A
         assert_eq!(drivers[0].name, "ntoskrnl.exe");
-        assert_eq!(
-            drivers[0].full_path,
-            r"\SystemRoot\system32\ntoskrnl.exe"
-        );
+        assert_eq!(drivers[0].full_path, r"\SystemRoot\system32\ntoskrnl.exe");
         assert_eq!(drivers[0].base_addr, 0xFFFFF800_00000000);
         assert_eq!(drivers[0].size, 0x0080_0000);
         assert_eq!(drivers[0].vaddr, entry_a_vaddr);
@@ -246,10 +289,10 @@ mod tests {
         build_kldr_entry(
             &mut page,
             256,
-            sentinel_vaddr,    // entry.Flink → sentinel
-            sentinel_vaddr,    // entry.Blink → sentinel
+            sentinel_vaddr,      // entry.Flink → sentinel
+            sentinel_vaddr,      // entry.Blink → sentinel
             0xFFFFF800_02000000, // DllBase
-            0x0004_0000,       // SizeOfImage = 256KB
+            0x0004_0000,         // SizeOfImage = 256KB
             vaddr_base + str_offset_full as u64,
             full_len,
             vaddr_base + str_offset_base as u64,
