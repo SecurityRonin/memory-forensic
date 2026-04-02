@@ -114,8 +114,8 @@ mod tests {
             got: 4,
         };
         let msg = e.to_string();
-        assert!(msg.contains("8"));
-        assert!(msg.contains("4"));
+        assert!(msg.contains('8'));
+        assert!(msg.contains('4'));
     }
 
     #[test]

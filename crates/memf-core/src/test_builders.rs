@@ -270,7 +270,7 @@ impl PageTableBuilder {
     /// Map a pagefile PTE: PRESENT=0, pagefile_num in bits [1..5], page_offset in bits [12..48].
     pub fn map_pagefile(mut self, vaddr: u64, pagefile_num: u8, page_offset: u64) -> Self {
         let pte_addr = self.ensure_pt_entry(vaddr);
-        let pte = ((pagefile_num as u64 & 0xF) << 1) | (page_offset << 12);
+        let pte = ((u64::from(pagefile_num) & 0xF) << 1) | (page_offset << 12);
         self.mem.write_u64(pte_addr, pte);
         self
     }
@@ -476,7 +476,7 @@ mod tests {
         let pt_idx = (vaddr >> 12) & 0x1FF;
         let pte = mem.read_u64(pt_base + pt_idx * 8);
         assert_eq!(pte & 1, 0, "PRESENT must be clear");
-        assert_eq!((pte >> 1) & 0xF, pagefile_num as u64, "pagefile_num");
+        assert_eq!((pte >> 1) & 0xF, u64::from(pagefile_num), "pagefile_num");
         assert_eq!(pte & (1 << 10), 0, "prototype bit must be clear");
         assert_eq!(pte & (1 << 11), 0, "transition bit must be clear");
         assert_eq!((pte >> 12) & 0xF_FFFF_FFFF, page_offset, "page_offset");
