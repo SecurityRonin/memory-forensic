@@ -172,7 +172,7 @@ fn utf16le_string_extraction_pipeline() {
     let test_str = "https://utf16.example.com/test";
     let utf16_bytes: Vec<u8> = test_str
         .encode_utf16()
-        .flat_map(|c| c.to_le_bytes())
+        .flat_map(u16::to_le_bytes)
         .collect();
 
     let mut data = vec![0u8; 512];

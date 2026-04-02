@@ -31,7 +31,7 @@ enum Commands {
         /// Path to the memory dump file.
         dump: PathBuf,
     },
-    /// List processes from a memory dump.
+    /// List processes (and optionally threads) from a memory dump.
     Ps {
         /// Path to the memory dump file.
         dump: PathBuf,
@@ -47,9 +47,17 @@ enum Commands {
         /// Optional kernel page table root (CR3) physical address (hex).
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
+
+        /// Also enumerate threads for each process (Windows only).
+        #[arg(long)]
+        threads: bool,
+
+        /// Filter by process ID.
+        #[arg(long)]
+        pid: Option<u64>,
     },
-    /// List loaded kernel modules from a memory dump.
-    Modules {
+    /// List loaded kernel modules (Linux) or drivers (Windows).
+    Mod {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -66,7 +74,7 @@ enum Commands {
         cr3: Option<u64>,
     },
     /// List network connections from a memory dump.
-    Netstat {
+    Net {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -82,8 +90,8 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
     },
-    /// List threads from a Windows memory dump.
-    Threads {
+    /// List loaded libraries (DLLs, .so, dylibs) for a process.
+    Lib {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -99,28 +107,7 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
 
-        /// Filter by process ID.
-        #[arg(long)]
-        pid: Option<u64>,
-    },
-    /// List DLLs for a process from a Windows memory dump.
-    Dlls {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-
-        /// Process ID to list DLLs for (required).
+        /// Process ID to list libraries for (required).
         #[arg(long)]
         pid: u64,
     },
@@ -164,33 +151,28 @@ fn main() -> Result<()> {
             symbols,
             output,
             cr3,
-        } => cmd_ps(&dump, symbols.as_deref(), output, cr3),
-        Commands::Modules {
+            threads,
+            pid,
+        } => cmd_ps(&dump, symbols.as_deref(), output, cr3, threads, pid),
+        Commands::Mod {
             dump,
             symbols,
             output,
             cr3,
-        } => cmd_modules(&dump, symbols.as_deref(), output, cr3),
-        Commands::Netstat {
+        } => cmd_mod(&dump, symbols.as_deref(), output, cr3),
+        Commands::Net {
             dump,
             symbols,
             output,
             cr3,
-        } => cmd_netstat(&dump, symbols.as_deref(), output, cr3),
-        Commands::Threads {
+        } => cmd_net(&dump, symbols.as_deref(), output, cr3),
+        Commands::Lib {
             dump,
             symbols,
             output,
             cr3,
             pid,
-        } => cmd_threads(&dump, symbols.as_deref(), output, cr3, pid),
-        Commands::Dlls {
-            dump,
-            symbols,
-            output,
-            cr3,
-            pid,
-        } => cmd_dlls(&dump, symbols.as_deref(), output, cr3, pid),
+        } => cmd_lib(&dump, symbols.as_deref(), output, cr3, pid),
         Commands::Strings {
             dump,
             from_file,
@@ -337,10 +319,15 @@ fn cmd_ps(
     symbols_path: Option<&Path>,
     output: OutputFormat,
     cr3_override: Option<u64>,
+    threads: bool,
+    pid_filter: Option<u64>,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
     match ctx.os {
         OsProfile::Linux => {
+            if threads {
+                anyhow::bail!("--threads is not yet supported for Linux dumps");
+            }
             let procs = memf_linux::process::walk_processes(&reader)
                 .context("failed to walk Linux processes")?;
             print_linux_processes(&procs, output);
@@ -352,6 +339,25 @@ fn cmd_ps(
             let procs = memf_windows::process::walk_processes(&reader, ps_head)
                 .context("failed to walk Windows processes")?;
             print_windows_processes(&procs, output);
+
+            if threads {
+                let mut all_threads = Vec::new();
+                for proc in &procs {
+                    if let Some(pid) = pid_filter {
+                        if proc.pid != pid {
+                            continue;
+                        }
+                    }
+                    match memf_windows::thread::walk_threads(&reader, proc.vaddr, proc.pid) {
+                        Ok(t) => all_threads.extend(t),
+                        Err(e) => {
+                            eprintln!("warning: failed to walk threads for PID {}: {e}", proc.pid);
+                        }
+                    }
+                }
+                println!();
+                print_threads(&all_threads, output);
+            }
         }
         OsProfile::MacOs => anyhow::bail!("macOS process walking not yet supported"),
     }
@@ -359,10 +365,10 @@ fn cmd_ps(
 }
 
 // ---------------------------------------------------------------------------
-// cmd_modules — Linux kernel modules or Windows drivers
+// cmd_mod — Linux kernel modules or Windows drivers
 // ---------------------------------------------------------------------------
 
-fn cmd_modules(
+fn cmd_mod(
     dump: &Path,
     symbols_path: Option<&Path>,
     output: OutputFormat,
@@ -389,10 +395,10 @@ fn cmd_modules(
 }
 
 // ---------------------------------------------------------------------------
-// cmd_netstat — Linux only for now
+// cmd_net — Linux only for now
 // ---------------------------------------------------------------------------
 
-fn cmd_netstat(
+fn cmd_net(
     dump: &Path,
     symbols_path: Option<&Path>,
     output: OutputFormat,
@@ -414,47 +420,10 @@ fn cmd_netstat(
 }
 
 // ---------------------------------------------------------------------------
-// cmd_threads — Windows
+// cmd_lib — per-process loaded libraries (DLLs, .so, dylibs)
 // ---------------------------------------------------------------------------
 
-fn cmd_threads(
-    dump: &Path,
-    symbols_path: Option<&Path>,
-    output: OutputFormat,
-    cr3_override: Option<u64>,
-    pid_filter: Option<u64>,
-) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
-    if ctx.os != OsProfile::Windows {
-        anyhow::bail!("memf threads currently requires a Windows memory dump");
-    }
-    let ps_head = ctx
-        .ps_active_process_head
-        .context("missing PsActiveProcessHead")?;
-    let procs = memf_windows::process::walk_processes(&reader, ps_head)
-        .context("failed to walk processes")?;
-
-    let mut all_threads = Vec::new();
-    for proc in &procs {
-        if let Some(pid) = pid_filter {
-            if proc.pid != pid {
-                continue;
-            }
-        }
-        match memf_windows::thread::walk_threads(&reader, proc.vaddr, proc.pid) {
-            Ok(threads) => all_threads.extend(threads),
-            Err(e) => eprintln!("warning: failed to walk threads for PID {}: {e}", proc.pid),
-        }
-    }
-    print_threads(&all_threads, output);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// cmd_dlls — Windows, requires --pid
-// ---------------------------------------------------------------------------
-
-fn cmd_dlls(
+fn cmd_lib(
     dump: &Path,
     symbols_path: Option<&Path>,
     output: OutputFormat,
@@ -463,7 +432,7 @@ fn cmd_dlls(
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
     if ctx.os != OsProfile::Windows {
-        anyhow::bail!("memf dlls requires a Windows memory dump");
+        anyhow::bail!("memf lib currently requires a Windows memory dump");
     }
     let ps_head = ctx
         .ps_active_process_head
@@ -482,7 +451,7 @@ fn cmd_dlls(
 
     let dlls = memf_windows::dll::walk_dlls(&reader, target.peb_addr)
         .with_context(|| format!("failed to walk DLLs for PID {pid}"))?;
-    print_dlls(&dlls, output);
+    print_libs(&dlls, output);
     Ok(())
 }
 
@@ -812,10 +781,10 @@ fn print_threads(threads: &[memf_windows::WinThreadInfo], output: OutputFormat) 
 }
 
 // ---------------------------------------------------------------------------
-// Output formatters — DLLs
+// Output formatters — libraries (DLLs, .so, dylibs)
 // ---------------------------------------------------------------------------
 
-fn print_dlls(dlls: &[memf_windows::WinDllInfo], output: OutputFormat) {
+fn print_libs(dlls: &[memf_windows::WinDllInfo], output: OutputFormat) {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -981,7 +950,7 @@ mod tests {
         // Remove any stale .json files from prior runs
         for entry in std::fs::read_dir(&dir).unwrap() {
             let entry = entry.unwrap();
-            if entry.path().extension().map_or(false, |e| e == "json") {
+            if entry.path().extension().is_some_and(|e| e == "json") {
                 std::fs::remove_file(entry.path()).ok();
             }
         }
@@ -1009,7 +978,14 @@ mod tests {
     fn cmd_ps_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("ps");
         let isf_path = make_temp_isf_file("ps");
-        let result = cmd_ps(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        let result = cmd_ps(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+            None,
+        );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
         if let Err(e) = &result {
             let msg = format!("{e}");
@@ -1020,10 +996,10 @@ mod tests {
     }
 
     #[test]
-    fn cmd_modules_with_lime_dump_attempts_analysis() {
+    fn cmd_mod_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("modules");
         let isf_path = make_temp_isf_file("modules");
-        let result = cmd_modules(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        let result = cmd_mod(&dump_path, Some(&isf_path), OutputFormat::Table, None);
         if let Err(e) = &result {
             let msg = format!("{e}");
             assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
@@ -1033,10 +1009,10 @@ mod tests {
     }
 
     #[test]
-    fn cmd_netstat_with_lime_dump_attempts_analysis() {
+    fn cmd_net_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("netstat");
         let isf_path = make_temp_isf_file("netstat");
-        let result = cmd_netstat(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        let result = cmd_net(&dump_path, Some(&isf_path), OutputFormat::Table, None);
         if let Err(e) = &result {
             let msg = format!("{e}");
             assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
@@ -1147,7 +1123,7 @@ mod tests {
     #[test]
     fn format_size_bytes() {
         let result = format_size(512);
-        assert!(result.contains("B"), "expected B, got: {result}");
+        assert!(result.contains('B'), "expected B, got: {result}");
         assert!(result.contains("512"));
     }
 
