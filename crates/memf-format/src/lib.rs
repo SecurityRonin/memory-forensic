@@ -442,6 +442,23 @@ mod tests {
     }
 
     #[test]
+    fn box_dyn_provider_delegates_correctly() {
+        use crate::test_builders::LimeBuilder;
+        let dump = LimeBuilder::new().add_range(0x1000, &[0xAA; 128]).build();
+        let provider = crate::lime::LimeProvider::from_bytes(&dump).unwrap();
+        let boxed: Box<dyn PhysicalMemoryProvider> = Box::new(provider);
+
+        assert_eq!(boxed.format_name(), "LiME");
+        assert_eq!(boxed.total_size(), 128);
+        assert!(!boxed.ranges().is_empty());
+
+        let mut buf = [0u8; 4];
+        let n = boxed.read_phys(0x1000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0xAA; 4]);
+    }
+
+    #[test]
     fn metadata_returns_some_for_crashdump() {
         use crate::test_builders::CrashDumpBuilder;
         let page = vec![0u8; 4096];

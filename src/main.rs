@@ -1,5 +1,7 @@
 #![deny(unsafe_code)]
 
+mod os_detect;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};

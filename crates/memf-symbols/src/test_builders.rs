@@ -360,4 +360,10 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(parsed["metadata"]["format"].is_string());
     }
+
+    #[test]
+    fn linux_preset_has_swapper_pg_dir() {
+        let json = IsfBuilder::linux_process_preset().build_json();
+        assert!(json["symbols"]["swapper_pg_dir"]["address"].is_number());
+    }
 }
