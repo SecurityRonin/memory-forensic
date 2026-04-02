@@ -21,6 +21,7 @@ impl std::fmt::Display for OsProfile {
 }
 
 /// Analysis context with OS-specific parameters.
+#[allow(dead_code)] // kaslr_offset will be used for KASLR-adjusted symbol display
 pub struct AnalysisContext {
     pub os: OsProfile,
     pub cr3: u64,
