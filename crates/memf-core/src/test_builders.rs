@@ -235,6 +235,33 @@ impl Default for PageTableBuilder {
     }
 }
 
+/// Mock pagefile source for testing pagefile PTE resolution.
+pub struct MockPagefileSource {
+    pagefile_num: u8,
+    pages: std::collections::HashMap<u64, [u8; 4096]>,
+}
+
+impl MockPagefileSource {
+    /// Create a mock with the given pagefile number and pre-loaded pages.
+    /// Each tuple is `(page_offset, page_data)`.
+    pub fn new(pagefile_num: u8, pages: Vec<(u64, [u8; 4096])>) -> Self {
+        Self {
+            pagefile_num,
+            pages: pages.into_iter().collect(),
+        }
+    }
+}
+
+impl crate::pagefile::PagefileSource for MockPagefileSource {
+    fn pagefile_number(&self) -> u8 {
+        self.pagefile_num
+    }
+
+    fn read_page(&self, page_offset: u64) -> crate::Result<Option<[u8; 4096]>> {
+        Ok(self.pages.get(&page_offset).copied())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +318,27 @@ mod tests {
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
         assert_ne!(pml4e & flags::PRESENT, 0);
+    }
+
+    #[test]
+    fn mock_pagefile_source_read_page() {
+        use crate::pagefile::PagefileSource;
+
+        let mut page_data = [0xABu8; 4096];
+        page_data[0] = 0x42;
+        let mock = MockPagefileSource::new(0, vec![(0x10, page_data)]);
+        assert_eq!(mock.pagefile_number(), 0);
+        let page = mock.read_page(0x10).unwrap().unwrap();
+        assert_eq!(page[0], 0x42);
+        assert_eq!(page[1], 0xAB);
+    }
+
+    #[test]
+    fn mock_pagefile_source_missing_page() {
+        use crate::pagefile::PagefileSource;
+
+        let mock = MockPagefileSource::new(1, vec![]);
+        assert_eq!(mock.pagefile_number(), 1);
+        assert!(mock.read_page(0x999).unwrap().is_none());
     }
 }
