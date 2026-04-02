@@ -18,7 +18,35 @@ pub fn walk_threads<P: PhysicalMemoryProvider>(
     eproc_addr: u64,
     pid: u64,
 ) -> Result<Vec<WinThreadInfo>> {
-    todo!()
+    // _KPROCESS is embedded at _EPROCESS.Pcb (offset 0).
+    let pcb_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "Pcb")
+        .ok_or_else(|| Error::Walker("missing _EPROCESS.Pcb offset".into()))?;
+
+    // ThreadListHead is within _KPROCESS.
+    let thread_list_head_offset = reader
+        .symbols()
+        .field_offset("_KPROCESS", "ThreadListHead")
+        .ok_or_else(|| Error::Walker("missing _KPROCESS.ThreadListHead offset".into()))?;
+
+    let thread_list_head_vaddr = eproc_addr
+        .wrapping_add(pcb_offset)
+        .wrapping_add(thread_list_head_offset);
+
+    // Walk the circular linked list: ThreadListHead -> _KTHREAD.ThreadListEntry
+    let kthread_addrs = reader.walk_list_with(
+        thread_list_head_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_KTHREAD",
+        "ThreadListEntry",
+    )?;
+
+    kthread_addrs
+        .into_iter()
+        .map(|kthread_addr| read_thread_info(reader, kthread_addr, pid))
+        .collect()
 }
 
 /// Read thread info from a single `_KTHREAD`.
@@ -31,7 +59,43 @@ fn read_thread_info<P: PhysicalMemoryProvider>(
     kthread_addr: u64,
     pid: u64,
 ) -> Result<WinThreadInfo> {
-    todo!()
+    // Read fields from _KTHREAD
+    let teb_addr: u64 = reader.read_field(kthread_addr, "_KTHREAD", "Teb")?;
+    let start_address: u64 = reader.read_field(kthread_addr, "_KTHREAD", "Win32StartAddress")?;
+    let create_time: u64 = reader.read_field(kthread_addr, "_KTHREAD", "CreateTime")?;
+
+    // _ETHREAD base = _KTHREAD base (since Tcb is at offset 0 within _ETHREAD).
+    let ethread_addr = kthread_addr;
+
+    // Read TID from _ETHREAD.Cid.UniqueThread.
+    // _ETHREAD.Cid is a _CLIENT_ID at offset 0x620.
+    // _CLIENT_ID.UniqueThread is at offset 8 within _CLIENT_ID.
+    let cid_offset = reader
+        .symbols()
+        .field_offset("_ETHREAD", "Cid")
+        .ok_or_else(|| Error::Walker("missing _ETHREAD.Cid offset".into()))?;
+
+    let tid: u64 = reader.read_field(
+        ethread_addr.wrapping_add(cid_offset),
+        "_CLIENT_ID",
+        "UniqueThread",
+    )?;
+
+    // Try to read the State field; fall back to Running if not available.
+    let state_raw: u32 = reader
+        .read_field(kthread_addr, "_KTHREAD", "State")
+        .unwrap_or(0);
+    let state = ThreadState::from_raw(state_raw);
+
+    Ok(WinThreadInfo {
+        tid,
+        pid,
+        create_time,
+        start_address,
+        teb_addr,
+        state,
+        vaddr: ethread_addr,
+    })
 }
 
 #[cfg(test)]
@@ -135,7 +199,10 @@ mod tests {
             .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
             .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
             // _KPROCESS.ThreadListHead.Flink
-            .write_phys_u64(eproc_paddr + KPROCESS_THREAD_LIST_HEAD, kthread_list_entry_vaddr)
+            .write_phys_u64(
+                eproc_paddr + KPROCESS_THREAD_LIST_HEAD,
+                kthread_list_entry_vaddr,
+            )
             // _KPROCESS.ThreadListHead.Blink
             .write_phys_u64(
                 eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8,
@@ -262,7 +329,10 @@ mod tests {
         let ptb = PageTableBuilder::new()
             .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
             // ThreadListHead.Flink -> self (empty)
-            .write_phys_u64(eproc_paddr + KPROCESS_THREAD_LIST_HEAD, thread_list_head_vaddr)
+            .write_phys_u64(
+                eproc_paddr + KPROCESS_THREAD_LIST_HEAD,
+                thread_list_head_vaddr,
+            )
             // ThreadListHead.Blink -> self (empty)
             .write_phys_u64(
                 eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8,
