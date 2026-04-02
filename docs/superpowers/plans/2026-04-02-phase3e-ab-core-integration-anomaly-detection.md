@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Integrate memory-forensic crates into RapidTriage as git dependencies, extend `InvestigationData` with unified memory types, detect/decompress memory dumps in UAC collections, run walkers, and implement a 4-metric network anomaly detection algorithm for memory dump connections.
+**Goal:** Integrate memory-forensic crates into RapidTriage as git dependencies, extend `InvestigationData` with unified memory types, detect memory dumps in UAC collections (decompression handled transparently by `memf-format::open_dump()`), run walkers, and implement a 4-metric network anomaly detection algorithm for memory dump connections.
 
-**Architecture:** The memory-forensic crates (`memf-format`, `memf-core`, `memf-symbols`, `memf-linux`, `memf-windows`, `memf-strings`) are consumed as-is via git dependencies from `https://github.com/SecurityRonin/memory-forensic.git`. All new code lives in the RapidTriage repo under `crates/rt-navigator/src/investigation/`. Unified memory types in `memory.rs` wrap OS-specific walker output. A `memory_loader.rs` module handles dump detection, decompression, and walker invocation. Network anomaly detection in `alerts/memory_network.rs` implements statistical outlier flagging (mean + 2*stddev) across 4 metrics plus suspicious port floor detection.
+**Architecture:** The memory-forensic crates (`memf-format`, `memf-core`, `memf-symbols`, `memf-linux`, `memf-windows`, `memf-strings`) are consumed as-is via git dependencies from `https://github.com/SecurityRonin/memory-forensic.git`. All new code lives in the RapidTriage repo under `crates/rt-navigator/src/investigation/`. Unified memory types in `memory.rs` wrap OS-specific walker output. A `memory_loader.rs` module handles dump detection and walker invocation — archive decompression (.zip/.7z) is handled transparently by `memf-format::open_dump()`, so RapidTriage doesn't need archive-handling dependencies. Network anomaly detection in `alerts/memory_network.rs` implements statistical outlier flagging (mean + 2*stddev) across 4 metrics plus suspicious port floor detection.
 
-**Tech Stack:** Rust, `zip = "2"` (existing), `sevenz-rust` (new), `memf-*` crates (git dep), `chrono` (existing), `thiserror` (existing)
+**Tech Stack:** Rust, `memf-*` crates (git dep), `chrono` (existing), `thiserror` (existing). Note: `zip` and `sevenz-rust` are dependencies of `memf-format` (not RapidTriage) — archive decompression is transparent via `open_dump()`.
 
 **Build command:** `/Users/4n6h4x0r/.cargo/bin/cargo`
 **Commit flag:** `--no-gpg-sign`
@@ -20,15 +20,15 @@
 | File | Responsibility |
 |------|---------------|
 | `crates/rt-navigator/src/investigation/memory.rs` | Unified memory types (`MemProcessEntry`, `MemConnectionEntry`, `MemModuleEntry`, `MemLibraryEntry`, `MemThreadEntry`, `MemoryDumpInfo`, `NetworkFlagSummary`, `OsProfile`), `From` conversions from `memf-linux` and `memf-windows` types |
-| `crates/rt-navigator/src/investigation/memory_loader.rs` | Memory dump detection in UAC `memory_dump/` dir, `.zip`/`.7z` decompression, `open_dump()` probing, OS detection, walker invocation, `InvestigationData` population |
+| `crates/rt-navigator/src/investigation/memory_loader.rs` | Memory dump detection in UAC `memory_dump/` dir, `open_dump()` probing (handles .zip/.7z transparently), OS detection, walker invocation, `InvestigationData` population |
 | `crates/rt-navigator/src/investigation/alerts/memory_network.rs` | 4-metric network anomaly detection for memory connections: fan-out per IP, fan-in per port, connections per PID, unique IPs per PID; statistical outlier flagging; suspicious port floor; `NetworkFlagSummary` computation |
 
 ### Modify
 
 | File | Change |
 |------|--------|
-| `Cargo.toml` (workspace root) | Add `memf-format`, `memf-core`, `memf-symbols`, `memf-linux`, `memf-windows`, `memf-strings`, `sevenz-rust` to `[workspace.dependencies]` |
-| `crates/rt-navigator/Cargo.toml` | Add `memf-format`, `memf-core`, `memf-symbols`, `memf-linux`, `memf-windows`, `sevenz-rust`, `zip` dependencies |
+| `Cargo.toml` (workspace root) | Add `memf-format`, `memf-core`, `memf-symbols`, `memf-linux`, `memf-windows`, `memf-strings` to `[workspace.dependencies]` |
+| `crates/rt-navigator/Cargo.toml` | Add `memf-format`, `memf-core`, `memf-symbols`, `memf-linux`, `memf-windows` dependencies |
 | `crates/rt-navigator/src/investigation/data.rs` (line 76) | Add 7 memory fields to `InvestigationData` struct; update `Debug` impl; update `Default` derivation; add memory loader call in `load_uac_collection()` |
 | `crates/rt-navigator/src/investigation/mod.rs` (line 22) | Add `pub mod memory;` and `pub mod memory_loader;`; add 4 `WorkbenchView` variants (`MemProcesses`, `MemNetwork`, `MemModules`, `MemLibraries`); extend `label()`, `item_count()`, `WorkbenchApp::new()` |
 | `crates/rt-navigator/src/investigation/alerts/mod.rs` (line 16) | Add `mod memory_network;` declaration |
@@ -56,8 +56,9 @@ memf-symbols = { git = "https://github.com/SecurityRonin/memory-forensic.git", b
 memf-linux   = { git = "https://github.com/SecurityRonin/memory-forensic.git", branch = "main" }
 memf-windows = { git = "https://github.com/SecurityRonin/memory-forensic.git", branch = "main" }
 memf-strings = { git = "https://github.com/SecurityRonin/memory-forensic.git", branch = "main" }
-sevenz-rust  = "0.6"
 ```
+
+Note: `zip` and `sevenz-rust` are NOT needed in RapidTriage — archive decompression is handled transparently inside `memf-format::open_dump()`.
 
 - [ ] **Step 2: Add dependencies to rt-navigator Cargo.toml**
 
@@ -69,11 +70,9 @@ memf-core.workspace    = true
 memf-symbols.workspace = true
 memf-linux.workspace   = true
 memf-windows.workspace = true
-sevenz-rust.workspace  = true
-zip = { workspace = true }
 ```
 
-Note: `zip = "2"` already exists in the workspace deps (used by `rt-unpack`). The `rt-navigator` crate needs its own reference to it for decompression.
+Note: `zip` and `sevenz-rust` are NOT needed here. Archive decompression (.zip/.7z) is handled transparently by `memf-format::open_dump()` — RapidTriage just passes the file path and gets back a `PhysicalMemoryProvider`.
 
 - [ ] **Step 3: Verify workspace resolves**
 
@@ -86,12 +85,11 @@ Expected: Compiles successfully (downloads git deps, resolves all crate versions
 ```bash
 cd /Users/4n6h4x0r/src/RapidTriage
 git add Cargo.toml Cargo.lock crates/rt-navigator/Cargo.toml
-git commit --no-gpg-sign -m "chore(deps): add memory-forensic git dependencies and sevenz-rust
+git commit --no-gpg-sign -m "chore(deps): add memory-forensic git dependencies
 
 Add memf-format, memf-core, memf-symbols, memf-linux, memf-windows,
 memf-strings as git workspace deps from SecurityRonin/memory-forensic.
-Add sevenz-rust for .7z archive decompression.
-Add zip dep to rt-navigator for memory dump decompression pipeline."
+Archive decompression (.zip/.7z) is handled by memf-format internally."
 ```
 
 ---
@@ -1954,7 +1952,7 @@ Exported from alerts mod for use by memory_loader."
 - Create: `/Users/4n6h4x0r/src/RapidTriage/crates/rt-navigator/src/investigation/memory_loader.rs`
 - Modify: `/Users/4n6h4x0r/src/RapidTriage/crates/rt-navigator/src/investigation/mod.rs` (line 5)
 
-This module handles detection, decompression, and walker invocation.
+This module handles dump detection and walker invocation. Archive decompression (.zip/.7z) is handled transparently by `memf-format::open_dump()` — this module just passes file paths through.
 
 - [ ] **Step 1: Register the module**
 
@@ -1969,12 +1967,12 @@ pub mod memory_loader;
 Create `/Users/4n6h4x0r/src/RapidTriage/crates/rt-navigator/src/investigation/memory_loader.rs`:
 
 ```rust
-//! Memory dump detection, decompression, and walker invocation.
+//! Memory dump detection and walker invocation.
 //!
-//! Scans a UAC collection's `memory_dump/` directory for memory dumps
-//! (raw or compressed). Decompresses `.zip` and `.7z` archives, probes
-//! for recognized formats via `memf_format::open_dump()`, runs OS-specific
-//! walkers, and populates the memory fields of `InvestigationData`.
+//! Scans a UAC collection's `memory_dump/` directory for memory dumps.
+//! Probes files via `memf_format::open_dump()` which handles archive
+//! decompression (.zip/.7z) transparently. Runs OS-specific walkers
+//! and populates the memory fields of `InvestigationData`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1986,13 +1984,14 @@ use super::memory::{
     MemoryDumpInfo, OsProfile,
 };
 
-/// Known memory dump file extensions (uncompressed).
-const DUMP_EXTENSIONS: &[&str] = &[
+/// Known file extensions that may contain memory dumps.
+///
+/// Includes both raw dump formats and archive formats (.zip, .7z) since
+/// `memf_format::open_dump()` handles archive decompression transparently.
+const KNOWN_EXTENSIONS: &[&str] = &[
     "lime", "avml", "dmp", "vmem", "vmss", "vmsn", "raw", "mem", "img", "core",
+    "zip", "7z",
 ];
-
-/// Known compressed archive extensions that may contain memory dumps.
-const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "7z"];
 
 /// Result of loading a memory dump from a UAC collection.
 #[derive(Debug)]
@@ -2013,10 +2012,12 @@ pub struct MemoryLoadResult {
 
 /// Scan a UAC collection directory for memory dumps.
 ///
-/// Looks in `{extracted_root}/memory_dump/` for dump files (raw or compressed).
-/// Returns the path to the first recognized dump file, decompressing archives
-/// to `temp_dir` if needed.
-pub fn find_memory_dump(extracted_root: &Path, temp_dir: &Path) -> Option<PathBuf> {
+/// Looks in `{extracted_root}/memory_dump/` for dump files. Tries each file
+/// with a known extension via `memf_format::open_dump()`, which handles
+/// .zip/.7z archive decompression transparently.
+///
+/// Returns the path to the first recognized dump file.
+pub fn find_memory_dump(extracted_root: &Path) -> Option<PathBuf> {
     let memory_dir = extracted_root.join("memory_dump");
     if !memory_dir.is_dir() {
         return None;
@@ -2034,126 +2035,31 @@ pub fn find_memory_dump(extracted_root: &Path, temp_dir: &Path) -> Option<PathBu
         .collect();
     files.sort();
 
-    // First pass: look for uncompressed dump files
+    // Try open_dump() on files with known extensions.
+    // open_dump() handles .zip/.7z archives transparently.
     for file in &files {
-        if is_dump_extension(file) {
-            if probe_dump(file) {
-                return Some(file.clone());
-            }
-        }
-    }
-
-    // Second pass: try decompressing archives
-    for file in &files {
-        if is_archive_extension(file) {
-            if let Some(dump_path) = decompress_and_probe(file, temp_dir) {
-                return Some(dump_path);
-            }
+        if is_known_extension(file) && probe_dump(file) {
+            return Some(file.clone());
         }
     }
 
     None
 }
 
-/// Check if a file has a known dump extension.
-fn is_dump_extension(path: &Path) -> bool {
+/// Check if a file has a known dump or archive extension.
+fn is_known_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| DUMP_EXTENSIONS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
-/// Check if a file has a known archive extension.
-fn is_archive_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| ARCHIVE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+        .map(|e| KNOWN_EXTENSIONS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
 }
 
 /// Probe whether a file is a recognized memory dump format.
+///
+/// This calls `memf_format::open_dump()` which handles .zip/.7z
+/// archive decompression transparently.
 fn probe_dump(path: &Path) -> bool {
     memf_format::open_dump(path).is_ok()
-}
-
-/// Decompress an archive and probe each file inside for a recognized dump.
-///
-/// Returns the path to the first recognized dump file within the archive,
-/// or `None` if no recognized file is found.
-fn decompress_and_probe(archive_path: &Path, temp_dir: &Path) -> Option<PathBuf> {
-    let ext = archive_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
-
-    let extract_dir = temp_dir.join("memdump_extract");
-    let _ = fs::create_dir_all(&extract_dir);
-
-    match ext.as_str() {
-        "zip" => decompress_zip(archive_path, &extract_dir),
-        "7z" => decompress_7z(archive_path, &extract_dir),
-        _ => None,
-    }
-    .and_then(|extracted_files| {
-        for file in extracted_files {
-            if probe_dump(&file) {
-                return Some(file);
-            }
-        }
-        None
-    })
-}
-
-/// Decompress a .zip archive, returning paths to extracted files.
-fn decompress_zip(archive_path: &Path, extract_dir: &Path) -> Option<Vec<PathBuf>> {
-    let file = fs::File::open(archive_path).ok()?;
-    let mut archive = zip::ZipArchive::new(file).ok()?;
-    let mut extracted = Vec::new();
-
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).ok()?;
-        if entry.is_dir() {
-            continue;
-        }
-        let name = entry
-            .enclosed_name()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from(format!("entry_{i}")));
-        let out_path = extract_dir.join(name);
-        if let Some(parent) = out_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let mut out_file = fs::File::create(&out_path).ok()?;
-        std::io::copy(&mut entry, &mut out_file).ok()?;
-        extracted.push(out_path);
-    }
-
-    Some(extracted)
-}
-
-/// Decompress a .7z archive, returning paths to extracted files.
-fn decompress_7z(archive_path: &Path, extract_dir: &Path) -> Option<Vec<PathBuf>> {
-    sevenz_rust::decompress_file(archive_path, extract_dir).ok()?;
-
-    // Collect all files in the extraction directory
-    let mut extracted = Vec::new();
-    collect_files_recursive(extract_dir, &mut extracted);
-    Some(extracted)
-}
-
-/// Recursively collect file paths from a directory.
-fn collect_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_files_recursive(&path, files);
-            } else {
-                files.push(path);
-            }
-        }
-    }
 }
 
 /// Load a memory dump: open it, detect OS, run walkers, return results.
@@ -2266,55 +2172,48 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn is_dump_extension_recognizes_lime() {
-        assert!(is_dump_extension(Path::new("/tmp/mem.lime")));
+    fn is_known_extension_recognizes_lime() {
+        assert!(is_known_extension(Path::new("/tmp/mem.lime")));
     }
 
     #[test]
-    fn is_dump_extension_recognizes_dmp() {
-        assert!(is_dump_extension(Path::new("/tmp/memory.dmp")));
+    fn is_known_extension_recognizes_dmp() {
+        assert!(is_known_extension(Path::new("/tmp/memory.dmp")));
     }
 
     #[test]
-    fn is_dump_extension_recognizes_vmem() {
-        assert!(is_dump_extension(Path::new("/tmp/snapshot.vmem")));
+    fn is_known_extension_recognizes_vmem() {
+        assert!(is_known_extension(Path::new("/tmp/snapshot.vmem")));
     }
 
     #[test]
-    fn is_dump_extension_case_insensitive() {
-        assert!(is_dump_extension(Path::new("/tmp/MEMORY.DMP")));
-        assert!(is_dump_extension(Path::new("/tmp/dump.LiME")));
+    fn is_known_extension_recognizes_zip() {
+        assert!(is_known_extension(Path::new("/tmp/dump.zip")));
     }
 
     #[test]
-    fn is_dump_extension_rejects_unknown() {
-        assert!(!is_dump_extension(Path::new("/tmp/file.txt")));
-        assert!(!is_dump_extension(Path::new("/tmp/file.exe")));
+    fn is_known_extension_recognizes_7z() {
+        assert!(is_known_extension(Path::new("/tmp/dump.7z")));
     }
 
     #[test]
-    fn is_dump_extension_no_extension() {
-        assert!(!is_dump_extension(Path::new("/tmp/memdump")));
-    }
-
-    // -----------------------------------------------------------------------
-    // Archive detection
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn is_archive_extension_recognizes_zip() {
-        assert!(is_archive_extension(Path::new("/tmp/dump.zip")));
+    fn is_known_extension_case_insensitive() {
+        assert!(is_known_extension(Path::new("/tmp/MEMORY.DMP")));
+        assert!(is_known_extension(Path::new("/tmp/dump.LiME")));
+        assert!(is_known_extension(Path::new("/tmp/archive.ZIP")));
     }
 
     #[test]
-    fn is_archive_extension_recognizes_7z() {
-        assert!(is_archive_extension(Path::new("/tmp/dump.7z")));
+    fn is_known_extension_rejects_unknown() {
+        assert!(!is_known_extension(Path::new("/tmp/file.txt")));
+        assert!(!is_known_extension(Path::new("/tmp/file.exe")));
+        assert!(!is_known_extension(Path::new("/tmp/file.tar.gz")));
+        assert!(!is_known_extension(Path::new("/tmp/file.rar")));
     }
 
     #[test]
-    fn is_archive_extension_rejects_unknown() {
-        assert!(!is_archive_extension(Path::new("/tmp/file.tar.gz")));
-        assert!(!is_archive_extension(Path::new("/tmp/file.rar")));
+    fn is_known_extension_no_extension() {
+        assert!(!is_known_extension(Path::new("/tmp/memdump")));
     }
 
     // -----------------------------------------------------------------------
@@ -2324,7 +2223,7 @@ mod tests {
     #[test]
     fn find_memory_dump_no_dir() {
         let temp = tempfile::tempdir().expect("create temp dir");
-        let result = find_memory_dump(temp.path(), temp.path());
+        let result = find_memory_dump(temp.path());
         assert!(result.is_none());
     }
 
@@ -2332,7 +2231,7 @@ mod tests {
     fn find_memory_dump_empty_dir() {
         let temp = tempfile::tempdir().expect("create temp dir");
         fs::create_dir_all(temp.path().join("memory_dump")).expect("create dir");
-        let result = find_memory_dump(temp.path(), temp.path());
+        let result = find_memory_dump(temp.path());
         assert!(result.is_none());
     }
 
@@ -2343,53 +2242,28 @@ mod tests {
         fs::create_dir_all(&mem_dir).expect("create dir");
         // Write a file with .dmp extension but invalid content
         fs::write(mem_dir.join("fake.dmp"), b"not a real dump").expect("write file");
-        let result = find_memory_dump(temp.path(), temp.path());
+        let result = find_memory_dump(temp.path());
         assert!(result.is_none());
     }
 
     // -----------------------------------------------------------------------
-    // Decompression -- zip
+    // KNOWN_EXTENSIONS coverage
     // -----------------------------------------------------------------------
 
     #[test]
-    fn decompress_zip_extracts_files() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let zip_path = temp.path().join("test.zip");
-
-        // Create a minimal zip with one file
-        let file = fs::File::create(&zip_path).expect("create zip");
-        let mut zip_writer = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        zip_writer
-            .start_file("inner.bin", options)
-            .expect("start file");
-        use std::io::Write;
-        zip_writer.write_all(b"hello world").expect("write");
-        zip_writer.finish().expect("finish");
-
-        let extract_dir = temp.path().join("extracted");
-        fs::create_dir_all(&extract_dir).expect("create dir");
-
-        let files = decompress_zip(&zip_path, &extract_dir).expect("decompress");
-        assert_eq!(files.len(), 1);
-        assert!(files[0].ends_with("inner.bin"));
-        assert_eq!(fs::read_to_string(&files[0]).expect("read"), "hello world");
-    }
-
-    // -----------------------------------------------------------------------
-    // DUMP_EXTENSIONS and ARCHIVE_EXTENSIONS coverage
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn dump_extensions_complete() {
-        let expected = vec!["lime", "avml", "dmp", "vmem", "vmss", "vmsn", "raw", "mem", "img", "core"];
-        assert_eq!(DUMP_EXTENSIONS, expected.as_slice());
+    fn known_extensions_includes_dump_formats() {
+        for ext in &["lime", "avml", "dmp", "vmem", "vmss", "vmsn", "raw", "mem", "img", "core"] {
+            assert!(
+                KNOWN_EXTENSIONS.contains(ext),
+                "Missing dump extension: {ext}"
+            );
+        }
     }
 
     #[test]
-    fn archive_extensions_complete() {
-        assert_eq!(ARCHIVE_EXTENSIONS, &["zip", "7z"]);
+    fn known_extensions_includes_archive_formats() {
+        assert!(KNOWN_EXTENSIONS.contains(&"zip"));
+        assert!(KNOWN_EXTENSIONS.contains(&"7z"));
     }
 
     // -----------------------------------------------------------------------
@@ -2437,14 +2311,15 @@ Expected: All tests pass. Zero clippy warnings.
 ```bash
 cd /Users/4n6h4x0r/src/RapidTriage
 git add crates/rt-navigator/src/investigation/memory_loader.rs crates/rt-navigator/src/investigation/mod.rs
-git commit --no-gpg-sign -m "feat(memory): add memory dump loader with detection and decompression
+git commit --no-gpg-sign -m "feat(memory): add memory dump loader with detection and format probing
 
-Add memory_loader.rs with find_memory_dump() for UAC collection scanning,
-zip/7z decompression pipeline, format probing via memf_format::open_dump(),
-and load_memory_dump() entry point. OS detection uses dump metadata.
+Add memory_loader.rs with find_memory_dump() for UAC collection scanning
+and load_memory_dump() entry point. Archive decompression (.zip/.7z) is
+handled transparently by memf_format::open_dump(). OS detection uses
+dump metadata.
 
 Walker invocation is stubbed for Phase 3E-C (requires symbol resolution).
-Dump detection and decompression are fully functional. 12 unit tests."
+Dump detection is fully functional. 12 unit tests."
 ```
 
 ---
@@ -2486,6 +2361,8 @@ use super::memory_loader::{find_memory_dump, load_memory_dump};
 use super::alerts::detect_alerts_with_memory;
 ```
 
+Note: No `tempfile` import needed — archive decompression is handled inside `memf-format::open_dump()`.
+
 In `load_uac_collection()`, replace the alert detection and InvestigationData construction block. After the timeline is built and sorted (around line 185), replace:
 
 ```rust
@@ -2503,12 +2380,9 @@ with:
 
 ```rust
     // ----- Attempt memory dump loading -----
-    let temp_dir = tempfile::tempdir().ok();
-    let temp_path = temp_dir.as_ref().map(|t| t.path().to_path_buf());
-    let mem_result = temp_path.as_deref().and_then(|tmp| {
-        find_memory_dump(extracted_root, tmp)
-            .and_then(|dump_path| load_memory_dump(&dump_path))
-    });
+    // find_memory_dump() scans memory_dump/ dir, open_dump() handles .zip/.7z transparently
+    let mem_result = find_memory_dump(extracted_root)
+        .and_then(|dump_path| load_memory_dump(&dump_path));
 
     let mut memory_connections = mem_result
         .as_ref()
@@ -2593,9 +2467,10 @@ git add crates/rt-navigator/src/investigation/data.rs
 git commit --no-gpg-sign -m "feat(data): wire memory dump loader into UAC collection pipeline
 
 load_uac_collection() now scans for memory dumps in the extracted UAC
-directory, decompresses archives if needed, probes for recognized formats,
-and populates InvestigationData memory fields. Uses detect_alerts_with_memory()
-for combined traditional + memory network anomaly alert detection."
+directory, probes for recognized formats (archive decompression handled
+transparently by memf-format), and populates InvestigationData memory
+fields. Uses detect_alerts_with_memory() for combined traditional +
+memory network anomaly alert detection."
 ```
 
 ---
@@ -2604,8 +2479,9 @@ for combined traditional + memory network anomaly alert detection."
 
 **Files:**
 - Modify: `/Users/4n6h4x0r/src/RapidTriage/crates/rt-navigator/src/investigation/data.rs` (test module)
+- Modify: `/Users/4n6h4x0r/src/RapidTriage/crates/rt-navigator/src/investigation/alerts/memory_network.rs` (test module)
 
-- [ ] **Step 1: Add integration test for memory loader with synthetic zip**
+- [ ] **Step 1: Add integration test for memory loader with invalid dump**
 
 Add to the `#[cfg(test)]` module in `data.rs`:
 
@@ -2613,6 +2489,7 @@ Add to the `#[cfg(test)]` module in `data.rs`:
     #[test]
     fn load_uac_collection_with_memory_dump_dir_no_valid_dump() {
         // A UAC collection with memory_dump/ dir but no valid dump files
+        // open_dump() will reject the invalid content regardless of extension
         let temp = tempfile::tempdir().expect("create temp dir");
         let mem_dir = temp.path().join("memory_dump");
         std::fs::create_dir_all(&mem_dir).expect("create dir");
@@ -2708,7 +2585,7 @@ Expected: No formatting issues.
 Count new tests added:
 - `memory.rs`: ~22 tests (type conversions, filetime, display impls)
 - `memory_network.rs`: ~20 tests (mean/stddev, flagging metrics, alerts, edge cases)
-- `memory_loader.rs`: ~12 tests (extension detection, decompression, find_dump)
+- `memory_loader.rs`: ~12 tests (extension detection, find_dump, load result construction)
 - `data.rs`: ~4 tests (memory field defaults, debug, loader wiring)
 - `engine.rs`: ~1 test (detect_alerts_with_memory)
 
@@ -2763,11 +2640,11 @@ Ensure all tests pass, clippy clean, formatting correct."
 ## Summary of Changes
 
 ### 3E-A: Core Integration + Data Layer
-1. **Workspace dependencies** -- 6 memf crates + sevenz-rust added to RapidTriage
+1. **Workspace dependencies** -- 6 memf crates added to RapidTriage (no archive deps — decompression in memf-format)
 2. **Unified memory types** -- `memory.rs` with 7 types, 6 enums, `From` conversions
 3. **InvestigationData extension** -- 7 new fields for memory forensic data
 4. **WorkbenchView extension** -- 4 new variants (MemProcesses, MemNetwork, MemModules, MemLibraries)
-5. **Memory dump loader** -- Detection, .zip/.7z decompression, format probing, OS detection
+5. **Memory dump loader** -- Detection, format probing (archive decompression in memf-format), OS detection
 6. **UAC pipeline wiring** -- `load_uac_collection()` scans for and loads memory dumps
 
 ### 3E-B: Network Anomaly Detection
