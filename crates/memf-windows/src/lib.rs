@@ -7,6 +7,7 @@
 
 pub mod driver;
 pub mod process;
+pub mod thread;
 pub mod types;
 pub mod unicode;
 
