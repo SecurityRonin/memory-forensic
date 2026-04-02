@@ -5,6 +5,7 @@
 //! Provides process, thread, driver, and DLL enumeration
 //! by walking Windows NT kernel data structures in physical memory dumps.
 
+pub mod dll;
 pub mod driver;
 pub mod process;
 pub mod thread;
