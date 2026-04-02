@@ -1341,6 +1341,7 @@ dependencies = [
  "memf-linux",
  "memf-strings",
  "memf-symbols",
+ "memf-windows",
  "serde_json",
 ]
 

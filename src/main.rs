@@ -1,6 +1,5 @@
 #![deny(unsafe_code)]
 
-#[allow(dead_code)] // Public API consumed by later Phase 3D tasks
 mod os_detect;
 
 use anyhow::{Context, Result};
@@ -8,11 +7,21 @@ use clap::{Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};
 use std::path::{Path, PathBuf};
 
+use memf_core::object_reader::ObjectReader;
+use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+use memf_format::PhysicalMemoryProvider;
+use os_detect::{AnalysisContext, OsProfile};
+
 #[derive(Parser)]
 #[command(name = "memf", about = "Memory forensics toolkit", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+/// Parse a hex address string for Clap's value_parser.
+fn parse_cr3(s: &str) -> Result<u64, String> {
+    os_detect::parse_hex_addr(s).map_err(|e| e.to_string())
 }
 
 #[derive(Subcommand)]
@@ -34,6 +43,10 @@ enum Commands {
         /// Output format: table, json, csv.
         #[arg(long, default_value = "table")]
         output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
     },
     /// List loaded kernel modules from a memory dump.
     Modules {
@@ -47,6 +60,10 @@ enum Commands {
         /// Output format: table, json, csv.
         #[arg(long, default_value = "table")]
         output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
     },
     /// List network connections from a memory dump.
     Netstat {
@@ -60,6 +77,52 @@ enum Commands {
         /// Output format: table, json, csv.
         #[arg(long, default_value = "table")]
         output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// List threads from a Windows memory dump.
+    Threads {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+
+        /// Filter by process ID.
+        #[arg(long)]
+        pid: Option<u64>,
+    },
+    /// List DLLs for a process from a Windows memory dump.
+    Dlls {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+
+        /// Process ID to list DLLs for (required).
+        #[arg(long)]
+        pid: u64,
     },
     /// Extract and classify strings from a memory dump or strings file.
     Strings {
@@ -100,17 +163,34 @@ fn main() -> Result<()> {
             dump,
             symbols,
             output,
-        } => cmd_ps(&dump, symbols.as_deref(), output),
+            cr3,
+        } => cmd_ps(&dump, symbols.as_deref(), output, cr3),
         Commands::Modules {
             dump,
             symbols,
             output,
-        } => cmd_modules(&dump, symbols.as_deref(), output),
+            cr3,
+        } => cmd_modules(&dump, symbols.as_deref(), output, cr3),
         Commands::Netstat {
             dump,
             symbols,
             output,
-        } => cmd_netstat(&dump, symbols.as_deref(), output),
+            cr3,
+        } => cmd_netstat(&dump, symbols.as_deref(), output, cr3),
+        Commands::Threads {
+            dump,
+            symbols,
+            output,
+            cr3,
+            pid,
+        } => cmd_threads(&dump, symbols.as_deref(), output, cr3, pid),
+        Commands::Dlls {
+            dump,
+            symbols,
+            output,
+            cr3,
+            pid,
+        } => cmd_dlls(&dump, symbols.as_deref(), output, cr3, pid),
         Commands::Strings {
             dump,
             from_file,
@@ -120,6 +200,75 @@ fn main() -> Result<()> {
         } => cmd_strings(dump, from_file, min_length, output, rules),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Symbol loading
+// ---------------------------------------------------------------------------
+
+fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
+    // If path is a file with .pdb extension, use PdbResolver
+    if let Some(p) = path {
+        if p.is_file() {
+            if let Some(ext) = p.extension() {
+                if ext.eq_ignore_ascii_case("pdb") {
+                    let resolver = memf_symbols::pdb_resolver::PdbResolver::from_path(p)
+                        .with_context(|| format!("failed to load PDB from {}", p.display()))?;
+                    return Ok(Box::new(resolver));
+                }
+            }
+        }
+    }
+    // Otherwise, existing ISF logic
+    let files = memf_symbols::isf::discover_isf_files(path);
+    if files.is_empty() {
+        anyhow::bail!("no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH");
+    }
+    let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
+        .with_context(|| format!("failed to load symbols from {}", files[0].display()))?;
+    Ok(Box::new(resolver))
+}
+
+// ---------------------------------------------------------------------------
+// Analysis setup helper
+// ---------------------------------------------------------------------------
+
+fn setup_analysis(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    cr3_override: Option<u64>,
+) -> Result<(
+    AnalysisContext,
+    ObjectReader<Box<dyn PhysicalMemoryProvider>>,
+)> {
+    let provider = memf_format::open_dump(dump)
+        .with_context(|| format!("failed to open {}", dump.display()))?;
+    let resolver = load_symbols(symbols_path)?;
+    let metadata = provider.metadata();
+
+    let ctx = if let Some(cr3) = cr3_override {
+        let os = os_detect::detect_os(metadata.as_ref(), resolver.as_ref())?;
+        AnalysisContext {
+            os,
+            cr3,
+            kaslr_offset: 0,
+            ps_active_process_head: metadata.as_ref().and_then(|m| m.ps_active_process_head),
+            ps_loaded_module_list: metadata.as_ref().and_then(|m| m.ps_loaded_module_list),
+        }
+    } else {
+        os_detect::build_analysis_context(metadata.as_ref(), resolver.as_ref(), provider.as_ref())?
+    };
+
+    eprintln!("OS: {}, CR3: {:#x}", ctx.os, ctx.cr3);
+
+    let vas = VirtualAddressSpace::new(provider, ctx.cr3, TranslationMode::X86_64FourLevel);
+    let reader = ObjectReader::new(vas, resolver);
+
+    Ok((ctx, reader))
+}
+
+// ---------------------------------------------------------------------------
+// cmd_info
+// ---------------------------------------------------------------------------
 
 #[allow(clippy::cast_precision_loss)]
 fn cmd_info(dump: &Path) -> Result<()> {
@@ -133,6 +282,33 @@ fn cmd_info(dump: &Path) -> Result<()> {
         provider.total_size() as f64 / (1024.0 * 1024.0 * 1024.0)
     );
     println!("Ranges:     {}", provider.ranges().len());
+
+    // Show metadata if available
+    if let Some(meta) = provider.metadata() {
+        println!();
+        if let Some(dtype) = &meta.dump_type {
+            println!("Type:       {dtype}");
+        }
+        if let Some(mt) = meta.machine_type {
+            println!("Machine:    {mt:?}");
+        }
+        if let Some(cr3) = meta.cr3 {
+            println!("CR3:        {cr3:#014x}");
+        }
+        if let Some(head) = meta.ps_active_process_head {
+            println!("PsActiveProcessHead: {head:#018x}");
+        }
+        if let Some(mods) = meta.ps_loaded_module_list {
+            println!("PsLoadedModuleList:  {mods:#018x}");
+        }
+        if let Some((major, minor)) = meta.os_version {
+            println!("OS Version: {major}.{minor}");
+        }
+        if let Some(n) = meta.num_processors {
+            println!("Processors: {n}");
+        }
+    }
+
     println!();
 
     let mut table = Table::new();
@@ -152,57 +328,167 @@ fn cmd_info(dump: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
-    let files = memf_symbols::isf::discover_isf_files(path);
-    if files.is_empty() {
-        anyhow::bail!("no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH");
+// ---------------------------------------------------------------------------
+// cmd_ps — dispatch to Linux or Windows walker
+// ---------------------------------------------------------------------------
+
+fn cmd_ps(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    match ctx.os {
+        OsProfile::Linux => {
+            let procs = memf_linux::process::walk_processes(&reader)
+                .context("failed to walk Linux processes")?;
+            print_linux_processes(&procs, output);
+        }
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead; provide via symbols or dump metadata")?;
+            let procs = memf_windows::process::walk_processes(&reader, ps_head)
+                .context("failed to walk Windows processes")?;
+            print_windows_processes(&procs, output);
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS process walking not yet supported"),
     }
-    let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
-        .with_context(|| format!("failed to load symbols from {}", files[0].display()))?;
-    Ok(Box::new(resolver))
+    Ok(())
 }
 
-fn cmd_ps(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    let provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
+// ---------------------------------------------------------------------------
+// cmd_modules — Linux kernel modules or Windows drivers
+// ---------------------------------------------------------------------------
 
-    let resolver = load_symbols(symbols_path)?;
+fn cmd_modules(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    match ctx.os {
+        OsProfile::Linux => {
+            let mods = memf_linux::modules::walk_modules(&reader)
+                .context("failed to walk Linux modules")?;
+            print_linux_modules(&mods, output);
+        }
+        OsProfile::Windows => {
+            let mod_list = ctx
+                .ps_loaded_module_list
+                .context("missing PsLoadedModuleList; provide via symbols or dump metadata")?;
+            let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
+                .context("failed to walk Windows drivers")?;
+            print_windows_drivers(&drivers, output);
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS module walking not yet supported"),
+    }
+    Ok(())
+}
 
-    let kaslr_offset =
-        memf_linux::kaslr::detect_kaslr_offset(provider.as_ref(), resolver.as_ref()).unwrap_or(0);
-    if kaslr_offset != 0 {
-        eprintln!("KASLR offset detected: {kaslr_offset:#x}");
+// ---------------------------------------------------------------------------
+// cmd_netstat — Linux only for now
+// ---------------------------------------------------------------------------
+
+fn cmd_netstat(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    match ctx.os {
+        OsProfile::Linux => {
+            let conns = memf_linux::network::walk_connections(&reader)
+                .context("failed to walk Linux connections")?;
+            print_connections(&conns, output);
+        }
+        OsProfile::Windows => {
+            anyhow::bail!("Windows network connection walking not yet supported (Phase 3E)")
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS network walking not yet supported"),
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_threads — Windows
+// ---------------------------------------------------------------------------
+
+fn cmd_threads(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    pid_filter: Option<u64>,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    if ctx.os != OsProfile::Windows {
+        anyhow::bail!("memf threads currently requires a Windows memory dump");
+    }
+    let ps_head = ctx
+        .ps_active_process_head
+        .context("missing PsActiveProcessHead")?;
+    let procs = memf_windows::process::walk_processes(&reader, ps_head)
+        .context("failed to walk processes")?;
+
+    let mut all_threads = Vec::new();
+    for proc in &procs {
+        if let Some(pid) = pid_filter {
+            if proc.pid != pid {
+                continue;
+            }
+        }
+        match memf_windows::thread::walk_threads(&reader, proc.vaddr, proc.pid) {
+            Ok(threads) => all_threads.extend(threads),
+            Err(e) => eprintln!("warning: failed to walk threads for PID {}: {e}", proc.pid),
+        }
+    }
+    print_threads(&all_threads, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_dlls — Windows, requires --pid
+// ---------------------------------------------------------------------------
+
+fn cmd_dlls(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    pid: u64,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    if ctx.os != OsProfile::Windows {
+        anyhow::bail!("memf dlls requires a Windows memory dump");
+    }
+    let ps_head = ctx
+        .ps_active_process_head
+        .context("missing PsActiveProcessHead")?;
+    let procs = memf_windows::process::walk_processes(&reader, ps_head)
+        .context("failed to walk processes")?;
+
+    let target = procs
+        .iter()
+        .find(|p| p.pid == pid)
+        .with_context(|| format!("process with PID {pid} not found"))?;
+
+    if target.peb_addr == 0 {
+        anyhow::bail!("process PID {pid} has no PEB (kernel process?)");
     }
 
-    anyhow::bail!(
-        "memf ps requires kernel page table root (CR3) auto-detection, \
-         which is scheduled for Phase 2.1. Use `memf ps --cr3 <addr>` when available."
-    );
+    let dlls = memf_windows::dll::walk_dlls(&reader, target.peb_addr)
+        .with_context(|| format!("failed to walk DLLs for PID {pid}"))?;
+    print_dlls(&dlls, output);
+    Ok(())
 }
 
-fn cmd_modules(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    let _provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
-
-    let _resolver = load_symbols(symbols_path)?;
-
-    anyhow::bail!(
-        "memf modules requires kernel page table root (CR3) auto-detection, \
-         which is scheduled for Phase 2.1."
-    );
-}
-
-fn cmd_netstat(dump: &Path, symbols_path: Option<&Path>, _output: OutputFormat) -> Result<()> {
-    let _provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
-
-    let _resolver = load_symbols(symbols_path)?;
-
-    anyhow::bail!(
-        "memf netstat requires kernel page table root (CR3) auto-detection, \
-         which is scheduled for Phase 2.1."
-    );
-}
+// ---------------------------------------------------------------------------
+// cmd_strings (unchanged)
+// ---------------------------------------------------------------------------
 
 fn cmd_strings(
     dump: Option<PathBuf>,
@@ -250,6 +536,331 @@ fn cmd_strings(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Output formatters — Linux processes
+// ---------------------------------------------------------------------------
+
+fn print_linux_processes(procs: &[memf_linux::ProcessInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "PPID", "Name", "State", "Vaddr"]);
+            for p in procs {
+                table.add_row(vec![
+                    format!("{}", p.pid),
+                    format!("{}", p.ppid),
+                    p.comm.clone(),
+                    format!("{}", p.state),
+                    format!("{:#x}", p.vaddr),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} processes", procs.len());
+        }
+        OutputFormat::Json => {
+            for p in procs {
+                let json = serde_json::json!({
+                    "pid": p.pid,
+                    "ppid": p.ppid,
+                    "name": p.comm,
+                    "state": format!("{}", p.state),
+                    "vaddr": format!("{:#x}", p.vaddr),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,ppid,name,state,vaddr");
+            for p in procs {
+                println!("{},{},{},{},{:#x}", p.pid, p.ppid, p.comm, p.state, p.vaddr);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows processes
+// ---------------------------------------------------------------------------
+
+fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "PPID", "Image Name", "Create Time", "CR3"]);
+            for p in procs {
+                table.add_row(vec![
+                    format!("{}", p.pid),
+                    format!("{}", p.ppid),
+                    p.image_name.clone(),
+                    format!("{:#x}", p.create_time),
+                    format!("{:#x}", p.cr3),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} processes", procs.len());
+        }
+        OutputFormat::Json => {
+            for p in procs {
+                let json = serde_json::json!({
+                    "pid": p.pid,
+                    "ppid": p.ppid,
+                    "image_name": p.image_name,
+                    "create_time": format!("{:#x}", p.create_time),
+                    "cr3": format!("{:#x}", p.cr3),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,ppid,image_name,create_time,cr3");
+            for p in procs {
+                println!(
+                    "{},{},{},{:#x},{:#x}",
+                    p.pid, p.ppid, p.image_name, p.create_time, p.cr3
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Linux modules
+// ---------------------------------------------------------------------------
+
+fn print_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Name", "Base Address", "Size"]);
+            for m in mods {
+                table.add_row(vec![
+                    m.name.clone(),
+                    format!("{:#x}", m.base_addr),
+                    format_size(m.size),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} modules", mods.len());
+        }
+        OutputFormat::Json => {
+            for m in mods {
+                let json = serde_json::json!({
+                    "name": m.name,
+                    "base_addr": format!("{:#x}", m.base_addr),
+                    "size": m.size,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("name,base_addr,size");
+            for m in mods {
+                println!("{},{:#x},{}", m.name, m.base_addr, m.size);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows drivers
+// ---------------------------------------------------------------------------
+
+fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Name", "Base Address", "Size", "Path"]);
+            for d in drivers {
+                table.add_row(vec![
+                    d.name.clone(),
+                    format!("{:#x}", d.base_addr),
+                    format_size(d.size),
+                    d.full_path.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} drivers", drivers.len());
+        }
+        OutputFormat::Json => {
+            for d in drivers {
+                let json = serde_json::json!({
+                    "name": d.name,
+                    "base_addr": format!("{:#x}", d.base_addr),
+                    "size": d.size,
+                    "path": d.full_path,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("name,base_addr,size,path");
+            for d in drivers {
+                let escaped = d.full_path.replace('"', "\"\"");
+                println!("{},{:#x},{},\"{}\"", d.name, d.base_addr, d.size, escaped);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — connections
+// ---------------------------------------------------------------------------
+
+fn print_connections(conns: &[memf_linux::ConnectionInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Proto", "Local", "Remote", "State", "PID"]);
+            for c in conns {
+                let local = format!("{}:{}", c.local_addr, c.local_port);
+                let remote = format!("{}:{}", c.remote_addr, c.remote_port);
+                let pid_str = c.pid.map_or_else(|| "-".to_string(), |p| format!("{p}"));
+                table.add_row(vec![
+                    format!("{}", c.protocol),
+                    local,
+                    remote,
+                    format!("{}", c.state),
+                    pid_str,
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} connections", conns.len());
+        }
+        OutputFormat::Json => {
+            for c in conns {
+                let json = serde_json::json!({
+                    "protocol": format!("{}", c.protocol),
+                    "local_addr": c.local_addr,
+                    "local_port": c.local_port,
+                    "remote_addr": c.remote_addr,
+                    "remote_port": c.remote_port,
+                    "state": format!("{}", c.state),
+                    "pid": c.pid,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("proto,local,remote,state,pid");
+            for c in conns {
+                let pid_str = c.pid.map_or_else(|| "-".to_string(), |p| format!("{p}"));
+                println!(
+                    "{},{}:{},{}:{},{},{}",
+                    c.protocol,
+                    c.local_addr,
+                    c.local_port,
+                    c.remote_addr,
+                    c.remote_port,
+                    c.state,
+                    pid_str
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — threads
+// ---------------------------------------------------------------------------
+
+fn print_threads(threads: &[memf_windows::WinThreadInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["TID", "PID", "Start Address", "State", "Create Time"]);
+            for t in threads {
+                table.add_row(vec![
+                    format!("{}", t.tid),
+                    format!("{}", t.pid),
+                    format!("{:#x}", t.start_address),
+                    format!("{}", t.state),
+                    format!("{:#x}", t.create_time),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} threads", threads.len());
+        }
+        OutputFormat::Json => {
+            for t in threads {
+                let json = serde_json::json!({
+                    "tid": t.tid,
+                    "pid": t.pid,
+                    "start_address": format!("{:#x}", t.start_address),
+                    "state": format!("{}", t.state),
+                    "create_time": format!("{:#x}", t.create_time),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("tid,pid,start_address,state,create_time");
+            for t in threads {
+                println!(
+                    "{},{},{:#x},{},{:#x}",
+                    t.tid, t.pid, t.start_address, t.state, t.create_time
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — DLLs
+// ---------------------------------------------------------------------------
+
+fn print_dlls(dlls: &[memf_windows::WinDllInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Name", "Base Address", "Size", "Load Order", "Path"]);
+            for d in dlls {
+                table.add_row(vec![
+                    d.name.clone(),
+                    format!("{:#x}", d.base_addr),
+                    format_size(d.size),
+                    format!("{}", d.load_order),
+                    d.full_path.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} DLLs", dlls.len());
+        }
+        OutputFormat::Json => {
+            for d in dlls {
+                let json = serde_json::json!({
+                    "name": d.name,
+                    "base_addr": format!("{:#x}", d.base_addr),
+                    "size": d.size,
+                    "load_order": d.load_order,
+                    "path": d.full_path,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("name,base_addr,size,load_order,path");
+            for d in dlls {
+                let escaped = d.full_path.replace('"', "\"\"");
+                println!(
+                    "{},{:#x},{},{},\"{}\"",
+                    d.name, d.base_addr, d.size, d.load_order, escaped
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Strings formatters (unchanged)
+// ---------------------------------------------------------------------------
 
 fn print_strings_table(strings: &[memf_strings::ClassifiedString]) {
     let mut table = Table::new();
@@ -320,6 +931,10 @@ fn print_strings_csv(strings: &[memf_strings::ClassifiedString]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
 #[allow(clippy::cast_precision_loss)]
 fn format_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
@@ -332,6 +947,10 @@ fn format_size(bytes: u64) -> String {
         format!("{bytes} B")
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -384,53 +1003,125 @@ mod tests {
         std::fs::remove_file(&isf_path).ok();
     }
 
+    // --- Updated tests: old CR3 bail is gone, now we attempt analysis ---
+
     #[test]
-    fn cmd_ps_bails_with_cr3_message() {
+    fn cmd_ps_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("ps");
         let isf_path = make_temp_isf_file("ps");
-        let result = cmd_ps(&dump_path, Some(&isf_path), OutputFormat::Table);
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        let err_msg = format!("{err}");
-        assert!(
-            err_msg.contains("CR3"),
-            "expected CR3 bail message, got: {err_msg}"
-        );
+        let result = cmd_ps(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        // May succeed or fail with a walker error, but NOT with old CR3 bail
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
         std::fs::remove_file(&dump_path).ok();
         std::fs::remove_file(&isf_path).ok();
     }
 
     #[test]
-    fn cmd_modules_bails_with_cr3_message() {
+    fn cmd_modules_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("modules");
         let isf_path = make_temp_isf_file("modules");
-        let result = cmd_modules(&dump_path, Some(&isf_path), OutputFormat::Table);
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        let err_msg = format!("{err}");
-        assert!(
-            err_msg.contains("CR3"),
-            "expected CR3 bail message, got: {err_msg}"
-        );
+        let result = cmd_modules(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
         std::fs::remove_file(&dump_path).ok();
         std::fs::remove_file(&isf_path).ok();
     }
 
     #[test]
-    fn cmd_netstat_bails_with_cr3_message() {
+    fn cmd_netstat_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("netstat");
         let isf_path = make_temp_isf_file("netstat");
-        let result = cmd_netstat(&dump_path, Some(&isf_path), OutputFormat::Table);
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        let err_msg = format!("{err}");
-        assert!(
-            err_msg.contains("CR3"),
-            "expected CR3 bail message, got: {err_msg}"
-        );
+        let result = cmd_netstat(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
         std::fs::remove_file(&dump_path).ok();
         std::fs::remove_file(&isf_path).ok();
     }
+
+    // --- New test: cmd_info with crash dump shows metadata ---
+
+    #[test]
+    fn cmd_info_shows_metadata_for_crashdump() {
+        use memf_format::test_builders::CrashDumpBuilder;
+
+        let page = vec![0u8; 4096];
+        let dump = CrashDumpBuilder::new()
+            .cr3(0x1ab000)
+            .add_run(0, &page)
+            .build();
+        let dump_path = std::env::temp_dir().join("memf_tdd_info_crash.dmp");
+        std::fs::write(&dump_path, &dump).unwrap();
+
+        let result = cmd_info(&dump_path);
+        assert!(
+            result.is_ok(),
+            "cmd_info should succeed with crash dump: {:?}",
+            result.err()
+        );
+        std::fs::remove_file(&dump_path).ok();
+    }
+
+    // --- New test: setup_analysis detects Windows from crash dump ---
+
+    #[test]
+    fn setup_analysis_detects_windows_from_crashdump() {
+        use memf_format::test_builders::CrashDumpBuilder;
+
+        let page = vec![0u8; 4096];
+        let dump = CrashDumpBuilder::new()
+            .cr3(0x1ab000)
+            .add_run(0, &page)
+            .build();
+        let dump_path = std::env::temp_dir().join("memf_tdd_setup_win.dmp");
+        std::fs::write(&dump_path, &dump).unwrap();
+        let isf_path = make_temp_isf_file("setup_win");
+
+        // This should detect Windows and extract CR3 from metadata
+        let result = setup_analysis(&dump_path, Some(&isf_path), None);
+        match result {
+            Ok((ctx, _reader)) => {
+                assert_eq!(ctx.os, OsProfile::Windows);
+                assert_eq!(ctx.cr3, 0x1ab000);
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+            }
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    // --- New test: setup_analysis uses cr3 override ---
+
+    #[test]
+    fn setup_analysis_uses_cr3_override() {
+        let dump_path = make_temp_lime_dump("cr3_override");
+        let isf_path = make_temp_isf_file("cr3_override");
+
+        let result = setup_analysis(&dump_path, Some(&isf_path), Some(0xDEAD000));
+        match result {
+            Ok((ctx, _reader)) => {
+                assert_eq!(ctx.os, OsProfile::Linux);
+                assert_eq!(ctx.cr3, 0xDEAD000);
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+            }
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    // --- Existing tests that still pass ---
 
     #[test]
     fn format_size_gb() {

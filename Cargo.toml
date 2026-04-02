@@ -74,6 +74,7 @@ memf-strings.workspace = true
 memf-symbols.workspace = true
 memf-core.workspace = true
 memf-linux.workspace = true
+memf-windows.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 comfy-table.workspace = true
