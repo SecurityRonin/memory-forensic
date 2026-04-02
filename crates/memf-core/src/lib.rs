@@ -10,8 +10,10 @@
 pub mod object_reader;
 pub mod test_builders;
 pub mod vas;
+pub mod pagefile;
 
 /// Error type for memf-core operations.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Physical memory read error.
@@ -53,6 +55,21 @@ pub enum Error {
     /// The list walk exceeded the maximum iteration count (cycle protection).
     #[error("list walk exceeded {0} iterations (possible cycle)")]
     ListCycle(usize),
+
+    /// Page is in a pagefile that was not provided.
+    #[error("page at {vaddr:#018x} paged out to pagefile {pagefile_num} offset {page_offset:#x}")]
+    PagedOut {
+        /// Virtual address of the faulting page.
+        vaddr: u64,
+        /// Pagefile number (0 = pagefile.sys, 1-15 = secondary).
+        pagefile_num: u8,
+        /// Page offset within the pagefile.
+        page_offset: u64,
+    },
+
+    /// Page uses a prototype PTE (shared section, not yet supported).
+    #[error("prototype PTE at {0:#018x} (not yet supported)")]
+    PrototypePte(u64),
 }
 
 /// A Result alias for memf-core.
@@ -123,5 +140,26 @@ mod tests {
         let phys_err = memf_format::Error::from(io_err);
         let e: Error = Error::from(phys_err);
         assert!(matches!(e, Error::Physical(_)));
+    }
+
+    #[test]
+    fn error_display_paged_out() {
+        let e = Error::PagedOut {
+            vaddr: 0xFFFF_8000_0000_2000,
+            pagefile_num: 0,
+            page_offset: 0x1234,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("0xffff800000002000"));
+        assert!(msg.contains("pagefile 0"));
+        assert!(msg.contains("0x1234"));
+    }
+
+    #[test]
+    fn error_display_prototype_pte() {
+        let e = Error::PrototypePte(0xFFFF_8000_DEAD_0000);
+        let msg = e.to_string();
+        assert!(msg.contains("0xffff8000dead0000"));
+        assert!(msg.contains("prototype PTE"));
     }
 }

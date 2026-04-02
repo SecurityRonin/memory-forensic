@@ -11,6 +11,8 @@ memf-format.workspace = true
 memf-symbols.workspace = true
 thiserror.workspace = true
 bytemuck.workspace = true
+memmap2.workspace = true
+rust-lzxpress.workspace = true
 
 [lints]
 workspace = true
