@@ -23,6 +23,21 @@ const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PRESENT: u64 = 1;
 const PS: u64 = 1 << 7;
 
+/// Internal result of page table walk — not exposed publicly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranslationResult {
+    /// Page is in physical memory at this address.
+    Physical(u64),
+    /// Page is demand-zero (all zeroes).
+    DemandZero,
+    /// Page is in a pagefile.
+    PagefileEntry { pagefile_num: u8, page_offset: u64 },
+    /// Page is a transition page (still in physical memory at this PFN-derived address).
+    Transition(u64),
+    /// Page uses a prototype PTE (Phase 3F-B).
+    Prototype,
+}
+
 impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     /// Create a new virtual address space.
     pub fn new(physical: P, page_table_root: u64, mode: TranslationMode) -> Self {
@@ -94,6 +109,23 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     }
 
     fn walk_x86_64_4level(&self, vaddr: u64) -> Result<u64> {
+        let result = self.walk_x86_64_4level_internal(vaddr)?;
+        match result {
+            TranslationResult::Physical(addr) | TranslationResult::Transition(addr) => Ok(addr),
+            TranslationResult::DemandZero => Err(Error::PageNotPresent(vaddr)),
+            TranslationResult::PagefileEntry {
+                pagefile_num,
+                page_offset,
+            } => Err(Error::PagedOut {
+                vaddr,
+                pagefile_num,
+                page_offset,
+            }),
+            TranslationResult::Prototype => Err(Error::PrototypePte(vaddr)),
+        }
+    }
+
+    fn walk_x86_64_4level_internal(&self, vaddr: u64) -> Result<TranslationResult> {
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pdpt_idx = (vaddr >> 30) & 0x1FF;
         let pd_idx = (vaddr >> 21) & 0x1FF;
@@ -117,7 +149,7 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         if pdpte & PS != 0 {
             let phys_base = pdpte & 0x000F_FFFF_C000_0000;
             let offset_1g = vaddr & 0x3FFF_FFFF;
-            return Ok(phys_base | offset_1g);
+            return Ok(TranslationResult::Physical(phys_base | offset_1g));
         }
 
         // PD
@@ -131,18 +163,39 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         if pde & PS != 0 {
             let phys_base = pde & 0x000F_FFFF_FFE0_0000;
             let offset_2m = vaddr & 0x1F_FFFF;
-            return Ok(phys_base | offset_2m);
+            return Ok(TranslationResult::Physical(phys_base | offset_2m));
         }
 
         // PT (4K page)
         let pt_base = pde & ADDR_MASK;
         let pte = self.read_pte(pt_base + pt_idx * 8)?;
-        if pte & PRESENT == 0 {
-            return Err(Error::PageNotPresent(vaddr));
+
+        if pte & PRESENT != 0 {
+            let phys_base = pte & ADDR_MASK;
+            return Ok(TranslationResult::Physical(phys_base | page_offset));
         }
 
-        let phys_base = pte & ADDR_MASK;
-        Ok(phys_base | page_offset)
+        // Non-present PTE decoding (PT level only)
+        Ok(Self::decode_non_present_pte(pte, page_offset))
+    }
+
+    fn decode_non_present_pte(pte: u64, page_offset: u64) -> TranslationResult {
+        if pte == 0 {
+            return TranslationResult::DemandZero;
+        }
+        if pte & (1 << 11) != 0 {
+            let pfn = (pte >> 12) & 0xF_FFFF_FFFF;
+            return TranslationResult::Transition(pfn * 0x1000 + page_offset);
+        }
+        if pte & (1 << 10) != 0 {
+            return TranslationResult::Prototype;
+        }
+        let pagefile_num = ((pte >> 1) & 0xF) as u8;
+        let pf_page_offset = (pte >> 12) & 0xF_FFFF_FFFF;
+        TranslationResult::PagefileEntry {
+            pagefile_num,
+            page_offset: pf_page_offset,
+        }
     }
 }
 
@@ -287,6 +340,98 @@ mod tests {
         let n = phys.read_phys(0x5000, &mut buf).unwrap();
         assert_eq!(n, 4);
         assert_eq!(buf, [0xAB; 4]);
+    }
+
+    #[test]
+    fn demand_zero_pte_returns_page_not_present() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_demand_zero(vaddr)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let result = vas.virt_to_phys(vaddr);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PageNotPresent(addr) => assert_eq!(addr, vaddr),
+            other => panic!("expected PageNotPresent, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn transition_pte_resolves_to_physical() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let pfn: u64 = 0x800;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_transition(vaddr, pfn)
+            .write_phys(pfn * 0x1000, &[0xDE, 0xAD, 0xBE, 0xEF])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let paddr = vas.virt_to_phys(vaddr).unwrap();
+        assert_eq!(paddr, pfn * 0x1000);
+    }
+
+    #[test]
+    fn transition_pte_with_offset() {
+        let vaddr_base: u64 = 0xFFFF_8000_0010_0000;
+        let vaddr: u64 = vaddr_base + 0x42;
+        let pfn: u64 = 0x800;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_transition(vaddr_base, pfn)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let paddr = vas.virt_to_phys(vaddr).unwrap();
+        assert_eq!(paddr, pfn * 0x1000 + 0x42);
+    }
+
+    #[test]
+    fn prototype_pte_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_prototype(vaddr)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let result = vas.virt_to_phys(vaddr);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PrototypePte(addr) => assert_eq!(addr, vaddr),
+            other => panic!("expected PrototypePte, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn pagefile_pte_returns_paged_out() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_pagefile(vaddr, 0, 0x1234)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let result = vas.virt_to_phys(vaddr);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PagedOut { vaddr: v, pagefile_num, page_offset } => {
+                assert_eq!(v, vaddr);
+                assert_eq!(pagefile_num, 0);
+                assert_eq!(page_offset, 0x1234);
+            }
+            other => panic!("expected PagedOut, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn pagefile_pte_number_routing() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_pagefile(vaddr, 2, 0xABCD)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let result = vas.virt_to_phys(vaddr);
+        match result.unwrap_err() {
+            Error::PagedOut { pagefile_num, page_offset, .. } => {
+                assert_eq!(pagefile_num, 2);
+                assert_eq!(page_offset, 0xABCD);
+            }
+            other => panic!("expected PagedOut, got: {other}"),
+        }
     }
 
     #[test]
