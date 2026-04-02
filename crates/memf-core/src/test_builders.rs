@@ -211,6 +211,78 @@ impl PageTableBuilder {
         self
     }
 
+    /// Ensure PML4→PDPT→PD→PT hierarchy exists for a 4K vaddr, returning the PT entry address.
+    fn ensure_pt_entry(&mut self, vaddr: u64) -> u64 {
+        let pml4_idx = (vaddr >> 39) & 0x1FF;
+        let pdpt_idx = (vaddr >> 30) & 0x1FF;
+        let pd_idx = (vaddr >> 21) & 0x1FF;
+        let pt_idx = (vaddr >> 12) & 0x1FF;
+
+        // PML4 -> PDPT
+        let pml4e_addr = self.cr3 + pml4_idx * 8;
+        let mut pml4e = self.mem.read_u64(pml4e_addr);
+        if pml4e & flags::PRESENT == 0 {
+            let pdpt_page = self.alloc_page();
+            pml4e = pdpt_page | flags::PRESENT | flags::WRITABLE;
+            self.mem.write_u64(pml4e_addr, pml4e);
+        }
+        let pdpt_base = pml4e & Self::ADDR_MASK;
+
+        // PDPT -> PD
+        let pdpte_addr = pdpt_base + pdpt_idx * 8;
+        let mut pdpte = self.mem.read_u64(pdpte_addr);
+        if pdpte & flags::PRESENT == 0 {
+            let pd_page = self.alloc_page();
+            pdpte = pd_page | flags::PRESENT | flags::WRITABLE;
+            self.mem.write_u64(pdpte_addr, pdpte);
+        }
+        let pd_base = pdpte & Self::ADDR_MASK;
+
+        // PD -> PT
+        let pde_addr = pd_base + pd_idx * 8;
+        let mut pde = self.mem.read_u64(pde_addr);
+        if pde & flags::PRESENT == 0 {
+            let pt_page = self.alloc_page();
+            pde = pt_page | flags::PRESENT | flags::WRITABLE;
+            self.mem.write_u64(pde_addr, pde);
+        }
+        let pt_base = pde & Self::ADDR_MASK;
+
+        pt_base + pt_idx * 8
+    }
+
+    /// Map a demand-zero PTE: upper levels present, PT entry = 0.
+    pub fn map_demand_zero(mut self, vaddr: u64) -> Self {
+        let pte_addr = self.ensure_pt_entry(vaddr);
+        // PT entry is already zero from page allocation; write explicitly for clarity
+        self.mem.write_u64(pte_addr, 0);
+        self
+    }
+
+    /// Map a transition PTE: PRESENT=0, bit 11 (TRANSITION)=1, PFN in bits [12..48].
+    pub fn map_transition(mut self, vaddr: u64, pfn: u64) -> Self {
+        let pte_addr = self.ensure_pt_entry(vaddr);
+        let pte = (pfn << 12) | (1 << 11);
+        self.mem.write_u64(pte_addr, pte);
+        self
+    }
+
+    /// Map a pagefile PTE: PRESENT=0, pagefile_num in bits [1..5], page_offset in bits [12..48].
+    pub fn map_pagefile(mut self, vaddr: u64, pagefile_num: u8, page_offset: u64) -> Self {
+        let pte_addr = self.ensure_pt_entry(vaddr);
+        let pte = ((pagefile_num as u64 & 0xF) << 1) | (page_offset << 12);
+        self.mem.write_u64(pte_addr, pte);
+        self
+    }
+
+    /// Map a prototype PTE: PRESENT=0, bit 10 (PROTOTYPE)=1.
+    pub fn map_prototype(mut self, vaddr: u64) -> Self {
+        let pte_addr = self.ensure_pt_entry(vaddr);
+        let pte: u64 = 1 << 10;
+        self.mem.write_u64(pte_addr, pte);
+        self
+    }
+
     /// Write data bytes at a physical address in the synthetic memory.
     pub fn write_phys(mut self, addr: u64, data: &[u8]) -> Self {
         self.mem.write_bytes(addr, data);
@@ -340,5 +412,98 @@ mod tests {
         let mock = MockPagefileSource::new(1, vec![]);
         assert_eq!(mock.pagefile_number(), 1);
         assert!(mock.read_page(0x999).unwrap().is_none());
+    }
+
+    #[test]
+    fn page_table_builder_map_demand_zero() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_demand_zero(vaddr)
+            .build();
+        let pml4_idx = (vaddr >> 39) & 0x1FF;
+        let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
+        assert_ne!(pml4e & flags::PRESENT, 0, "PML4 entry should be present");
+        let pdpt_base = pml4e & PageTableBuilder::ADDR_MASK;
+        let pdpt_idx = (vaddr >> 30) & 0x1FF;
+        let pdpte = mem.read_u64(pdpt_base + pdpt_idx * 8);
+        assert_ne!(pdpte & flags::PRESENT, 0, "PDPT entry should be present");
+        let pd_base = pdpte & PageTableBuilder::ADDR_MASK;
+        let pd_idx = (vaddr >> 21) & 0x1FF;
+        let pde = mem.read_u64(pd_base + pd_idx * 8);
+        assert_ne!(pde & flags::PRESENT, 0, "PD entry should be present");
+        let pt_base = pde & PageTableBuilder::ADDR_MASK;
+        let pt_idx = (vaddr >> 12) & 0x1FF;
+        let pte = mem.read_u64(pt_base + pt_idx * 8);
+        assert_eq!(pte, 0, "demand-zero PTE must be all zeros");
+    }
+
+    #[test]
+    fn page_table_builder_map_transition_pte() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let pfn: u64 = 0x800;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_transition(vaddr, pfn)
+            .build();
+        let pml4_idx = (vaddr >> 39) & 0x1FF;
+        let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
+        let pdpt_base = pml4e & PageTableBuilder::ADDR_MASK;
+        let pdpt_idx = (vaddr >> 30) & 0x1FF;
+        let pdpte = mem.read_u64(pdpt_base + pdpt_idx * 8);
+        let pd_base = pdpte & PageTableBuilder::ADDR_MASK;
+        let pd_idx = (vaddr >> 21) & 0x1FF;
+        let pde = mem.read_u64(pd_base + pd_idx * 8);
+        let pt_base = pde & PageTableBuilder::ADDR_MASK;
+        let pt_idx = (vaddr >> 12) & 0x1FF;
+        let pte = mem.read_u64(pt_base + pt_idx * 8);
+        assert_eq!(pte & 1, 0, "PRESENT must be clear");
+        assert_ne!(pte & (1 << 11), 0, "TRANSITION bit must be set");
+        assert_eq!((pte >> 12) & 0xF_FFFF_FFFF, pfn, "PFN must match");
+    }
+
+    #[test]
+    fn page_table_builder_map_pagefile_pte() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let pagefile_num: u8 = 0;
+        let page_offset: u64 = 0x5678;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_pagefile(vaddr, pagefile_num, page_offset)
+            .build();
+        let pml4_idx = (vaddr >> 39) & 0x1FF;
+        let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
+        let pdpt_base = pml4e & PageTableBuilder::ADDR_MASK;
+        let pdpt_idx = (vaddr >> 30) & 0x1FF;
+        let pdpte = mem.read_u64(pdpt_base + pdpt_idx * 8);
+        let pd_base = pdpte & PageTableBuilder::ADDR_MASK;
+        let pd_idx = (vaddr >> 21) & 0x1FF;
+        let pde = mem.read_u64(pd_base + pd_idx * 8);
+        let pt_base = pde & PageTableBuilder::ADDR_MASK;
+        let pt_idx = (vaddr >> 12) & 0x1FF;
+        let pte = mem.read_u64(pt_base + pt_idx * 8);
+        assert_eq!(pte & 1, 0, "PRESENT must be clear");
+        assert_eq!((pte >> 1) & 0xF, pagefile_num as u64, "pagefile_num");
+        assert_eq!(pte & (1 << 10), 0, "prototype bit must be clear");
+        assert_eq!(pte & (1 << 11), 0, "transition bit must be clear");
+        assert_eq!((pte >> 12) & 0xF_FFFF_FFFF, page_offset, "page_offset");
+    }
+
+    #[test]
+    fn page_table_builder_map_prototype_pte() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_prototype(vaddr)
+            .build();
+        let pml4_idx = (vaddr >> 39) & 0x1FF;
+        let pml4e = mem.read_u64(cr3 + pml4_idx * 8);
+        let pdpt_base = pml4e & PageTableBuilder::ADDR_MASK;
+        let pdpt_idx = (vaddr >> 30) & 0x1FF;
+        let pdpte = mem.read_u64(pdpt_base + pdpt_idx * 8);
+        let pd_base = pdpte & PageTableBuilder::ADDR_MASK;
+        let pd_idx = (vaddr >> 21) & 0x1FF;
+        let pde = mem.read_u64(pd_base + pd_idx * 8);
+        let pt_base = pde & PageTableBuilder::ADDR_MASK;
+        let pt_idx = (vaddr >> 12) & 0x1FF;
+        let pte = mem.read_u64(pt_base + pt_idx * 8);
+        assert_eq!(pte & 1, 0, "PRESENT must be clear");
+        assert_ne!(pte & (1 << 10), 0, "PROTOTYPE bit must be set");
     }
 }
