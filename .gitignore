@@ -1,1 +1,7 @@
 /target
+
+# Visual brainstorming sessions
+.superpowers/
+
+# Binary test data (memory dumps, disk images, archives)
+tests/data/

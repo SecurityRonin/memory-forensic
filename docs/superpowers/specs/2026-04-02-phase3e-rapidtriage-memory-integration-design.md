@@ -27,12 +27,16 @@ rt-navigator depends on these crates to run walkers and format providers.
 
 ### UAC Memory Dump Detection
 
-UAC collections may contain a `memory_dump/` directory with files like `avml.lime`, `*.dmp`, `*.vmem`, `*.raw`. The existing UAC parsing pipeline (in rt-parser-uac) is extended to:
+UAC collections may contain a `memory_dump/` directory with files like `avml.lime`, `*.dmp`, `*.vmem`, `*.raw`. These dumps may also be compressed as `.zip` or `.7z` archives. The existing UAC parsing pipeline (in rt-parser-uac) is extended to:
 
-1. Probe `memory_dump/` for recognized formats using `memf_format::open_dump()`
-2. If a valid dump is found, run OS detection via `memf_core::os_detect`
-3. Run applicable walkers (processes, network, modules, DLLs/libs)
-4. Populate memory forensic fields in `InvestigationData`
+1. Scan `memory_dump/` for dump files — both raw and compressed (`.zip`, `.7z`)
+2. If compressed, decompress to a temp directory before probing
+3. Probe for recognized formats using `memf_format::open_dump()`
+4. If a valid dump is found, run OS detection via `memf_core::os_detect`
+5. Run applicable walkers (processes, network, modules, DLLs/libs)
+6. Populate memory forensic fields in `InvestigationData`
+
+**Decompression:** The decompression step lives in the RapidTriage UAC pipeline (not in memf-format), since it's an artifact handling concern. memf-format's `open_dump()` always receives a path to an uncompressed file. Supported archive formats: `.zip` (via `zip` crate) and `.7z` (via `sevenz-rust` crate). If the archive contains multiple files, the pipeline probes each one until a recognized dump format is found.
 
 If no memory dump is present in the collection, the memory fields remain empty and memory-related views are hidden from the sidebar.
 
@@ -305,12 +309,15 @@ Below the bars: one-line summary with aggregate metrics.
 | Total Recall 2024 | Win11 | Crash dump | Modern Windows version coverage |
 | 13Cubed CTF | Win10 x64 | Unknown | Windows 10 coverage |
 
+Note: Test dumps may be stored compressed (`.zip`, `.7z`). The `csctf-2024_forensics_memory.zip` contains `mem.dmp` (2 GB uncompressed). Tests that use compressed dumps also exercise the decompression pipeline.
+
 ### Test Levels
 
 1. **Unit tests:** Network anomaly detection algorithm (flagging thresholds, edge cases)
 2. **Unit tests:** Unified type conversion from OS-specific walker output
-3. **Integration tests:** UAC pipeline with memory dump detection and extraction
-4. **Real-data tests:** Run against test corpus dumps, verify process/connection counts match expected values (marked `#[ignore]` for CI, run manually)
+3. **Unit tests:** Archive decompression (`.zip`, `.7z`) with valid and invalid contents
+4. **Integration tests:** UAC pipeline with memory dump detection, decompression, and extraction
+5. **Real-data tests:** Run against test corpus dumps, verify process/connection counts match expected values (marked `#[ignore]` for CI, run manually)
 
 ## Decomposition into Sub-Projects
 
