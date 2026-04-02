@@ -30,19 +30,19 @@ rt-navigator depends on these crates to run walkers and format providers.
 UAC collections may contain a `memory_dump/` directory with files like `avml.lime`, `*.dmp`, `*.vmem`, `*.raw`. These dumps may also be compressed as `.zip` or `.7z` archives. The existing UAC parsing pipeline (in rt-parser-uac) is extended to:
 
 1. Scan `memory_dump/` for dump files — both raw and compressed (`.zip`, `.7z`)
-2. If compressed, decompress to a temp directory before probing
-3. Probe for recognized formats using `memf_format::open_dump()`
-4. If a valid dump is found, run OS detection via `memf_core::os_detect`
-5. Run applicable walkers (processes, network, modules, DLLs/libs)
-6. Populate memory forensic fields in `InvestigationData`
+2. Probe for recognized formats using `memf_format::open_dump()` (handles decompression transparently)
+3. If a valid dump is found, run OS detection via `memf_core::os_detect`
+4. Run applicable walkers (processes, network, modules, DLLs/libs)
+5. Populate memory forensic fields in `InvestigationData`
 
-**Decompression:** The decompression step lives in the RapidTriage UAC pipeline (not in memf-format), since it's an artifact handling concern. memf-format's `open_dump()` always receives a path to an uncompressed file. Supported archive formats: `.zip` (via `zip` crate) and `.7z` (via `sevenz-rust` crate). If the archive contains multiple files, the pipeline probes each one until a recognized dump format is found.
+**Decompression:** Transparent archive decompression lives in `memf-format`'s `open_dump()`, so both the `memf` CLI and RapidTriage benefit from it. When `open_dump()` detects a `.zip` (PK header `50 4B 03 04`) or `.7z` (`37 7A BC AF 27 1C`) archive, it extracts to a temp directory, probes each extracted file for recognized dump formats, and opens the best match. The returned provider wraps both the inner `PhysicalMemoryProvider` and the `TempDir` (keeping extracted files alive). Supported archive formats: `.zip` (via `zip` crate) and `.7z` (via `sevenz-rust` crate).
 
 If no memory dump is present in the collection, the memory fields remain empty and memory-related views are hidden from the sidebar.
 
 ### What Stays in memory-forensic
 
 - All library crates: memf-format, memf-core, memf-symbols, memf-linux, memf-windows, memf-strings
+- Transparent `.zip`/`.7z` decompression in `memf-format::open_dump()` (shared by all consumers)
 - The `memf` CLI binary for standalone non-interactive use (`memf ps`, `memf net`, `memf mod`, `memf lib`, `memf info`, `memf strings`)
 - No TUI code
 
@@ -313,11 +313,12 @@ Note: Test dumps may be stored compressed (`.zip`, `.7z`). The `csctf-2024_foren
 
 ### Test Levels
 
-1. **Unit tests:** Network anomaly detection algorithm (flagging thresholds, edge cases)
-2. **Unit tests:** Unified type conversion from OS-specific walker output
-3. **Unit tests:** Archive decompression (`.zip`, `.7z`) with valid and invalid contents
-4. **Integration tests:** UAC pipeline with memory dump detection, decompression, and extraction
-5. **Real-data tests:** Run against test corpus dumps, verify process/connection counts match expected values (marked `#[ignore]` for CI, run manually)
+1. **Unit tests (memf-format):** Archive decompression — `.zip` and `.7z` containing valid dumps, invalid contents, multi-file archives
+2. **Unit tests (RapidTriage):** Network anomaly detection algorithm (flagging thresholds, edge cases)
+3. **Unit tests (RapidTriage):** Unified type conversion from OS-specific walker output
+4. **Integration tests (memf-format):** `open_dump()` with compressed test dumps (cridex_memdump.zip, csctf-2024_forensics_memory.zip)
+5. **Integration tests (RapidTriage):** UAC pipeline with memory dump detection and extraction
+6. **Real-data tests:** Run against test corpus dumps, verify process/connection counts match expected values (marked `#[ignore]` for CI, run manually)
 
 ## Decomposition into Sub-Projects
 
