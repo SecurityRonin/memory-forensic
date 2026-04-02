@@ -165,6 +165,13 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         Err(Error::ListCycle(MAX_LIST_ITERATIONS))
     }
 
+    /// Read `len` raw bytes from virtual memory at `vaddr`.
+    pub fn read_bytes(&self, vaddr: u64, len: usize) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        self.vas.read_virt(vaddr, &mut buf)?;
+        Ok(buf)
+    }
+
     fn read_u64_at(&self, vaddr: u64) -> Result<u64> {
         let mut buf = [0u8; 8];
         self.vas.read_virt(vaddr, &mut buf)?;
