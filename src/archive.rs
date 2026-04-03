@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -75,9 +76,10 @@ fn extract_from_zip(path: &Path) -> Result<NamedTempFile> {
         .context("archive contains no extractable files")?
         .to_string();
 
+    let size = entries.iter().find(|(n, _)| n == &best).map(|(_, s)| *s);
     let mut src = archive.by_name(&best)?;
     let mut tmp = NamedTempFile::new()?;
-    std::io::copy(&mut src, &mut tmp)?;
+    copy_with_progress(&mut src, &mut tmp, &best, size)?;
     Ok(tmp)
 }
 
@@ -97,12 +99,14 @@ fn extract_from_7z(path: &Path) -> Result<NamedTempFile> {
         .context("archive contains no extractable files")?
         .to_string();
 
+    let best_size = entries.iter().find(|(n, _)| n == &best).map(|(_, s)| *s);
     let mut tmp = NamedTempFile::new()?;
     let mut found = false;
     reader
         .for_each_entries(|entry, rd| {
             if entry.name == best {
-                std::io::copy(rd, &mut tmp).map_err(sevenz_rust::Error::io)?;
+                copy_with_progress(rd, &mut tmp, &best, best_size)
+                    .map_err(sevenz_rust::Error::io)?;
                 found = true;
                 return Ok(false); // stop iteration
             }
@@ -114,6 +118,55 @@ fn extract_from_7z(path: &Path) -> Result<NamedTempFile> {
         bail!("entry {best:?} not found in 7z archive");
     }
     Ok(tmp)
+}
+
+/// Copy `src` to `dst` with a terminal progress bar.
+/// Shows a determinate bar when `total` is known, spinner otherwise.
+fn copy_with_progress(
+    src: &mut dyn Read,
+    dst: &mut dyn std::io::Write,
+    name: &str,
+    total: Option<u64>,
+) -> std::io::Result<u64> {
+    let pb = if let Some(total) = total {
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("  extracting {msg} [{bar:30}] {bytes}/{total_bytes}")
+                .expect("valid template")
+                .progress_chars("=> "),
+        );
+        pb
+    } else {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("  extracting {msg} {bytes}")
+                .expect("valid template"),
+        );
+        pb
+    };
+
+    let short_name = Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(name);
+    pb.set_message(short_name.to_string());
+
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut written = 0u64;
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n])?;
+        written += n as u64;
+        pb.set_position(written);
+    }
+
+    pb.finish_and_clear();
+    Ok(written)
 }
 
 /// Pick the best filename from a list of (name, uncompressed_size) entries.
@@ -270,7 +323,7 @@ mod tests {
         let mut writer = sevenz_rust::SevenZWriter::create(tmp.path()).unwrap();
         for (name, data) in files {
             let mut entry = sevenz_rust::SevenZArchiveEntry::new();
-            entry.name = name.to_string();
+            entry.name = (*name).to_string();
             entry.has_stream = true;
             writer
                 .push_archive_entry(entry, Some(std::io::Cursor::new(data.to_vec())))

@@ -44,6 +44,7 @@ pdb = "0.8"
 ureq = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sevenz-rust = "0.6"
+indicatif = "0.17"
 tempfile = "3"
 
 [workspace.lints.clippy]
@@ -84,6 +85,7 @@ comfy-table.workspace = true
 serde_json.workspace = true
 zip.workspace = true
 sevenz-rust.workspace = true
+indicatif.workspace = true
 tempfile.workspace = true
 
 [lints]
