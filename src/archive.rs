@@ -32,6 +32,11 @@ impl ResolvedDump {
             Self::Extracted(t) => t.path(),
         }
     }
+
+    /// Whether the dump was extracted from an archive (needs raw fallback).
+    pub fn is_extracted(&self) -> bool {
+        matches!(self, Self::Extracted(_))
+    }
 }
 
 /// If `path` is a zip or 7z archive (detected by magic bytes), extract the best

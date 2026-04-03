@@ -174,7 +174,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Info { dump } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_info(resolved.path())
+            cmd_info(resolved.path(), resolved.is_extracted())
         }
         Commands::Ps {
             dump,
@@ -192,6 +192,7 @@ fn main() -> Result<()> {
                 cr3,
                 threads,
                 pid,
+                resolved.is_extracted(),
             )
         }
         Commands::Mod {
@@ -201,7 +202,13 @@ fn main() -> Result<()> {
             cr3,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_mod(resolved.path(), symbols.as_deref(), output, cr3)
+            cmd_mod(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
         }
         Commands::Net {
             dump,
@@ -210,7 +217,13 @@ fn main() -> Result<()> {
             cr3,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_net(resolved.path(), symbols.as_deref(), output, cr3)
+            cmd_net(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
         }
         Commands::Lib {
             dump,
@@ -220,7 +233,14 @@ fn main() -> Result<()> {
             pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_lib(resolved.path(), symbols.as_deref(), output, cr3, pid)
+            cmd_lib(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                pid,
+                resolved.is_extracted(),
+            )
         }
         Commands::Strings {
             dump,
@@ -230,15 +250,31 @@ fn main() -> Result<()> {
             rules,
         } => {
             let resolved = dump.as_deref().map(archive::resolve_dump).transpose()?;
+            let raw_fallback = resolved.as_ref().is_some_and(archive::ResolvedDump::is_extracted);
             cmd_strings(
                 resolved.as_ref().map(archive::ResolvedDump::path),
                 from_file,
                 min_length,
                 output,
                 rules,
+                raw_fallback,
             )
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Format detection
+// ---------------------------------------------------------------------------
+
+/// Open a dump using raw-format fallback when extracted from an archive.
+fn open_dump_for(dump: &Path, raw_fallback: bool) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    let result = if raw_fallback {
+        memf_format::open_dump_with_raw_fallback(dump)
+    } else {
+        memf_format::open_dump(dump)
+    };
+    result.with_context(|| format!("failed to open {}", dump.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -276,12 +312,12 @@ fn setup_analysis(
     dump: &Path,
     symbols_path: Option<&Path>,
     cr3_override: Option<u64>,
+    raw_fallback: bool,
 ) -> Result<(
     AnalysisContext,
     ObjectReader<Box<dyn PhysicalMemoryProvider>>,
 )> {
-    let provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
+    let provider = open_dump_for(dump, raw_fallback)?;
     let resolver = load_symbols(symbols_path)?;
     let metadata = provider.metadata();
 
@@ -311,9 +347,8 @@ fn setup_analysis(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::cast_precision_loss)]
-fn cmd_info(dump: &Path) -> Result<()> {
-    let provider = memf_format::open_dump(dump)
-        .with_context(|| format!("failed to open {}", dump.display()))?;
+fn cmd_info(dump: &Path, raw_fallback: bool) -> Result<()> {
+    let provider = open_dump_for(dump, raw_fallback)?;
 
     println!("Format:     {}", provider.format_name());
     println!(
@@ -379,8 +414,9 @@ fn cmd_ps(
     cr3_override: Option<u64>,
     threads: bool,
     pid_filter: Option<u64>,
+    raw_fallback: bool,
 ) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
             if threads {
@@ -431,8 +467,9 @@ fn cmd_mod(
     symbols_path: Option<&Path>,
     output: OutputFormat,
     cr3_override: Option<u64>,
+    raw_fallback: bool,
 ) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
             let mods = memf_linux::modules::walk_modules(&reader)
@@ -461,8 +498,9 @@ fn cmd_net(
     symbols_path: Option<&Path>,
     output: OutputFormat,
     cr3_override: Option<u64>,
+    raw_fallback: bool,
 ) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
             let conns = memf_linux::network::walk_connections(&reader)
@@ -487,8 +525,9 @@ fn cmd_lib(
     output: OutputFormat,
     cr3_override: Option<u64>,
     pid: u64,
+    raw_fallback: bool,
 ) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override)?;
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     if ctx.os != OsProfile::Windows {
         anyhow::bail!("memf lib currently requires a Windows memory dump");
     }
@@ -523,14 +562,14 @@ fn cmd_strings(
     min_length: usize,
     output: OutputFormat,
     rules: Option<PathBuf>,
+    raw_fallback: bool,
 ) -> Result<()> {
     // Load strings from either a dump or a pre-extracted file
     let mut strings = if let Some(path) = from_file {
         memf_strings::from_file::from_strings_file(&path)
             .with_context(|| format!("failed to read strings file {}", path.display()))?
     } else if let Some(dump_path) = dump {
-        let provider = memf_format::open_dump(dump_path)
-            .with_context(|| format!("failed to open {}", dump_path.display()))?;
+        let provider = open_dump_for(dump_path, raw_fallback)?;
         let config = memf_strings::extract::ExtractConfig {
             min_length,
             ascii: true,
@@ -1043,6 +1082,7 @@ mod tests {
             None,
             false,
             None,
+            false,
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
         if let Err(e) = &result {
@@ -1057,7 +1097,13 @@ mod tests {
     fn cmd_mod_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("modules");
         let isf_path = make_temp_isf_file("modules");
-        let result = cmd_mod(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        let result = cmd_mod(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
         if let Err(e) = &result {
             let msg = format!("{e}");
             assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
@@ -1070,7 +1116,13 @@ mod tests {
     fn cmd_net_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("netstat");
         let isf_path = make_temp_isf_file("netstat");
-        let result = cmd_net(&dump_path, Some(&isf_path), OutputFormat::Table, None);
+        let result = cmd_net(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
         if let Err(e) = &result {
             let msg = format!("{e}");
             assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
@@ -1093,7 +1145,7 @@ mod tests {
         let dump_path = std::env::temp_dir().join("memf_tdd_info_crash.dmp");
         std::fs::write(&dump_path, &dump).unwrap();
 
-        let result = cmd_info(&dump_path);
+        let result = cmd_info(&dump_path, false);
         assert!(
             result.is_ok(),
             "cmd_info should succeed with crash dump: {:?}",
@@ -1118,7 +1170,7 @@ mod tests {
         let isf_path = make_temp_isf_file("setup_win");
 
         // This should detect Windows and extract CR3 from metadata
-        let result = setup_analysis(&dump_path, Some(&isf_path), None);
+        let result = setup_analysis(&dump_path, Some(&isf_path), None, false);
         match result {
             Ok((ctx, _reader)) => {
                 assert_eq!(ctx.os, OsProfile::Windows);
@@ -1140,7 +1192,7 @@ mod tests {
         let dump_path = make_temp_lime_dump("cr3_override");
         let isf_path = make_temp_isf_file("cr3_override");
 
-        let result = setup_analysis(&dump_path, Some(&isf_path), Some(0xDEAD000));
+        let result = setup_analysis(&dump_path, Some(&isf_path), Some(0xDEAD000), false);
         match result {
             Ok((ctx, _reader)) => {
                 assert_eq!(ctx.os, OsProfile::Linux);
@@ -1194,7 +1246,7 @@ mod tests {
     #[test]
     fn cmd_info_produces_output() {
         let dump_path = make_temp_lime_dump("info");
-        let result = cmd_info(&dump_path);
+        let result = cmd_info(&dump_path, false);
         assert!(
             result.is_ok(),
             "cmd_info should succeed: {:?}",
@@ -1212,7 +1264,14 @@ mod tests {
         writeln!(f, "192.168.1.100").unwrap();
         writeln!(f, "just some text").unwrap();
 
-        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Table, None);
+        let result = cmd_strings(
+            None,
+            Some(path.clone()),
+            4,
+            OutputFormat::Table,
+            None,
+            false,
+        );
         assert!(
             result.is_ok(),
             "cmd_strings --from-file should succeed: {:?}",
@@ -1224,7 +1283,7 @@ mod tests {
     #[test]
     fn cmd_strings_with_dump() {
         let dump_path = make_temp_lime_dump("strings_dump");
-        let result = cmd_strings(Some(&dump_path), None, 4, OutputFormat::Table, None);
+        let result = cmd_strings(Some(&dump_path), None, 4, OutputFormat::Table, None, false);
         assert!(
             result.is_ok(),
             "cmd_strings with dump should succeed: {:?}",
@@ -1235,7 +1294,7 @@ mod tests {
 
     #[test]
     fn cmd_strings_no_source_errors() {
-        let result = cmd_strings(None, None, 4, OutputFormat::Table, None);
+        let result = cmd_strings(None, None, 4, OutputFormat::Table, None, false);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("provide either"));
@@ -1248,7 +1307,7 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "https://evil.com/malware.exe").unwrap();
 
-        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Json, None);
+        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Json, None, false);
         assert!(result.is_ok());
         std::fs::remove_file(&path).ok();
     }
@@ -1260,7 +1319,7 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "192.168.1.1").unwrap();
 
-        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Csv, None);
+        let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Csv, None, false);
         assert!(result.is_ok());
         std::fs::remove_file(&path).ok();
     }
