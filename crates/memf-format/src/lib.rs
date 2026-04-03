@@ -165,6 +165,23 @@ inventory::collect!(&'static dyn FormatPlugin);
 /// Returns the provider from the highest-confidence plugin (>=80 returns
 /// immediately; otherwise the best score >=50 wins).
 pub fn open_dump(path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    open_dump_inner(path, 20)
+}
+
+/// Like [`open_dump`], but accepts the raw format as a last resort.
+///
+/// Useful when the caller has already confirmed the file is a memory dump
+/// (e.g., extracted from an archive with known dump extensions). Without this,
+/// raw dumps fail detection because the raw plugin scores 5, below `open_dump`'s
+/// minimum threshold of 20.
+pub fn open_dump_with_raw_fallback(path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    open_dump_inner(path, 1)
+}
+
+fn open_dump_inner(
+    path: &Path,
+    min_fallback_score: u8,
+) -> Result<Box<dyn PhysicalMemoryProvider>> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
     let mut header = [0u8; 4096];
@@ -192,7 +209,7 @@ pub fn open_dump(path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
             } else {
                 best = Some((*plugin, score));
             }
-        } else if score >= 20 && best.is_none() {
+        } else if score >= min_fallback_score && best.is_none() {
             best = Some((*plugin, score));
         }
     }
