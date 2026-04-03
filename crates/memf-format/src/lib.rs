@@ -497,4 +497,31 @@ mod tests {
         assert_eq!(meta.cr3, Some(0x1ab000));
         std::fs::remove_file(&path).ok();
     }
+
+    #[test]
+    fn raw_fallback_accepts_plain_bytes() {
+        let data = vec![0x00; 1024];
+        let path = std::env::temp_dir().join("memf_test_raw_fallback");
+        std::fs::write(&path, &data).unwrap();
+        // open_dump rejects this (score 5 < 20), but raw_fallback should accept it
+        let result = open_dump_with_raw_fallback(&path);
+        assert!(result.is_ok());
+        let provider = result.unwrap();
+        assert_eq!(provider.format_name(), "Raw");
+        assert_eq!(provider.total_size(), 1024);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn raw_fallback_still_detects_lime() {
+        use crate::test_builders::LimeBuilder;
+        let dump = LimeBuilder::new().add_range(0, &[0xAA; 128]).build();
+        let path = std::env::temp_dir().join("memf_test_raw_fallback_lime");
+        std::fs::write(&path, &dump).unwrap();
+        // Even with raw fallback enabled, LiME should still be detected (higher score)
+        let provider = open_dump_with_raw_fallback(&path).unwrap();
+        assert_eq!(provider.format_name(), "LiME");
+        assert_eq!(provider.total_size(), 128);
+        std::fs::remove_file(&path).ok();
+    }
 }
