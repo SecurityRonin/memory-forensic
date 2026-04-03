@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+mod archive;
 mod os_detect;
 
 use anyhow::{Context, Result};
@@ -13,7 +14,33 @@ use memf_format::PhysicalMemoryProvider;
 use os_detect::{AnalysisContext, OsProfile};
 
 #[derive(Parser)]
-#[command(name = "memf", about = "Memory forensics toolkit", version)]
+#[command(
+    name = "memf",
+    version,
+    about = "Memory forensics toolkit",
+    long_about = "Memory forensics toolkit — analyze physical memory dumps from Windows, Linux, and VMware.\n\n\
+        Supported dump formats:\n  \
+        LiME (.lime)          Linux (LiME kernel module)\n  \
+        AVML v2               Linux (Azure AVML)\n  \
+        ELF Core              Linux (QEMU, gcore)\n  \
+        Windows Crash Dump    Windows (.dmp, DumpIt, WinDbg)\n  \
+        Hiberfil.sys          Windows (hibernate / fast startup)\n  \
+        VMware State          Any (.vmss, .vmsn)\n  \
+        kdump / diskdump      Linux (makedumpfile)\n  \
+        Raw / flat            Any (fallback)\n\n\
+        Format is auto-detected from file headers. Symbol files (ISF JSON or PDB)\n\
+        are required for process, module, and network analysis.",
+    after_help = "Examples:\n  \
+        memf info memdump.dmp\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --threads --output json\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --pid 4\n  \
+        memf mod memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf net memdump.dmp --symbols ntkrnlmp.json --output csv\n  \
+        memf lib memdump.dmp --symbols ntkrnlmp.json --pid 1234\n  \
+        memf strings memdump.dmp --rules ./yara-rules/\n  \
+        memf strings --from-file extracted.txt --min-length 8"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

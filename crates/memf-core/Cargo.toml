@@ -15,7 +15,7 @@ memmap2.workspace = true
 rust-lzxpress.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 [lints]
 workspace = true
