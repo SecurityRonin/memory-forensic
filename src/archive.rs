@@ -6,6 +6,9 @@ use tempfile::NamedTempFile;
 /// Magic bytes for zip (PK local file header).
 const ZIP_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 
+/// Magic bytes for an empty zip (PK end-of-central-directory only).
+const ZIP_EMPTY_MAGIC: [u8; 4] = [0x50, 0x4B, 0x05, 0x06];
+
 /// Magic bytes for 7z.
 const SEVENZ_MAGIC: [u8; 6] = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
 
@@ -39,7 +42,7 @@ pub fn resolve_dump(path: &Path) -> Result<ResolvedDump> {
     let mut magic = [0u8; 6];
     let n = file.read(&mut magic)?;
 
-    if n >= 4 && magic[..4] == ZIP_MAGIC {
+    if n >= 4 && (magic[..4] == ZIP_MAGIC || magic[..4] == ZIP_EMPTY_MAGIC) {
         return extract_from_zip(path).map(ResolvedDump::Extracted);
     }
     if n >= 6 && magic[..6] == SEVENZ_MAGIC {
@@ -49,18 +52,87 @@ pub fn resolve_dump(path: &Path) -> Result<ResolvedDump> {
     Ok(ResolvedDump::Direct(path.to_path_buf()))
 }
 
-fn extract_from_zip(_path: &Path) -> Result<NamedTempFile> {
-    todo!()
+fn extract_from_zip(path: &Path) -> Result<NamedTempFile> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    let entries: Vec<(String, u64)> = (0..archive.len())
+        .filter_map(|i| {
+            let entry = archive.by_index(i).ok()?;
+            if entry.is_dir() {
+                return None;
+            }
+            Some((entry.name().to_string(), entry.size()))
+        })
+        .collect();
+
+    let best = pick_best_entry(&entries)
+        .context("archive contains no extractable files")?
+        .to_string();
+
+    let mut src = archive.by_name(&best)?;
+    let mut tmp = NamedTempFile::new()?;
+    std::io::copy(&mut src, &mut tmp)?;
+    Ok(tmp)
 }
 
-fn extract_from_7z(_path: &Path) -> Result<NamedTempFile> {
-    todo!()
+fn extract_from_7z(path: &Path) -> Result<NamedTempFile> {
+    let mut reader = sevenz_rust::SevenZReader::open(path, sevenz_rust::Password::empty())
+        .map_err(|e| anyhow::anyhow!("failed to open 7z archive: {e}"))?;
+
+    let entries: Vec<(String, u64)> = reader
+        .archive()
+        .files
+        .iter()
+        .filter(|e| !e.is_directory && e.has_stream)
+        .map(|e| (e.name.clone(), e.size))
+        .collect();
+
+    let best = pick_best_entry(&entries)
+        .context("archive contains no extractable files")?
+        .to_string();
+
+    let mut tmp = NamedTempFile::new()?;
+    let mut found = false;
+    reader
+        .for_each_entries(|entry, rd| {
+            if entry.name == best {
+                std::io::copy(rd, &mut tmp).map_err(sevenz_rust::Error::io)?;
+                found = true;
+                return Ok(false); // stop iteration
+            }
+            Ok(true) // continue
+        })
+        .map_err(|e| anyhow::anyhow!("7z extraction failed: {e}"))?;
+
+    if !found {
+        bail!("entry {best:?} not found in 7z archive");
+    }
+    Ok(tmp)
 }
 
 /// Pick the best filename from a list of (name, uncompressed_size) entries.
 /// Prefers files with known dump extensions; falls back to largest.
 fn pick_best_entry(entries: &[(String, u64)]) -> Option<&str> {
-    todo!()
+    // Prefer entries with known dump extensions, pick largest among those.
+    let dump_candidates: Vec<&(String, u64)> = entries
+        .iter()
+        .filter(|(name, _)| {
+            Path::new(name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| DUMP_EXTENSIONS.contains(&ext))
+        })
+        .collect();
+
+    let best = if dump_candidates.is_empty() {
+        // Fallback: largest file by uncompressed size.
+        entries.iter().max_by_key(|(_, size)| *size)?
+    } else {
+        dump_candidates.into_iter().max_by_key(|(_, size)| *size)?
+    };
+
+    Some(&best.0)
 }
 
 #[cfg(test)]

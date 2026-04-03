@@ -172,7 +172,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Info { dump } => cmd_info(&dump),
+        Commands::Info { dump } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_info(resolved.path())
+        }
         Commands::Ps {
             dump,
             symbols,
@@ -180,33 +183,61 @@ fn main() -> Result<()> {
             cr3,
             threads,
             pid,
-        } => cmd_ps(&dump, symbols.as_deref(), output, cr3, threads, pid),
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_ps(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                threads,
+                pid,
+            )
+        }
         Commands::Mod {
             dump,
             symbols,
             output,
             cr3,
-        } => cmd_mod(&dump, symbols.as_deref(), output, cr3),
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_mod(resolved.path(), symbols.as_deref(), output, cr3)
+        }
         Commands::Net {
             dump,
             symbols,
             output,
             cr3,
-        } => cmd_net(&dump, symbols.as_deref(), output, cr3),
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_net(resolved.path(), symbols.as_deref(), output, cr3)
+        }
         Commands::Lib {
             dump,
             symbols,
             output,
             cr3,
             pid,
-        } => cmd_lib(&dump, symbols.as_deref(), output, cr3, pid),
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_lib(resolved.path(), symbols.as_deref(), output, cr3, pid)
+        }
         Commands::Strings {
             dump,
             from_file,
             min_length,
             output,
             rules,
-        } => cmd_strings(dump, from_file, min_length, output, rules),
+        } => {
+            let resolved = dump.as_deref().map(archive::resolve_dump).transpose()?;
+            cmd_strings(
+                resolved.as_ref().map(archive::ResolvedDump::path),
+                from_file,
+                min_length,
+                output,
+                rules,
+            )
+        }
     }
 }
 
@@ -487,7 +518,7 @@ fn cmd_lib(
 // ---------------------------------------------------------------------------
 
 fn cmd_strings(
-    dump: Option<PathBuf>,
+    dump: Option<&Path>,
     from_file: Option<PathBuf>,
     min_length: usize,
     output: OutputFormat,
@@ -498,7 +529,7 @@ fn cmd_strings(
         memf_strings::from_file::from_strings_file(&path)
             .with_context(|| format!("failed to read strings file {}", path.display()))?
     } else if let Some(dump_path) = dump {
-        let provider = memf_format::open_dump(&dump_path)
+        let provider = memf_format::open_dump(dump_path)
             .with_context(|| format!("failed to open {}", dump_path.display()))?;
         let config = memf_strings::extract::ExtractConfig {
             min_length,
@@ -1193,7 +1224,7 @@ mod tests {
     #[test]
     fn cmd_strings_with_dump() {
         let dump_path = make_temp_lime_dump("strings_dump");
-        let result = cmd_strings(Some(dump_path.clone()), None, 4, OutputFormat::Table, None);
+        let result = cmd_strings(Some(&dump_path), None, 4, OutputFormat::Table, None);
         assert!(
             result.is_ok(),
             "cmd_strings with dump should succeed: {:?}",
