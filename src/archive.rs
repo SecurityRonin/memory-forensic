@@ -322,6 +322,61 @@ mod tests {
         assert_eq!(entries[0].0, "dump.dmp");
     }
 
+    // --- tar.gz extraction ---
+
+    #[test]
+    fn tar_gz_extracts_dump_file() {
+        let archive = create_test_tar_gz(&[("memdump.dmp", &[0xDE, 0xAD, 0xBE, 0xEF])]);
+        let result = resolve_dump(archive.path()).unwrap();
+        assert!(
+            matches!(result, ResolvedDump::Extracted(_)),
+            "tar.gz should be detected and extracted"
+        );
+        let mut content = Vec::new();
+        std::fs::File::open(result.path())
+            .unwrap()
+            .read_to_end(&mut content)
+            .unwrap();
+        assert_eq!(content, [0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn tar_gz_prefers_dump_extension_over_largest() {
+        let big_txt = vec![0u8; 1000];
+        let small_dmp = vec![0xAB; 100];
+        let archive =
+            create_test_tar_gz(&[("notes.txt", &big_txt), ("memory.dmp", &small_dmp)]);
+        let result = resolve_dump(archive.path()).unwrap();
+        assert!(matches!(result, ResolvedDump::Extracted(_)));
+        let meta = std::fs::metadata(result.path()).unwrap();
+        assert_eq!(meta.len(), 100);
+    }
+
+    #[test]
+    fn tar_gz_empty_archive_errors() {
+        let archive = create_test_tar_gz(&[]);
+        let result = resolve_dump(archive.path());
+        assert!(result.is_err(), "empty tar.gz should produce an error");
+    }
+
+    // --- tar.bz2 extraction ---
+
+    #[test]
+    fn tar_bz2_extracts_dump_file() {
+        let archive = create_test_tar_bz2(&[("memdump.raw", &[0xCA, 0xFE])]);
+        let result = resolve_dump(archive.path()).unwrap();
+        assert!(
+            matches!(result, ResolvedDump::Extracted(_)),
+            "tar.bz2 should be detected and extracted"
+        );
+        let mut content = Vec::new();
+        std::fs::File::open(result.path())
+            .unwrap()
+            .read_to_end(&mut content)
+            .unwrap();
+        assert_eq!(content, [0xCA, 0xFE]);
+    }
+
     // --- 7z extraction ---
 
     #[test]
@@ -360,6 +415,42 @@ mod tests {
             writer.write_all(data).unwrap();
         }
         writer.finish().unwrap();
+        tmp
+    }
+
+    fn create_test_tar_gz(files: &[(&str, &[u8])]) -> NamedTempFile {
+        let tmp = tempfile::Builder::new().suffix(".tar.gz").tempfile().unwrap();
+        let gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(tmp.path()).unwrap(),
+            flate2::Compression::default(),
+        );
+        let mut builder = tar::Builder::new(gz);
+        for (name, data) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, *name, &data[..]).unwrap();
+        }
+        builder.finish().unwrap();
+        tmp
+    }
+
+    fn create_test_tar_bz2(files: &[(&str, &[u8])]) -> NamedTempFile {
+        let tmp = tempfile::Builder::new().suffix(".tar.bz2").tempfile().unwrap();
+        let bz = bzip2::write::BzEncoder::new(
+            std::fs::File::create(tmp.path()).unwrap(),
+            bzip2::Compression::default(),
+        );
+        let mut builder = tar::Builder::new(bz);
+        for (name, data) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, *name, &data[..]).unwrap();
+        }
+        builder.finish().unwrap();
         tmp
     }
 
