@@ -178,10 +178,7 @@ pub fn open_dump_with_raw_fallback(path: &Path) -> Result<Box<dyn PhysicalMemory
     open_dump_inner(path, 1)
 }
 
-fn open_dump_inner(
-    path: &Path,
-    min_fallback_score: u8,
-) -> Result<Box<dyn PhysicalMemoryProvider>> {
+fn open_dump_inner(path: &Path, min_fallback_score: u8) -> Result<Box<dyn PhysicalMemoryProvider>> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
     let mut header = [0u8; 4096];

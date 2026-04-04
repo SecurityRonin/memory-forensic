@@ -170,10 +170,7 @@ fn elf_core_extract_and_classify() {
 fn utf16le_string_extraction_pipeline() {
     // Encode a URL as UTF-16LE: each ASCII char becomes 2 bytes (char, 0x00)
     let test_str = "https://utf16.example.com/test";
-    let utf16_bytes: Vec<u8> = test_str
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
+    let utf16_bytes: Vec<u8> = test_str.encode_utf16().flat_map(u16::to_le_bytes).collect();
 
     let mut data = vec![0u8; 512];
     data[64..64 + utf16_bytes.len()].copy_from_slice(&utf16_bytes);

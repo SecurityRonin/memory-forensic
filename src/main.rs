@@ -297,7 +297,10 @@ fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResol
     // Otherwise, existing ISF logic
     let files = memf_symbols::isf::discover_isf_files(path);
     if files.is_empty() {
-        anyhow::bail!("no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH");
+        anyhow::bail!(
+            "no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH.\n\
+             Hint: run `memf info <dump>` first to inspect the dump format and metadata."
+        );
     }
     let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
         .with_context(|| format!("failed to load symbols from {}", files[0].display()))?;
@@ -318,7 +321,15 @@ fn setup_analysis(
     ObjectReader<Box<dyn PhysicalMemoryProvider>>,
 )> {
     let provider = open_dump_for(dump, raw_fallback)?;
-    let resolver = load_symbols(symbols_path)?;
+    let resolver = if symbols_path.is_some() {
+        load_symbols(symbols_path)?
+    } else {
+        // No explicit symbols path — try auto-download from symbol server.
+        match try_auto_download_symbols(provider.as_ref()) {
+            Ok(r) => r,
+            Err(_) => load_symbols(symbols_path)?, // falls through to helpful error
+        }
+    };
     let metadata = provider.metadata();
 
     let ctx = if let Some(cr3) = cr3_override {
@@ -1001,14 +1012,87 @@ fn print_strings_csv(strings: &[memf_strings::ClassifiedString]) {
 // Kernel PDB scanning
 // ---------------------------------------------------------------------------
 
+/// Try to auto-download kernel symbols by scanning physical memory for a
+/// Windows kernel PE, extracting PDB identification, and fetching from the
+/// Microsoft symbol server.
+fn try_auto_download_symbols(
+    provider: &dyn PhysicalMemoryProvider,
+) -> Result<Box<dyn memf_symbols::SymbolResolver>> {
+    let pdb_id = find_kernel_pdb_in_physmem(provider)
+        .context("no Windows kernel PE found in physical memory")?;
+
+    eprintln!(
+        "Found kernel PDB: {} (GUID {}, age {})",
+        pdb_id.pdb_name, pdb_id.guid, pdb_id.age
+    );
+    eprintln!("Downloading from Microsoft symbol server...");
+
+    let client = memf_symbols::symserver::SymbolServerClient::microsoft()
+        .context("failed to initialize symbol server client")?;
+    let pdb_path = client
+        .get_pdb(&pdb_id.pdb_name, &pdb_id.guid, pdb_id.age)
+        .with_context(|| format!("failed to download {}", pdb_id.pdb_name))?;
+
+    eprintln!("Cached at {}", pdb_path.display());
+
+    let resolver = memf_symbols::pdb_resolver::PdbResolver::from_path(&pdb_path)
+        .with_context(|| format!("failed to load PDB from {}", pdb_path.display()))?;
+    Ok(Box::new(resolver))
+}
+
+/// MZ magic bytes (PE header signature).
+const MZ_MAGIC: [u8; 2] = [0x4D, 0x5A];
+
+/// Maximum bytes to read when probing a PE candidate.
+const PE_PROBE_SIZE: usize = 4096;
+
+/// Known kernel PDB name prefixes.
+const KERNEL_PDB_PREFIXES: &[&str] = &["ntkrnl", "ntoskrnl"];
+
 /// Scan physical memory for a Windows kernel PE and extract its PDB identification.
 ///
 /// Walks page-aligned offsets looking for MZ headers, parses each as a PE,
 /// and returns the first PDB ID whose name matches `ntkrnl*` or `ntoskrnl*`.
 fn find_kernel_pdb_in_physmem(
-    _provider: &dyn PhysicalMemoryProvider,
+    provider: &dyn PhysicalMemoryProvider,
 ) -> Option<memf_symbols::pe_debug::PdbId> {
-    None // TODO: implement
+    let mut buf = vec![0u8; PE_PROBE_SIZE];
+
+    for range in provider.ranges() {
+        // Scan page-aligned offsets within this range.
+        let start = (range.start + 0xFFF) & !0xFFF; // round up to page boundary
+        let mut addr = start;
+        while addr + 2 <= range.end {
+            // Quick check: read MZ magic (2 bytes).
+            let mut magic = [0u8; 2];
+            if provider.read_phys(addr, &mut magic).ok() != Some(2) || magic != MZ_MAGIC {
+                addr += 4096;
+                continue;
+            }
+
+            // Read full page for PE parsing.
+            let read_len = PE_PROBE_SIZE.min((range.end - addr) as usize);
+            let n = provider.read_phys(addr, &mut buf[..read_len]).ok()?;
+            if n < 256 {
+                addr += 4096;
+                continue;
+            }
+
+            // Try to extract PDB info from this PE candidate.
+            if let Ok(pdb_id) = memf_symbols::pe_debug::extract_pdb_id(&buf[..n]) {
+                let name_lower = pdb_id.pdb_name.to_lowercase();
+                if KERNEL_PDB_PREFIXES
+                    .iter()
+                    .any(|prefix| name_lower.starts_with(prefix))
+                {
+                    return Some(pdb_id);
+                }
+            }
+
+            addr += 4096;
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
