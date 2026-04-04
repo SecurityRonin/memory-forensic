@@ -8,10 +8,27 @@
 //! MEMF_TEST_DATA=/path/to/dumps cargo test --test real_data -- --ignored
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn test_data_dir() -> Option<PathBuf> {
     std::env::var("MEMF_TEST_DATA").ok().map(PathBuf::from)
+}
+
+/// Helper to check if a specific test file exists in the test data directory.
+fn test_file(name: &str) -> Option<PathBuf> {
+    let dir = test_data_dir()?;
+    let path = dir.join(name);
+    if path.exists() { Some(path) } else { None }
+}
+
+/// Check for the Total Recall zip in the default test data location.
+fn total_recall_zip() -> Option<PathBuf> {
+    // Check in test data dir first, then common local paths.
+    if let Some(p) = test_file("TOTAL_RECALL_memory_forensics_CHALLENGE.zip") {
+        return Some(p);
+    }
+    let local = Path::new("tests/data/TOTAL_RECALL_memory_forensics_CHALLENGE.zip");
+    if local.exists() { Some(local.to_path_buf()) } else { None }
 }
 
 #[test]
@@ -62,4 +79,25 @@ fn classify_real_strings_file() {
         classified > 0,
         "expected at least some strings to be classified"
     );
+}
+
+#[test]
+#[ignore = "requires Total Recall zip (Deflate64, 1.3 GB)"]
+fn deflate64_zip_entries_are_readable() {
+    let path = total_recall_zip().expect("Total Recall zip not found");
+    let file = std::fs::File::open(&path).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+
+    // Verify we can access entry metadata — requires Deflate64 support.
+    let mut found_dmp = false;
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index(i)
+            .expect("entry should be readable with deflate64 support");
+        if entry.name().ends_with(".dmp") {
+            found_dmp = true;
+            assert!(entry.size() > 1_000_000_000, "expected > 1 GB crash dump");
+        }
+    }
+    assert!(found_dmp, "archive should contain a .dmp file");
 }

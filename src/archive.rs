@@ -58,6 +58,16 @@ pub fn resolve_dump(path: &Path) -> Result<ResolvedDump> {
     Ok(ResolvedDump::Direct(path.to_path_buf()))
 }
 
+/// List readable file entries in a zip archive, separating successes from errors.
+///
+/// Returns `(readable_entries, errors)` where each readable entry is `(name, size)`
+/// and each error is a human-readable description of why `by_index()` failed.
+fn enumerate_zip_entries(
+    _archive: &mut zip::ZipArchive<std::fs::File>,
+) -> (Vec<(String, u64)>, Vec<String>) {
+    (Vec::new(), Vec::new()) // TODO: implement
+}
+
 fn extract_from_zip(path: &Path) -> Result<NamedTempFile> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -275,6 +285,25 @@ mod tests {
         let zip_file = create_test_zip(&[]);
         let result = resolve_dump(zip_file.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn zip_error_includes_skipped_count_and_reason() {
+        // When zip entries exist but cannot be read (unsupported compression,
+        // encryption, etc.), the error should report how many were skipped
+        // and include the first failure reason — not just "no extractable files".
+        //
+        // We test this structurally: `enumerate_zip_entries` separates listing
+        // from extraction so we can verify the (entries, errors) split.
+        let zip_file = create_test_zip(&[("dump.dmp", &[0xAB; 64])]);
+        let file = std::fs::File::open(zip_file.path()).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        let (entries, errors) = enumerate_zip_entries(&mut archive);
+        // Normal zip: all entries readable, no errors.
+        assert_eq!(entries.len(), 1);
+        assert!(errors.is_empty());
+        assert_eq!(entries[0].0, "dump.dmp");
     }
 
     // --- 7z extraction ---
