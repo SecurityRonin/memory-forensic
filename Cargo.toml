@@ -42,7 +42,7 @@ ruzstd = "0.8"
 lru = "0.16"
 pdb = "0.8"
 ureq = "3"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
 sevenz-rust = "0.6"
 indicatif = "0.17"
 tempfile = "3"

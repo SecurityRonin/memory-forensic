@@ -94,7 +94,10 @@ fn deflate64_zip_entries_are_readable() {
         let entry = archive
             .by_index(i)
             .expect("entry should be readable with deflate64 support");
-        if entry.name().ends_with(".dmp") {
+        if Path::new(entry.name())
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dmp"))
+        {
             found_dmp = true;
             assert!(entry.size() > 1_000_000_000, "expected > 1 GB crash dump");
         }

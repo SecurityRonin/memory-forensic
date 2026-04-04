@@ -63,27 +63,43 @@ pub fn resolve_dump(path: &Path) -> Result<ResolvedDump> {
 /// Returns `(readable_entries, errors)` where each readable entry is `(name, size)`
 /// and each error is a human-readable description of why `by_index()` failed.
 fn enumerate_zip_entries(
-    _archive: &mut zip::ZipArchive<std::fs::File>,
+    archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> (Vec<(String, u64)>, Vec<String>) {
-    (Vec::new(), Vec::new()) // TODO: implement
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+    for i in 0..archive.len() {
+        match archive.by_index(i) {
+            Ok(entry) => {
+                if !entry.is_dir() {
+                    entries.push((entry.name().to_string(), entry.size()));
+                }
+            }
+            Err(e) => errors.push(format!("{e}")),
+        }
+    }
+    (entries, errors)
 }
 
 fn extract_from_zip(path: &Path) -> Result<NamedTempFile> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
-    let entries: Vec<(String, u64)> = (0..archive.len())
-        .filter_map(|i| {
-            let entry = archive.by_index(i).ok()?;
-            if entry.is_dir() {
-                return None;
-            }
-            Some((entry.name().to_string(), entry.size()))
-        })
-        .collect();
+    let total = archive.len();
+    let (entries, errors) = enumerate_zip_entries(&mut archive);
 
     let best = pick_best_entry(&entries)
-        .context("archive contains no extractable files")?
+        .with_context(|| {
+            if errors.is_empty() {
+                "archive contains no extractable files".to_string()
+            } else {
+                format!(
+                    "archive has {total} entries but none could be extracted \
+                     ({} skipped: {})",
+                    errors.len(),
+                    errors[0]
+                )
+            }
+        })?
         .to_string();
 
     let size = entries.iter().find(|(n, _)| n == &best).map(|(_, s)| *s);
