@@ -998,6 +998,20 @@ fn print_strings_csv(strings: &[memf_strings::ClassifiedString]) {
 }
 
 // ---------------------------------------------------------------------------
+// Kernel PDB scanning
+// ---------------------------------------------------------------------------
+
+/// Scan physical memory for a Windows kernel PE and extract its PDB identification.
+///
+/// Walks page-aligned offsets looking for MZ headers, parses each as a PE,
+/// and returns the first PDB ID whose name matches `ntkrnl*` or `ntoskrnl*`.
+fn find_kernel_pdb_in_physmem(
+    _provider: &dyn PhysicalMemoryProvider,
+) -> Option<memf_symbols::pe_debug::PdbId> {
+    None // TODO: implement
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
@@ -1321,6 +1335,160 @@ mod tests {
 
         let result = cmd_strings(None, Some(path.clone()), 4, OutputFormat::Csv, None, false);
         assert!(result.is_ok());
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- auto-symbol resolution ---
+
+    /// Build a minimal PE (PE32+/AMD64) with an embedded CodeView RSDS debug record.
+    fn build_pe_with_debug(guid_bytes: [u8; 16], age: u32, pdb_name: &str) -> Vec<u8> {
+        let mut buf = vec![0u8; 4096];
+
+        // DOS header
+        buf[0] = b'M';
+        buf[1] = b'Z';
+        let pe_offset: u32 = 0x80;
+        buf[0x3C..0x40].copy_from_slice(&pe_offset.to_le_bytes());
+
+        let mut pos = pe_offset as usize;
+
+        // PE signature
+        buf[pos..pos + 4].copy_from_slice(b"PE\0\0");
+        pos += 4;
+
+        // COFF header (20 bytes)
+        buf[pos..pos + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // AMD64
+        buf[pos + 2..pos + 4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+        let opt_hdr_size: u16 = 240;
+        buf[pos + 16..pos + 18].copy_from_slice(&opt_hdr_size.to_le_bytes());
+        buf[pos + 18..pos + 20].copy_from_slice(&0x0022u16.to_le_bytes());
+        pos += 20;
+
+        // Optional header (PE32+)
+        let opt_start = pos;
+        buf[pos..pos + 2].copy_from_slice(&0x020Bu16.to_le_bytes());
+        buf[opt_start + 32..opt_start + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        buf[opt_start + 36..opt_start + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        buf[opt_start + 56..opt_start + 60].copy_from_slice(&0x2000u32.to_le_bytes());
+        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x200u32.to_le_bytes());
+        buf[opt_start + 108..opt_start + 112].copy_from_slice(&16u32.to_le_bytes());
+
+        // Debug directory (index 6) -> RVA 0x200
+        let debug_dir_rva: u32 = 0x200;
+        let debug_dir_size: u32 = 28;
+        buf[opt_start + 160..opt_start + 164].copy_from_slice(&debug_dir_rva.to_le_bytes());
+        buf[opt_start + 164..opt_start + 168].copy_from_slice(&debug_dir_size.to_le_bytes());
+
+        pos = opt_start + opt_hdr_size as usize;
+
+        // Section header — .rdata mapping RVA 0x200 to file offset 0x200
+        buf[pos..pos + 8].copy_from_slice(b".rdata\0\0");
+        buf[pos + 8..pos + 12].copy_from_slice(&0x1000u32.to_le_bytes());
+        buf[pos + 12..pos + 16].copy_from_slice(&0x200u32.to_le_bytes());
+        buf[pos + 16..pos + 20].copy_from_slice(&0x200u32.to_le_bytes());
+        buf[pos + 20..pos + 24].copy_from_slice(&0x200u32.to_le_bytes());
+
+        // IMAGE_DEBUG_DIRECTORY at file offset 0x200
+        let ddo = 0x200usize;
+        let cv_rva: u32 = 0x220;
+        let pdb_bytes = pdb_name.as_bytes();
+        let cv_size: u32 = (24 + pdb_bytes.len() + 1) as u32;
+        buf[ddo + 12..ddo + 16].copy_from_slice(&2u32.to_le_bytes()); // CODEVIEW
+        buf[ddo + 16..ddo + 20].copy_from_slice(&cv_size.to_le_bytes());
+        buf[ddo + 20..ddo + 24].copy_from_slice(&cv_rva.to_le_bytes());
+        buf[ddo + 24..ddo + 28].copy_from_slice(&cv_rva.to_le_bytes());
+
+        // CodeView RSDS record at file offset 0x220
+        let cvo = 0x220usize;
+        buf[cvo..cvo + 4].copy_from_slice(b"RSDS");
+        buf[cvo + 4..cvo + 20].copy_from_slice(&guid_bytes);
+        buf[cvo + 20..cvo + 24].copy_from_slice(&age.to_le_bytes());
+        let ns = cvo + 24;
+        buf[ns..ns + pdb_bytes.len()].copy_from_slice(pdb_bytes);
+        buf[ns + pdb_bytes.len()] = 0;
+
+        buf
+    }
+
+    // Known GUID bytes (mixed-endian) → "1B72224D-37B8-1792-2820-0ED8994498B2"
+    const TEST_GUID_BYTES: [u8; 16] = [
+        0x4D, 0x22, 0x72, 0x1B, 0xB8, 0x37, 0x92, 0x17, 0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44,
+        0x98, 0xB2,
+    ];
+
+    #[test]
+    fn load_symbols_error_suggests_info() {
+        let dir = std::env::temp_dir().join("memf_tdd_cli_no_syms_hint");
+        std::fs::create_dir_all(&dir).ok();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.path().extension().is_some_and(|e| e == "json" || e == "pdb") {
+                std::fs::remove_file(entry.path()).ok();
+            }
+        }
+
+        let result = load_symbols(Some(&dir));
+        let err_msg = format!("{}", result.err().expect("should fail"));
+        assert!(
+            err_msg.contains("memf info"),
+            "error should suggest 'memf info', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn find_kernel_pdb_finds_ntkrnl_pe() {
+        let pe = build_pe_with_debug(TEST_GUID_BYTES, 1, "ntkrnlmp.pdb");
+
+        // Raw dump: 4KB zeros + 4KB PE at physical address 0x1000
+        let mut dump = vec![0u8; 4096];
+        let mut pe_page = pe;
+        pe_page.resize(4096, 0);
+        dump.extend_from_slice(&pe_page);
+
+        let path = std::env::temp_dir().join("memf_tdd_kernel_pdb_find.raw");
+        std::fs::write(&path, &dump).unwrap();
+
+        let provider = memf_format::open_dump_with_raw_fallback(&path).unwrap();
+        let result = find_kernel_pdb_in_physmem(provider.as_ref());
+
+        assert!(result.is_some(), "should find kernel PDB in physmem");
+        let pdb_id = result.unwrap();
+        assert_eq!(pdb_id.pdb_name, "ntkrnlmp.pdb");
+        assert_eq!(pdb_id.age, 1);
+        assert_eq!(pdb_id.guid, "1B72224D-37B8-1792-2820-0ED8994498B2");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn find_kernel_pdb_ignores_non_kernel_pe() {
+        let pe = build_pe_with_debug([0xAA; 16], 1, "userapp.pdb");
+
+        let mut dump = vec![0u8; 4096];
+        let mut pe_page = pe;
+        pe_page.resize(4096, 0);
+        dump.extend_from_slice(&pe_page);
+
+        let path = std::env::temp_dir().join("memf_tdd_kernel_pdb_nonkern.raw");
+        std::fs::write(&path, &dump).unwrap();
+
+        let provider = memf_format::open_dump_with_raw_fallback(&path).unwrap();
+        let result = find_kernel_pdb_in_physmem(provider.as_ref());
+
+        assert!(result.is_none(), "should not match non-kernel PE");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn find_kernel_pdb_no_pe_returns_none() {
+        let dump = vec![0xBBu8; 8192];
+        let path = std::env::temp_dir().join("memf_tdd_kernel_pdb_nope.raw");
+        std::fs::write(&path, &dump).unwrap();
+
+        let provider = memf_format::open_dump_with_raw_fallback(&path).unwrap();
+        let result = find_kernel_pdb_in_physmem(provider.as_ref());
+
+        assert!(result.is_none(), "should not find PDB in plain data");
         std::fs::remove_file(&path).ok();
     }
 }
