@@ -197,18 +197,41 @@ fn enumerate_tar_entries(reader: impl Read) -> Result<Vec<(String, u64)>> {
     Ok(entries)
 }
 
+/// Create a progress bar for scanning/extracting an archive, tracking compressed bytes.
+fn scanning_progress_bar(path: &Path) -> Result<(ProgressBar, u64)> {
+    let compressed_size = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    let short = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("archive");
+    let pb = ProgressBar::new(compressed_size);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("  scanning {msg} [{bar:30}] {bytes}/{total_bytes}")
+            .expect("valid template")
+            .progress_chars("=> "),
+    );
+    pb.set_message(short.to_string());
+    Ok((pb, compressed_size))
+}
+
 fn extract_from_tar_gz(path: &Path) -> Result<NamedTempFile> {
+    // First pass: enumerate entries with progress on compressed bytes read.
+    let (pb, _) = scanning_progress_bar(path)?;
     let file = std::fs::File::open(path)?;
-    let gz = flate2::read::GzDecoder::new(file);
-    // First pass with decompressor for enumeration; extract_from_tar re-opens for extraction.
+    let tracked = ProgressReader::new(file, pb.clone());
+    let gz = flate2::read::GzDecoder::new(tracked);
     let entries = enumerate_tar_entries(gz)?;
+    pb.finish_and_clear();
 
     let best = pick_best_entry(&entries)
         .context("tar.gz archive contains no extractable files")?
         .to_string();
     let best_size = entries.iter().find(|(n, _)| n == &best).map(|(_, s)| *s);
 
-    // Second pass: re-open, decompress, and extract.
+    // Second pass: re-open, decompress, and extract with progress.
     let file = std::fs::File::open(path)?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
@@ -228,16 +251,20 @@ fn extract_from_tar_gz(path: &Path) -> Result<NamedTempFile> {
 }
 
 fn extract_from_tar_bz2(path: &Path) -> Result<NamedTempFile> {
+    // First pass: enumerate entries with progress on compressed bytes read.
+    let (pb, _) = scanning_progress_bar(path)?;
     let file = std::fs::File::open(path)?;
-    let bz = bzip2::read::BzDecoder::new(file);
+    let tracked = ProgressReader::new(file, pb.clone());
+    let bz = bzip2::read::BzDecoder::new(tracked);
     let entries = enumerate_tar_entries(bz)?;
+    pb.finish_and_clear();
 
     let best = pick_best_entry(&entries)
         .context("tar.bz2 archive contains no extractable files")?
         .to_string();
     let best_size = entries.iter().find(|(n, _)| n == &best).map(|(_, s)| *s);
 
-    // Second pass: re-open, decompress, and extract.
+    // Second pass: re-open, decompress, and extract with progress.
     let file = std::fs::File::open(path)?;
     let bz = bzip2::read::BzDecoder::new(file);
     let mut archive = tar::Archive::new(bz);
