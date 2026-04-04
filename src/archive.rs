@@ -10,6 +10,12 @@ const ZIP_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 /// Magic bytes for an empty zip (PK end-of-central-directory only).
 const ZIP_EMPTY_MAGIC: [u8; 4] = [0x50, 0x4B, 0x05, 0x06];
 
+/// Magic bytes for gzip (covers .tar.gz / .tgz).
+const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
+
+/// Magic bytes for bzip2 (covers .tar.bz2).
+const BZIP2_MAGIC: [u8; 3] = [0x42, 0x5A, 0x68]; // "BZh"
+
 /// Magic bytes for 7z.
 const SEVENZ_MAGIC: [u8; 6] = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
 
@@ -53,6 +59,12 @@ pub fn resolve_dump(path: &Path) -> Result<ResolvedDump> {
     }
     if n >= 6 && magic[..6] == SEVENZ_MAGIC {
         return extract_from_7z(path).map(ResolvedDump::Extracted);
+    }
+    if n >= 2 && magic[..2] == GZIP_MAGIC {
+        return extract_from_tar_gz(path).map(ResolvedDump::Extracted);
+    }
+    if n >= 3 && magic[..3] == BZIP2_MAGIC {
+        return extract_from_tar_bz2(path).map(ResolvedDump::Extracted);
     }
 
     Ok(ResolvedDump::Direct(path.to_path_buf()))
@@ -144,6 +156,84 @@ fn extract_from_7z(path: &Path) -> Result<NamedTempFile> {
         bail!("entry {best:?} not found in 7z archive");
     }
     Ok(tmp)
+}
+
+/// Enumerate tar entries as `(name, size)` pairs from a decompressed reader.
+fn enumerate_tar_entries(reader: impl Read) -> Result<Vec<(String, u64)>> {
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = Vec::new();
+    for entry in archive.entries().context("failed to read tar entries")? {
+        let entry = entry.context("failed to read tar entry")?;
+        if entry.header().entry_type() == tar::EntryType::Regular {
+            let name = entry
+                .path()
+                .context("invalid tar entry path")?
+                .to_string_lossy()
+                .into_owned();
+            let size = entry.size();
+            entries.push((name, size));
+        }
+    }
+    Ok(entries)
+}
+
+fn extract_from_tar_gz(path: &Path) -> Result<NamedTempFile> {
+    let file = std::fs::File::open(path)?;
+    let gz = flate2::read::GzDecoder::new(file);
+    // First pass with decompressor for enumeration; extract_from_tar re-opens for extraction.
+    let entries = enumerate_tar_entries(gz)?;
+
+    let best = pick_best_entry(&entries)
+        .context("tar.gz archive contains no extractable files")?
+        .to_string();
+    let best_size = entries.iter().find(|(n, _)| n == &best).map(|(_, s)| *s);
+
+    // Second pass: re-open, decompress, and extract.
+    let file = std::fs::File::open(path)?;
+    let gz = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(gz);
+    for entry in archive.entries().context("failed to re-read tar.gz entries")? {
+        let mut entry = entry.context("failed to re-read tar.gz entry")?;
+        let name = entry
+            .path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name == best {
+            let mut tmp = NamedTempFile::new()?;
+            copy_with_progress(&mut entry, &mut tmp, &best, best_size)?;
+            return Ok(tmp);
+        }
+    }
+    bail!("entry {best:?} not found in tar.gz archive")
+}
+
+fn extract_from_tar_bz2(path: &Path) -> Result<NamedTempFile> {
+    let file = std::fs::File::open(path)?;
+    let bz = bzip2::read::BzDecoder::new(file);
+    let entries = enumerate_tar_entries(bz)?;
+
+    let best = pick_best_entry(&entries)
+        .context("tar.bz2 archive contains no extractable files")?
+        .to_string();
+    let best_size = entries.iter().find(|(n, _)| n == &best).map(|(_, s)| *s);
+
+    // Second pass: re-open, decompress, and extract.
+    let file = std::fs::File::open(path)?;
+    let bz = bzip2::read::BzDecoder::new(file);
+    let mut archive = tar::Archive::new(bz);
+    for entry in archive.entries().context("failed to re-read tar.bz2 entries")? {
+        let mut entry = entry.context("failed to re-read tar.bz2 entry")?;
+        let name = entry
+            .path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name == best {
+            let mut tmp = NamedTempFile::new()?;
+            copy_with_progress(&mut entry, &mut tmp, &best, best_size)?;
+            return Ok(tmp);
+        }
+    }
+    bail!("entry {best:?} not found in tar.bz2 archive")
 }
 
 /// Copy `src` to `dst` with a terminal progress bar.
