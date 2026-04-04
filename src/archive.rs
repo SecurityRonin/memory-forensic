@@ -158,6 +158,26 @@ fn extract_from_7z(path: &Path) -> Result<NamedTempFile> {
     Ok(tmp)
 }
 
+/// Wraps a reader to update a progress bar with bytes consumed.
+struct ProgressReader<R> {
+    inner: R,
+    pb: ProgressBar,
+}
+
+impl<R> ProgressReader<R> {
+    fn new(inner: R, pb: ProgressBar) -> Self {
+        Self { inner, pb }
+    }
+}
+
+impl<R: Read> Read for ProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.pb.inc(n as u64);
+        Ok(n)
+    }
+}
+
 /// Enumerate tar entries as `(name, size)` pairs from a decompressed reader.
 fn enumerate_tar_entries(reader: impl Read) -> Result<Vec<(String, u64)>> {
     let mut archive = tar::Archive::new(reader);
@@ -410,6 +430,37 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(errors.is_empty());
         assert_eq!(entries[0].0, "dump.dmp");
+    }
+
+    // --- ProgressReader ---
+
+    #[test]
+    fn progress_reader_passes_through_data() {
+        let data = b"hello world";
+        let pb = ProgressBar::hidden();
+        let mut reader = ProgressReader::new(std::io::Cursor::new(data), pb.clone());
+        let mut buf = vec![0u8; 64];
+        let n = reader.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello world");
+        assert_eq!(pb.position(), 11);
+    }
+
+    #[test]
+    fn progress_reader_tracks_multiple_reads() {
+        let data = vec![0xABu8; 100];
+        let pb = ProgressBar::hidden();
+        let mut reader = ProgressReader::new(std::io::Cursor::new(data), pb.clone());
+        let mut buf = [0u8; 30];
+        let mut total = 0u64;
+        loop {
+            let n = reader.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+        }
+        assert_eq!(total, 100);
+        assert_eq!(pb.position(), 100);
     }
 
     // --- tar.gz extraction ---
