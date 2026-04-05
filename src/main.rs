@@ -47,9 +47,14 @@ use os_detect::{AnalysisContext, OsProfile};
         memf ps memdump.dmp --symbols ntkrnlmp.json --tree\n  \
         memf ps memdump.dmp --symbols ntkrnlmp.json --masquerade\n  \
         memf malfind memdump.lime --symbols linux.json\n  \
+        memf malfind memdump.dmp --symbols ntkrnlmp.json\n  \
         memf mounts memdump.lime --symbols linux.json\n  \
         memf mod memdump.lime --symbols linux.json --check-syscalls\n  \
         memf mod memdump.lime --symbols linux.json --check-hooks\n  \
+        memf mod memdump.dmp --symbols ntkrnlmp.json --check-ssdt\n  \
+        memf mod memdump.dmp --symbols ntkrnlmp.json --check-callbacks\n  \
+        memf vad memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf privileges memdump.dmp --symbols ntkrnlmp.json\n  \
         memf strings memdump.dmp --rules ./yara-rules/\n  \
         memf strings --from-file extracted.txt --min-length 8"
 )]
@@ -108,6 +113,8 @@ enum Commands {
     /// With --check-syscalls or --check-hooks (Linux), also runs integrity
     /// checks on the syscall table or kernel function prologues.
     /// With --check-irp (Windows, future), checks driver IRP dispatch tables.
+    /// With --check-ssdt (Windows), checks SSDT for hooked system services.
+    /// With --check-callbacks (Windows), enumerates kernel notification callbacks.
     Mod {
         /// Path to the memory dump file.
         dump: PathBuf,
@@ -135,6 +142,14 @@ enum Commands {
         /// Check driver IRP dispatch table for hooks (Windows only).
         #[arg(long)]
         check_irp: bool,
+
+        /// Check SSDT for hooked system service entries (Windows only).
+        #[arg(long)]
+        check_ssdt: bool,
+
+        /// Enumerate kernel notification callbacks (Windows only).
+        #[arg(long)]
+        check_callbacks: bool,
     },
     /// List network connections from a memory dump.
     Net {
@@ -242,7 +257,7 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
     },
-    /// Detect suspicious memory regions (anonymous RWX). Linux only.
+    /// Detect suspicious memory regions (anonymous RWX pages).
     Malfind {
         /// Path to the memory dump file.
         dump: PathBuf,
@@ -364,6 +379,40 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
     },
+    /// List Virtual Address Descriptors (VAD tree) for Windows processes.
+    Vad {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// List process token privileges. Windows only.
+    Privileges {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
     /// Extract and classify strings from a memory dump or strings file.
     Strings {
         /// Path to the memory dump file (mutually exclusive with --from-file).
@@ -434,6 +483,8 @@ fn main() -> Result<()> {
             check_syscalls,
             check_hooks,
             check_irp,
+            check_ssdt,
+            check_callbacks,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_mod(
@@ -444,6 +495,8 @@ fn main() -> Result<()> {
                 check_syscalls,
                 check_hooks,
                 check_irp,
+                check_ssdt,
+                check_callbacks,
                 resolved.is_extracted(),
             )
         }
@@ -637,6 +690,36 @@ fn main() -> Result<()> {
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_check_modules(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Vad {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_vad(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Privileges {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_privileges(
                 resolved.path(),
                 symbols.as_deref(),
                 output,
@@ -908,6 +991,8 @@ fn cmd_mod(
     check_syscalls: bool,
     check_hooks: bool,
     check_irp: bool,
+    check_ssdt: bool,
+    check_callbacks: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -915,6 +1000,12 @@ fn cmd_mod(
         OsProfile::Linux => {
             if check_irp {
                 anyhow::bail!("--check-irp is only available for Windows memory dumps");
+            }
+            if check_ssdt {
+                anyhow::bail!("--check-ssdt is only available for Windows memory dumps");
+            }
+            if check_callbacks {
+                anyhow::bail!("--check-callbacks is only available for Windows memory dumps");
             }
             let mods = memf_linux::modules::walk_modules(&reader)
                 .context("failed to walk Linux modules")?;
@@ -943,6 +1034,38 @@ fn cmd_mod(
             let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
                 .context("failed to walk Windows drivers")?;
             print_windows_drivers(&drivers, output);
+            if check_ssdt {
+                let ssdt_vaddr = reader
+                    .symbols()
+                    .symbol_address("KeServiceDescriptorTable")
+                    .context("missing KeServiceDescriptorTable symbol for SSDT check")?;
+                let hooks = memf_windows::ssdt::check_ssdt_hooks(&reader, ssdt_vaddr, &drivers)
+                    .context("failed to check SSDT hooks")?;
+                print_ssdt_hooks(&hooks, output);
+            }
+            if check_callbacks {
+                let proc_notify = reader
+                    .symbols()
+                    .symbol_address("PspCreateProcessNotifyRoutine")
+                    .context("missing PspCreateProcessNotifyRoutine symbol")?;
+                let thread_notify = reader
+                    .symbols()
+                    .symbol_address("PspCreateThreadNotifyRoutine")
+                    .context("missing PspCreateThreadNotifyRoutine symbol")?;
+                let image_notify = reader
+                    .symbols()
+                    .symbol_address("PspLoadImageNotifyRoutine")
+                    .context("missing PspLoadImageNotifyRoutine symbol")?;
+                let cbs = memf_windows::callbacks::walk_kernel_callbacks(
+                    &reader,
+                    proc_notify,
+                    thread_notify,
+                    image_notify,
+                    &drivers,
+                )
+                .context("failed to enumerate kernel callbacks")?;
+                print_callbacks(&cbs, output);
+            }
             if check_irp {
                 anyhow::bail!(
                     "--check-irp requires _DRIVER_OBJECT enumeration via pool scanning (not yet implemented)"
@@ -1127,12 +1250,22 @@ fn cmd_malfind(
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
-    if ctx.os != OsProfile::Linux {
-        anyhow::bail!("memf malfind currently requires a Linux memory dump");
+    match ctx.os {
+        OsProfile::Linux => {
+            let findings = memf_linux::malfind::scan_malfind(&reader)
+                .context("failed to scan for suspicious memory regions")?;
+            print_malfind(&findings, output);
+        }
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead for Windows malfind")?;
+            let findings = memf_windows::vad::walk_malfind(&reader, ps_head)
+                .context("failed to scan Windows memory for suspicious regions")?;
+            print_windows_malfind(&findings, output);
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS malfind not yet supported"),
     }
-    let findings = memf_linux::malfind::scan_malfind(&reader)
-        .context("failed to scan for suspicious memory regions")?;
-    print_malfind(&findings, output);
     Ok(())
 }
 
@@ -2582,6 +2715,371 @@ fn print_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: OutputF
 }
 
 // ---------------------------------------------------------------------------
+// cmd_vad — Windows VAD tree
+// ---------------------------------------------------------------------------
+
+fn cmd_vad(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Windows {
+        anyhow::bail!("memf vad requires a Windows memory dump");
+    }
+    let ps_head = ctx
+        .ps_active_process_head
+        .context("missing PsActiveProcessHead for VAD walk")?;
+    let procs = memf_windows::process::walk_processes(&reader, ps_head)
+        .context("failed to walk processes")?;
+
+    let mut all_vads = Vec::new();
+    for proc in &procs {
+        if let Ok(vads) =
+            memf_windows::vad::walk_vad_tree(&reader, proc.vaddr, proc.pid, &proc.image_name)
+        {
+            all_vads.extend(vads);
+        }
+    }
+    print_windows_vads(&all_vads, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_privileges — Windows token privileges
+// ---------------------------------------------------------------------------
+
+fn cmd_privileges(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Windows {
+        anyhow::bail!("memf privileges requires a Windows memory dump");
+    }
+    let ps_head = ctx
+        .ps_active_process_head
+        .context("missing PsActiveProcessHead for token walk")?;
+    let tokens = memf_windows::token::walk_tokens(&reader, ps_head)
+        .context("failed to walk process tokens")?;
+    print_windows_privileges(&tokens, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — SSDT hooks
+// ---------------------------------------------------------------------------
+
+fn print_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let suspicious: Vec<_> = hooks.iter().filter(|h| h.suspicious).collect();
+            if suspicious.is_empty() {
+                println!(
+                    "\nSSDT: {} entries checked, no hooks detected.",
+                    hooks.len()
+                );
+            } else {
+                let mut table = Table::new();
+                table.load_preset(UTF8_FULL_CONDENSED);
+                table.set_header(vec!["Index", "Target", "Module", "Suspicious"]);
+                for h in &suspicious {
+                    table.add_row(vec![
+                        format!("{}", h.index),
+                        format!("{:#x}", h.target_addr),
+                        h.target_module
+                            .as_deref()
+                            .unwrap_or("<unknown>")
+                            .to_string(),
+                        "YES".to_string(),
+                    ]);
+                }
+                println!("{table}");
+                println!(
+                    "\nSSDT: {} entries checked, {} suspicious hooks",
+                    hooks.len(),
+                    suspicious.len()
+                );
+            }
+        }
+        OutputFormat::Json => {
+            for h in hooks {
+                let json = serde_json::json!({
+                    "index": h.index,
+                    "target_addr": format!("{:#x}", h.target_addr),
+                    "target_module": h.target_module,
+                    "suspicious": h.suspicious,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("index,target_addr,target_module,suspicious");
+            for h in hooks {
+                println!(
+                    "{},{:#x},{},{}",
+                    h.index,
+                    h.target_addr,
+                    h.target_module.as_deref().unwrap_or(""),
+                    h.suspicious
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — kernel callbacks
+// ---------------------------------------------------------------------------
+
+fn print_callbacks(cbs: &[memf_windows::WinCallbackInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Type", "Index", "Address", "Module"]);
+            for cb in cbs {
+                table.add_row(vec![
+                    cb.callback_type.clone(),
+                    format!("{}", cb.index),
+                    format!("{:#x}", cb.address),
+                    cb.owning_module
+                        .as_deref()
+                        .unwrap_or("<unknown>")
+                        .to_string(),
+                ]);
+            }
+            println!("{table}");
+            let unknown = cbs.iter().filter(|c| c.owning_module.is_none()).count();
+            if unknown > 0 {
+                println!(
+                    "\nTotal: {} callbacks ({} from unknown modules — possible rootkit)",
+                    cbs.len(),
+                    unknown
+                );
+            } else {
+                println!("\nTotal: {} callbacks", cbs.len());
+            }
+        }
+        OutputFormat::Json => {
+            for cb in cbs {
+                let json = serde_json::json!({
+                    "callback_type": cb.callback_type,
+                    "index": cb.index,
+                    "address": format!("{:#x}", cb.address),
+                    "owning_module": cb.owning_module,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("callback_type,index,address,owning_module");
+            for cb in cbs {
+                println!(
+                    "{},{},{:#x},{}",
+                    cb.callback_type,
+                    cb.index,
+                    cb.address,
+                    cb.owning_module.as_deref().unwrap_or("")
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows VAD tree
+// ---------------------------------------------------------------------------
+
+fn print_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                "PID",
+                "Process",
+                "Start",
+                "End",
+                "Protection",
+                "Private",
+            ]);
+            for v in vads {
+                table.add_row(vec![
+                    format!("{}", v.pid),
+                    v.image_name.clone(),
+                    format!("{:#x}", v.start_vaddr),
+                    format!("{:#x}", v.end_vaddr),
+                    v.protection_str.clone(),
+                    if v.is_private { "Yes" } else { "No" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} VAD entries", vads.len());
+        }
+        OutputFormat::Json => {
+            for v in vads {
+                let json = serde_json::json!({
+                    "pid": v.pid,
+                    "image_name": v.image_name,
+                    "start_vaddr": format!("{:#x}", v.start_vaddr),
+                    "end_vaddr": format!("{:#x}", v.end_vaddr),
+                    "protection": v.protection_str,
+                    "is_private": v.is_private,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,start_vaddr,end_vaddr,protection,is_private");
+            for v in vads {
+                println!(
+                    "{},{},{:#x},{:#x},{},{}",
+                    v.pid, v.image_name, v.start_vaddr, v.end_vaddr, v.protection_str, v.is_private
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows malfind
+// ---------------------------------------------------------------------------
+
+fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                "PID",
+                "Process",
+                "Start",
+                "End",
+                "Protection",
+                "Header",
+            ]);
+            for f in findings {
+                let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
+                    write!(s, "{b:02x}").unwrap();
+                    s
+                });
+                table.add_row(vec![
+                    format!("{}", f.pid),
+                    f.image_name.clone(),
+                    format!("{:#x}", f.start_vaddr),
+                    format!("{:#x}", f.end_vaddr),
+                    f.protection_str.clone(),
+                    hex_header,
+                ]);
+            }
+            println!("{table}");
+            if findings.is_empty() {
+                println!("\nNo suspicious memory regions found.");
+            } else {
+                println!(
+                    "\nTotal: {} suspicious regions (private + RWX)",
+                    findings.len()
+                );
+            }
+        }
+        OutputFormat::Json => {
+            for f in findings {
+                let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
+                    write!(s, "{b:02x}").unwrap();
+                    s
+                });
+                let json = serde_json::json!({
+                    "pid": f.pid,
+                    "image_name": f.image_name,
+                    "start_vaddr": format!("{:#x}", f.start_vaddr),
+                    "end_vaddr": format!("{:#x}", f.end_vaddr),
+                    "protection": f.protection_str,
+                    "header_hex": hex_header,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,start_vaddr,end_vaddr,protection,header_hex");
+            for f in findings {
+                let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
+                    write!(s, "{b:02x}").unwrap();
+                    s
+                });
+                println!(
+                    "{},{},{:#x},{:#x},{},{}",
+                    f.pid, f.image_name, f.start_vaddr, f.end_vaddr, f.protection_str, hex_header
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows token privileges
+// ---------------------------------------------------------------------------
+
+fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "Enabled Privileges"]);
+            for t in tokens {
+                let privs = if t.privilege_names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    t.privilege_names.join(", ")
+                };
+                table.add_row(vec![format!("{}", t.pid), t.image_name.clone(), privs]);
+            }
+            println!("{table}");
+            let elevated: Vec<_> = tokens
+                .iter()
+                .filter(|t| t.privilege_names.contains(&"SeDebugPrivilege".to_string()))
+                .collect();
+            if elevated.is_empty() {
+                println!("\nTotal: {} processes", tokens.len());
+            } else {
+                println!(
+                    "\nTotal: {} processes ({} with SeDebugPrivilege)",
+                    tokens.len(),
+                    elevated.len()
+                );
+            }
+        }
+        OutputFormat::Json => {
+            for t in tokens {
+                let json = serde_json::json!({
+                    "pid": t.pid,
+                    "image_name": t.image_name,
+                    "privileges_enabled": format!("{:#x}", t.privileges_enabled),
+                    "privileges_present": format!("{:#x}", t.privileges_present),
+                    "privilege_names": t.privilege_names,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,privileges_enabled,privileges_present,privilege_names");
+            for t in tokens {
+                let privs = t.privilege_names.join(";");
+                println!(
+                    "{},{},{:#x},{:#x},\"{}\"",
+                    t.pid, t.image_name, t.privileges_enabled, t.privileges_present, privs
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
@@ -2688,6 +3186,8 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
+            false,
+            false,
             false,
             false,
             false,
@@ -3178,6 +3678,8 @@ mod tests {
             OutputFormat::Table,
             None,
             true,
+            false,
+            false,
             false,
             false,
             false,
