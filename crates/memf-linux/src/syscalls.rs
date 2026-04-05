@@ -20,7 +20,49 @@ const DEFAULT_NR_SYSCALLS: u64 = 450;
 pub fn check_syscall_table<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<SyscallInfo>> {
-    todo!()
+    let table_addr = reader
+        .symbols()
+        .symbol_address("sys_call_table")
+        .ok_or_else(|| Error::Walker("symbol 'sys_call_table' not found".into()))?;
+
+    let stext = reader
+        .symbols()
+        .symbol_address("_stext")
+        .ok_or_else(|| Error::Walker("symbol '_stext' not found".into()))?;
+
+    let etext = reader
+        .symbols()
+        .symbol_address("_etext")
+        .ok_or_else(|| Error::Walker("symbol '_etext' not found".into()))?;
+
+    // Determine number of syscalls: prefer __NR_syscall_max + 1, else default
+    let nr_syscalls = reader
+        .symbols()
+        .symbol_address("__NR_syscall_max")
+        .map(|max| max + 1)
+        .unwrap_or(DEFAULT_NR_SYSCALLS);
+
+    // Read the entire table as raw bytes (each entry is 8 bytes / u64 pointer)
+    let table_size = usize::try_from(nr_syscalls).unwrap_or(0) * 8;
+    let table_raw = reader.read_bytes(table_addr, table_size)?;
+
+    let mut entries = Vec::with_capacity(nr_syscalls as usize);
+
+    for i in 0..nr_syscalls {
+        let off = (i as usize) * 8;
+        let handler = u64::from_le_bytes(table_raw[off..off + 8].try_into().unwrap());
+
+        let hooked = handler < stext || handler > etext;
+
+        entries.push(SyscallInfo {
+            number: i,
+            handler,
+            hooked,
+            expected_name: None,
+        });
+    }
+
+    Ok(entries)
 }
 
 #[cfg(test)]
