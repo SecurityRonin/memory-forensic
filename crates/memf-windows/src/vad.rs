@@ -51,7 +51,52 @@ pub fn walk_vad_tree<P: PhysicalMemoryProvider>(
     pid: u64,
     image_name: &str,
 ) -> Result<Vec<WinVadInfo>> {
-    todo!()
+    // Read _RTL_AVL_TREE.Root pointer
+    let root: u64 = reader.read_field(vad_root_vaddr, "_RTL_AVL_TREE", "Root")?;
+
+    if root == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+    let mut stack = vec![root];
+
+    // Iterative in-order traversal of the AVL tree
+    while let Some(node_addr) = stack.pop() {
+        if node_addr == 0 {
+            continue;
+        }
+
+        // Read _MMVAD_SHORT fields
+        let left: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "Left")?;
+        let right: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "Right")?;
+        let starting_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "StartingVpn")?;
+        let ending_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "EndingVpn")?;
+        let flags_raw: u32 = reader.read_field(node_addr, "_MMVAD_SHORT", "Flags")?;
+
+        let protection = (flags_raw >> VAD_PROTECTION_SHIFT) & VAD_PROTECTION_MASK;
+        let is_private = is_private_vad(flags_raw);
+
+        results.push(WinVadInfo {
+            pid,
+            image_name: image_name.to_string(),
+            start_vaddr: starting_vpn << 12,
+            end_vaddr: (ending_vpn << 12) | 0xFFF,
+            protection,
+            protection_str: protection_to_string(protection),
+            is_private,
+        });
+
+        // Push children for traversal
+        if right != 0 {
+            stack.push(right);
+        }
+        if left != 0 {
+            stack.push(left);
+        }
+    }
+
+    Ok(results)
 }
 
 /// Detect suspicious private RWX memory regions across all processes.
@@ -63,7 +108,37 @@ pub fn walk_malfind<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinMalfindInfo>> {
-    todo!()
+    let procs = crate::process::walk_processes(reader, ps_head_vaddr)?;
+    let mut results = Vec::new();
+
+    let vad_root_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "VadRoot")
+        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
+
+    for proc in &procs {
+        if proc.peb_addr == 0 {
+            continue; // skip kernel processes
+        }
+
+        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
+        let vads = walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name)?;
+
+        for vad in &vads {
+            if vad.is_private && is_execute_write(vad.protection) {
+                results.push(WinMalfindInfo {
+                    pid: vad.pid,
+                    image_name: vad.image_name.clone(),
+                    start_vaddr: vad.start_vaddr,
+                    end_vaddr: vad.end_vaddr,
+                    protection_str: vad.protection_str.clone(),
+                    first_bytes: Vec::new(), // would read from process VA space
+                });
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]

@@ -23,7 +23,53 @@ pub fn check_ssdt_hooks<P: PhysicalMemoryProvider>(
     ssdt_vaddr: u64,
     known_modules: &[WinDriverInfo],
 ) -> Result<Vec<WinSsdtHookInfo>> {
-    todo!()
+    // Read _KSERVICE_TABLE_DESCRIPTOR.Base (pointer to i32 array)
+    let base: u64 = reader.read_field(ssdt_vaddr, "_KSERVICE_TABLE_DESCRIPTOR", "Base")?;
+
+    // Read _KSERVICE_TABLE_DESCRIPTOR.Limit (number of entries)
+    let limit: u32 = reader.read_field(ssdt_vaddr, "_KSERVICE_TABLE_DESCRIPTOR", "Limit")?;
+
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read the entire SSDT table (array of i32)
+    let table_bytes = reader.read_bytes(base, limit as usize * 4)?;
+
+    let mut results = Vec::with_capacity(limit as usize);
+
+    for i in 0..limit as usize {
+        let offset = i * 4;
+        let entry =
+            i32::from_le_bytes(table_bytes[offset..offset + 4].try_into().expect("4 bytes"));
+
+        // Decode: target = Base + (entry >> 4)
+        let relative_offset = entry >> 4; // arithmetic shift preserves sign
+        // SSDT offsets are signed (can point before table base), so these
+        // casts through i64 are intentional and correct for kernel addresses.
+        #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+        let target_addr = (base as i64).wrapping_add(i64::from(relative_offset)) as u64;
+
+        // Find which module contains the target
+        let target_module = known_modules.iter().find_map(|m| {
+            if target_addr >= m.base_addr && target_addr < m.base_addr + m.size {
+                Some(m.name.clone())
+            } else {
+                None
+            }
+        });
+
+        let suspicious = target_module.is_none();
+
+        results.push(WinSsdtHookInfo {
+            index: i as u32,
+            target_addr,
+            target_module,
+            suspicious,
+        });
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -99,9 +145,9 @@ mod tests {
         // Entry 0: offset +0x1000 into table base → inside ntoskrnl (clean)
         // Encoded: (0x1000 << 4) | 0 = 0x10000
         let clean_entry = (0x1000i32) << 4;
-        // Entry 1: offset +0x7F_FFFF → way beyond ntoskrnl size (hooked!)
-        // This resolves to table_vaddr + 0x7FFFFF = outside 0x800000 range
-        let hooked_entry = (0x7F_FFFFi32) << 4;
+        // Entry 1: offset +0x90_0000 → beyond ntoskrnl size of 0x80_0000 (hooked!)
+        // target = table_vaddr + 0x900000, which is outside [base, base+0x800000)
+        let hooked_entry = (0x90_0000i32) << 4;
 
         let ptb = build_ssdt(
             &[clean_entry, hooked_entry],

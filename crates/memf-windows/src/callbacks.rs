@@ -26,7 +26,74 @@ pub fn walk_kernel_callbacks<P: PhysicalMemoryProvider>(
     load_image_notify_vaddr: u64,
     known_modules: &[WinDriverInfo],
 ) -> Result<Vec<WinCallbackInfo>> {
-    todo!()
+    let mut results = Vec::new();
+
+    read_callback_array(
+        reader,
+        process_notify_vaddr,
+        "CreateProcess",
+        known_modules,
+        &mut results,
+    )?;
+    read_callback_array(
+        reader,
+        thread_notify_vaddr,
+        "CreateThread",
+        known_modules,
+        &mut results,
+    )?;
+    read_callback_array(
+        reader,
+        load_image_notify_vaddr,
+        "LoadImage",
+        known_modules,
+        &mut results,
+    )?;
+
+    Ok(results)
+}
+
+/// Read a single callback array of up to `MAX_CALLBACK_SLOTS` entries.
+fn read_callback_array<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    array_vaddr: u64,
+    callback_type: &str,
+    known_modules: &[WinDriverInfo],
+    results: &mut Vec<WinCallbackInfo>,
+) -> Result<()> {
+    // Read up to MAX_CALLBACK_SLOTS pointers (8 bytes each)
+    let raw = reader.read_bytes(array_vaddr, MAX_CALLBACK_SLOTS * 8)?;
+
+    for i in 0..MAX_CALLBACK_SLOTS {
+        let offset = i * 8;
+        let entry = u64::from_le_bytes(raw[offset..offset + 8].try_into().expect("8 bytes"));
+
+        // Null entry → end of populated slots
+        if entry == 0 {
+            break;
+        }
+
+        // Mask off _EX_FAST_REF low 4 bits to get real pointer
+        let address = entry & !0xF;
+
+        // Find owning module
+        let owning_module = known_modules.iter().find_map(|m| {
+            if address >= m.base_addr && address < m.base_addr + m.size {
+                Some(m.name.clone())
+            } else {
+                None
+            }
+        });
+
+        results.push(WinCallbackInfo {
+            callback_type: callback_type.to_string(),
+            index: i as u32,
+            address,
+            owning_module,
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

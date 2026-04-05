@@ -61,7 +61,59 @@ pub fn walk_tokens<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinTokenInfo>> {
-    todo!()
+    let procs = crate::process::walk_processes(reader, ps_head_vaddr)?;
+    let mut results = Vec::new();
+
+    let priv_offset = reader
+        .symbols()
+        .field_offset("_TOKEN", "Privileges")
+        .ok_or_else(|| crate::Error::Walker("missing _TOKEN.Privileges offset".into()))?;
+
+    let present_off = reader
+        .symbols()
+        .field_offset("_SEP_TOKEN_PRIVILEGES", "Present")
+        .ok_or_else(|| {
+            crate::Error::Walker("missing _SEP_TOKEN_PRIVILEGES.Present offset".into())
+        })?;
+
+    let enabled_off = reader
+        .symbols()
+        .field_offset("_SEP_TOKEN_PRIVILEGES", "Enabled")
+        .ok_or_else(|| {
+            crate::Error::Walker("missing _SEP_TOKEN_PRIVILEGES.Enabled offset".into())
+        })?;
+
+    for proc in &procs {
+        // Read _EPROCESS.Token (_EX_FAST_REF)
+        let token_raw: u64 = reader.read_field(proc.vaddr, "_EPROCESS", "Token")?;
+        let token_addr = token_raw & !0xF; // mask off EX_FAST_REF low nibble
+
+        if token_addr == 0 {
+            continue;
+        }
+
+        // Read _TOKEN.Privileges._SEP_TOKEN_PRIVILEGES
+        let priv_base = token_addr.wrapping_add(priv_offset);
+
+        let present_bytes = reader.read_bytes(priv_base.wrapping_add(present_off), 8)?;
+        let privileges_present = u64::from_le_bytes(present_bytes.try_into().expect("8 bytes"));
+
+        let enabled_bytes = reader.read_bytes(priv_base.wrapping_add(enabled_off), 8)?;
+        let privileges_enabled = u64::from_le_bytes(enabled_bytes.try_into().expect("8 bytes"));
+
+        let privilege_names = decode_privileges(privileges_enabled);
+
+        results.push(WinTokenInfo {
+            pid: proc.pid,
+            image_name: proc.image_name.clone(),
+            privileges_enabled,
+            privileges_present,
+            privilege_names,
+            session_id: 0, // requires _MM_SESSION_SPACE traversal
+        });
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
