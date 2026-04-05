@@ -265,12 +265,43 @@ impl IsfBuilder {
             .add_field("_DRIVER_OBJECT", "DriverSize", 0x20, "unsigned int")
             .add_field("_DRIVER_OBJECT", "DriverName", 0x38, "_UNICODE_STRING")
             .add_field("_DRIVER_OBJECT", "MajorFunction", 0x70, "pointer")
+            // _KSERVICE_TABLE_DESCRIPTOR (SSDT)
+            .add_struct("_KSERVICE_TABLE_DESCRIPTOR", 32)
+            .add_field("_KSERVICE_TABLE_DESCRIPTOR", "Base", 0x0, "pointer")
+            .add_field("_KSERVICE_TABLE_DESCRIPTOR", "Limit", 0x10, "unsigned int")
+            // _RTL_AVL_TREE (VAD root)
+            .add_struct("_RTL_AVL_TREE", 8)
+            .add_field("_RTL_AVL_TREE", "Root", 0x0, "pointer")
+            // _MMVAD_SHORT (VAD entry)
+            .add_struct("_MMVAD_SHORT", 80)
+            .add_field("_MMVAD_SHORT", "Left", 0x0, "pointer")
+            .add_field("_MMVAD_SHORT", "Right", 0x8, "pointer")
+            .add_field("_MMVAD_SHORT", "StartingVpn", 0x18, "unsigned long")
+            .add_field("_MMVAD_SHORT", "EndingVpn", 0x20, "unsigned long")
+            .add_field("_MMVAD_SHORT", "Flags", 0x30, "unsigned int")
+            // _TOKEN (process token)
+            .add_struct("_TOKEN", 256)
+            .add_field("_TOKEN", "Privileges", 0x40, "_SEP_TOKEN_PRIVILEGES")
+            // _SEP_TOKEN_PRIVILEGES
+            .add_struct("_SEP_TOKEN_PRIVILEGES", 24)
+            .add_field("_SEP_TOKEN_PRIVILEGES", "Present", 0x0, "unsigned long")
+            .add_field("_SEP_TOKEN_PRIVILEGES", "Enabled", 0x8, "unsigned long")
+            .add_field(
+                "_SEP_TOKEN_PRIVILEGES",
+                "EnabledByDefault",
+                0x10,
+                "unsigned long",
+            )
             // Kernel symbols
             .add_symbol("PsActiveProcessHead", 0xFFFFF805_5A400000)
             .add_symbol("PsLoadedModuleList", 0xFFFFF805_5A410000)
             .add_symbol("KdDebuggerDataBlock", 0xFFFFF805_5A420000)
             .add_symbol("PsInitialSystemProcess", 0xFFFFF805_5A430000)
             .add_symbol("KeNumberProcessors", 0xFFFFF805_5A440000)
+            .add_symbol("KeServiceDescriptorTable", 0xFFFFF805_5A450000)
+            .add_symbol("PspCreateProcessNotifyRoutine", 0xFFFFF805_5A460000)
+            .add_symbol("PspCreateThreadNotifyRoutine", 0xFFFFF805_5A470000)
+            .add_symbol("PspLoadImageNotifyRoutine", 0xFFFFF805_5A480000)
     }
 
     /// Build a minimal ISF JSON for Linux process walking tests.

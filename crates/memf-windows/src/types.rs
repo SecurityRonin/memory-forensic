@@ -210,6 +210,85 @@ pub struct WinIrpHookInfo {
     pub suspicious: bool,
 }
 
+/// SSDT hook detection result for a single system service entry.
+#[derive(Debug, Clone)]
+pub struct WinSsdtHookInfo {
+    /// System service index (syscall number).
+    pub index: u32,
+    /// Absolute address the SSDT entry resolves to.
+    pub target_addr: u64,
+    /// Name of the module containing the target, if identified.
+    pub target_module: Option<String>,
+    /// Whether the target is outside ntoskrnl (suspicious).
+    pub suspicious: bool,
+}
+
+/// Kernel callback registration entry.
+#[derive(Debug, Clone)]
+pub struct WinCallbackInfo {
+    /// Type of callback (e.g., "CreateProcess", "CreateThread", "LoadImage").
+    pub callback_type: String,
+    /// Array index (slot) within the callback array.
+    pub index: u32,
+    /// Address of the registered callback function.
+    pub address: u64,
+    /// Name of the module containing the callback, if identified.
+    pub owning_module: Option<String>,
+}
+
+/// Virtual Address Descriptor (VAD) entry from `_MMVAD_SHORT`.
+#[derive(Debug, Clone)]
+pub struct WinVadInfo {
+    /// Process ID owning this VAD.
+    pub pid: u64,
+    /// Image file name of the owning process.
+    pub image_name: String,
+    /// Start virtual address of the region (StartingVpn << 12).
+    pub start_vaddr: u64,
+    /// End virtual address of the region (EndingVpn << 12 | 0xFFF).
+    pub end_vaddr: u64,
+    /// Page protection (raw `VadFlags.Protection` value).
+    pub protection: u32,
+    /// Human-readable protection string (e.g., "PAGE_EXECUTE_READWRITE").
+    pub protection_str: String,
+    /// Whether this VAD is private (not mapped from a file).
+    pub is_private: bool,
+}
+
+/// Suspicious memory region detected via VAD analysis.
+#[derive(Debug, Clone)]
+pub struct WinMalfindInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Image file name of the owning process.
+    pub image_name: String,
+    /// Start virtual address of the suspicious region.
+    pub start_vaddr: u64,
+    /// End virtual address of the suspicious region.
+    pub end_vaddr: u64,
+    /// Human-readable protection string.
+    pub protection_str: String,
+    /// First 64 bytes of the region (for PE header detection).
+    pub first_bytes: Vec<u8>,
+}
+
+/// Process token and privilege information.
+#[derive(Debug, Clone)]
+pub struct WinTokenInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Image file name from `_EPROCESS.ImageFileName`.
+    pub image_name: String,
+    /// Enabled privilege bitmask from `_SEP_TOKEN_PRIVILEGES.Enabled`.
+    pub privileges_enabled: u64,
+    /// Present privilege bitmask from `_SEP_TOKEN_PRIVILEGES.Present`.
+    pub privileges_present: u64,
+    /// Human-readable names of enabled privileges.
+    pub privilege_names: Vec<String>,
+    /// Session ID from `_EPROCESS.SessionId` (if available).
+    pub session_id: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
