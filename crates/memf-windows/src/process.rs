@@ -75,7 +75,45 @@ fn read_process_info<P: PhysicalMemoryProvider>(
 /// entry annotated with its tree depth. Processes whose parent is
 /// not found in the list are treated as roots (depth 0).
 pub fn build_pstree(procs: &[WinProcessInfo]) -> Vec<WinPsTreeEntry> {
-    todo!()
+    use std::collections::{HashMap, HashSet};
+
+    // Build PID → index map and children map
+    let pid_set: HashSet<u64> = procs.iter().map(|p| p.pid).collect();
+    let mut children: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut roots = Vec::new();
+
+    for (i, proc) in procs.iter().enumerate() {
+        if proc.ppid == 0 || !pid_set.contains(&proc.ppid) {
+            roots.push(i);
+        } else {
+            children.entry(proc.ppid).or_default().push(i);
+        }
+    }
+
+    // Sort roots and children by PID for deterministic output
+    roots.sort_by_key(|&i| procs[i].pid);
+    for kids in children.values_mut() {
+        kids.sort_by_key(|&i| procs[i].pid);
+    }
+
+    // DFS walk
+    let mut result = Vec::with_capacity(procs.len());
+    let mut stack: Vec<(usize, u32)> = roots.into_iter().rev().map(|i| (i, 0)).collect();
+
+    while let Some((idx, depth)) = stack.pop() {
+        result.push(WinPsTreeEntry {
+            process: procs[idx].clone(),
+            depth,
+        });
+        if let Some(kids) = children.get(&procs[idx].pid) {
+            // Push in reverse so first child is processed first
+            for &kid_idx in kids.iter().rev() {
+                stack.push((kid_idx, depth + 1));
+            }
+        }
+    }
+
+    result
 }
 
 /// Check for PEB masquerade across all processes.
@@ -88,7 +126,61 @@ pub fn check_peb_masquerade<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinPebMasqueradeInfo>> {
-    todo!()
+    let eproc_addrs = reader.walk_list_with(
+        ps_head_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_EPROCESS",
+        "ActiveProcessLinks",
+    )?;
+
+    let mut results = Vec::new();
+
+    for eproc_addr in eproc_addrs {
+        let pid: u64 = reader.read_field(eproc_addr, "_EPROCESS", "UniqueProcessId")?;
+        let peb_addr: u64 = reader.read_field(eproc_addr, "_EPROCESS", "Peb")?;
+        let eprocess_name =
+            reader.read_field_string(eproc_addr, "_EPROCESS", "ImageFileName", 15)?;
+
+        // Skip kernel processes (no PEB)
+        if peb_addr == 0 {
+            continue;
+        }
+
+        // PEB.ProcessParameters
+        let params_ptr: u64 = reader.read_field(peb_addr, "_PEB", "ProcessParameters")?;
+        if params_ptr == 0 {
+            continue;
+        }
+
+        // ProcessParameters.ImagePathName is a _UNICODE_STRING
+        let image_path_offset = reader
+            .symbols()
+            .field_offset("_RTL_USER_PROCESS_PARAMETERS", "ImagePathName")
+            .ok_or_else(|| {
+                Error::Walker("missing _RTL_USER_PROCESS_PARAMETERS.ImagePathName offset".into())
+            })?;
+        let image_ustr_addr = params_ptr.wrapping_add(image_path_offset);
+        let peb_image_path = read_unicode_string(reader, image_ustr_addr)?;
+
+        // Extract basename from path (after last backslash)
+        let peb_basename = peb_image_path
+            .rsplit('\\')
+            .next()
+            .unwrap_or(&peb_image_path);
+
+        // Case-insensitive comparison
+        let suspicious = !eprocess_name.eq_ignore_ascii_case(peb_basename);
+
+        results.push(WinPebMasqueradeInfo {
+            pid,
+            eprocess_name,
+            peb_image_path,
+            suspicious,
+        });
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]

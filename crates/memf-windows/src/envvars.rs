@@ -22,7 +22,58 @@ pub fn walk_envvars<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinEnvVarInfo>> {
-    todo!()
+    let eproc_addrs = reader.walk_list_with(
+        ps_head_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_EPROCESS",
+        "ActiveProcessLinks",
+    )?;
+
+    let mut results = Vec::new();
+
+    for eproc_addr in eproc_addrs {
+        let pid: u64 = reader.read_field(eproc_addr, "_EPROCESS", "UniqueProcessId")?;
+        let peb_addr: u64 = reader.read_field(eproc_addr, "_EPROCESS", "Peb")?;
+        let image_name = reader.read_field_string(eproc_addr, "_EPROCESS", "ImageFileName", 15)?;
+
+        // Skip kernel processes (no PEB)
+        if peb_addr == 0 {
+            continue;
+        }
+
+        // PEB.ProcessParameters
+        let params_ptr: u64 = reader.read_field(peb_addr, "_PEB", "ProcessParameters")?;
+
+        if params_ptr == 0 {
+            continue;
+        }
+
+        // ProcessParameters.Environment
+        let env_ptr: u64 =
+            reader.read_field(params_ptr, "_RTL_USER_PROCESS_PARAMETERS", "Environment")?;
+
+        if env_ptr == 0 {
+            continue;
+        }
+
+        // Read the environment block (up to MAX_ENV_SIZE bytes)
+        let Ok(raw) = reader.read_bytes(env_ptr, MAX_ENV_SIZE) else {
+            continue;
+        };
+
+        let pairs = parse_env_block(&raw);
+        for (variable, value) in pairs {
+            results.push(WinEnvVarInfo {
+                pid,
+                image_name: image_name.clone(),
+                variable,
+                value,
+            });
+        }
+    }
+
+    Ok(results)
 }
 
 /// Parse a UTF-16LE environment block into key-value pairs.
@@ -30,7 +81,32 @@ pub fn walk_envvars<P: PhysicalMemoryProvider>(
 /// The block is a sequence of `KEY=VALUE\0` strings terminated by
 /// a double null (`\0\0`).
 fn parse_env_block(raw: &[u8]) -> Vec<(String, String)> {
-    todo!()
+    let mut pairs = Vec::new();
+
+    // Convert raw bytes to u16 code units
+    let u16s: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+
+    let mut start = 0;
+    for (i, &ch) in u16s.iter().enumerate() {
+        if ch == 0 {
+            if i == start {
+                // Double null — end of block
+                break;
+            }
+            let entry = String::from_utf16_lossy(&u16s[start..i]);
+            if let Some(eq_pos) = entry.find('=') {
+                let key = entry[..eq_pos].to_string();
+                let val = entry[eq_pos + 1..].to_string();
+                pairs.push((key, val));
+            }
+            start = i + 1;
+        }
+    }
+
+    pairs
 }
 
 #[cfg(test)]

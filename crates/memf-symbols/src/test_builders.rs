@@ -134,6 +134,7 @@ impl IsfBuilder {
     ///
     /// Includes common NT kernel structures with realistic field offsets
     /// matching a typical Windows 10 22H2 kernel (ntkrnlmp.pdb).
+    #[allow(clippy::too_many_lines)]
     pub fn windows_kernel_preset() -> Self {
         Self::new()
             // _EPROCESS — Windows process object

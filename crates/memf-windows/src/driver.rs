@@ -119,7 +119,59 @@ pub fn check_irp_hooks<P: PhysicalMemoryProvider>(
     driver_obj_addr: u64,
     known_modules: &[WinDriverInfo],
 ) -> Result<Vec<WinIrpHookInfo>> {
-    todo!()
+    // Read the driver name (best effort)
+    let driver_name_offset = reader
+        .symbols()
+        .field_offset("_DRIVER_OBJECT", "DriverName")
+        .ok_or_else(|| crate::Error::Walker("missing _DRIVER_OBJECT.DriverName offset".into()))?;
+    let driver_name = read_unicode_string(reader, driver_obj_addr.wrapping_add(driver_name_offset))
+        .unwrap_or_default();
+
+    // Read MajorFunction array (28 pointers)
+    let mf_offset = reader
+        .symbols()
+        .field_offset("_DRIVER_OBJECT", "MajorFunction")
+        .ok_or_else(|| {
+            crate::Error::Walker("missing _DRIVER_OBJECT.MajorFunction offset".into())
+        })?;
+    let mf_base = driver_obj_addr.wrapping_add(mf_offset);
+    let mf_bytes = reader.read_bytes(mf_base, IRP_MJ_COUNT * 8)?;
+
+    let mut results = Vec::new();
+
+    for (i, irp_name) in IRP_MJ_NAMES.iter().enumerate() {
+        let offset = i * 8;
+        let target_addr =
+            u64::from_le_bytes(mf_bytes[offset..offset + 8].try_into().expect("8 bytes"));
+
+        // Skip null entries
+        if target_addr == 0 {
+            continue;
+        }
+
+        // Find which module (if any) contains the target address
+        let target_module = known_modules.iter().find_map(|m| {
+            if target_addr >= m.base_addr && target_addr < m.base_addr + m.size {
+                Some(m.name.clone())
+            } else {
+                None
+            }
+        });
+
+        let suspicious = target_module.is_none();
+
+        results.push(WinIrpHookInfo {
+            driver_name: driver_name.clone(),
+            driver_obj_addr,
+            irp_index: i as u8,
+            irp_name: (*irp_name).to_string(),
+            target_addr,
+            target_module,
+            suspicious,
+        });
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]

@@ -18,7 +18,50 @@ pub fn walk_cmdlines<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinCmdlineInfo>> {
-    todo!()
+    let eproc_addrs = reader.walk_list_with(
+        ps_head_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_EPROCESS",
+        "ActiveProcessLinks",
+    )?;
+
+    let mut results = Vec::new();
+
+    for eproc_addr in eproc_addrs {
+        let pid: u64 = reader.read_field(eproc_addr, "_EPROCESS", "UniqueProcessId")?;
+        let peb_addr: u64 = reader.read_field(eproc_addr, "_EPROCESS", "Peb")?;
+        let image_name = reader.read_field_string(eproc_addr, "_EPROCESS", "ImageFileName", 15)?;
+
+        // Skip kernel processes (no PEB)
+        if peb_addr == 0 {
+            continue;
+        }
+
+        // PEB.ProcessParameters
+        let params_ptr: u64 = reader.read_field(peb_addr, "_PEB", "ProcessParameters")?;
+        if params_ptr == 0 {
+            continue;
+        }
+
+        // ProcessParameters.CommandLine is a _UNICODE_STRING
+        let cmdline_offset = reader
+            .symbols()
+            .field_offset("_RTL_USER_PROCESS_PARAMETERS", "CommandLine")
+            .ok_or_else(|| {
+                Error::Walker("missing _RTL_USER_PROCESS_PARAMETERS.CommandLine offset".into())
+            })?;
+        let cmdline_ustr_addr = params_ptr.wrapping_add(cmdline_offset);
+        let cmdline = read_unicode_string(reader, cmdline_ustr_addr)?;
+
+        results.push(WinCmdlineInfo {
+            pid,
+            image_name,
+            cmdline,
+        });
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
