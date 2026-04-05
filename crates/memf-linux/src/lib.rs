@@ -12,6 +12,7 @@ pub mod maps;
 pub mod modules;
 pub mod network;
 pub mod process;
+pub mod syscalls;
 pub mod types;
 
 use memf_core::object_reader::ObjectReader;
