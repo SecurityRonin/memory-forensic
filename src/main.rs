@@ -1575,4 +1575,120 @@ mod tests {
         assert!(result.is_none(), "should not find PDB in plain data");
         std::fs::remove_file(&path).ok();
     }
+
+    // --- New walker CLI subcommand tests ---
+
+    #[test]
+    fn cmd_maps_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("maps");
+        let isf_path = make_temp_isf_file("maps");
+        let result = cmd_maps(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_files_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("files");
+        let isf_path = make_temp_isf_file("files");
+        let result = cmd_files(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_envvars_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("envvars");
+        let isf_path = make_temp_isf_file("envvars");
+        let result = cmd_envvars(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_malfind_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("malfind");
+        let isf_path = make_temp_isf_file("malfind");
+        let result = cmd_malfind(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_mounts_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("mounts");
+        let isf_path = make_temp_isf_file("mounts");
+        let result = cmd_mounts(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_check_syscalls_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("syscalls");
+        let isf_path = make_temp_isf_file("syscalls");
+        let result = cmd_check_syscalls(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
 }
