@@ -20,7 +20,48 @@ const MAX_ENV_SIZE: u64 = 256 * 1024;
 pub fn walk_envvars<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<EnvVarInfo>> {
-    todo!()
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut all_vars = Vec::new();
+
+    // Include init_task itself
+    collect_process_envvars(reader, init_task_addr, &mut all_vars);
+
+    for &task_addr in &task_addrs {
+        collect_process_envvars(reader, task_addr, &mut all_vars);
+    }
+
+    Ok(all_vars)
+}
+
+/// Collect envvars for a single process, silently skipping kernel threads.
+fn collect_process_envvars<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    out: &mut Vec<EnvVarInfo>,
+) {
+    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if mm_ptr == 0 {
+        return; // kernel thread
+    }
+
+    if let Ok(vars) = walk_process_envvars(reader, task_addr) {
+        out.extend(vars);
+    }
 }
 
 /// Walk environment variables for a single process.
@@ -28,12 +69,53 @@ pub fn walk_process_envvars<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     task_addr: u64,
 ) -> Result<Vec<EnvVarInfo>> {
-    todo!()
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
+    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
+    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
+
+    if mm_ptr == 0 {
+        return Err(Error::Walker(format!(
+            "task {} (PID {}) has NULL mm (kernel thread)",
+            comm, pid
+        )));
+    }
+
+    let env_start: u64 = reader.read_field(mm_ptr, "mm_struct", "env_start")?;
+    let env_end: u64 = reader.read_field(mm_ptr, "mm_struct", "env_end")?;
+
+    if env_start == 0 || env_end <= env_start {
+        return Ok(Vec::new());
+    }
+
+    let size = (env_end - env_start).min(MAX_ENV_SIZE);
+    let data = reader.read_bytes(env_start, size as usize)?;
+
+    Ok(parse_env_region(&data, u64::from(pid), &comm))
 }
 
 /// Parse null-separated `KEY=VALUE` entries from a raw byte buffer.
 fn parse_env_region(data: &[u8], pid: u64, comm: &str) -> Vec<EnvVarInfo> {
-    todo!()
+    let mut vars = Vec::new();
+
+    for chunk in data.split(|&b| b == 0) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let s = String::from_utf8_lossy(chunk);
+        if let Some(eq_pos) = s.find('=') {
+            let key = s[..eq_pos].to_string();
+            let value = s[eq_pos + 1..].to_string();
+            vars.push(EnvVarInfo {
+                pid,
+                comm: comm.to_string(),
+                key,
+                value,
+            });
+        }
+        // Skip malformed entries (no '=')
+    }
+
+    vars
 }
 
 #[cfg(test)]
