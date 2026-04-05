@@ -15,7 +15,48 @@ use crate::{Error, Result, VmaFlags, VmaInfo};
 pub fn walk_maps<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<VmaInfo>> {
-    todo!()
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut all_vmas = Vec::new();
+
+    // Include init_task itself
+    collect_process_vmas(reader, init_task_addr, &mut all_vmas);
+
+    for &task_addr in &task_addrs {
+        collect_process_vmas(reader, task_addr, &mut all_vmas);
+    }
+
+    Ok(all_vmas)
+}
+
+/// Collect VMAs for a single process, silently skipping kernel threads (mm == NULL).
+fn collect_process_vmas<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    out: &mut Vec<VmaInfo>,
+) {
+    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if mm_ptr == 0 {
+        return; // kernel thread — no user VMAs
+    }
+
+    if let Ok(vmas) = walk_process_maps(reader, task_addr) {
+        out.extend(vmas);
+    }
 }
 
 /// Walk VMAs for a single process given its `task_struct` address.
@@ -23,7 +64,44 @@ pub fn walk_process_maps<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     task_addr: u64,
 ) -> Result<Vec<VmaInfo>> {
-    todo!()
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
+    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
+    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
+
+    if mm_ptr == 0 {
+        return Err(Error::Walker(format!(
+            "task {} (PID {}) has NULL mm (kernel thread)",
+            comm, pid
+        )));
+    }
+
+    let mmap_ptr: u64 = reader.read_field(mm_ptr, "mm_struct", "mmap")?;
+
+    let mut vmas = Vec::new();
+    let mut vma_addr = mmap_ptr;
+
+    // Walk the singly-linked vm_next chain (NULL-terminated)
+    while vma_addr != 0 {
+        let vm_start: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_start")?;
+        let vm_end: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_end")?;
+        let vm_flags: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_flags")?;
+        let vm_pgoff: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_pgoff")?;
+        let vm_file: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_file")?;
+
+        vmas.push(VmaInfo {
+            pid: u64::from(pid),
+            comm: comm.clone(),
+            start: vm_start,
+            end: vm_end,
+            flags: VmaFlags::from_raw(vm_flags),
+            pgoff: vm_pgoff,
+            file_backed: vm_file != 0,
+        });
+
+        vma_addr = reader.read_field(vma_addr, "vm_area_struct", "vm_next")?;
+    }
+
+    Ok(vmas)
 }
 
 #[cfg(test)]
