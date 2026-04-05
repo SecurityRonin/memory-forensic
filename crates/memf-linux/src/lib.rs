@@ -6,6 +6,7 @@
 //! by walking kernel data structures in physical memory dumps.
 
 pub mod kaslr;
+pub mod maps;
 pub mod modules;
 pub mod network;
 pub mod process;

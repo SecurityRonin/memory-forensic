@@ -241,9 +241,180 @@ pub struct ModuleInfo {
     pub state: ModuleState,
 }
 
+// ---------------------------------------------------------------------------
+// VMA / memory map types
+// ---------------------------------------------------------------------------
+
+/// Permission flags for a virtual memory area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmaFlags {
+    /// VM_READ (0x1).
+    pub read: bool,
+    /// VM_WRITE (0x2).
+    pub write: bool,
+    /// VM_EXEC (0x4).
+    pub exec: bool,
+    /// VM_SHARED (0x8).
+    pub shared: bool,
+}
+
+impl VmaFlags {
+    /// Parse Linux `vm_flags` bitmask.
+    pub fn from_raw(flags: u64) -> Self {
+        Self {
+            read: flags & 0x1 != 0,
+            write: flags & 0x2 != 0,
+            exec: flags & 0x4 != 0,
+            shared: flags & 0x8 != 0,
+        }
+    }
+}
+
+impl fmt::Display for VmaFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}{}{}{}",
+            if self.read { 'r' } else { '-' },
+            if self.write { 'w' } else { '-' },
+            if self.exec { 'x' } else { '-' },
+            if self.shared { 's' } else { 'p' },
+        )
+    }
+}
+
+/// Information about a process virtual memory area.
+#[derive(Debug, Clone)]
+pub struct VmaInfo {
+    /// PID of the owning process.
+    pub pid: u64,
+    /// Process name.
+    pub comm: String,
+    /// VMA start virtual address.
+    pub start: u64,
+    /// VMA end virtual address.
+    pub end: u64,
+    /// Permission flags.
+    pub flags: VmaFlags,
+    /// File page offset (`vm_pgoff`).
+    pub pgoff: u64,
+    /// Whether the VMA is file-backed.
+    pub file_backed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// File descriptor types
+// ---------------------------------------------------------------------------
+
+/// Information about an open file descriptor.
+#[derive(Debug, Clone)]
+pub struct FileDescriptorInfo {
+    /// PID of the owning process.
+    pub pid: u64,
+    /// Process name.
+    pub comm: String,
+    /// File descriptor number.
+    pub fd: u32,
+    /// File path (from dentry, if resolvable).
+    pub path: String,
+    /// Inode number, if available.
+    pub inode: Option<u64>,
+    /// File position (f_pos).
+    pub pos: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Environment variable types
+// ---------------------------------------------------------------------------
+
+/// A single environment variable from a process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvVarInfo {
+    /// PID of the owning process.
+    pub pid: u64,
+    /// Process name.
+    pub comm: String,
+    /// Variable name (e.g. "PATH").
+    pub key: String,
+    /// Variable value.
+    pub value: String,
+}
+
+// ---------------------------------------------------------------------------
+// Malfind types
+// ---------------------------------------------------------------------------
+
+/// A suspicious memory region detected by malfind analysis.
+#[derive(Debug, Clone)]
+pub struct MalfindInfo {
+    /// PID of the owning process.
+    pub pid: u64,
+    /// Process name.
+    pub comm: String,
+    /// VMA start address.
+    pub start: u64,
+    /// VMA end address.
+    pub end: u64,
+    /// VMA permission flags.
+    pub flags: VmaFlags,
+    /// Why this region is suspicious.
+    pub reason: String,
+    /// First 64 bytes of the region (hex dump).
+    pub header_bytes: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Mount / filesystem types
+// ---------------------------------------------------------------------------
+
+/// Information about a mounted filesystem.
+#[derive(Debug, Clone)]
+pub struct MountInfo {
+    /// Device name or source.
+    pub dev_name: String,
+    /// Mount point path.
+    pub mount_point: String,
+    /// Filesystem type (e.g. "ext4", "tmpfs").
+    pub fs_type: String,
+}
+
+// ---------------------------------------------------------------------------
+// Syscall table types
+// ---------------------------------------------------------------------------
+
+/// Information about a syscall table entry.
+#[derive(Debug, Clone)]
+pub struct SyscallInfo {
+    /// Syscall number.
+    pub number: u64,
+    /// Address of the handler function.
+    pub handler: u64,
+    /// Whether this entry appears hooked (doesn't match known symbol).
+    pub hooked: bool,
+    /// Name of the expected handler, if known.
+    pub expected_name: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vma_flags_from_raw() {
+        let f = VmaFlags::from_raw(0x5); // read + exec
+        assert!(f.read);
+        assert!(!f.write);
+        assert!(f.exec);
+        assert!(!f.shared);
+    }
+
+    #[test]
+    fn vma_flags_display() {
+        assert_eq!(VmaFlags::from_raw(0x7).to_string(), "rwxp"); // r+w+x, private
+        assert_eq!(VmaFlags::from_raw(0x1).to_string(), "r--p");
+        assert_eq!(VmaFlags::from_raw(0xF).to_string(), "rwxs"); // shared
+        assert_eq!(VmaFlags::from_raw(0x0).to_string(), "---p");
+    }
 
     #[test]
     fn process_state_from_raw() {
