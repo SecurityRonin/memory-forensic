@@ -20,7 +20,113 @@ const HEADER_SIZE: usize = 64;
 pub fn scan_malfind<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<MalfindInfo>> {
-    todo!()
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut findings = Vec::new();
+
+    // Include init_task itself
+    scan_process_vmas(reader, init_task_addr, &mut findings);
+
+    for &task_addr in &task_addrs {
+        scan_process_vmas(reader, task_addr, &mut findings);
+    }
+
+    Ok(findings)
+}
+
+/// Scan a single process's VMAs for suspicious regions.
+fn scan_process_vmas<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    out: &mut Vec<MalfindInfo>,
+) {
+    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if mm_ptr == 0 {
+        return; // kernel thread
+    }
+
+    let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let comm = reader
+        .read_field_string(task_addr, "task_struct", "comm", 16)
+        .unwrap_or_default();
+
+    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let mut vma_addr = mmap_ptr;
+    while vma_addr != 0 {
+        if let Ok(finding) = check_vma(reader, vma_addr, u64::from(pid), &comm) {
+            if let Some(f) = finding {
+                out.push(f);
+            }
+        }
+
+        vma_addr = reader
+            .read_field(vma_addr, "vm_area_struct", "vm_next")
+            .unwrap_or(0);
+    }
+}
+
+/// Check a single VMA for suspicious characteristics.
+/// Returns `Ok(Some(finding))` if suspicious, `Ok(None)` if clean.
+fn check_vma<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    vma_addr: u64,
+    pid: u64,
+    comm: &str,
+) -> Result<Option<MalfindInfo>> {
+    let vm_flags: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_flags")?;
+    let vm_file: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_file")?;
+
+    let flags = VmaFlags::from_raw(vm_flags);
+    let file_backed = vm_file != 0;
+
+    // Suspicious: write+exec AND anonymous (not file-backed)
+    if !(flags.write && flags.exec && !file_backed) {
+        return Ok(None);
+    }
+
+    let vm_start: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_start")?;
+    let vm_end: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_end")?;
+
+    // Try to read header bytes from the region
+    let read_size = HEADER_SIZE.min((vm_end - vm_start) as usize);
+    let header_bytes = reader.read_bytes(vm_start, read_size).unwrap_or_default();
+
+    let reason = format!(
+        "anonymous rwx region ({} flags, {} bytes)",
+        flags,
+        vm_end - vm_start
+    );
+
+    Ok(Some(MalfindInfo {
+        pid,
+        comm: comm.to_string(),
+        start: vm_start,
+        end: vm_end,
+        flags,
+        reason,
+        header_bytes,
+    }))
 }
 
 #[cfg(test)]
