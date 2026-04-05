@@ -248,6 +248,112 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
     },
+    /// Recover bash command history from process heaps. Linux only.
+    #[command(name = "bash-history")]
+    BashHistory {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Cross-view hidden process detection. Linux only.
+    Psxview {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Check TTY driver operations for hooks. Linux only.
+    #[command(name = "check-tty")]
+    CheckTty {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Check kernel functions for inline hooks. Linux only.
+    #[command(name = "check-hooks")]
+    CheckHooks {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Extract ELF headers from process memory. Linux only.
+    Elfinfo {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Detect hidden kernel modules. Linux only.
+    #[command(name = "check-modules")]
+    CheckModules {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
     /// Extract and classify strings from a memory dump or strings file.
     Strings {
         /// Path to the memory dump file (mutually exclusive with --from-file).
@@ -435,6 +541,96 @@ fn main() -> Result<()> {
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_check_syscalls(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::BashHistory {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_bash_history(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Psxview {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_psxview(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::CheckTty {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_check_tty(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::CheckHooks {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_check_hooks(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Elfinfo {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_elfinfo(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::CheckModules {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_check_modules(
                 resolved.path(),
                 symbols.as_deref(),
                 output,
@@ -887,6 +1083,131 @@ fn cmd_check_syscalls(
     let entries = memf_linux::syscalls::check_syscall_table(&reader)
         .context("failed to check syscall table")?;
     print_syscalls(&entries, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_bash_history — recover bash command history from process heaps
+// ---------------------------------------------------------------------------
+
+fn cmd_bash_history(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf bash-history currently requires a Linux memory dump");
+    }
+    let entries =
+        memf_linux::bash::walk_bash_history(&reader).context("failed to recover bash history")?;
+    print_bash_history(&entries, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_psxview — cross-view hidden process detection
+// ---------------------------------------------------------------------------
+
+fn cmd_psxview(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf psxview currently requires a Linux memory dump");
+    }
+    let entries = memf_linux::psxview::walk_psxview(&reader).context("failed to run psxview")?;
+    print_psxview(&entries, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_check_tty — check TTY driver operations for hooks
+// ---------------------------------------------------------------------------
+
+fn cmd_check_tty(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf check-tty currently requires a Linux memory dump");
+    }
+    let entries =
+        memf_linux::tty_check::check_tty_hooks(&reader).context("failed to check TTY hooks")?;
+    print_tty_check(&entries, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_check_hooks — check kernel functions for inline hooks
+// ---------------------------------------------------------------------------
+
+fn cmd_check_hooks(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf check-hooks currently requires a Linux memory dump");
+    }
+    let entries = memf_linux::check_hooks::check_inline_hooks(&reader)
+        .context("failed to check inline hooks")?;
+    print_check_hooks(&entries, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_elfinfo — extract ELF headers from process memory
+// ---------------------------------------------------------------------------
+
+fn cmd_elfinfo(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf elfinfo currently requires a Linux memory dump");
+    }
+    let entries =
+        memf_linux::elfinfo::walk_elfinfo(&reader).context("failed to extract ELF info")?;
+    print_elfinfo(&entries, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_check_modules — detect hidden kernel modules
+// ---------------------------------------------------------------------------
+
+fn cmd_check_modules(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf check-modules currently requires a Linux memory dump");
+    }
+    let entries = memf_linux::check_modules::check_hidden_modules(&reader)
+        .context("failed to check hidden modules")?;
+    print_check_modules(&entries, output);
     Ok(())
 }
 
@@ -1707,6 +2028,303 @@ fn print_syscalls(entries: &[memf_linux::SyscallInfo], output: OutputFormat) {
             for e in entries {
                 let name = e.expected_name.as_deref().unwrap_or("-");
                 println!("{},{:#x},{},{}", e.number, e.handler, e.hooked, name);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — bash history
+// ---------------------------------------------------------------------------
+
+fn print_bash_history(entries: &[memf_linux::BashHistoryInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "COMM", "INDEX", "TIMESTAMP", "COMMAND"]);
+            for e in entries {
+                table.add_row(vec![
+                    format!("{}", e.pid),
+                    e.comm.clone(),
+                    format!("{}", e.index),
+                    e.timestamp
+                        .map_or_else(|| "-".to_string(), |ts| ts.to_string()),
+                    e.command.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} history entries", entries.len());
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "pid": e.pid,
+                    "comm": e.comm,
+                    "index": e.index,
+                    "timestamp": e.timestamp,
+                    "command": e.command,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,index,timestamp,command");
+            for e in entries {
+                let ts = e
+                    .timestamp
+                    .map_or_else(|| "-".to_string(), |ts| ts.to_string());
+                println!("{},{},{},{},{}", e.pid, e.comm, e.index, ts, e.command);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — psxview
+// ---------------------------------------------------------------------------
+
+fn print_psxview(entries: &[memf_linux::PsxViewInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "COMM", "TASK_LIST", "PID_HASH"]);
+            for e in entries {
+                table.add_row(vec![
+                    format!("{}", e.pid),
+                    e.comm.clone(),
+                    if e.in_task_list { "YES" } else { "NO" }.to_string(),
+                    if e.in_pid_hash { "YES" } else { "NO" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            let hidden = entries
+                .iter()
+                .filter(|e| e.in_task_list != e.in_pid_hash)
+                .count();
+            println!("\nTotal: {} processes ({} hidden)", entries.len(), hidden);
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "pid": e.pid,
+                    "comm": e.comm,
+                    "in_task_list": e.in_task_list,
+                    "in_pid_hash": e.in_pid_hash,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,in_task_list,in_pid_hash");
+            for e in entries {
+                println!("{},{},{},{}", e.pid, e.comm, e.in_task_list, e.in_pid_hash);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — TTY check
+// ---------------------------------------------------------------------------
+
+fn print_tty_check(entries: &[memf_linux::TtyCheckInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["DRIVER", "OPERATION", "HANDLER", "HOOKED"]);
+            for e in entries {
+                table.add_row(vec![
+                    e.name.clone(),
+                    e.operation.clone(),
+                    format!("{:#x}", e.handler),
+                    if e.hooked { "YES" } else { "NO" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            let hooked = entries.iter().filter(|e| e.hooked).count();
+            println!(
+                "\nTotal: {} TTY operations ({} hooked)",
+                entries.len(),
+                hooked
+            );
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "name": e.name,
+                    "operation": e.operation,
+                    "handler": format!("{:#x}", e.handler),
+                    "hooked": e.hooked,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("name,operation,handler,hooked");
+            for e in entries {
+                println!("{},{},{:#x},{}", e.name, e.operation, e.handler, e.hooked);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — kernel inline hooks
+// ---------------------------------------------------------------------------
+
+fn print_check_hooks(entries: &[memf_linux::KernelHookInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                "SYMBOL",
+                "ADDRESS",
+                "HOOK_TYPE",
+                "TARGET",
+                "SUSPICIOUS",
+            ]);
+            for e in entries {
+                table.add_row(vec![
+                    e.symbol.clone(),
+                    format!("{:#x}", e.address),
+                    e.hook_type.clone(),
+                    e.target
+                        .map_or_else(|| "-".to_string(), |t| format!("{:#x}", t)),
+                    if e.suspicious { "YES" } else { "NO" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            let suspicious = entries.iter().filter(|e| e.suspicious).count();
+            println!(
+                "\nTotal: {} functions ({} suspicious)",
+                entries.len(),
+                suspicious
+            );
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "symbol": e.symbol,
+                    "address": format!("{:#x}", e.address),
+                    "hook_type": e.hook_type,
+                    "target": e.target.map(|t| format!("{:#x}", t)),
+                    "suspicious": e.suspicious,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("symbol,address,hook_type,target,suspicious");
+            for e in entries {
+                let target = e
+                    .target
+                    .map_or_else(|| "-".to_string(), |t| format!("{:#x}", t));
+                println!(
+                    "{},{:#x},{},{},{}",
+                    e.symbol, e.address, e.hook_type, target, e.suspicious
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — ELF info
+// ---------------------------------------------------------------------------
+
+fn print_elfinfo(entries: &[memf_linux::ElfInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "COMM", "VMA_START", "TYPE", "MACHINE", "ENTRY"]);
+            for e in entries {
+                table.add_row(vec![
+                    format!("{}", e.pid),
+                    e.comm.clone(),
+                    format!("{:#x}", e.vma_start),
+                    format!("{:?}", e.elf_type),
+                    format!("{}", e.machine),
+                    format!("{:#x}", e.entry_point),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} ELF headers", entries.len());
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "pid": e.pid,
+                    "comm": e.comm,
+                    "vma_start": format!("{:#x}", e.vma_start),
+                    "elf_type": format!("{:?}", e.elf_type),
+                    "machine": e.machine,
+                    "entry_point": format!("{:#x}", e.entry_point),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,vma_start,elf_type,machine,entry_point");
+            for e in entries {
+                println!(
+                    "{},{},{:#x},{:?},{},{:#x}",
+                    e.pid, e.comm, e.vma_start, e.elf_type, e.machine, e.entry_point
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — hidden modules
+// ---------------------------------------------------------------------------
+
+fn print_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["NAME", "BASE_ADDR", "SIZE", "MODULES_LIST", "SYSFS"]);
+            for e in entries {
+                table.add_row(vec![
+                    e.name.clone(),
+                    format!("{:#x}", e.base_addr),
+                    format!("{}", e.size),
+                    if e.in_modules_list { "YES" } else { "NO" }.to_string(),
+                    if e.in_sysfs { "YES" } else { "NO" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            let hidden = entries
+                .iter()
+                .filter(|e| e.in_modules_list != e.in_sysfs)
+                .count();
+            println!("\nTotal: {} modules ({} hidden)", entries.len(), hidden);
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "name": e.name,
+                    "base_addr": format!("{:#x}", e.base_addr),
+                    "size": e.size,
+                    "in_modules_list": e.in_modules_list,
+                    "in_sysfs": e.in_sysfs,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("name,base_addr,size,in_modules_list,in_sysfs");
+            for e in entries {
+                println!(
+                    "{},{:#x},{},{},{}",
+                    e.name, e.base_addr, e.size, e.in_modules_list, e.in_sysfs
+                );
             }
         }
     }
