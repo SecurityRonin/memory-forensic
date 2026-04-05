@@ -17,7 +17,108 @@ use crate::{Error, MountInfo, Result};
 pub fn walk_filesystems<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<MountInfo>> {
-    todo!()
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let nsproxy_ptr: u64 = reader.read_field(init_task_addr, "task_struct", "nsproxy")?;
+    if nsproxy_ptr == 0 {
+        return Err(Error::Walker("init_task has NULL nsproxy".into()));
+    }
+
+    let mnt_ns_ptr: u64 = reader.read_field(nsproxy_ptr, "nsproxy", "mnt_ns")?;
+    if mnt_ns_ptr == 0 {
+        return Err(Error::Walker("nsproxy has NULL mnt_ns".into()));
+    }
+
+    // mnt_namespace.list is the head of a circular list of mount.mnt_list
+    let mount_addrs = reader.walk_list(mnt_ns_ptr, "mount", "mnt_list")?;
+
+    let d_name_offset = reader
+        .symbols()
+        .field_offset("dentry", "d_name")
+        .ok_or_else(|| Error::Walker("dentry.d_name field not found".into()))?;
+
+    let name_in_qstr_offset = reader
+        .symbols()
+        .field_offset("qstr", "name")
+        .ok_or_else(|| Error::Walker("qstr.name field not found".into()))?;
+
+    let mnt_offset = reader
+        .symbols()
+        .field_offset("mount", "mnt")
+        .ok_or_else(|| Error::Walker("mount.mnt field not found".into()))?;
+
+    let mut mounts = Vec::new();
+
+    for &mount_addr in &mount_addrs {
+        // Read device name string
+        let devname_ptr: u64 = reader.read_field(mount_addr, "mount", "mnt_devname")?;
+        let dev_name = if devname_ptr != 0 {
+            reader.read_string(devname_ptr, 256).unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Read mount point from dentry → d_name.name
+        let mountpoint_ptr: u64 = reader.read_field(mount_addr, "mount", "mnt_mountpoint")?;
+        let mount_point = if mountpoint_ptr != 0 {
+            read_dentry_name(reader, mountpoint_ptr, d_name_offset, name_in_qstr_offset)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Read filesystem type: mount.mnt.mnt_sb → super_block.s_type → file_system_type.name
+        let sb_ptr: u64 = reader.read_field(mount_addr + mnt_offset, "vfsmount", "mnt_sb")?;
+        let fs_type = if sb_ptr != 0 {
+            read_fs_type_name(reader, sb_ptr).unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        mounts.push(MountInfo {
+            dev_name,
+            mount_point,
+            fs_type,
+        });
+    }
+
+    Ok(mounts)
+}
+
+/// Read the name from a dentry's embedded d_name (qstr).
+fn read_dentry_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    dentry_ptr: u64,
+    d_name_offset: u64,
+    name_in_qstr_offset: u64,
+) -> Result<String> {
+    let name_addr = dentry_ptr + d_name_offset + name_in_qstr_offset;
+    let name_raw = reader.read_bytes(name_addr, 8)?;
+    let name_ptr = u64::from_le_bytes(name_raw.try_into().unwrap());
+    if name_ptr != 0 {
+        Ok(reader.read_string(name_ptr, 256)?)
+    } else {
+        Ok(String::new())
+    }
+}
+
+/// Read the filesystem type name from a super_block.
+fn read_fs_type_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    sb_ptr: u64,
+) -> Result<String> {
+    let s_type_ptr: u64 = reader.read_field(sb_ptr, "super_block", "s_type")?;
+    if s_type_ptr == 0 {
+        return Ok(String::new());
+    }
+    let name_ptr: u64 = reader.read_field(s_type_ptr, "file_system_type", "name")?;
+    if name_ptr == 0 {
+        return Ok(String::new());
+    }
+    Ok(reader.read_string(name_ptr, 64)?)
 }
 
 #[cfg(test)]
