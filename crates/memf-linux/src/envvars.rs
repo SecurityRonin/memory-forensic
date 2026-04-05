@@ -159,7 +159,9 @@ mod tests {
             .write_phys(paddr, data);
 
         for &(ev, ep, edata) in extra_mappings {
-            builder = builder.map_4k(ev, ep, flags::WRITABLE).write_phys(ep, edata);
+            builder = builder
+                .map_4k(ev, ep, flags::WRITABLE)
+                .write_phys(ep, edata);
         }
 
         let (cr3, mem) = builder.build();

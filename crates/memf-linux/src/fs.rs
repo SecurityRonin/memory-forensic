@@ -211,7 +211,7 @@ mod tests {
         data[0x210..0x218].copy_from_slice(&devname1_addr.to_le_bytes()); // mnt_devname
         let dentry1_addr = vaddr + 0x340;
         data[0x218..0x220].copy_from_slice(&dentry1_addr.to_le_bytes()); // mnt_mountpoint
-        // mnt.mnt_sb at offset 32
+                                                                         // mnt.mnt_sb at offset 32
         let sb1_addr = vaddr + 0x380;
         data[0x220..0x228].copy_from_slice(&sb1_addr.to_le_bytes()); // mnt.mnt_sb
 

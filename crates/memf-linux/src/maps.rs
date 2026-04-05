@@ -12,9 +12,7 @@ use crate::{Error, Result, VmaFlags, VmaInfo};
 ///
 /// For each process, follows `task_struct.mm → mm_struct.mmap` to the head
 /// of the `vm_area_struct` chain, then traverses via `vm_next` pointers.
-pub fn walk_maps<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-) -> Result<Vec<VmaInfo>> {
+pub fn walk_maps<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<VmaInfo>> {
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
@@ -158,12 +156,12 @@ mod tests {
         let mut data = vec![0u8; 4096];
 
         // init_task (PID 1, "systemd")
-        data[0..4].copy_from_slice(&1u32.to_le_bytes());     // pid
-        data[4..12].copy_from_slice(&0i64.to_le_bytes());    // state
+        data[0..4].copy_from_slice(&1u32.to_le_bytes()); // pid
+        data[4..12].copy_from_slice(&0i64.to_le_bytes()); // state
         let tasks_addr = vaddr + 16;
         data[16..24].copy_from_slice(&tasks_addr.to_le_bytes()); // tasks.next → self
         data[24..32].copy_from_slice(&tasks_addr.to_le_bytes()); // tasks.prev → self
-        data[32..39].copy_from_slice(b"systemd");             // comm
+        data[32..39].copy_from_slice(b"systemd"); // comm
         let mm_addr = vaddr + 0x200;
         data[48..56].copy_from_slice(&mm_addr.to_le_bytes()); // mm → mm_struct
 
@@ -176,18 +174,18 @@ mod tests {
         data[0x300..0x308].copy_from_slice(&0x0040_0000u64.to_le_bytes()); // vm_start
         data[0x308..0x310].copy_from_slice(&0x0040_1000u64.to_le_bytes()); // vm_end
         let vma2_addr = vaddr + 0x400;
-        data[0x310..0x318].copy_from_slice(&vma2_addr.to_le_bytes());      // vm_next → VMA #2
-        data[0x318..0x320].copy_from_slice(&0x5u64.to_le_bytes());         // vm_flags: r-x
-        data[0x320..0x328].copy_from_slice(&0u64.to_le_bytes());           // vm_pgoff
-        data[0x328..0x330].copy_from_slice(&0x9999u64.to_le_bytes());      // vm_file (non-null)
+        data[0x310..0x318].copy_from_slice(&vma2_addr.to_le_bytes()); // vm_next → VMA #2
+        data[0x318..0x320].copy_from_slice(&0x5u64.to_le_bytes()); // vm_flags: r-x
+        data[0x320..0x328].copy_from_slice(&0u64.to_le_bytes()); // vm_pgoff
+        data[0x328..0x330].copy_from_slice(&0x9999u64.to_le_bytes()); // vm_file (non-null)
 
         // VMA #2 at +0x400: heap (rw-)
         data[0x400..0x408].copy_from_slice(&0x7FFF_0000u64.to_le_bytes()); // vm_start
         data[0x408..0x410].copy_from_slice(&0x7FFF_2000u64.to_le_bytes()); // vm_end
-        data[0x410..0x418].copy_from_slice(&0u64.to_le_bytes());           // vm_next: NULL (end)
-        data[0x418..0x420].copy_from_slice(&0x3u64.to_le_bytes());         // vm_flags: rw-
-        data[0x420..0x428].copy_from_slice(&0u64.to_le_bytes());           // vm_pgoff
-        data[0x428..0x430].copy_from_slice(&0u64.to_le_bytes());           // vm_file: NULL (anon)
+        data[0x410..0x418].copy_from_slice(&0u64.to_le_bytes()); // vm_next: NULL (end)
+        data[0x418..0x420].copy_from_slice(&0x3u64.to_le_bytes()); // vm_flags: rw-
+        data[0x420..0x428].copy_from_slice(&0u64.to_le_bytes()); // vm_pgoff
+        data[0x428..0x430].copy_from_slice(&0u64.to_le_bytes()); // vm_file: NULL (anon)
 
         let reader = make_test_reader(&data, vaddr, paddr);
         let vmas = walk_maps(&reader).unwrap();

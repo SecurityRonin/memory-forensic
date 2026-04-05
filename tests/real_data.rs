@@ -18,7 +18,11 @@ fn test_data_dir() -> Option<PathBuf> {
 fn test_file(name: &str) -> Option<PathBuf> {
     let dir = test_data_dir()?;
     let path = dir.join(name);
-    if path.exists() { Some(path) } else { None }
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 /// Check for the Total Recall zip in the default test data location.
@@ -28,7 +32,11 @@ fn total_recall_zip() -> Option<PathBuf> {
         return Some(p);
     }
     let local = Path::new("tests/data/TOTAL_RECALL_memory_forensics_CHALLENGE.zip");
-    if local.exists() { Some(local.to_path_buf()) } else { None }
+    if local.exists() {
+        Some(local.to_path_buf())
+    } else {
+        None
+    }
 }
 
 #[test]

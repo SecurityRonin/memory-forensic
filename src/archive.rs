@@ -235,7 +235,10 @@ fn extract_from_tar_gz(path: &Path) -> Result<NamedTempFile> {
     let file = std::fs::File::open(path)?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
-    for entry in archive.entries().context("failed to re-read tar.gz entries")? {
+    for entry in archive
+        .entries()
+        .context("failed to re-read tar.gz entries")?
+    {
         let mut entry = entry.context("failed to re-read tar.gz entry")?;
         let name = entry
             .path()
@@ -268,7 +271,10 @@ fn extract_from_tar_bz2(path: &Path) -> Result<NamedTempFile> {
     let file = std::fs::File::open(path)?;
     let bz = bzip2::read::BzDecoder::new(file);
     let mut archive = tar::Archive::new(bz);
-    for entry in archive.entries().context("failed to re-read tar.bz2 entries")? {
+    for entry in archive
+        .entries()
+        .context("failed to re-read tar.bz2 entries")?
+    {
         let mut entry = entry.context("failed to re-read tar.bz2 entry")?;
         let name = entry
             .path()
@@ -512,8 +518,7 @@ mod tests {
     fn tar_gz_prefers_dump_extension_over_largest() {
         let big_txt = vec![0u8; 1000];
         let small_dmp = vec![0xAB; 100];
-        let archive =
-            create_test_tar_gz(&[("notes.txt", &big_txt), ("memory.dmp", &small_dmp)]);
+        let archive = create_test_tar_gz(&[("notes.txt", &big_txt), ("memory.dmp", &small_dmp)]);
         let result = resolve_dump(archive.path()).unwrap();
         assert!(matches!(result, ResolvedDump::Extracted(_)));
         let meta = std::fs::metadata(result.path()).unwrap();
@@ -587,7 +592,10 @@ mod tests {
     }
 
     fn create_test_tar_gz(files: &[(&str, &[u8])]) -> NamedTempFile {
-        let tmp = tempfile::Builder::new().suffix(".tar.gz").tempfile().unwrap();
+        let tmp = tempfile::Builder::new()
+            .suffix(".tar.gz")
+            .tempfile()
+            .unwrap();
         let gz = flate2::write::GzEncoder::new(
             std::fs::File::create(tmp.path()).unwrap(),
             flate2::Compression::default(),
@@ -605,7 +613,10 @@ mod tests {
     }
 
     fn create_test_tar_bz2(files: &[(&str, &[u8])]) -> NamedTempFile {
-        let tmp = tempfile::Builder::new().suffix(".tar.bz2").tempfile().unwrap();
+        let tmp = tempfile::Builder::new()
+            .suffix(".tar.bz2")
+            .tempfile()
+            .unwrap();
         let bz = bzip2::write::BzEncoder::new(
             std::fs::File::create(tmp.path()).unwrap(),
             bzip2::Compression::default(),

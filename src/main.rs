@@ -6,6 +6,7 @@ mod os_detect;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use memf_core::object_reader::ObjectReader;
@@ -38,6 +39,12 @@ use os_detect::{AnalysisContext, OsProfile};
         memf mod memdump.dmp --symbols ntkrnlmp.json\n  \
         memf net memdump.dmp --symbols ntkrnlmp.json --output csv\n  \
         memf lib memdump.dmp --symbols ntkrnlmp.json --pid 1234\n  \
+        memf maps memdump.lime --symbols linux.json\n  \
+        memf files memdump.lime --symbols linux.json\n  \
+        memf envvars memdump.lime --symbols linux.json --output json\n  \
+        memf malfind memdump.lime --symbols linux.json\n  \
+        memf mounts memdump.lime --symbols linux.json\n  \
+        memf check-syscalls memdump.lime --symbols linux.json\n  \
         memf strings memdump.dmp --rules ./yara-rules/\n  \
         memf strings --from-file extracted.txt --min-length 8"
 )]
@@ -137,6 +144,109 @@ enum Commands {
         /// Process ID to list libraries for (required).
         #[arg(long)]
         pid: u64,
+    },
+    /// List process virtual memory areas (VMAs / memory maps). Linux only.
+    Maps {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// List open file descriptors for all processes. Linux only.
+    Files {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// List process environment variables. Linux only.
+    Envvars {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Detect suspicious memory regions (anonymous RWX). Linux only.
+    Malfind {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// List mounted filesystems. Linux only.
+    Mounts {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Check syscall table for hooks. Linux only.
+    #[command(name = "check-syscalls")]
+    CheckSyscalls {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
     },
     /// Extract and classify strings from a memory dump or strings file.
     Strings {
@@ -242,6 +352,96 @@ fn main() -> Result<()> {
                 resolved.is_extracted(),
             )
         }
+        Commands::Maps {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_maps(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Files {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_files(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Envvars {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_envvars(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Malfind {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_malfind(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Mounts {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_mounts(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::CheckSyscalls {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_check_syscalls(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
         Commands::Strings {
             dump,
             from_file,
@@ -250,7 +450,9 @@ fn main() -> Result<()> {
             rules,
         } => {
             let resolved = dump.as_deref().map(archive::resolve_dump).transpose()?;
-            let raw_fallback = resolved.as_ref().is_some_and(archive::ResolvedDump::is_extracted);
+            let raw_fallback = resolved
+                .as_ref()
+                .is_some_and(archive::ResolvedDump::is_extracted);
             cmd_strings(
                 resolved.as_ref().map(archive::ResolvedDump::path),
                 from_file,
@@ -560,6 +762,131 @@ fn cmd_lib(
     let dlls = memf_windows::dll::walk_dlls(&reader, target.peb_addr)
         .with_context(|| format!("failed to walk DLLs for PID {pid}"))?;
     print_libs(&dlls, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_maps — Linux process VMAs
+// ---------------------------------------------------------------------------
+
+fn cmd_maps(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf maps currently requires a Linux memory dump");
+    }
+    let vmas = memf_linux::maps::walk_maps(&reader).context("failed to walk Linux VMAs")?;
+    print_vmas(&vmas, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_files — Linux open file descriptors
+// ---------------------------------------------------------------------------
+
+fn cmd_files(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf files currently requires a Linux memory dump");
+    }
+    let fds =
+        memf_linux::files::walk_files(&reader).context("failed to walk Linux file descriptors")?;
+    print_file_descriptors(&fds, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_envvars — Linux process environment variables
+// ---------------------------------------------------------------------------
+
+fn cmd_envvars(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf envvars currently requires a Linux memory dump");
+    }
+    let vars = memf_linux::envvars::walk_envvars(&reader)
+        .context("failed to walk Linux environment variables")?;
+    print_envvars(&vars, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_malfind — suspicious memory regions
+// ---------------------------------------------------------------------------
+
+fn cmd_malfind(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf malfind currently requires a Linux memory dump");
+    }
+    let findings = memf_linux::malfind::scan_malfind(&reader)
+        .context("failed to scan for suspicious memory regions")?;
+    print_malfind(&findings, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_mounts — Linux mounted filesystems
+// ---------------------------------------------------------------------------
+
+fn cmd_mounts(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf mounts currently requires a Linux memory dump");
+    }
+    let mounts = memf_linux::fs::walk_filesystems(&reader)
+        .context("failed to walk Linux mounted filesystems")?;
+    print_mounts(&mounts, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_check_syscalls — syscall table integrity check
+// ---------------------------------------------------------------------------
+
+fn cmd_check_syscalls(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if ctx.os != OsProfile::Linux {
+        anyhow::bail!("memf check-syscalls currently requires a Linux memory dump");
+    }
+    let entries = memf_linux::syscalls::check_syscall_table(&reader)
+        .context("failed to check syscall table")?;
+    print_syscalls(&entries, output);
     Ok(())
 }
 
@@ -1096,6 +1423,296 @@ fn find_kernel_pdb_in_physmem(
 }
 
 // ---------------------------------------------------------------------------
+// Output formatters — VMAs (maps)
+// ---------------------------------------------------------------------------
+
+fn print_vmas(vmas: &[memf_linux::VmaInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "Start", "End", "Flags", "File"]);
+            for v in vmas {
+                table.add_row(vec![
+                    format!("{}", v.pid),
+                    v.comm.clone(),
+                    format!("{:#x}", v.start),
+                    format!("{:#x}", v.end),
+                    format!("{}", v.flags),
+                    if v.file_backed { "yes" } else { "anon" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} VMAs", vmas.len());
+        }
+        OutputFormat::Json => {
+            for v in vmas {
+                let json = serde_json::json!({
+                    "pid": v.pid,
+                    "comm": v.comm,
+                    "start": format!("{:#x}", v.start),
+                    "end": format!("{:#x}", v.end),
+                    "flags": format!("{}", v.flags),
+                    "file_backed": v.file_backed,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,start,end,flags,file_backed");
+            for v in vmas {
+                println!(
+                    "{},{},{:#x},{:#x},{},{}",
+                    v.pid, v.comm, v.start, v.end, v.flags, v.file_backed
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — file descriptors
+// ---------------------------------------------------------------------------
+
+fn print_file_descriptors(fds: &[memf_linux::FileDescriptorInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "FD", "Path", "Inode", "Pos"]);
+            for f in fds {
+                let inode_str = f.inode.map_or_else(|| "-".to_string(), |i| format!("{i}"));
+                table.add_row(vec![
+                    format!("{}", f.pid),
+                    f.comm.clone(),
+                    format!("{}", f.fd),
+                    f.path.clone(),
+                    inode_str,
+                    format!("{}", f.pos),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} file descriptors", fds.len());
+        }
+        OutputFormat::Json => {
+            for f in fds {
+                let json = serde_json::json!({
+                    "pid": f.pid,
+                    "comm": f.comm,
+                    "fd": f.fd,
+                    "path": f.path,
+                    "inode": f.inode,
+                    "pos": f.pos,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,fd,path,inode,pos");
+            for f in fds {
+                let inode_str = f.inode.map_or_else(|| "-".to_string(), |i| format!("{i}"));
+                let escaped = f.path.replace('"', "\"\"");
+                println!(
+                    "{},{},{},\"{}\",{},{}",
+                    f.pid, f.comm, f.fd, escaped, inode_str, f.pos
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — environment variables
+// ---------------------------------------------------------------------------
+
+fn print_envvars(vars: &[memf_linux::EnvVarInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "Key", "Value"]);
+            for v in vars {
+                table.add_row(vec![
+                    format!("{}", v.pid),
+                    v.comm.clone(),
+                    v.key.clone(),
+                    v.value.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} environment variables", vars.len());
+        }
+        OutputFormat::Json => {
+            for v in vars {
+                let json = serde_json::json!({
+                    "pid": v.pid,
+                    "comm": v.comm,
+                    "key": v.key,
+                    "value": v.value,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,key,value");
+            for v in vars {
+                let escaped_val = v.value.replace('"', "\"\"");
+                println!("{},{},{},\"{}\"", v.pid, v.comm, v.key, escaped_val);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — malfind
+// ---------------------------------------------------------------------------
+
+fn print_malfind(findings: &[memf_linux::MalfindInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "Start", "End", "Flags", "Reason"]);
+            for f in findings {
+                table.add_row(vec![
+                    format!("{}", f.pid),
+                    f.comm.clone(),
+                    format!("{:#x}", f.start),
+                    format!("{:#x}", f.end),
+                    format!("{}", f.flags),
+                    f.reason.clone(),
+                ]);
+            }
+            println!("{table}");
+            if findings.is_empty() {
+                println!("\nNo suspicious memory regions found.");
+            } else {
+                println!("\nTotal: {} suspicious regions", findings.len());
+            }
+        }
+        OutputFormat::Json => {
+            for f in findings {
+                let hex_header: String = f.header_bytes.iter().fold(String::new(), |mut s, b| {
+                    write!(s, "{b:02x}").unwrap();
+                    s
+                });
+                let json = serde_json::json!({
+                    "pid": f.pid,
+                    "comm": f.comm,
+                    "start": format!("{:#x}", f.start),
+                    "end": format!("{:#x}", f.end),
+                    "flags": format!("{}", f.flags),
+                    "reason": f.reason,
+                    "header_hex": hex_header,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,start,end,flags,reason,header_hex");
+            for f in findings {
+                let hex_header: String = f.header_bytes.iter().fold(String::new(), |mut s, b| {
+                    write!(s, "{b:02x}").unwrap();
+                    s
+                });
+                let escaped = f.reason.replace('"', "\"\"");
+                println!(
+                    "{},{},{:#x},{:#x},{},\"{}\",{}",
+                    f.pid, f.comm, f.start, f.end, f.flags, escaped, hex_header
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — mounted filesystems
+// ---------------------------------------------------------------------------
+
+fn print_mounts(mounts: &[memf_linux::MountInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Device", "Mount Point", "FS Type"]);
+            for m in mounts {
+                table.add_row(vec![
+                    m.dev_name.clone(),
+                    m.mount_point.clone(),
+                    m.fs_type.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} mounts", mounts.len());
+        }
+        OutputFormat::Json => {
+            for m in mounts {
+                let json = serde_json::json!({
+                    "dev_name": m.dev_name,
+                    "mount_point": m.mount_point,
+                    "fs_type": m.fs_type,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("dev_name,mount_point,fs_type");
+            for m in mounts {
+                let escaped_dev = m.dev_name.replace('"', "\"\"");
+                let escaped_mp = m.mount_point.replace('"', "\"\"");
+                println!("\"{}\",\"{}\",{}", escaped_dev, escaped_mp, m.fs_type);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — syscall table
+// ---------------------------------------------------------------------------
+
+fn print_syscalls(entries: &[memf_linux::SyscallInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["NR", "Handler", "Hooked"]);
+            for e in entries {
+                table.add_row(vec![
+                    format!("{}", e.number),
+                    format!("{:#x}", e.handler),
+                    if e.hooked { "YES" } else { "-" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            let hooked_count = entries.iter().filter(|e| e.hooked).count();
+            println!(
+                "\nTotal: {} syscalls ({} hooked)",
+                entries.len(),
+                hooked_count
+            );
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "number": e.number,
+                    "handler": format!("{:#x}", e.handler),
+                    "hooked": e.hooked,
+                    "expected_name": e.expected_name,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("number,handler,hooked,expected_name");
+            for e in entries {
+                let name = e.expected_name.as_deref().unwrap_or("-");
+                println!("{},{:#x},{},{}", e.number, e.handler, e.hooked, name);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
@@ -1496,8 +2113,8 @@ mod tests {
 
     // Known GUID bytes (mixed-endian) → "1B72224D-37B8-1792-2820-0ED8994498B2"
     const TEST_GUID_BYTES: [u8; 16] = [
-        0x4D, 0x22, 0x72, 0x1B, 0xB8, 0x37, 0x92, 0x17, 0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44,
-        0x98, 0xB2,
+        0x4D, 0x22, 0x72, 0x1B, 0xB8, 0x37, 0x92, 0x17, 0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44, 0x98,
+        0xB2,
     ];
 
     #[test]
@@ -1506,7 +2123,11 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         for entry in std::fs::read_dir(&dir).unwrap() {
             let entry = entry.unwrap();
-            if entry.path().extension().is_some_and(|e| e == "json" || e == "pdb") {
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|e| e == "json" || e == "pdb")
+            {
                 std::fs::remove_file(entry.path()).ok();
             }
         }

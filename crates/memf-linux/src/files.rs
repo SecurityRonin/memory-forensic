@@ -226,13 +226,13 @@ mod tests {
         let mut data = vec![0u8; 4096];
 
         // init_task (PID 1, "bash")
-        data[0..4].copy_from_slice(&1u32.to_le_bytes());      // pid
-        data[4..12].copy_from_slice(&0i64.to_le_bytes());     // state
+        data[0..4].copy_from_slice(&1u32.to_le_bytes()); // pid
+        data[4..12].copy_from_slice(&0i64.to_le_bytes()); // state
         let tasks_addr = vaddr + 16;
         data[16..24].copy_from_slice(&tasks_addr.to_le_bytes()); // tasks.next → self
         data[24..32].copy_from_slice(&tasks_addr.to_le_bytes()); // tasks.prev → self
-        data[32..36].copy_from_slice(b"bash");                   // comm
-        data[48..56].copy_from_slice(&0u64.to_le_bytes());       // mm = NULL (irrelevant)
+        data[32..36].copy_from_slice(b"bash"); // comm
+        data[48..56].copy_from_slice(&0u64.to_le_bytes()); // mm = NULL (irrelevant)
         let files_struct_addr = vaddr + 0x200;
         data[56..64].copy_from_slice(&files_struct_addr.to_le_bytes()); // files
 
@@ -241,14 +241,14 @@ mod tests {
         data[0x200..0x208].copy_from_slice(&fdtable_addr.to_le_bytes()); // fdt
 
         // fdtable at +0x300
-        data[0x300..0x304].copy_from_slice(&3u32.to_le_bytes());  // max_fds = 3
+        data[0x300..0x304].copy_from_slice(&3u32.to_le_bytes()); // max_fds = 3
         let fd_array_addr = vaddr + 0x400;
         data[0x308..0x310].copy_from_slice(&fd_array_addr.to_le_bytes()); // fd array
 
         // fd array at +0x400: [file0_ptr, NULL, file2_ptr]
         let file0_addr = vaddr + 0x500;
         data[0x400..0x408].copy_from_slice(&file0_addr.to_le_bytes()); // fd 0
-        data[0x408..0x410].copy_from_slice(&0u64.to_le_bytes());      // fd 1 = NULL (closed)
+        data[0x408..0x410].copy_from_slice(&0u64.to_le_bytes()); // fd 1 = NULL (closed)
         let file2_addr = vaddr + 0x600;
         data[0x410..0x418].copy_from_slice(&file2_addr.to_le_bytes()); // fd 2
 
@@ -258,14 +258,14 @@ mod tests {
         data[0x508..0x510].copy_from_slice(&dentry0_addr.to_le_bytes()); // f_path.dentry
         let inode0_addr = vaddr + 0x800;
         data[0x510..0x518].copy_from_slice(&inode0_addr.to_le_bytes()); // f_inode
-        data[0x518..0x520].copy_from_slice(&0u64.to_le_bytes());       // f_pos = 0
+        data[0x518..0x520].copy_from_slice(&0u64.to_le_bytes()); // f_pos = 0
 
         // dentry #0 at +0x700
         // d_name (qstr) at offset 0, name pointer at qstr offset 8
         let name0_addr = vaddr + 0x780;
         data[0x708..0x710].copy_from_slice(&name0_addr.to_le_bytes()); // d_name.name
-        data[0x780..0x78A].copy_from_slice(b"/dev/pts/0");             // name string
-        // d_inode at offset 48
+        data[0x780..0x78A].copy_from_slice(b"/dev/pts/0"); // name string
+                                                           // d_inode at offset 48
         data[0x730..0x738].copy_from_slice(&inode0_addr.to_le_bytes()); // d_inode
 
         // inode #0 at +0x800
@@ -276,12 +276,12 @@ mod tests {
         data[0x608..0x610].copy_from_slice(&dentry2_addr.to_le_bytes()); // f_path.dentry
         let inode2_addr = vaddr + 0xA00;
         data[0x610..0x618].copy_from_slice(&inode2_addr.to_le_bytes()); // f_inode
-        data[0x618..0x620].copy_from_slice(&1024u64.to_le_bytes());     // f_pos = 1024
+        data[0x618..0x620].copy_from_slice(&1024u64.to_le_bytes()); // f_pos = 1024
 
         // dentry #2 at +0x900
         let name2_addr = vaddr + 0x980;
         data[0x908..0x910].copy_from_slice(&name2_addr.to_le_bytes()); // d_name.name
-        data[0x980..0x988].copy_from_slice(b"/tmp/log");               // name string
+        data[0x980..0x988].copy_from_slice(b"/tmp/log"); // name string
         data[0x930..0x938].copy_from_slice(&inode2_addr.to_le_bytes()); // d_inode
 
         // inode #2 at +0xA00
@@ -312,12 +312,12 @@ mod tests {
         let paddr: u64 = 0x0080_0000;
         let mut data = vec![0u8; 4096];
 
-        data[0..4].copy_from_slice(&0u32.to_le_bytes());         // pid = 0
+        data[0..4].copy_from_slice(&0u32.to_le_bytes()); // pid = 0
         let tasks_addr = vaddr + 16;
         data[16..24].copy_from_slice(&tasks_addr.to_le_bytes()); // tasks.next → self
         data[24..32].copy_from_slice(&tasks_addr.to_le_bytes()); // tasks.prev → self
         data[32..41].copy_from_slice(b"swapper/0");
-        data[56..64].copy_from_slice(&0u64.to_le_bytes());       // files = NULL
+        data[56..64].copy_from_slice(&0u64.to_le_bytes()); // files = NULL
 
         let reader = make_test_reader(&data, vaddr, paddr);
         let fds = walk_files(&reader).unwrap();
