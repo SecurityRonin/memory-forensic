@@ -5,6 +5,7 @@
 //! Provides process, network connection, and kernel module enumeration
 //! by walking kernel data structures in physical memory dumps.
 
+pub mod files;
 pub mod kaslr;
 pub mod maps;
 pub mod modules;
