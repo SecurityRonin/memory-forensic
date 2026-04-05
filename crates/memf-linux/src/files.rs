@@ -18,7 +18,48 @@ use crate::{Error, FileDescriptorInfo, Result};
 pub fn walk_files<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<FileDescriptorInfo>> {
-    todo!()
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut all_fds = Vec::new();
+
+    // Include init_task itself
+    collect_process_files(reader, init_task_addr, &mut all_fds);
+
+    for &task_addr in &task_addrs {
+        collect_process_files(reader, task_addr, &mut all_fds);
+    }
+
+    Ok(all_fds)
+}
+
+/// Collect FDs for a single process, silently skipping if files is NULL.
+fn collect_process_files<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    out: &mut Vec<FileDescriptorInfo>,
+) {
+    let files_ptr: u64 = match reader.read_field(task_addr, "task_struct", "files") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if files_ptr == 0 {
+        return; // kernel thread or no files_struct
+    }
+
+    if let Ok(fds) = walk_process_files(reader, task_addr) {
+        out.extend(fds);
+    }
 }
 
 /// Walk open file descriptors for a single process.
@@ -26,7 +67,96 @@ pub fn walk_process_files<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     task_addr: u64,
 ) -> Result<Vec<FileDescriptorInfo>> {
-    todo!()
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
+    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
+    let files_ptr: u64 = reader.read_field(task_addr, "task_struct", "files")?;
+
+    if files_ptr == 0 {
+        return Err(Error::Walker(format!(
+            "task {} (PID {}) has NULL files pointer",
+            comm, pid
+        )));
+    }
+
+    let fdt_ptr: u64 = reader.read_field(files_ptr, "files_struct", "fdt")?;
+    let max_fds: u32 = reader.read_field(fdt_ptr, "fdtable", "max_fds")?;
+    let fd_array_ptr: u64 = reader.read_field(fdt_ptr, "fdtable", "fd")?;
+
+    // Resolve embedded struct offsets for f_path.dentry navigation
+    let f_path_offset = reader
+        .symbols()
+        .field_offset("file", "f_path")
+        .ok_or_else(|| Error::Walker("file.f_path field not found".into()))?;
+    let dentry_in_path_offset = reader
+        .symbols()
+        .field_offset("path", "dentry")
+        .ok_or_else(|| Error::Walker("path.dentry field not found".into()))?;
+    let name_in_qstr_offset = reader
+        .symbols()
+        .field_offset("qstr", "name")
+        .ok_or_else(|| Error::Walker("qstr.name field not found".into()))?;
+
+    // Read the entire fd pointer array as raw bytes
+    let array_size = usize::try_from(max_fds).unwrap_or(0) * 8;
+    let fd_raw = reader.read_bytes(fd_array_ptr, array_size)?;
+
+    let d_name_offset = reader
+        .symbols()
+        .field_offset("dentry", "d_name")
+        .ok_or_else(|| Error::Walker("dentry.d_name field not found".into()))?;
+
+    let mut fds = Vec::new();
+
+    for fd_num in 0..max_fds {
+        let off = usize::try_from(fd_num).unwrap_or(0) * 8;
+        let file_ptr = u64::from_le_bytes(fd_raw[off..off + 8].try_into().unwrap());
+
+        if file_ptr == 0 {
+            continue; // closed fd slot
+        }
+
+        // Read f_pos
+        let f_pos: u64 = reader.read_field(file_ptr, "file", "f_pos")?;
+
+        // Read f_inode pointer for inode number
+        let f_inode_ptr: u64 = reader.read_field(file_ptr, "file", "f_inode")?;
+        let inode = if f_inode_ptr != 0 {
+            reader.read_field::<u64>(f_inode_ptr, "inode", "i_ino").ok()
+        } else {
+            None
+        };
+
+        // Navigate embedded structs: file.f_path.dentry (f_path is embedded at
+        // f_path_offset, dentry pointer is at dentry_in_path_offset within path)
+        let dentry_addr = file_ptr + f_path_offset + dentry_in_path_offset;
+        let dentry_raw = reader.read_bytes(dentry_addr, 8)?;
+        let dentry_ptr = u64::from_le_bytes(dentry_raw.try_into().unwrap());
+
+        let path = if dentry_ptr != 0 {
+            // dentry.d_name is an embedded qstr; name pointer at qstr.name offset
+            let name_addr = dentry_ptr + d_name_offset + name_in_qstr_offset;
+            let name_raw = reader.read_bytes(name_addr, 8)?;
+            let name_ptr = u64::from_le_bytes(name_raw.try_into().unwrap());
+            if name_ptr != 0 {
+                reader.read_string(name_ptr, 256).unwrap_or_default()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        fds.push(FileDescriptorInfo {
+            pid: u64::from(pid),
+            comm: comm.clone(),
+            fd: fd_num,
+            path,
+            inode,
+            pos: f_pos,
+        });
+    }
+
+    Ok(fds)
 }
 
 #[cfg(test)]
