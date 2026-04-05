@@ -382,6 +382,166 @@ pub struct MountInfo {
 // Syscall table types
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Bash history types
+// ---------------------------------------------------------------------------
+
+/// A recovered bash command history entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BashHistoryInfo {
+    /// PID of the bash process.
+    pub pid: u64,
+    /// Process name (usually "bash").
+    pub comm: String,
+    /// The command text.
+    pub command: String,
+    /// Unix timestamp when the command was recorded, if available.
+    pub timestamp: Option<i64>,
+    /// Index of this entry in the history.
+    pub index: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Process cross-view types (psxview)
+// ---------------------------------------------------------------------------
+
+/// Cross-view process visibility information for DKOM detection.
+#[derive(Debug, Clone)]
+pub struct PsxViewInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process name.
+    pub comm: String,
+    /// Whether the process was found in the task_struct linked list.
+    pub in_task_list: bool,
+    /// Whether the process was found in the PID hash table.
+    pub in_pid_hash: bool,
+}
+
+// ---------------------------------------------------------------------------
+// TTY check types
+// ---------------------------------------------------------------------------
+
+/// Information about a TTY operations function pointer check.
+#[derive(Debug, Clone)]
+pub struct TtyCheckInfo {
+    /// TTY device name.
+    pub name: String,
+    /// Operation name (e.g. "write", "ioctl").
+    pub operation: String,
+    /// Handler function address.
+    pub handler: u64,
+    /// Whether this handler appears hooked (outside kernel text).
+    pub hooked: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Kernel inline hook types
+// ---------------------------------------------------------------------------
+
+/// Information about a potential inline kernel function hook.
+#[derive(Debug, Clone)]
+pub struct KernelHookInfo {
+    /// Symbol name of the checked function.
+    pub symbol: String,
+    /// Function address.
+    pub address: u64,
+    /// Type of hook detected (e.g. "jmp", "call", "none").
+    pub hook_type: String,
+    /// Target address of the hook, if determinable.
+    pub target: Option<u64>,
+    /// Whether this appears suspicious.
+    pub suspicious: bool,
+}
+
+// ---------------------------------------------------------------------------
+// ELF info types
+// ---------------------------------------------------------------------------
+
+/// ELF object type from the ELF header `e_type` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElfType {
+    /// ET_NONE (0).
+    None,
+    /// ET_REL (1).
+    Relocatable,
+    /// ET_EXEC (2).
+    Executable,
+    /// ET_DYN (3) — shared object / PIE executable.
+    SharedObject,
+    /// ET_CORE (4).
+    Core,
+    /// Unknown type.
+    Unknown(u16),
+}
+
+impl ElfType {
+    /// Parse ELF `e_type` value.
+    pub fn from_raw(value: u16) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::Relocatable,
+            2 => Self::Executable,
+            3 => Self::SharedObject,
+            4 => Self::Core,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+impl fmt::Display for ElfType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "NONE"),
+            Self::Relocatable => write!(f, "REL"),
+            Self::Executable => write!(f, "EXEC"),
+            Self::SharedObject => write!(f, "DYN"),
+            Self::Core => write!(f, "CORE"),
+            Self::Unknown(v) => write!(f, "UNKNOWN({v})"),
+        }
+    }
+}
+
+/// Information about an ELF binary found in process memory.
+#[derive(Debug, Clone)]
+pub struct ElfInfo {
+    /// PID of the process.
+    pub pid: u64,
+    /// Process name.
+    pub comm: String,
+    /// VMA start address where ELF was found.
+    pub vma_start: u64,
+    /// ELF type.
+    pub elf_type: ElfType,
+    /// Machine architecture (e.g. EM_X86_64 = 62).
+    pub machine: u16,
+    /// Entry point address.
+    pub entry_point: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Hidden module types
+// ---------------------------------------------------------------------------
+
+/// Information about a potentially hidden kernel module.
+#[derive(Debug, Clone)]
+pub struct HiddenModuleInfo {
+    /// Module name.
+    pub name: String,
+    /// Base virtual address.
+    pub base_addr: u64,
+    /// Module size in bytes.
+    pub size: u64,
+    /// Whether found in the modules linked list.
+    pub in_modules_list: bool,
+    /// Whether found via kset/sysfs walk.
+    pub in_sysfs: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Syscall table types
+// ---------------------------------------------------------------------------
+
 /// Information about a syscall table entry.
 #[derive(Debug, Clone)]
 pub struct SyscallInfo {
@@ -507,5 +667,25 @@ mod tests {
         assert_eq!(Protocol::Udp6.to_string(), "UDP6");
         assert_eq!(Protocol::Unix.to_string(), "UNIX");
         assert_eq!(Protocol::Raw.to_string(), "RAW");
+    }
+
+    #[test]
+    fn elf_type_from_raw() {
+        assert_eq!(ElfType::from_raw(0), ElfType::None);
+        assert_eq!(ElfType::from_raw(1), ElfType::Relocatable);
+        assert_eq!(ElfType::from_raw(2), ElfType::Executable);
+        assert_eq!(ElfType::from_raw(3), ElfType::SharedObject);
+        assert_eq!(ElfType::from_raw(4), ElfType::Core);
+        assert!(matches!(ElfType::from_raw(99), ElfType::Unknown(99)));
+    }
+
+    #[test]
+    fn elf_type_display() {
+        assert_eq!(ElfType::None.to_string(), "NONE");
+        assert_eq!(ElfType::Relocatable.to_string(), "REL");
+        assert_eq!(ElfType::Executable.to_string(), "EXEC");
+        assert_eq!(ElfType::SharedObject.to_string(), "DYN");
+        assert_eq!(ElfType::Core.to_string(), "CORE");
+        assert_eq!(ElfType::Unknown(42).to_string(), "UNKNOWN(42)");
     }
 }

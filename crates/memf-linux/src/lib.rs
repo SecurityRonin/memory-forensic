@@ -5,6 +5,10 @@
 //! Provides process, network connection, and kernel module enumeration
 //! by walking kernel data structures in physical memory dumps.
 
+pub mod bash;
+pub mod check_hooks;
+pub mod check_modules;
+pub mod elfinfo;
 pub mod envvars;
 pub mod files;
 pub mod fs;
@@ -14,7 +18,9 @@ pub mod maps;
 pub mod modules;
 pub mod network;
 pub mod process;
+pub mod psxview;
 pub mod syscalls;
+pub mod tty_check;
 pub mod types;
 
 use memf_core::object_reader::ObjectReader;
