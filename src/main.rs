@@ -48,7 +48,8 @@ use os_detect::{AnalysisContext, OsProfile};
         memf ps memdump.dmp --symbols ntkrnlmp.json --masquerade\n  \
         memf malfind memdump.lime --symbols linux.json\n  \
         memf mounts memdump.lime --symbols linux.json\n  \
-        memf check-syscalls memdump.lime --symbols linux.json\n  \
+        memf mod memdump.lime --symbols linux.json --check-syscalls\n  \
+        memf mod memdump.lime --symbols linux.json --check-hooks\n  \
         memf strings memdump.dmp --rules ./yara-rules/\n  \
         memf strings --from-file extracted.txt --min-length 8"
 )]
@@ -103,6 +104,10 @@ enum Commands {
         masquerade: bool,
     },
     /// List loaded kernel modules (Linux) or drivers (Windows).
+    ///
+    /// With --check-syscalls or --check-hooks (Linux), also runs integrity
+    /// checks on the syscall table or kernel function prologues.
+    /// With --check-irp (Windows, future), checks driver IRP dispatch tables.
     Mod {
         /// Path to the memory dump file.
         dump: PathBuf,
@@ -118,6 +123,18 @@ enum Commands {
         /// Optional kernel page table root (CR3) physical address (hex).
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
+
+        /// Check syscall table for hooks (Linux only).
+        #[arg(long)]
+        check_syscalls: bool,
+
+        /// Check kernel functions for inline hooks (Linux only).
+        #[arg(long)]
+        check_hooks: bool,
+
+        /// Check driver IRP dispatch table for hooks (Windows only).
+        #[arg(long)]
+        check_irp: bool,
     },
     /// List network connections from a memory dump.
     Net {
@@ -259,24 +276,6 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
     },
-    /// Check syscall table for hooks. Linux only.
-    #[command(name = "check-syscalls")]
-    CheckSyscalls {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
     /// Recover bash command history from process heaps. Linux only.
     #[command(name = "bash-history")]
     BashHistory {
@@ -315,24 +314,6 @@ enum Commands {
     /// Check TTY driver operations for hooks. Linux only.
     #[command(name = "check-tty")]
     CheckTty {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Check kernel functions for inline hooks. Linux only.
-    #[command(name = "check-hooks")]
-    CheckHooks {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -450,6 +431,9 @@ fn main() -> Result<()> {
             symbols,
             output,
             cr3,
+            check_syscalls,
+            check_hooks,
+            check_irp,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_mod(
@@ -457,6 +441,9 @@ fn main() -> Result<()> {
                 symbols.as_deref(),
                 output,
                 cr3,
+                check_syscalls,
+                check_hooks,
+                check_irp,
                 resolved.is_extracted(),
             )
         }
@@ -582,21 +569,6 @@ fn main() -> Result<()> {
                 resolved.is_extracted(),
             )
         }
-        Commands::CheckSyscalls {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_check_syscalls(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
         Commands::BashHistory {
             dump,
             symbols,
@@ -635,21 +607,6 @@ fn main() -> Result<()> {
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_check_tty(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::CheckHooks {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_check_hooks(
                 resolved.path(),
                 symbols.as_deref(),
                 output,
@@ -942,27 +899,55 @@ fn cmd_ps(
 // cmd_mod — Linux kernel modules or Windows drivers
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn cmd_mod(
     dump: &Path,
     symbols_path: Option<&Path>,
     output: OutputFormat,
     cr3_override: Option<u64>,
+    check_syscalls: bool,
+    check_hooks: bool,
+    check_irp: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
+            if check_irp {
+                anyhow::bail!("--check-irp is only available for Windows memory dumps");
+            }
             let mods = memf_linux::modules::walk_modules(&reader)
                 .context("failed to walk Linux modules")?;
             print_linux_modules(&mods, output);
+            if check_syscalls {
+                let entries = memf_linux::syscalls::check_syscall_table(&reader)
+                    .context("failed to check syscall table")?;
+                print_syscalls(&entries, output);
+            }
+            if check_hooks {
+                let entries = memf_linux::check_hooks::check_inline_hooks(&reader)
+                    .context("failed to check inline hooks")?;
+                print_check_hooks(&entries, output);
+            }
         }
         OsProfile::Windows => {
+            if check_syscalls {
+                anyhow::bail!("--check-syscalls is only available for Linux memory dumps");
+            }
+            if check_hooks {
+                anyhow::bail!("--check-hooks is only available for Linux memory dumps");
+            }
             let mod_list = ctx
                 .ps_loaded_module_list
                 .context("missing PsLoadedModuleList; provide via symbols or dump metadata")?;
             let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
                 .context("failed to walk Windows drivers")?;
             print_windows_drivers(&drivers, output);
+            if check_irp {
+                anyhow::bail!(
+                    "--check-irp requires _DRIVER_OBJECT enumeration via pool scanning (not yet implemented)"
+                );
+            }
         }
         OsProfile::MacOs => anyhow::bail!("macOS module walking not yet supported"),
     }
@@ -1173,26 +1158,6 @@ fn cmd_mounts(
 }
 
 // ---------------------------------------------------------------------------
-// cmd_check_syscalls — syscall table integrity check
-// ---------------------------------------------------------------------------
-
-fn cmd_check_syscalls(
-    dump: &Path,
-    symbols_path: Option<&Path>,
-    output: OutputFormat,
-    cr3_override: Option<u64>,
-    raw_fallback: bool,
-) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
-    if ctx.os != OsProfile::Linux {
-        anyhow::bail!("memf check-syscalls currently requires a Linux memory dump");
-    }
-    let entries = memf_linux::syscalls::check_syscall_table(&reader)
-        .context("failed to check syscall table")?;
-    print_syscalls(&entries, output);
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // cmd_bash_history — recover bash command history from process heaps
 // ---------------------------------------------------------------------------
@@ -1256,25 +1221,6 @@ fn cmd_check_tty(
 }
 
 // ---------------------------------------------------------------------------
-// cmd_check_hooks — check kernel functions for inline hooks
-// ---------------------------------------------------------------------------
-
-fn cmd_check_hooks(
-    dump: &Path,
-    symbols_path: Option<&Path>,
-    output: OutputFormat,
-    cr3_override: Option<u64>,
-    raw_fallback: bool,
-) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
-    if ctx.os != OsProfile::Linux {
-        anyhow::bail!("memf check-hooks currently requires a Linux memory dump");
-    }
-    let entries = memf_linux::check_hooks::check_inline_hooks(&reader)
-        .context("failed to check inline hooks")?;
-    print_check_hooks(&entries, output);
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // cmd_elfinfo — extract ELF headers from process memory
@@ -2743,6 +2689,9 @@ mod tests {
             OutputFormat::Table,
             None,
             false,
+            false,
+            false,
+            false,
         );
         if let Err(e) = &result {
             let msg = format!("{e}");
@@ -3220,14 +3169,17 @@ mod tests {
     }
 
     #[test]
-    fn cmd_check_syscalls_with_lime_dump_attempts_analysis() {
+    fn cmd_mod_check_syscalls_with_lime_dump_attempts_analysis() {
         let dump_path = make_temp_lime_dump("syscalls");
         let isf_path = make_temp_isf_file("syscalls");
-        let result = cmd_check_syscalls(
+        let result = cmd_mod(
             &dump_path,
             Some(&isf_path),
             OutputFormat::Table,
             None,
+            true,
+            false,
+            false,
             false,
         );
         if let Err(e) = &result {
