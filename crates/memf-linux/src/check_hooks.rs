@@ -35,14 +35,76 @@ const FUNCTIONS_TO_CHECK: &[&str] = &[
 pub fn check_inline_hooks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<KernelHookInfo>> {
-    todo!()
+    let stext = reader
+        .symbols()
+        .symbol_address("_stext")
+        .ok_or_else(|| Error::Walker("symbol '_stext' not found".into()))?;
+    let etext = reader
+        .symbols()
+        .symbol_address("_etext")
+        .ok_or_else(|| Error::Walker("symbol '_etext' not found".into()))?;
+
+    let mut results = Vec::new();
+
+    for &func_name in FUNCTIONS_TO_CHECK {
+        let Some(func_addr) = reader.symbols().symbol_address(func_name) else {
+            continue; // Symbol not present, skip
+        };
+
+        let Ok(prologue) = reader.read_bytes(func_addr, PROLOGUE_SIZE) else {
+            continue;
+        };
+
+        let (hook_type, target) = analyze_prologue(&prologue, func_addr);
+        let suspicious = hook_type != "none" || target.is_some_and(|t| t < stext || t > etext);
+
+        results.push(KernelHookInfo {
+            symbol: func_name.to_string(),
+            address: func_addr,
+            hook_type,
+            target,
+            suspicious,
+        });
+    }
+
+    Ok(results)
 }
 
 /// Analyze a function prologue for hook patterns.
 ///
 /// Returns `(hook_type, target)` if a hook is detected, or `("none", None)`.
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 fn analyze_prologue(bytes: &[u8], func_addr: u64) -> (String, Option<u64>) {
-    todo!()
+    if bytes.len() < PROLOGUE_SIZE {
+        return ("none".to_string(), None);
+    }
+
+    // Pattern 1: E9 xx xx xx xx — relative JMP (5 bytes)
+    if bytes[0] == 0xE9 {
+        let offset = i32::from_le_bytes(bytes[1..5].try_into().unwrap());
+        let target = (func_addr as i64 + 5 + i64::from(offset)) as u64;
+        return ("jmp_rel32".to_string(), Some(target));
+    }
+
+    // Pattern 2: FF 25 xx xx xx xx — absolute indirect JMP [rip+disp32]
+    if bytes[0] == 0xFF && bytes[1] == 0x25 {
+        let offset = i32::from_le_bytes(bytes[2..6].try_into().unwrap());
+        let target = (func_addr as i64 + 6 + i64::from(offset)) as u64;
+        return ("jmp_indirect".to_string(), Some(target));
+    }
+
+    // Pattern 3: 48 B8 <imm64> FF E0 — MOV RAX, imm64; JMP RAX (12 bytes)
+    if bytes.len() >= 12
+        && bytes[0] == 0x48
+        && bytes[1] == 0xB8
+        && bytes[10] == 0xFF
+        && bytes[11] == 0xE0
+    {
+        let target = u64::from_le_bytes(bytes[2..10].try_into().unwrap());
+        return ("mov_rax_jmp".to_string(), Some(target));
+    }
+
+    ("none".to_string(), None)
 }
 
 #[cfg(test)]
@@ -173,7 +235,9 @@ mod tests {
 
     #[test]
     fn analyze_prologue_normal() {
-        let bytes = [0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = [
+            0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
         let (hook_type, target) = analyze_prologue(&bytes, 0xFFFF_8000_0001_0000);
         assert_eq!(hook_type, "none");
         assert_eq!(target, None);

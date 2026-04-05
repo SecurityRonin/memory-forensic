@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{ElfInfo, ElfType, Error, Result, VmaFlags};
+use crate::{ElfInfo, ElfType, Error, Result};
 
 /// ELF magic bytes.
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
@@ -20,17 +20,105 @@ const ELF64_HEADER_SIZE: usize = 64;
 /// For each process, walks the VMA list and reads the first
 /// [`ELF64_HEADER_SIZE`] bytes from each region. Regions starting
 /// with the ELF magic are parsed and returned.
-pub fn walk_elfinfo<P: PhysicalMemoryProvider>(
+pub fn walk_elfinfo<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<ElfInfo>> {
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results = Vec::new();
+
+    scan_process_elfs(reader, init_task_addr, &mut results);
+
+    for &task_addr in &task_addrs {
+        scan_process_elfs(reader, task_addr, &mut results);
+    }
+
+    Ok(results)
+}
+
+/// Scan a single process's VMAs for ELF headers.
+fn scan_process_elfs<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-) -> Result<Vec<ElfInfo>> {
-    todo!()
+    task_addr: u64,
+    out: &mut Vec<ElfInfo>,
+) {
+    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if mm_ptr == 0 {
+        return;
+    }
+
+    let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let comm = reader
+        .read_field_string(task_addr, "task_struct", "comm", 16)
+        .unwrap_or_default();
+
+    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let mut vma_addr = mmap_ptr;
+    while vma_addr != 0 {
+        let vm_start: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_start") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+
+        // Read the first 64 bytes and check for ELF magic
+        if let Ok(header_bytes) = reader.read_bytes(vm_start, ELF64_HEADER_SIZE) {
+            if let Some(info) = parse_elf64_header(&header_bytes, u64::from(pid), &comm, vm_start) {
+                out.push(info);
+            }
+        }
+
+        vma_addr = reader
+            .read_field(vma_addr, "vm_area_struct", "vm_next")
+            .unwrap_or(0);
+    }
 }
 
 /// Parse a 64-bit ELF header from raw bytes.
 ///
 /// Returns `None` if the magic doesn't match or the header is too short.
 fn parse_elf64_header(bytes: &[u8], pid: u64, comm: &str, vma_start: u64) -> Option<ElfInfo> {
-    todo!()
+    if bytes.len() < ELF64_HEADER_SIZE {
+        return None;
+    }
+    if bytes[0..4] != ELF_MAGIC {
+        return None;
+    }
+    // Verify ELFCLASS64 (e_ident[4] == 2)
+    if bytes[4] != 2 {
+        return None;
+    }
+
+    let e_type = u16::from_le_bytes(bytes[16..18].try_into().unwrap());
+    let e_machine = u16::from_le_bytes(bytes[18..20].try_into().unwrap());
+    let e_entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+
+    Some(ElfInfo {
+        pid,
+        comm: comm.to_string(),
+        vma_start,
+        elf_type: ElfType::from_raw(e_type),
+        machine: e_machine,
+        entry_point: e_entry,
+    })
 }
 
 #[cfg(test)]
@@ -94,7 +182,7 @@ mod tests {
         hdr[4] = 2; // ELFCLASS64
         hdr[5] = 1; // ELFDATA2LSB
         hdr[6] = 1; // EV_CURRENT
-        // e_type (offset 16)
+                    // e_type (offset 16)
         hdr[16..18].copy_from_slice(&elf_type.to_le_bytes());
         // e_machine (offset 18)
         hdr[18..20].copy_from_slice(&machine.to_le_bytes());
@@ -135,8 +223,8 @@ mod tests {
         data[0x328..0x330].copy_from_slice(&0xABCDu64.to_le_bytes()); // vm_file non-null
 
         let elf = build_elf64_header(
-            3,    // ET_DYN (PIE executable)
-            62,   // EM_X86_64
+            3,  // ET_DYN (PIE executable)
+            62, // EM_X86_64
             0x0000_5555_0000_1000,
         );
 
@@ -180,8 +268,12 @@ mod tests {
 
         let non_elf = vec![0xFFu8; 4096]; // garbage, not ELF
 
-        let reader =
-            make_test_reader(&data, vaddr, paddr, &[(region_vaddr, region_paddr, &non_elf)]);
+        let reader = make_test_reader(
+            &data,
+            vaddr,
+            paddr,
+            &[(region_vaddr, region_paddr, &non_elf)],
+        );
         let results = walk_elfinfo(&reader).unwrap();
 
         assert!(results.is_empty());

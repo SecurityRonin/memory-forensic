@@ -10,14 +10,6 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{Error, Result, TtyCheckInfo};
 
-/// Names of `tty_operations` function pointers to check.
-const OPS_TO_CHECK: &[(&str, u64)] = &[
-    ("open", 0),
-    ("close", 8),
-    ("write", 16),
-    ("ioctl", 48),
-];
-
 /// Check TTY driver operations for hooks.
 ///
 /// Walks the `tty_drivers` linked list, reads each driver's
@@ -26,7 +18,65 @@ const OPS_TO_CHECK: &[(&str, u64)] = &[
 pub fn check_tty_hooks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<TtyCheckInfo>> {
-    todo!()
+    let tty_drivers_addr = reader
+        .symbols()
+        .symbol_address("tty_drivers")
+        .ok_or_else(|| Error::Walker("symbol 'tty_drivers' not found".into()))?;
+
+    let stext = reader
+        .symbols()
+        .symbol_address("_stext")
+        .ok_or_else(|| Error::Walker("symbol '_stext' not found".into()))?;
+
+    let etext = reader
+        .symbols()
+        .symbol_address("_etext")
+        .ok_or_else(|| Error::Walker("symbol '_etext' not found".into()))?;
+
+    let _tty_drivers_offset = reader
+        .symbols()
+        .field_offset("tty_driver", "tty_drivers")
+        .ok_or_else(|| Error::Walker("tty_driver.tty_drivers field not found".into()))?;
+
+    // Walk the tty_drivers linked list
+    let driver_addrs = reader.walk_list(tty_drivers_addr, "tty_driver", "tty_drivers")?;
+
+    let mut results = Vec::new();
+
+    for &driver_addr in &driver_addrs {
+        let name = reader
+            .read_field_string(driver_addr, "tty_driver", "name", 64)
+            .unwrap_or_else(|_| "<unknown>".to_string());
+
+        let ops_ptr: u64 = match reader.read_field(driver_addr, "tty_driver", "ops") {
+            Ok(v) if v != 0 => v,
+            _ => continue,
+        };
+
+        // Check each operation function pointer
+        let ops_fields = ["open", "close", "write", "ioctl"];
+        for &op_name in &ops_fields {
+            let handler: u64 = match reader.read_field(ops_ptr, "tty_operations", op_name) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            if handler == 0 {
+                continue;
+            }
+
+            let hooked = handler < stext || handler > etext;
+
+            results.push(TtyCheckInfo {
+                name: name.clone(),
+                operation: op_name.to_string(),
+                handler,
+                hooked,
+            });
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]

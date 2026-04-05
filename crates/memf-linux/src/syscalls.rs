@@ -39,8 +39,7 @@ pub fn check_syscall_table<P: PhysicalMemoryProvider>(
     let nr_syscalls = reader
         .symbols()
         .symbol_address("__NR_syscall_max")
-        .map(|max| max + 1)
-        .unwrap_or(DEFAULT_NR_SYSCALLS);
+        .map_or(DEFAULT_NR_SYSCALLS, |max| max + 1);
 
     // Read the entire table as raw bytes (each entry is 8 bytes / u64 pointer)
     let table_size = usize::try_from(nr_syscalls).unwrap_or(0) * 8;

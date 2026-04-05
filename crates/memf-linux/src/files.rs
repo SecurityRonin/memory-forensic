@@ -73,8 +73,7 @@ pub fn walk_process_files<P: PhysicalMemoryProvider>(
 
     if files_ptr == 0 {
         return Err(Error::Walker(format!(
-            "task {} (PID {}) has NULL files pointer",
-            comm, pid
+            "task {comm} (PID {pid}) has NULL files pointer"
         )));
     }
 

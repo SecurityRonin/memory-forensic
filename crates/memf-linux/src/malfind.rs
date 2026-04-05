@@ -74,10 +74,8 @@ fn scan_process_vmas<P: PhysicalMemoryProvider>(
 
     let mut vma_addr = mmap_ptr;
     while vma_addr != 0 {
-        if let Ok(finding) = check_vma(reader, vma_addr, u64::from(pid), &comm) {
-            if let Some(f) = finding {
-                out.push(f);
-            }
+        if let Ok(Some(f)) = check_vma(reader, vma_addr, u64::from(pid), &comm) {
+            out.push(f);
         }
 
         vma_addr = reader

@@ -75,8 +75,7 @@ pub fn walk_process_envvars<P: PhysicalMemoryProvider>(
 
     if mm_ptr == 0 {
         return Err(Error::Walker(format!(
-            "task {} (PID {}) has NULL mm (kernel thread)",
-            comm, pid
+            "task {comm} (PID {pid}) has NULL mm (kernel thread)"
         )));
     }
 

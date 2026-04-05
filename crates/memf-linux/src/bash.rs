@@ -25,17 +25,218 @@ const MAX_COMMAND_LEN: usize = 4096;
 pub fn walk_bash_history<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<BashHistoryInfo>> {
-    todo!()
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results = Vec::new();
+
+    // Include init_task itself
+    scan_process_history(reader, init_task_addr, &mut results);
+
+    for &task_addr in &task_addrs {
+        scan_process_history(reader, task_addr, &mut results);
+    }
+
+    Ok(results)
+}
+
+/// Scan a single process for bash history entries.
+fn scan_process_history<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    out: &mut Vec<BashHistoryInfo>,
+) {
+    let Ok(comm) = reader.read_field_string(task_addr, "task_struct", "comm", 16) else {
+        return;
+    };
+
+    if comm != "bash" {
+        return;
+    }
+
+    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if mm_ptr == 0 {
+        return; // kernel thread
+    }
+
+    let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    // Collect VMA ranges for pointer validation
+    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let mut vma_ranges: Vec<(u64, u64)> = Vec::new();
+    let mut heap_regions: Vec<(u64, u64)> = Vec::new();
+    let mut vma_addr = mmap_ptr;
+
+    while vma_addr != 0 {
+        let vm_start: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_start") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let vm_end: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_end") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let vm_flags: u64 = reader
+            .read_field(vma_addr, "vm_area_struct", "vm_flags")
+            .unwrap_or(0);
+        let vm_file: u64 = reader
+            .read_field(vma_addr, "vm_area_struct", "vm_file")
+            .unwrap_or(0);
+
+        vma_ranges.push((vm_start, vm_end));
+
+        let flags = VmaFlags::from_raw(vm_flags);
+        // Heap candidate: anonymous (vm_file == 0), read+write
+        if vm_file == 0 && flags.read && flags.write && !flags.exec {
+            heap_regions.push((vm_start, vm_end));
+        }
+
+        vma_addr = reader
+            .read_field(vma_addr, "vm_area_struct", "vm_next")
+            .unwrap_or(0);
+    }
+
+    // Scan each heap region for HIST_ENTRY patterns
+    let mut index = 0u64;
+    for &(start, end) in &heap_regions {
+        let size = (end - start).min(MAX_HEAP_SCAN) as usize;
+        let Ok(data) = reader.read_bytes(start, size) else {
+            continue;
+        };
+
+        scan_heap_for_entries(
+            reader,
+            &data,
+            &vma_ranges,
+            u64::from(pid),
+            &comm,
+            &mut index,
+            out,
+        );
+    }
+}
+
+/// Scan a heap region for HIST_ENTRY structs.
+///
+/// HIST_ENTRY layout (24 bytes on 64-bit):
+///   offset 0:  char *line      (pointer to command string)
+///   offset 8:  char *timestamp (pointer to "#DIGITS" string, or NULL)
+///   offset 16: histdata_t *data (usually NULL)
+fn scan_heap_for_entries<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    data: &[u8],
+    vma_ranges: &[(u64, u64)],
+    pid: u64,
+    comm: &str,
+    index: &mut u64,
+    out: &mut Vec<BashHistoryInfo>,
+) {
+    if data.len() < 24 {
+        return;
+    }
+
+    // Scan at 8-byte alignment for HIST_ENTRY candidates
+    let limit = data.len() - 23;
+    let mut off = 0;
+    while off < limit {
+        let line_ptr = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+        let ts_ptr = u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap());
+
+        // Quick reject: line_ptr must be non-zero and within a VMA
+        if line_ptr == 0 || !addr_in_vmas(line_ptr, vma_ranges) {
+            off += 8;
+            continue;
+        }
+
+        // ts_ptr must be NULL or within a VMA
+        if ts_ptr != 0 && !addr_in_vmas(ts_ptr, vma_ranges) {
+            off += 8;
+            continue;
+        }
+
+        // Try to read the command string
+        let Ok(line_str) = reader.read_string(line_ptr, MAX_COMMAND_LEN) else {
+            off += 8;
+            continue;
+        };
+
+        if line_str.is_empty() || !is_printable_ascii(line_str.as_bytes()) {
+            off += 8;
+            continue;
+        }
+
+        // Try to read and parse the timestamp
+        let timestamp = if ts_ptr != 0 {
+            reader
+                .read_string(ts_ptr, 32)
+                .ok()
+                .and_then(|s| parse_bash_timestamp(&s))
+        } else {
+            None
+        };
+
+        // Validate timestamp pointer actually looks like a bash timestamp
+        if ts_ptr != 0 && timestamp.is_none() {
+            off += 8;
+            continue;
+        }
+
+        out.push(BashHistoryInfo {
+            pid,
+            comm: comm.to_string(),
+            command: line_str,
+            timestamp,
+            index: *index,
+        });
+        *index += 1;
+
+        // Skip past this HIST_ENTRY (24 bytes)
+        off += 24;
+    }
+}
+
+/// Check whether an address falls within any of the given VMA ranges.
+fn addr_in_vmas(addr: u64, ranges: &[(u64, u64)]) -> bool {
+    ranges
+        .iter()
+        .any(|&(start, end)| addr >= start && addr < end)
 }
 
 /// Check whether a byte sequence is printable ASCII (no control chars except tab).
 fn is_printable_ascii(bytes: &[u8]) -> bool {
-    todo!()
+    !bytes.is_empty()
+        && bytes
+            .iter()
+            .all(|&b| b == b'\t' || (0x20..=0x7E).contains(&b))
 }
 
 /// Parse a bash timestamp string (`#1700000000`) into a Unix timestamp.
 fn parse_bash_timestamp(s: &str) -> Option<i64> {
-    todo!()
+    let digits = s.strip_prefix('#')?;
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<i64>().ok()
 }
 
 #[cfg(test)]

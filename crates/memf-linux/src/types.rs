@@ -247,6 +247,7 @@ pub struct ModuleInfo {
 
 /// Permission flags for a virtual memory area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct VmaFlags {
     /// VM_READ (0x1).
     pub read: bool,
