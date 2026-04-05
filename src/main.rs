@@ -42,6 +42,10 @@ use os_detect::{AnalysisContext, OsProfile};
         memf maps memdump.lime --symbols linux.json\n  \
         memf files memdump.lime --symbols linux.json\n  \
         memf envvars memdump.lime --symbols linux.json --output json\n  \
+        memf envvars memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf cmdline memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --tree\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --masquerade\n  \
         memf malfind memdump.lime --symbols linux.json\n  \
         memf mounts memdump.lime --symbols linux.json\n  \
         memf check-syscalls memdump.lime --symbols linux.json\n  \
@@ -89,6 +93,14 @@ enum Commands {
         /// Filter by process ID.
         #[arg(long)]
         pid: Option<u64>,
+
+        /// Display processes as a tree (Windows only).
+        #[arg(long)]
+        tree: bool,
+
+        /// Check for PEB masquerade (EPROCESS vs PEB image name mismatch). Windows only.
+        #[arg(long)]
+        masquerade: bool,
     },
     /// List loaded kernel modules (Linux) or drivers (Windows).
     Mod {
@@ -179,8 +191,25 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
     },
-    /// List process environment variables. Linux only.
+    /// List process environment variables (Linux and Windows).
     Envvars {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Extract process command lines from PEB (Windows only).
+    Cmdline {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -384,6 +413,7 @@ enum OutputFormat {
     Csv,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -399,6 +429,8 @@ fn main() -> Result<()> {
             cr3,
             threads,
             pid,
+            tree,
+            masquerade,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_ps(
@@ -408,6 +440,8 @@ fn main() -> Result<()> {
                 cr3,
                 threads,
                 pid,
+                tree,
+                masquerade,
                 resolved.is_extracted(),
             )
         }
@@ -496,6 +530,21 @@ fn main() -> Result<()> {
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_envvars(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Cmdline {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_cmdline(
                 resolved.path(),
                 symbols.as_deref(),
                 output,
@@ -816,6 +865,7 @@ fn cmd_info(dump: &Path, raw_fallback: bool) -> Result<()> {
 // cmd_ps — dispatch to Linux or Windows walker
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn cmd_ps(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -823,6 +873,8 @@ fn cmd_ps(
     cr3_override: Option<u64>,
     threads: bool,
     pid_filter: Option<u64>,
+    tree: bool,
+    masquerade: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -830,6 +882,12 @@ fn cmd_ps(
         OsProfile::Linux => {
             if threads {
                 anyhow::bail!("--threads is not yet supported for Linux dumps");
+            }
+            if tree {
+                anyhow::bail!("--tree is not yet supported for Linux dumps");
+            }
+            if masquerade {
+                anyhow::bail!("--masquerade is only supported for Windows dumps");
             }
             let procs = memf_linux::process::walk_processes(&reader)
                 .context("failed to walk Linux processes")?;
@@ -841,7 +899,13 @@ fn cmd_ps(
                 .context("missing PsActiveProcessHead; provide via symbols or dump metadata")?;
             let procs = memf_windows::process::walk_processes(&reader, ps_head)
                 .context("failed to walk Windows processes")?;
-            print_windows_processes(&procs, output);
+
+            if tree {
+                let tree_entries = memf_windows::process::build_pstree(&procs);
+                print_pstree(&tree_entries, output);
+            } else {
+                print_windows_processes(&procs, output);
+            }
 
             if threads {
                 let mut all_threads = Vec::new();
@@ -860,6 +924,13 @@ fn cmd_ps(
                 }
                 println!();
                 print_threads(&all_threads, output);
+            }
+
+            if masquerade {
+                let masq_results = memf_windows::process::check_peb_masquerade(&reader, ps_head)
+                    .context("failed to check PEB masquerade")?;
+                println!();
+                print_masquerade(&masq_results, output);
             }
         }
         OsProfile::MacOs => anyhow::bail!("macOS process walking not yet supported"),
@@ -1003,7 +1074,7 @@ fn cmd_files(
 }
 
 // ---------------------------------------------------------------------------
-// cmd_envvars — Linux process environment variables
+// cmd_envvars — process environment variables (Linux and Windows)
 // ---------------------------------------------------------------------------
 
 fn cmd_envvars(
@@ -1014,12 +1085,48 @@ fn cmd_envvars(
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
-    if ctx.os != OsProfile::Linux {
-        anyhow::bail!("memf envvars currently requires a Linux memory dump");
+    match ctx.os {
+        OsProfile::Linux => {
+            let vars = memf_linux::envvars::walk_envvars(&reader)
+                .context("failed to walk Linux environment variables")?;
+            print_envvars(&vars, output);
+        }
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead; provide via symbols or dump metadata")?;
+            let vars = memf_windows::envvars::walk_envvars(&reader, ps_head)
+                .context("failed to walk Windows environment variables")?;
+            print_windows_envvars(&vars, output);
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS environment variable walking not yet supported"),
     }
-    let vars = memf_linux::envvars::walk_envvars(&reader)
-        .context("failed to walk Linux environment variables")?;
-    print_envvars(&vars, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cmd_cmdline — Windows process command lines
+// ---------------------------------------------------------------------------
+
+fn cmd_cmdline(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    match ctx.os {
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead; provide via symbols or dump metadata")?;
+            let cmdlines = memf_windows::cmdline::walk_cmdlines(&reader, ps_head)
+                .context("failed to walk Windows command lines")?;
+            print_windows_cmdlines(&cmdlines, output);
+        }
+        _ => anyhow::bail!("memf cmdline currently requires a Windows memory dump"),
+    }
     Ok(())
 }
 
@@ -1427,6 +1534,204 @@ fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: Output
             for d in drivers {
                 let escaped = d.full_path.replace('"', "\"\"");
                 println!("{},{:#x},{},\"{}\"", d.name, d.base_addr, d.size, escaped);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows command lines
+// ---------------------------------------------------------------------------
+
+fn print_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Image Name", "Command Line"]);
+            for c in cmdlines {
+                let cmdline_display = if c.cmdline.len() > 120 {
+                    format!("{}...", &c.cmdline[..117])
+                } else {
+                    c.cmdline.clone()
+                };
+                table.add_row(vec![
+                    format!("{}", c.pid),
+                    c.image_name.clone(),
+                    cmdline_display,
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} command lines", cmdlines.len());
+        }
+        OutputFormat::Json => {
+            for c in cmdlines {
+                let json = serde_json::json!({
+                    "pid": c.pid,
+                    "image_name": c.image_name,
+                    "cmdline": c.cmdline,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,cmdline");
+            for c in cmdlines {
+                let escaped = c.cmdline.replace('"', "\"\"");
+                println!("{},{},\"{}\"", c.pid, c.image_name, escaped);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows environment variables
+// ---------------------------------------------------------------------------
+
+fn print_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Image Name", "Variable", "Value"]);
+            for v in vars {
+                table.add_row(vec![
+                    format!("{}", v.pid),
+                    v.image_name.clone(),
+                    v.variable.clone(),
+                    v.value.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} environment variables", vars.len());
+        }
+        OutputFormat::Json => {
+            for v in vars {
+                let json = serde_json::json!({
+                    "pid": v.pid,
+                    "image_name": v.image_name,
+                    "variable": v.variable,
+                    "value": v.value,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,variable,value");
+            for v in vars {
+                let escaped_val = v.value.replace('"', "\"\"");
+                println!(
+                    "{},{},{},\"{}\"",
+                    v.pid, v.image_name, v.variable, escaped_val
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Windows process tree
+// ---------------------------------------------------------------------------
+
+fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "PPID", "Image Name", "Create Time", "CR3"]);
+            for e in entries {
+                let indent = "  ".repeat(e.depth as usize);
+                let name = format!("{}{}", indent, e.process.image_name);
+                table.add_row(vec![
+                    format!("{}", e.process.pid),
+                    format!("{}", e.process.ppid),
+                    name,
+                    format!("{:#x}", e.process.create_time),
+                    format!("{:#x}", e.process.cr3),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} processes", entries.len());
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "pid": e.process.pid,
+                    "ppid": e.process.ppid,
+                    "image_name": e.process.image_name,
+                    "depth": e.depth,
+                    "create_time": format!("{:#x}", e.process.create_time),
+                    "cr3": format!("{:#x}", e.process.cr3),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,ppid,image_name,depth,create_time,cr3");
+            for e in entries {
+                println!(
+                    "{},{},{},{},{:#x},{:#x}",
+                    e.process.pid,
+                    e.process.ppid,
+                    e.process.image_name,
+                    e.depth,
+                    e.process.create_time,
+                    e.process.cr3
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — PEB masquerade detection
+// ---------------------------------------------------------------------------
+
+fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "EPROCESS Name", "PEB Image Path", "Suspicious"]);
+            for r in results {
+                table.add_row(vec![
+                    format!("{}", r.pid),
+                    r.eprocess_name.clone(),
+                    r.peb_image_path.clone(),
+                    if r.suspicious {
+                        "YES".to_string()
+                    } else {
+                        "no".to_string()
+                    },
+                ]);
+            }
+            println!("{table}");
+            let suspicious_count = results.iter().filter(|r| r.suspicious).count();
+            println!(
+                "\nTotal: {} processes checked, {} suspicious",
+                results.len(),
+                suspicious_count
+            );
+        }
+        OutputFormat::Json => {
+            for r in results {
+                let json = serde_json::json!({
+                    "pid": r.pid,
+                    "eprocess_name": r.eprocess_name,
+                    "peb_image_path": r.peb_image_path,
+                    "suspicious": r.suspicious,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,eprocess_name,peb_image_path,suspicious");
+            for r in results {
+                let escaped = r.peb_image_path.replace('"', "\"\"");
+                println!(
+                    "{},{},\"{}\",{}",
+                    r.pid, r.eprocess_name, escaped, r.suspicious
+                );
             }
         }
     }
@@ -2193,7 +2498,7 @@ fn print_check_hooks(entries: &[memf_linux::KernelHookInfo], output: OutputForma
                     format!("{:#x}", e.address),
                     e.hook_type.clone(),
                     e.target
-                        .map_or_else(|| "-".to_string(), |t| format!("{:#x}", t)),
+                        .map_or_else(|| "-".to_string(), |t| format!("{t:#x}")),
                     if e.suspicious { "YES" } else { "NO" }.to_string(),
                 ]);
             }
@@ -2211,7 +2516,7 @@ fn print_check_hooks(entries: &[memf_linux::KernelHookInfo], output: OutputForma
                     "symbol": e.symbol,
                     "address": format!("{:#x}", e.address),
                     "hook_type": e.hook_type,
-                    "target": e.target.map(|t| format!("{:#x}", t)),
+                    "target": e.target.map(|t| format!("{t:#x}")),
                     "suspicious": e.suspicious,
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
@@ -2222,7 +2527,7 @@ fn print_check_hooks(entries: &[memf_linux::KernelHookInfo], output: OutputForma
             for e in entries {
                 let target = e
                     .target
-                    .map_or_else(|| "-".to_string(), |t| format!("{:#x}", t));
+                    .map_or_else(|| "-".to_string(), |t| format!("{t:#x}"));
                 println!(
                     "{},{:#x},{},{},{}",
                     e.symbol, e.address, e.hook_type, target, e.suspicious
@@ -2415,6 +2720,8 @@ mod tests {
             None,
             false,
             None,
+            false,
+            false,
             false,
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
