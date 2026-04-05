@@ -238,6 +238,32 @@ impl IsfBuilder {
                 88,
                 "_UNICODE_STRING",
             )
+            // _RTL_USER_PROCESS_PARAMETERS (accessed via PEB.ProcessParameters)
+            .add_struct("_RTL_USER_PROCESS_PARAMETERS", 1024)
+            .add_field(
+                "_RTL_USER_PROCESS_PARAMETERS",
+                "ImagePathName",
+                0x60,
+                "_UNICODE_STRING",
+            )
+            .add_field(
+                "_RTL_USER_PROCESS_PARAMETERS",
+                "CommandLine",
+                0x70,
+                "_UNICODE_STRING",
+            )
+            .add_field(
+                "_RTL_USER_PROCESS_PARAMETERS",
+                "Environment",
+                0x80,
+                "pointer",
+            )
+            // _DRIVER_OBJECT (for IRP hook detection)
+            .add_struct("_DRIVER_OBJECT", 336)
+            .add_field("_DRIVER_OBJECT", "DriverStart", 0x18, "pointer")
+            .add_field("_DRIVER_OBJECT", "DriverSize", 0x20, "unsigned int")
+            .add_field("_DRIVER_OBJECT", "DriverName", 0x38, "_UNICODE_STRING")
+            .add_field("_DRIVER_OBJECT", "MajorFunction", 0x70, "pointer")
             // Kernel symbols
             .add_symbol("PsActiveProcessHead", 0xFFFFF805_5A400000)
             .add_symbol("PsLoadedModuleList", 0xFFFFF805_5A410000)

@@ -7,7 +7,8 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result, WinProcessInfo};
+use crate::unicode::read_unicode_string;
+use crate::{Error, Result, WinPebMasqueradeInfo, WinProcessInfo, WinPsTreeEntry};
 
 /// Walk the Windows process list starting from `PsActiveProcessHead`.
 ///
@@ -66,6 +67,28 @@ fn read_process_info<P: PhysicalMemoryProvider>(
         thread_count: 0,
         is_wow64: false,
     })
+}
+
+/// Build a process tree from a flat process list.
+///
+/// Returns a depth-first-ordered list of `WinPsTreeEntry` with each
+/// entry annotated with its tree depth. Processes whose parent is
+/// not found in the list are treated as roots (depth 0).
+pub fn build_pstree(procs: &[WinProcessInfo]) -> Vec<WinPsTreeEntry> {
+    todo!()
+}
+
+/// Check for PEB masquerade across all processes.
+///
+/// For each process with a non-null PEB, reads
+/// `PEB.ProcessParameters.ImagePathName` and compares the basename
+/// against `_EPROCESS.ImageFileName`. Mismatches may indicate
+/// process masquerading (e.g., malware pretending to be svchost.exe).
+pub fn check_peb_masquerade<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    ps_head_vaddr: u64,
+) -> Result<Vec<WinPebMasqueradeInfo>> {
+    todo!()
 }
 
 #[cfg(test)]
@@ -378,5 +401,203 @@ mod tests {
         assert_eq!(p.vaddr, eproc_vaddr);
         assert_eq!(p.thread_count, 0);
         assert!(!p.is_wow64);
+    }
+
+    // -------------------------------------------------------------------
+    // pstree tests (pure function, no memory access)
+    // -------------------------------------------------------------------
+
+    fn make_proc(pid: u64, ppid: u64, name: &str) -> WinProcessInfo {
+        WinProcessInfo {
+            pid,
+            ppid,
+            image_name: name.to_string(),
+            create_time: 0,
+            exit_time: 0,
+            cr3: 0,
+            peb_addr: 0,
+            vaddr: 0,
+            thread_count: 0,
+            is_wow64: false,
+        }
+    }
+
+    #[test]
+    fn build_pstree_single_root() {
+        let procs = vec![make_proc(4, 0, "System")];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].process.pid, 4);
+        assert_eq!(tree[0].depth, 0);
+    }
+
+    #[test]
+    fn build_pstree_nested() {
+        // System(4) → csrss(528) → conhost(700)
+        let procs = vec![
+            make_proc(700, 528, "conhost.exe"),
+            make_proc(4, 0, "System"),
+            make_proc(528, 4, "csrss.exe"),
+        ];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 3);
+        // DFS order: System, csrss, conhost
+        assert_eq!(tree[0].process.pid, 4);
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[1].process.pid, 528);
+        assert_eq!(tree[1].depth, 1);
+        assert_eq!(tree[2].process.pid, 700);
+        assert_eq!(tree[2].depth, 2);
+    }
+
+    #[test]
+    fn build_pstree_orphan_processes() {
+        // Orphan process (ppid points to non-existent process)
+        // should appear as a root at depth 0.
+        let procs = vec![
+            make_proc(4, 0, "System"),
+            make_proc(999, 12345, "orphan.exe"),
+        ];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 2);
+        // Both should be roots (depth 0), sorted by PID
+        assert_eq!(tree[0].process.pid, 4);
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[1].process.pid, 999);
+        assert_eq!(tree[1].depth, 0);
+    }
+
+    // -------------------------------------------------------------------
+    // PEB masquerade tests
+    // -------------------------------------------------------------------
+
+    /// Encode a Rust &str as UTF-16LE bytes.
+    fn utf16le_bytes(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+    }
+
+    fn build_unicode_string_at(buf: &mut [u8], offset: usize, length: u16, buffer_ptr: u64) {
+        buf[offset..offset + 2].copy_from_slice(&length.to_le_bytes());
+        buf[offset + 2..offset + 4].copy_from_slice(&length.to_le_bytes());
+        buf[offset + 8..offset + 16].copy_from_slice(&buffer_ptr.to_le_bytes());
+    }
+
+    const PEB_PROCESS_PARAMETERS: u64 = 0x20;
+    const PARAMS_IMAGE_PATH_NAME: u64 = 0x60;
+
+    #[test]
+    fn detects_peb_masquerade() {
+        // EPROCESS says "malware.exe" but PEB ImagePathName says "svchost.exe"
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let peb_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let peb_paddr: u64 = 0x0080_2000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1AB000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132800000000000000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 666)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, peb_vaddr)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"malware.exe\0");
+
+        // PEB → ProcessParameters → ImagePathName = "C:\Windows\System32\svchost.exe"
+        let params_vaddr = peb_vaddr + 0x200;
+        let mut peb_data = vec![0u8; 4096];
+        peb_data[PEB_PROCESS_PARAMETERS as usize..PEB_PROCESS_PARAMETERS as usize + 8]
+            .copy_from_slice(&params_vaddr.to_le_bytes());
+
+        let image_path = r"C:\Windows\System32\svchost.exe";
+        let image_utf16 = utf16le_bytes(image_path);
+        let image_len = image_utf16.len() as u16;
+        let image_buf_vaddr = peb_vaddr + 0x400;
+        let params_off = 0x200usize;
+        build_unicode_string_at(
+            &mut peb_data,
+            params_off + PARAMS_IMAGE_PATH_NAME as usize,
+            image_len,
+            image_buf_vaddr,
+        );
+        let str_off = 0x400usize;
+        peb_data[str_off..str_off + image_utf16.len()].copy_from_slice(&image_utf16);
+
+        let ptb = ptb.write_phys(peb_paddr, &peb_data);
+
+        let reader = make_win_reader(ptb);
+        let results = check_peb_masquerade(&reader, head_vaddr).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].pid, 666);
+        assert_eq!(results[0].eprocess_name, "malware.exe");
+        assert!(results[0].peb_image_path.contains("svchost.exe"));
+        assert!(results[0].suspicious);
+    }
+
+    #[test]
+    fn clean_process_no_masquerade() {
+        // EPROCESS says "svchost.exe" and PEB ImagePathName also says "svchost.exe"
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let peb_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let peb_paddr: u64 = 0x0080_2000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1AB000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132800000000000000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 800)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, peb_vaddr)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"svchost.exe\0");
+
+        // PEB → ProcessParameters → ImagePathName matches
+        let params_vaddr = peb_vaddr + 0x200;
+        let mut peb_data = vec![0u8; 4096];
+        peb_data[PEB_PROCESS_PARAMETERS as usize..PEB_PROCESS_PARAMETERS as usize + 8]
+            .copy_from_slice(&params_vaddr.to_le_bytes());
+
+        let image_path = r"C:\Windows\System32\svchost.exe";
+        let image_utf16 = utf16le_bytes(image_path);
+        let image_len = image_utf16.len() as u16;
+        let image_buf_vaddr = peb_vaddr + 0x400;
+        let params_off = 0x200usize;
+        build_unicode_string_at(
+            &mut peb_data,
+            params_off + PARAMS_IMAGE_PATH_NAME as usize,
+            image_len,
+            image_buf_vaddr,
+        );
+        let str_off = 0x400usize;
+        peb_data[str_off..str_off + image_utf16.len()].copy_from_slice(&image_utf16);
+
+        let ptb = ptb.write_phys(peb_paddr, &peb_data);
+
+        let reader = make_win_reader(ptb);
+        let results = check_peb_masquerade(&reader, head_vaddr).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].suspicious);
     }
 }

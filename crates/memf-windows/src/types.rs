@@ -145,6 +145,71 @@ pub struct WinDllInfo {
     pub load_order: u32,
 }
 
+/// Command line extracted from a Windows process's PEB.
+#[derive(Debug, Clone)]
+pub struct WinCmdlineInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Image file name from `_EPROCESS.ImageFileName`.
+    pub image_name: String,
+    /// Full command line from `_RTL_USER_PROCESS_PARAMETERS.CommandLine`.
+    pub cmdline: String,
+}
+
+/// Environment variable from a Windows process's PEB.
+#[derive(Debug, Clone)]
+pub struct WinEnvVarInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Image file name from `_EPROCESS.ImageFileName`.
+    pub image_name: String,
+    /// Environment variable name.
+    pub variable: String,
+    /// Environment variable value.
+    pub value: String,
+}
+
+/// Process tree entry with depth for hierarchical display.
+#[derive(Debug, Clone)]
+pub struct WinPsTreeEntry {
+    /// The process information.
+    pub process: WinProcessInfo,
+    /// Tree depth (0 = root, 1 = child of root, etc.).
+    pub depth: u32,
+}
+
+/// PEB masquerade detection result.
+#[derive(Debug, Clone)]
+pub struct WinPebMasqueradeInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Image file name from `_EPROCESS.ImageFileName`.
+    pub eprocess_name: String,
+    /// Image path name from PEB `_RTL_USER_PROCESS_PARAMETERS.ImagePathName`.
+    pub peb_image_path: String,
+    /// Whether the names mismatch (potential masquerade).
+    pub suspicious: bool,
+}
+
+/// IRP hook detection for a single dispatch entry in a driver object.
+#[derive(Debug, Clone)]
+pub struct WinIrpHookInfo {
+    /// Driver name from `_DRIVER_OBJECT.DriverName`.
+    pub driver_name: String,
+    /// Virtual address of the `_DRIVER_OBJECT`.
+    pub driver_obj_addr: u64,
+    /// IRP major function index (0..27).
+    pub irp_index: u8,
+    /// Human-readable IRP name (e.g., `IRP_MJ_CREATE`).
+    pub irp_name: String,
+    /// Target address the IRP dispatch points to.
+    pub target_addr: u64,
+    /// Name of the module containing the target, if identified.
+    pub target_module: Option<String>,
+    /// Whether the target is outside all known modules (suspicious).
+    pub suspicious: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

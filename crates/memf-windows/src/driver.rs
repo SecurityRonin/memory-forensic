@@ -7,7 +7,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 use crate::unicode::read_unicode_string;
-use crate::{Result, WinDriverInfo};
+use crate::{Result, WinDriverInfo, WinIrpHookInfo};
 
 /// Walk the Windows loaded driver list starting from `PsLoadedModuleList`.
 ///
@@ -71,6 +71,55 @@ fn read_driver_info<P: PhysicalMemoryProvider>(
         size: u64::from(size_of_image),
         vaddr: entry_addr,
     })
+}
+
+/// Number of IRP major function slots in a `_DRIVER_OBJECT`.
+const IRP_MJ_COUNT: usize = 28;
+
+/// Human-readable names for each IRP major function index.
+const IRP_MJ_NAMES: &[&str] = &[
+    "IRP_MJ_CREATE",
+    "IRP_MJ_CREATE_NAMED_PIPE",
+    "IRP_MJ_CLOSE",
+    "IRP_MJ_READ",
+    "IRP_MJ_WRITE",
+    "IRP_MJ_QUERY_INFORMATION",
+    "IRP_MJ_SET_INFORMATION",
+    "IRP_MJ_QUERY_EA",
+    "IRP_MJ_SET_EA",
+    "IRP_MJ_FLUSH_BUFFERS",
+    "IRP_MJ_QUERY_VOLUME_INFORMATION",
+    "IRP_MJ_SET_VOLUME_INFORMATION",
+    "IRP_MJ_DIRECTORY_CONTROL",
+    "IRP_MJ_FILE_SYSTEM_CONTROL",
+    "IRP_MJ_DEVICE_CONTROL",
+    "IRP_MJ_INTERNAL_DEVICE_CONTROL",
+    "IRP_MJ_SHUTDOWN",
+    "IRP_MJ_LOCK_CONTROL",
+    "IRP_MJ_CLEANUP",
+    "IRP_MJ_CREATE_MAILSLOT",
+    "IRP_MJ_QUERY_SECURITY",
+    "IRP_MJ_SET_SECURITY",
+    "IRP_MJ_POWER",
+    "IRP_MJ_SYSTEM_CONTROL",
+    "IRP_MJ_DEVICE_CHANGE",
+    "IRP_MJ_QUERY_QUOTA",
+    "IRP_MJ_SET_QUOTA",
+    "IRP_MJ_PNP",
+];
+
+/// Check a driver object's IRP dispatch table for hooks.
+///
+/// Reads `MajorFunction[0..28]` from the `_DRIVER_OBJECT` at
+/// `driver_obj_addr` and checks whether each function pointer falls
+/// within a known kernel module. Pointers that fall outside all
+/// known modules are flagged as suspicious.
+pub fn check_irp_hooks<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    driver_obj_addr: u64,
+    known_modules: &[WinDriverInfo],
+) -> Result<Vec<WinIrpHookInfo>> {
+    todo!()
 }
 
 #[cfg(test)]
@@ -261,6 +310,168 @@ mod tests {
 
         let drivers = walk_drivers(&reader, vaddr_base).unwrap();
         assert!(drivers.is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // IRP hook detection tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn detects_hooked_irp() {
+        // A driver object with one MajorFunction entry pointing outside
+        // all known modules should be flagged as suspicious.
+        let drv_obj_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let drv_obj_paddr: u64 = 0x0050_0000;
+
+        let mut page = vec![0u8; 4096];
+
+        // _DRIVER_OBJECT layout:
+        //   DriverStart@0x18, DriverSize@0x20, DriverName@0x38, MajorFunction@0x70
+        let driver_base: u64 = 0xFFFFF800_02000000;
+        let driver_size: u32 = 0x40000;
+        page[0x18..0x20].copy_from_slice(&driver_base.to_le_bytes());
+        page[0x20..0x24].copy_from_slice(&driver_size.to_le_bytes());
+
+        // DriverName: empty (Length=0)
+        // (already zeroed)
+
+        // MajorFunction[0] (IRP_MJ_CREATE) → inside ntoskrnl (clean)
+        let ntoskrnl_base: u64 = 0xFFFFF800_00000000;
+        let clean_target: u64 = ntoskrnl_base + 0x1000;
+        page[0x70..0x78].copy_from_slice(&clean_target.to_le_bytes());
+
+        // MajorFunction[1] (IRP_MJ_CREATE_NAMED_PIPE) → outside all modules (hooked!)
+        let hooked_target: u64 = 0xFFFF_C900_DEAD_0000;
+        page[0x78..0x80].copy_from_slice(&hooked_target.to_le_bytes());
+
+        // MajorFunction[2..28] → 0 (null, will be skipped)
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(drv_obj_vaddr, drv_obj_paddr, flags::WRITABLE)
+            .write_phys(drv_obj_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let known_modules = vec![
+            WinDriverInfo {
+                name: "ntoskrnl.exe".into(),
+                full_path: r"\SystemRoot\system32\ntoskrnl.exe".into(),
+                base_addr: ntoskrnl_base,
+                size: 0x800000,
+                vaddr: 0,
+            },
+            WinDriverInfo {
+                name: "ACPI.sys".into(),
+                full_path: r"\SystemRoot\system32\ACPI.sys".into(),
+                base_addr: driver_base,
+                size: u64::from(driver_size),
+                vaddr: 0,
+            },
+        ];
+
+        let hooks = check_irp_hooks(&reader, drv_obj_vaddr, &known_modules).unwrap();
+
+        // Should have entries for non-null IRP slots
+        let suspicious: Vec<_> = hooks.iter().filter(|h| h.suspicious).collect();
+        assert_eq!(suspicious.len(), 1);
+        assert_eq!(suspicious[0].irp_index, 1);
+        assert_eq!(suspicious[0].irp_name, "IRP_MJ_CREATE_NAMED_PIPE");
+        assert_eq!(suspicious[0].target_addr, hooked_target);
+    }
+
+    #[test]
+    fn clean_driver_no_hooks() {
+        // All MajorFunction entries point inside known modules → no suspicious entries.
+        let drv_obj_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let drv_obj_paddr: u64 = 0x0050_0000;
+
+        let mut page = vec![0u8; 4096];
+
+        let driver_base: u64 = 0xFFFFF800_02000000;
+        let driver_size: u32 = 0x40000;
+        page[0x18..0x20].copy_from_slice(&driver_base.to_le_bytes());
+        page[0x20..0x24].copy_from_slice(&driver_size.to_le_bytes());
+
+        // MajorFunction[0] → inside driver's own range
+        let clean_target: u64 = driver_base + 0x100;
+        page[0x70..0x78].copy_from_slice(&clean_target.to_le_bytes());
+        // MajorFunction[1..28] → 0 (null)
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(drv_obj_vaddr, drv_obj_paddr, flags::WRITABLE)
+            .write_phys(drv_obj_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let known_modules = vec![WinDriverInfo {
+            name: "ACPI.sys".into(),
+            full_path: r"\SystemRoot\system32\ACPI.sys".into(),
+            base_addr: driver_base,
+            size: u64::from(driver_size),
+            vaddr: 0,
+        }];
+
+        let hooks = check_irp_hooks(&reader, drv_obj_vaddr, &known_modules).unwrap();
+
+        let suspicious: Vec<_> = hooks.iter().filter(|h| h.suspicious).collect();
+        assert!(suspicious.is_empty());
+    }
+
+    #[test]
+    fn identifies_target_module() {
+        // MajorFunction entry pointing into ntoskrnl should be identified.
+        let drv_obj_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let drv_obj_paddr: u64 = 0x0050_0000;
+
+        let mut page = vec![0u8; 4096];
+
+        let driver_base: u64 = 0xFFFFF800_02000000;
+        let driver_size: u32 = 0x40000;
+        page[0x18..0x20].copy_from_slice(&driver_base.to_le_bytes());
+        page[0x20..0x24].copy_from_slice(&driver_size.to_le_bytes());
+
+        let ntoskrnl_base: u64 = 0xFFFFF800_00000000;
+        let target_in_ntoskrnl: u64 = ntoskrnl_base + 0x5000;
+        page[0x70..0x78].copy_from_slice(&target_in_ntoskrnl.to_le_bytes());
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(drv_obj_vaddr, drv_obj_paddr, flags::WRITABLE)
+            .write_phys(drv_obj_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let known_modules = vec![
+            WinDriverInfo {
+                name: "ntoskrnl.exe".into(),
+                full_path: r"\SystemRoot\system32\ntoskrnl.exe".into(),
+                base_addr: ntoskrnl_base,
+                size: 0x800000,
+                vaddr: 0,
+            },
+            WinDriverInfo {
+                name: "ACPI.sys".into(),
+                full_path: r"\SystemRoot\system32\ACPI.sys".into(),
+                base_addr: driver_base,
+                size: u64::from(driver_size),
+                vaddr: 0,
+            },
+        ];
+
+        let hooks = check_irp_hooks(&reader, drv_obj_vaddr, &known_modules).unwrap();
+
+        // IRP_MJ_CREATE should be resolved to ntoskrnl.exe and not suspicious
+        let create = hooks.iter().find(|h| h.irp_index == 0).unwrap();
+        assert_eq!(create.target_module.as_deref(), Some("ntoskrnl.exe"));
+        assert!(!create.suspicious);
     }
 
     #[test]
