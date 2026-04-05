@@ -9,6 +9,7 @@ pub mod envvars;
 pub mod files;
 pub mod fs;
 pub mod kaslr;
+pub mod malfind;
 pub mod maps;
 pub mod modules;
 pub mod network;
