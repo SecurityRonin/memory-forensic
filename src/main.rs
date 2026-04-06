@@ -36,25 +36,25 @@ use os_detect::{AnalysisContext, OsProfile};
         memf ps memdump.dmp --symbols ntkrnlmp.json\n  \
         memf ps memdump.dmp --symbols ntkrnlmp.json --threads --output json\n  \
         memf ps memdump.dmp --symbols ntkrnlmp.json --pid 4\n  \
-        memf mod memdump.dmp --symbols ntkrnlmp.json\n  \
-        memf net memdump.dmp --symbols ntkrnlmp.json --output csv\n  \
-        memf lib memdump.dmp --symbols ntkrnlmp.json --pid 1234\n  \
-        memf maps memdump.lime --symbols linux.json\n  \
-        memf files memdump.lime --symbols linux.json\n  \
-        memf envvars memdump.lime --symbols linux.json --output json\n  \
-        memf envvars memdump.dmp --symbols ntkrnlmp.json\n  \
-        memf cmdline memdump.dmp --symbols ntkrnlmp.json\n  \
         memf ps memdump.dmp --symbols ntkrnlmp.json --tree\n  \
         memf ps memdump.dmp --symbols ntkrnlmp.json --masquerade\n  \
-        memf malfind memdump.lime --symbols linux.json\n  \
-        memf malfind memdump.dmp --symbols ntkrnlmp.json\n  \
-        memf mounts memdump.lime --symbols linux.json\n  \
-        memf mod memdump.lime --symbols linux.json --check-syscalls\n  \
-        memf mod memdump.lime --symbols linux.json --check-hooks\n  \
-        memf mod memdump.dmp --symbols ntkrnlmp.json --check-ssdt\n  \
-        memf mod memdump.dmp --symbols ntkrnlmp.json --check-callbacks\n  \
-        memf vad memdump.dmp --symbols ntkrnlmp.json\n  \
-        memf privileges memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --dlls --pid 1234\n  \
+        memf ps memdump.lime --symbols linux.json --maps\n  \
+        memf ps memdump.lime --symbols linux.json --envvars\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --cmdline\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --vad\n  \
+        memf ps memdump.dmp --symbols ntkrnlmp.json --privileges\n  \
+        memf ps memdump.lime --symbols linux.json --elfinfo\n  \
+        memf ps memdump.lime --symbols linux.json --bash-history\n  \
+        memf system memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf system memdump.lime --symbols linux.json --mounts\n  \
+        memf net memdump.dmp --symbols ntkrnlmp.json --output csv\n  \
+        memf check memdump.lime --symbols linux.json --syscalls\n  \
+        memf check memdump.lime --symbols linux.json --hooks\n  \
+        memf check memdump.lime --symbols linux.json --malfind\n  \
+        memf check memdump.dmp --symbols ntkrnlmp.json --ssdt\n  \
+        memf check memdump.dmp --symbols ntkrnlmp.json --callbacks\n  \
+        memf handles memdump.lime --symbols linux.json\n  \
         memf strings memdump.dmp --rules ./yara-rules/\n  \
         memf strings --from-file extracted.txt --min-length 8"
 )]
@@ -75,7 +75,8 @@ enum Commands {
         /// Path to the memory dump file.
         dump: PathBuf,
     },
-    /// List processes (and optionally threads) from a memory dump.
+    /// List processes and per-process attributes from a memory dump.
+    #[command(alias = "process")]
     Ps {
         /// Path to the memory dump file.
         dump: PathBuf,
@@ -104,18 +105,84 @@ enum Commands {
         #[arg(long)]
         tree: bool,
 
-        /// Check for PEB masquerade (EPROCESS vs PEB image name mismatch). Windows only.
+        /// Check for PEB masquerade (Windows only).
         #[arg(long)]
         masquerade: bool,
+
+        /// List loaded DLLs (Windows) or shared libraries per process.
+        #[arg(long)]
+        dlls: bool,
+
+        /// List process memory maps / VMAs (Linux only).
+        #[arg(long)]
+        maps: bool,
+
+        /// Show environment variables for each process.
+        #[arg(long)]
+        envvars: bool,
+
+        /// Extract process command lines from PEB (Windows only).
+        #[arg(long)]
+        cmdline: bool,
+
+        /// List Virtual Address Descriptors (Windows only).
+        #[arg(long)]
+        vad: bool,
+
+        /// Show process token privileges (Windows only).
+        #[arg(long)]
+        privileges: bool,
+
+        /// Extract ELF headers from process memory (Linux only).
+        #[arg(long)]
+        elfinfo: bool,
+
+        /// Recover bash command history from process heaps (Linux only).
+        #[arg(long, name = "bash-history")]
+        bash_history: bool,
     },
-    /// List loaded kernel modules (Linux) or drivers (Windows).
-    ///
-    /// With --check-syscalls or --check-hooks (Linux), also runs integrity
-    /// checks on the syscall table or kernel function prologues.
-    /// With --check-irp (Windows, future), checks driver IRP dispatch tables.
-    /// With --check-ssdt (Windows), checks SSDT for hooked system services.
-    /// With --check-callbacks (Windows), enumerates kernel notification callbacks.
-    Mod {
+    /// List kernel modules/drivers and system-level artifacts.
+    #[command(alias = "sys")]
+    System {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+
+        /// Also list mounted filesystems (Linux only).
+        #[arg(long)]
+        mounts: bool,
+    },
+    /// List network connections from a memory dump.
+    #[command(alias = "network")]
+    Net {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Run integrity and tampering detection checks.
+    Check {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -133,271 +200,42 @@ enum Commands {
 
         /// Check syscall table for hooks (Linux only).
         #[arg(long)]
-        check_syscalls: bool,
+        syscalls: bool,
 
         /// Check kernel functions for inline hooks (Linux only).
         #[arg(long)]
-        check_hooks: bool,
+        hooks: bool,
 
-        /// Check driver IRP dispatch table for hooks (Windows only).
+        /// Check driver IRP dispatch table (Windows only, future).
         #[arg(long)]
-        check_irp: bool,
+        irp: bool,
 
-        /// Check SSDT for hooked system service entries (Windows only).
+        /// Check SSDT for hooked system services (Windows only).
         #[arg(long)]
-        check_ssdt: bool,
+        ssdt: bool,
 
         /// Enumerate kernel notification callbacks (Windows only).
         #[arg(long)]
-        check_callbacks: bool,
-    },
-    /// List network connections from a memory dump.
-    Net {
-        /// Path to the memory dump file.
-        dump: PathBuf,
+        callbacks: bool,
 
-        /// Path to ISF JSON symbol file or directory.
+        /// Detect suspicious memory regions (anonymous RWX pages).
         #[arg(long)]
-        symbols: Option<PathBuf>,
+        malfind: bool,
 
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// List loaded libraries (DLLs, .so, dylibs) for a process.
-    Lib {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
+        /// Cross-view hidden process detection (Linux only).
         #[arg(long)]
-        symbols: Option<PathBuf>,
+        psxview: bool,
 
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-
-        /// Process ID to list libraries for (required).
+        /// Check TTY driver operations for hooks (Linux only).
         #[arg(long)]
-        pid: u64,
-    },
-    /// List process virtual memory areas (VMAs / memory maps). Linux only.
-    Maps {
-        /// Path to the memory dump file.
-        dump: PathBuf,
+        tty: bool,
 
-        /// Path to ISF JSON symbol file or directory.
+        /// Detect hidden kernel modules (Linux only).
         #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
+        modules: bool,
     },
-    /// List open file descriptors for all processes. Linux only.
-    Files {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// List process environment variables (Linux and Windows).
-    Envvars {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Extract process command lines from PEB (Windows only).
-    Cmdline {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Detect suspicious memory regions (anonymous RWX pages).
-    Malfind {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// List mounted filesystems. Linux only.
-    Mounts {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Recover bash command history from process heaps. Linux only.
-    #[command(name = "bash-history")]
-    BashHistory {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Cross-view hidden process detection. Linux only.
-    Psxview {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Check TTY driver operations for hooks. Linux only.
-    #[command(name = "check-tty")]
-    CheckTty {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Extract ELF headers from process memory. Linux only.
-    Elfinfo {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// Detect hidden kernel modules. Linux only.
-    #[command(name = "check-modules")]
-    CheckModules {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// List Virtual Address Descriptors (VAD tree) for Windows processes.
-    Vad {
-        /// Path to the memory dump file.
-        dump: PathBuf,
-
-        /// Path to ISF JSON symbol file or directory.
-        #[arg(long)]
-        symbols: Option<PathBuf>,
-
-        /// Output format: table, json, csv.
-        #[arg(long, default_value = "table")]
-        output: OutputFormat,
-
-        /// Optional kernel page table root (CR3) physical address (hex).
-        #[arg(long, value_parser = parse_cr3)]
-        cr3: Option<u64>,
-    },
-    /// List process token privileges. Windows only.
-    Privileges {
+    /// List open handles (Windows) or file descriptors (Linux).
+    Handles {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -461,6 +299,14 @@ fn main() -> Result<()> {
             pid,
             tree,
             masquerade,
+            dlls,
+            maps,
+            envvars,
+            cmdline,
+            vad,
+            privileges,
+            elfinfo,
+            bash_history,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_ps(
@@ -472,31 +318,31 @@ fn main() -> Result<()> {
                 pid,
                 tree,
                 masquerade,
+                dlls,
+                maps,
+                envvars,
+                cmdline,
+                vad,
+                privileges,
+                elfinfo,
+                bash_history,
                 resolved.is_extracted(),
             )
         }
-        Commands::Mod {
+        Commands::System {
             dump,
             symbols,
             output,
             cr3,
-            check_syscalls,
-            check_hooks,
-            check_irp,
-            check_ssdt,
-            check_callbacks,
+            mounts,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_mod(
+            cmd_system(
                 resolved.path(),
                 symbols.as_deref(),
                 output,
                 cr3,
-                check_syscalls,
-                check_hooks,
-                check_irp,
-                check_ssdt,
-                check_callbacks,
+                mounts,
                 resolved.is_extracted(),
             )
         }
@@ -515,211 +361,47 @@ fn main() -> Result<()> {
                 resolved.is_extracted(),
             )
         }
-        Commands::Lib {
+        Commands::Check {
             dump,
             symbols,
             output,
             cr3,
-            pid,
+            syscalls,
+            hooks,
+            irp,
+            ssdt,
+            callbacks,
+            malfind,
+            psxview,
+            tty,
+            modules,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_lib(
+            cmd_check(
                 resolved.path(),
                 symbols.as_deref(),
                 output,
                 cr3,
-                pid,
+                syscalls,
+                hooks,
+                irp,
+                ssdt,
+                callbacks,
+                malfind,
+                psxview,
+                tty,
+                modules,
                 resolved.is_extracted(),
             )
         }
-        Commands::Maps {
+        Commands::Handles {
             dump,
             symbols,
             output,
             cr3,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_maps(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Files {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_files(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Envvars {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_envvars(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Cmdline {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_cmdline(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Malfind {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_malfind(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Mounts {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_mounts(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::BashHistory {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_bash_history(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Psxview {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_psxview(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::CheckTty {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_check_tty(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Elfinfo {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_elfinfo(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::CheckModules {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_check_modules(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Vad {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_vad(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                resolved.is_extracted(),
-            )
-        }
-        Commands::Privileges {
-            dump,
-            symbols,
-            output,
-            cr3,
-        } => {
-            let resolved = archive::resolve_dump(&dump)?;
-            cmd_privileges(
+            cmd_handles(
                 resolved.path(),
                 symbols.as_deref(),
                 output,
@@ -902,10 +584,14 @@ fn cmd_info(dump: &Path, raw_fallback: bool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// cmd_ps — dispatch to Linux or Windows walker
+// cmd_ps — processes and per-process attributes
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_lines
+)]
 fn cmd_ps(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -915,6 +601,14 @@ fn cmd_ps(
     pid_filter: Option<u64>,
     tree: bool,
     masquerade: bool,
+    dlls: bool,
+    maps: bool,
+    envvars: bool,
+    cmdline: bool,
+    vad: bool,
+    privileges: bool,
+    elfinfo: bool,
+    bash_history: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -929,11 +623,57 @@ fn cmd_ps(
             if masquerade {
                 anyhow::bail!("--masquerade is only supported for Windows dumps");
             }
+            if dlls {
+                anyhow::bail!("--dlls is only supported for Windows dumps");
+            }
+            if cmdline {
+                anyhow::bail!("--cmdline is only supported for Windows dumps");
+            }
+            if vad {
+                anyhow::bail!("--vad is only supported for Windows dumps");
+            }
+            if privileges {
+                anyhow::bail!("--privileges is only supported for Windows dumps");
+            }
             let procs = memf_linux::process::walk_processes(&reader)
                 .context("failed to walk Linux processes")?;
             print_linux_processes(&procs, output);
+
+            if maps {
+                let vmas =
+                    memf_linux::maps::walk_maps(&reader).context("failed to walk Linux VMAs")?;
+                println!();
+                print_vmas(&vmas, output);
+            }
+            if envvars {
+                let vars = memf_linux::envvars::walk_envvars(&reader)
+                    .context("failed to walk Linux environment variables")?;
+                println!();
+                print_envvars(&vars, output);
+            }
+            if elfinfo {
+                let entries = memf_linux::elfinfo::walk_elfinfo(&reader)
+                    .context("failed to extract ELF info")?;
+                println!();
+                print_elfinfo(&entries, output);
+            }
+            if bash_history {
+                let entries = memf_linux::bash::walk_bash_history(&reader)
+                    .context("failed to recover bash history")?;
+                println!();
+                print_bash_history(&entries, output);
+            }
         }
         OsProfile::Windows => {
+            if maps {
+                anyhow::bail!("--maps is only supported for Linux dumps");
+            }
+            if elfinfo {
+                anyhow::bail!("--elfinfo is only supported for Linux dumps");
+            }
+            if bash_history {
+                anyhow::bail!("--bash-history is only supported for Linux dumps");
+            }
             let ps_head = ctx
                 .ps_active_process_head
                 .context("missing PsActiveProcessHead; provide via symbols or dump metadata")?;
@@ -972,6 +712,59 @@ fn cmd_ps(
                 println!();
                 print_masquerade(&masq_results, output);
             }
+
+            if dlls {
+                let pid = pid_filter
+                    .context("--dlls requires --pid to specify which process to list DLLs for")?;
+                let target = procs
+                    .iter()
+                    .find(|p| p.pid == pid)
+                    .with_context(|| format!("process with PID {pid} not found"))?;
+                if target.peb_addr == 0 {
+                    anyhow::bail!("process PID {pid} has no PEB (kernel process?)");
+                }
+                let dll_list = memf_windows::dll::walk_dlls(&reader, target.peb_addr)
+                    .with_context(|| format!("failed to walk DLLs for PID {pid}"))?;
+                println!();
+                print_libs(&dll_list, output);
+            }
+
+            if envvars {
+                let vars = memf_windows::envvars::walk_envvars(&reader, ps_head)
+                    .context("failed to walk Windows environment variables")?;
+                println!();
+                print_windows_envvars(&vars, output);
+            }
+
+            if cmdline {
+                let cmdlines = memf_windows::cmdline::walk_cmdlines(&reader, ps_head)
+                    .context("failed to walk Windows command lines")?;
+                println!();
+                print_windows_cmdlines(&cmdlines, output);
+            }
+
+            if vad {
+                let mut all_vads = Vec::new();
+                for proc in &procs {
+                    if let Ok(vads) = memf_windows::vad::walk_vad_tree(
+                        &reader,
+                        proc.vaddr,
+                        proc.pid,
+                        &proc.image_name,
+                    ) {
+                        all_vads.extend(vads);
+                    }
+                }
+                println!();
+                print_windows_vads(&all_vads, output);
+            }
+
+            if privileges {
+                let tokens = memf_windows::token::walk_tokens(&reader, ps_head)
+                    .context("failed to walk process tokens")?;
+                println!();
+                print_windows_privileges(&tokens, output);
+            }
         }
         OsProfile::MacOs => anyhow::bail!("macOS process walking not yet supported"),
     }
@@ -979,106 +772,7 @@ fn cmd_ps(
 }
 
 // ---------------------------------------------------------------------------
-// cmd_mod — Linux kernel modules or Windows drivers
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn cmd_mod(
-    dump: &Path,
-    symbols_path: Option<&Path>,
-    output: OutputFormat,
-    cr3_override: Option<u64>,
-    check_syscalls: bool,
-    check_hooks: bool,
-    check_irp: bool,
-    check_ssdt: bool,
-    check_callbacks: bool,
-    raw_fallback: bool,
-) -> Result<()> {
-    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
-    match ctx.os {
-        OsProfile::Linux => {
-            if check_irp {
-                anyhow::bail!("--check-irp is only available for Windows memory dumps");
-            }
-            if check_ssdt {
-                anyhow::bail!("--check-ssdt is only available for Windows memory dumps");
-            }
-            if check_callbacks {
-                anyhow::bail!("--check-callbacks is only available for Windows memory dumps");
-            }
-            let mods = memf_linux::modules::walk_modules(&reader)
-                .context("failed to walk Linux modules")?;
-            print_linux_modules(&mods, output);
-            if check_syscalls {
-                let entries = memf_linux::syscalls::check_syscall_table(&reader)
-                    .context("failed to check syscall table")?;
-                print_syscalls(&entries, output);
-            }
-            if check_hooks {
-                let entries = memf_linux::check_hooks::check_inline_hooks(&reader)
-                    .context("failed to check inline hooks")?;
-                print_check_hooks(&entries, output);
-            }
-        }
-        OsProfile::Windows => {
-            if check_syscalls {
-                anyhow::bail!("--check-syscalls is only available for Linux memory dumps");
-            }
-            if check_hooks {
-                anyhow::bail!("--check-hooks is only available for Linux memory dumps");
-            }
-            let mod_list = ctx
-                .ps_loaded_module_list
-                .context("missing PsLoadedModuleList; provide via symbols or dump metadata")?;
-            let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
-                .context("failed to walk Windows drivers")?;
-            print_windows_drivers(&drivers, output);
-            if check_ssdt {
-                let ssdt_vaddr = reader
-                    .symbols()
-                    .symbol_address("KeServiceDescriptorTable")
-                    .context("missing KeServiceDescriptorTable symbol for SSDT check")?;
-                let hooks = memf_windows::ssdt::check_ssdt_hooks(&reader, ssdt_vaddr, &drivers)
-                    .context("failed to check SSDT hooks")?;
-                print_ssdt_hooks(&hooks, output);
-            }
-            if check_callbacks {
-                let proc_notify = reader
-                    .symbols()
-                    .symbol_address("PspCreateProcessNotifyRoutine")
-                    .context("missing PspCreateProcessNotifyRoutine symbol")?;
-                let thread_notify = reader
-                    .symbols()
-                    .symbol_address("PspCreateThreadNotifyRoutine")
-                    .context("missing PspCreateThreadNotifyRoutine symbol")?;
-                let image_notify = reader
-                    .symbols()
-                    .symbol_address("PspLoadImageNotifyRoutine")
-                    .context("missing PspLoadImageNotifyRoutine symbol")?;
-                let cbs = memf_windows::callbacks::walk_kernel_callbacks(
-                    &reader,
-                    proc_notify,
-                    thread_notify,
-                    image_notify,
-                    &drivers,
-                )
-                .context("failed to enumerate kernel callbacks")?;
-                print_callbacks(&cbs, output);
-            }
-            if check_irp {
-                anyhow::bail!(
-                    "--check-irp requires _DRIVER_OBJECT enumeration via pool scanning (not yet implemented)"
-                );
-            }
-        }
-        OsProfile::MacOs => anyhow::bail!("macOS module walking not yet supported"),
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// cmd_net — Linux only for now
+// cmd_net — network connections
 // ---------------------------------------------------------------------------
 
 fn cmd_net(
@@ -1107,6 +801,7 @@ fn cmd_net(
 // cmd_lib — per-process loaded libraries (DLLs, .so, dylibs)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_lib(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1144,6 +839,7 @@ fn cmd_lib(
 // cmd_maps — Linux process VMAs
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_maps(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1164,6 +860,7 @@ fn cmd_maps(
 // cmd_files — Linux open file descriptors
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_files(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1185,6 +882,7 @@ fn cmd_files(
 // cmd_envvars — process environment variables (Linux and Windows)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_envvars(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1216,6 +914,7 @@ fn cmd_envvars(
 // cmd_cmdline — Windows process command lines
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_cmdline(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1242,6 +941,7 @@ fn cmd_cmdline(
 // cmd_malfind — suspicious memory regions
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_malfind(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1273,6 +973,7 @@ fn cmd_malfind(
 // cmd_mounts — Linux mounted filesystems
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_mounts(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1295,6 +996,7 @@ fn cmd_mounts(
 // cmd_bash_history — recover bash command history from process heaps
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_bash_history(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1316,6 +1018,7 @@ fn cmd_bash_history(
 // cmd_psxview — cross-view hidden process detection
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_psxview(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1336,6 +1039,7 @@ fn cmd_psxview(
 // cmd_check_tty — check TTY driver operations for hooks
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_check_tty(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1359,6 +1063,7 @@ fn cmd_check_tty(
 // cmd_elfinfo — extract ELF headers from process memory
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_elfinfo(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1380,6 +1085,7 @@ fn cmd_elfinfo(
 // cmd_check_modules — detect hidden kernel modules
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_check_modules(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -2718,6 +2424,7 @@ fn print_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: OutputF
 // cmd_vad — Windows VAD tree
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_vad(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -2751,6 +2458,7 @@ fn cmd_vad(
 // cmd_privileges — Windows token privileges
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn cmd_privileges(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -2784,14 +2492,44 @@ fn cmd_system(
     mounts: bool,
     raw_fallback: bool,
 ) -> Result<()> {
-    todo!()
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    match ctx.os {
+        OsProfile::Linux => {
+            let mods = memf_linux::modules::walk_modules(&reader)
+                .context("failed to walk Linux modules")?;
+            print_linux_modules(&mods, output);
+            if mounts {
+                let fs = memf_linux::fs::walk_filesystems(&reader)
+                    .context("failed to walk Linux mounted filesystems")?;
+                println!();
+                print_mounts(&fs, output);
+            }
+        }
+        OsProfile::Windows => {
+            if mounts {
+                anyhow::bail!("--mounts is only available for Linux memory dumps");
+            }
+            let mod_list = ctx
+                .ps_loaded_module_list
+                .context("missing PsLoadedModuleList; provide via symbols or dump metadata")?;
+            let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
+                .context("failed to walk Windows drivers")?;
+            print_windows_drivers(&drivers, output);
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS module walking not yet supported"),
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // cmd_check — integrity and tampering detection
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_lines
+)]
 fn cmd_check(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -2808,7 +2546,135 @@ fn cmd_check(
     modules: bool,
     raw_fallback: bool,
 ) -> Result<()> {
-    todo!()
+    if !(syscalls || hooks || irp || ssdt || callbacks || malfind || psxview || tty || modules) {
+        anyhow::bail!(
+            "no check flags specified. Available checks:\n  \
+             Linux:   --syscalls  --hooks  --malfind  --psxview  --tty  --modules\n  \
+             Windows: --ssdt  --callbacks  --irp  --malfind"
+        );
+    }
+
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    match ctx.os {
+        OsProfile::Linux => {
+            // Cross-OS validation: bail on Windows-only checks
+            if irp {
+                anyhow::bail!("--irp is only available for Windows memory dumps");
+            }
+            if ssdt {
+                anyhow::bail!("--ssdt is only available for Windows memory dumps");
+            }
+            if callbacks {
+                anyhow::bail!("--callbacks is only available for Windows memory dumps");
+            }
+            if syscalls {
+                let entries = memf_linux::syscalls::check_syscall_table(&reader)
+                    .context("failed to check syscall table")?;
+                print_syscalls(&entries, output);
+            }
+            if hooks {
+                let entries = memf_linux::check_hooks::check_inline_hooks(&reader)
+                    .context("failed to check inline hooks")?;
+                print_check_hooks(&entries, output);
+            }
+            if malfind {
+                let findings = memf_linux::malfind::scan_malfind(&reader)
+                    .context("failed to scan for suspicious memory regions")?;
+                print_malfind(&findings, output);
+            }
+            if psxview {
+                let entries =
+                    memf_linux::psxview::walk_psxview(&reader).context("failed to run psxview")?;
+                print_psxview(&entries, output);
+            }
+            if tty {
+                let entries = memf_linux::tty_check::check_tty_hooks(&reader)
+                    .context("failed to check TTY hooks")?;
+                print_tty_check(&entries, output);
+            }
+            if modules {
+                let entries = memf_linux::check_modules::check_hidden_modules(&reader)
+                    .context("failed to check hidden modules")?;
+                print_check_modules(&entries, output);
+            }
+        }
+        OsProfile::Windows => {
+            // Cross-OS validation: bail on Linux-only checks
+            if syscalls {
+                anyhow::bail!("--syscalls is only available for Linux memory dumps");
+            }
+            if hooks {
+                anyhow::bail!("--hooks is only available for Linux memory dumps");
+            }
+            if psxview {
+                anyhow::bail!("--psxview is only available for Linux memory dumps");
+            }
+            if tty {
+                anyhow::bail!("--tty is only available for Linux memory dumps");
+            }
+            if modules {
+                anyhow::bail!("--modules is only available for Linux memory dumps");
+            }
+            if ssdt {
+                let mod_list = ctx
+                    .ps_loaded_module_list
+                    .context("missing PsLoadedModuleList for SSDT check")?;
+                let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
+                    .context("failed to walk Windows drivers for SSDT check")?;
+                let ssdt_vaddr = reader
+                    .symbols()
+                    .symbol_address("KeServiceDescriptorTable")
+                    .context("missing KeServiceDescriptorTable symbol for SSDT check")?;
+                let hook_entries =
+                    memf_windows::ssdt::check_ssdt_hooks(&reader, ssdt_vaddr, &drivers)
+                        .context("failed to check SSDT hooks")?;
+                print_ssdt_hooks(&hook_entries, output);
+            }
+            if callbacks {
+                let mod_list = ctx
+                    .ps_loaded_module_list
+                    .context("missing PsLoadedModuleList for callback check")?;
+                let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
+                    .context("failed to walk Windows drivers for callback check")?;
+                let proc_notify = reader
+                    .symbols()
+                    .symbol_address("PspCreateProcessNotifyRoutine")
+                    .context("missing PspCreateProcessNotifyRoutine symbol")?;
+                let thread_notify = reader
+                    .symbols()
+                    .symbol_address("PspCreateThreadNotifyRoutine")
+                    .context("missing PspCreateThreadNotifyRoutine symbol")?;
+                let image_notify = reader
+                    .symbols()
+                    .symbol_address("PspLoadImageNotifyRoutine")
+                    .context("missing PspLoadImageNotifyRoutine symbol")?;
+                let cbs = memf_windows::callbacks::walk_kernel_callbacks(
+                    &reader,
+                    proc_notify,
+                    thread_notify,
+                    image_notify,
+                    &drivers,
+                )
+                .context("failed to enumerate kernel callbacks")?;
+                print_callbacks(&cbs, output);
+            }
+            if irp {
+                anyhow::bail!(
+                    "--irp requires _DRIVER_OBJECT enumeration via pool scanning (not yet implemented)"
+                );
+            }
+            if malfind {
+                let ps_head = ctx
+                    .ps_active_process_head
+                    .context("missing PsActiveProcessHead for Windows malfind")?;
+                let findings = memf_windows::vad::walk_malfind(&reader, ps_head)
+                    .context("failed to scan Windows memory for suspicious regions")?;
+                print_windows_malfind(&findings, output);
+            }
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS integrity checks not yet supported"),
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2822,7 +2688,19 @@ fn cmd_handles(
     cr3_override: Option<u64>,
     raw_fallback: bool,
 ) -> Result<()> {
-    todo!()
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    match ctx.os {
+        OsProfile::Linux => {
+            let fds = memf_linux::files::walk_files(&reader)
+                .context("failed to walk Linux file descriptors")?;
+            print_file_descriptors(&fds, output);
+        }
+        OsProfile::Windows => {
+            anyhow::bail!("Windows handle table walking not yet implemented")
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS handle walking not yet supported"),
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3221,6 +3099,14 @@ mod tests {
             false,
             false,
             false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
         if let Err(e) = &result {
@@ -3232,20 +3118,16 @@ mod tests {
     }
 
     #[test]
-    fn cmd_mod_with_lime_dump_attempts_analysis() {
+    fn cmd_system_with_lime_dump_lists_modules() {
         let dump_path = make_temp_lime_dump("modules");
         let isf_path = make_temp_isf_file("modules");
-        let result = cmd_mod(
+        let result = cmd_system(
             &dump_path,
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
+            false, // mounts
+            false, // raw_fallback
         );
         if let Err(e) = &result {
             let msg = format!("{e}");
@@ -3723,20 +3605,24 @@ mod tests {
     }
 
     #[test]
-    fn cmd_mod_check_syscalls_with_lime_dump_attempts_analysis() {
+    fn cmd_check_syscalls_with_lime_dump_via_check() {
         let dump_path = make_temp_lime_dump("syscalls");
         let isf_path = make_temp_isf_file("syscalls");
-        let result = cmd_mod(
+        let result = cmd_check(
             &dump_path,
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            true,
-            false,
-            false,
-            false,
-            false,
-            false,
+            true,  // syscalls
+            false, // hooks
+            false, // irp
+            false, // ssdt
+            false, // callbacks
+            false, // malfind
+            false, // psxview
+            false, // tty
+            false, // modules
+            false, // raw_fallback
         );
         if let Err(e) = &result {
             let msg = format!("{e}");
@@ -3797,9 +3683,15 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false, false, false, false, false, // syscalls, hooks, irp, ssdt, callbacks
+            false,
+            false,
+            false,
+            false,
+            false, // syscalls, hooks, irp, ssdt, callbacks
             true,  // malfind
-            false, false, false, // psxview, tty, modules
+            false,
+            false,
+            false, // psxview, tty, modules
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -3819,9 +3711,15 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            true,  // syscalls
-            false, false, false, false, // hooks, irp, ssdt, callbacks
-            false, false, false, false, // malfind, psxview, tty, modules
+            true, // syscalls
+            false,
+            false,
+            false,
+            false, // hooks, irp, ssdt, callbacks
+            false,
+            false,
+            false,
+            false, // malfind, psxview, tty, modules
             false, // raw_fallback
         );
         if let Err(e) = &result {
