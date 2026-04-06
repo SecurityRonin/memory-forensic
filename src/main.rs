@@ -790,7 +790,39 @@ fn cmd_net(
             print_connections(&conns, output);
         }
         OsProfile::Windows => {
-            anyhow::bail!("Windows network connection walking not yet supported (Phase 3E)")
+            // TCP hash table discovery requires tcpip.sys symbols.
+            // TcpBTable: global pointer to the hash table array.
+            // TcpBTableSize: global u32 holding the number of buckets.
+            let tcp_table_sym = reader
+                .symbols()
+                .symbol_address("TcpBTable")
+                .context(
+                    "missing 'TcpBTable' symbol; Windows TCP connection listing \
+                     requires tcpip.sys symbols in the ISF file",
+                )?;
+            let ptr_bytes = reader
+                .read_bytes(tcp_table_sym, 8)
+                .context("failed to dereference TcpBTable pointer")?;
+            let table_vaddr =
+                u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
+
+            let tcp_size_sym = reader
+                .symbols()
+                .symbol_address("TcpBTableSize")
+                .context("missing 'TcpBTableSize' symbol")?;
+            let size_bytes = reader
+                .read_bytes(tcp_size_sym, 4)
+                .context("failed to read TcpBTableSize")?;
+            let bucket_count =
+                u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
+
+            let conns = memf_windows::network::walk_tcp_endpoints(
+                &reader,
+                table_vaddr,
+                bucket_count,
+            )
+            .context("failed to walk Windows TCP endpoints")?;
+            print_win_connections(&conns, output);
         }
         OsProfile::MacOs => anyhow::bail!("macOS network walking not yet supported"),
     }
@@ -1574,6 +1606,76 @@ fn print_connections(conns: &[memf_linux::ConnectionInfo], output: OutputFormat)
                     c.remote_port,
                     c.state,
                     pid_str
+                );
+            }
+        }
+    }
+}
+
+fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                "Proto", "Local", "Remote", "State", "PID", "Process", "Created",
+            ]);
+            for c in conns {
+                let local = format!("{}:{}", c.local_addr, c.local_port);
+                let remote = format!("{}:{}", c.remote_addr, c.remote_port);
+                let created = if c.create_time != 0 {
+                    format!("{:#x}", c.create_time)
+                } else {
+                    "-".to_string()
+                };
+                table.add_row(vec![
+                    c.protocol.clone(),
+                    local,
+                    remote,
+                    format!("{}", c.state),
+                    format!("{}", c.pid),
+                    c.process_name.clone(),
+                    created,
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} connections", conns.len());
+        }
+        OutputFormat::Json => {
+            for c in conns {
+                let json = serde_json::json!({
+                    "protocol": c.protocol,
+                    "local_addr": c.local_addr,
+                    "local_port": c.local_port,
+                    "remote_addr": c.remote_addr,
+                    "remote_port": c.remote_port,
+                    "state": format!("{}", c.state),
+                    "pid": c.pid,
+                    "process_name": c.process_name,
+                    "create_time": format!("{:#x}", c.create_time),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("proto,local,remote,state,pid,process,created");
+            for c in conns {
+                let created = if c.create_time != 0 {
+                    format!("{:#x}", c.create_time)
+                } else {
+                    "-".to_string()
+                };
+                println!(
+                    "{},{}:{},{}:{},{},{},{},{}",
+                    c.protocol,
+                    c.local_addr,
+                    c.local_port,
+                    c.remote_addr,
+                    c.remote_port,
+                    c.state,
+                    c.pid,
+                    c.process_name,
+                    created,
                 );
             }
         }
