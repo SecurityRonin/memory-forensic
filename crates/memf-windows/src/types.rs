@@ -385,6 +385,8 @@ pub struct WinTokenInfo {
     pub privilege_names: Vec<String>,
     /// Session ID from `_EPROCESS.SessionId` (if available).
     pub session_id: u32,
+    /// User SID string from `_TOKEN.UserAndGroups[0]` (e.g. `S-1-5-18`).
+    pub user_sid: String,
 }
 
 #[cfg(test)]

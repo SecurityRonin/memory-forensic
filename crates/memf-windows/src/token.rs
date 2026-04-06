@@ -10,6 +10,54 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{Result, WinTokenInfo};
 
+/// Convert raw SID components to the standard string representation.
+///
+/// Format: `S-{Revision}-{IdentifierAuthority}-{Sub1}-{Sub2}-...`
+///
+/// The `IdentifierAuthority` is a 6-byte big-endian value. When the top
+/// two bytes are zero, it displays as decimal (e.g. `5` for NT Authority);
+/// otherwise as `0x` hex.
+pub fn sid_to_string(
+    _revision: u8,
+    _identifier_authority: &[u8; 6],
+    _sub_authorities: &[u32],
+) -> String {
+    todo!()
+}
+
+/// Read the user SID from a `_TOKEN` address.
+///
+/// Follows `_TOKEN.UserAndGroups` → `_SID_AND_ATTRIBUTES[0].Sid` → `_SID`
+/// and formats the result as a string like `S-1-5-18`.
+/// Returns an empty string if any pointer in the chain is null.
+fn read_user_sid<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    token_addr: u64,
+) -> String {
+    // Read _TOKEN.UserAndGroups pointer
+    let user_and_groups: u64 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroups") {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+
+    if user_and_groups == 0 {
+        return String::new();
+    }
+
+    // Read first _SID_AND_ATTRIBUTES.Sid pointer (index 0 = token user)
+    let sid_ptr: u64 = match reader.read_field(user_and_groups, "_SID_AND_ATTRIBUTES", "Sid") {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+
+    if sid_ptr == 0 {
+        return String::new();
+    }
+
+    // Read _SID fields and format
+    todo!()
+}
+
 /// Well-known Windows privilege LUID values and their names.
 /// The privilege bitmask uses bit positions corresponding to LUID values.
 const PRIVILEGE_NAMES: &[(u32, &str)] = &[
@@ -102,6 +150,7 @@ pub fn walk_tokens<P: PhysicalMemoryProvider>(
         let privileges_enabled = u64::from_le_bytes(enabled_bytes.try_into().expect("8 bytes"));
 
         let privilege_names = decode_privileges(privileges_enabled);
+        let user_sid = read_user_sid(reader, token_addr);
 
         results.push(WinTokenInfo {
             pid: proc.pid,
@@ -110,6 +159,7 @@ pub fn walk_tokens<P: PhysicalMemoryProvider>(
             privileges_present,
             privilege_names,
             session_id: 0, // requires _MM_SESSION_SPACE traversal
+            user_sid,
         });
     }
 
@@ -218,6 +268,8 @@ mod tests {
         assert!(results[0]
             .privilege_names
             .contains(&"SeChangeNotifyPrivilege".to_string()));
+        // Token page has UserAndGroups at offset 0x90 — uninitialized = 0 → empty SID
+        assert_eq!(results[0].user_sid, "");
     }
 
     #[test]
@@ -246,5 +298,98 @@ mod tests {
         let reader = make_win_reader(ptb);
         let results = walk_tokens(&reader, head_vaddr).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn sid_to_string_local_system() {
+        // S-1-5-18 = NT AUTHORITY\SYSTEM
+        let authority = [0u8, 0, 0, 0, 0, 5]; // NT Authority (value 5)
+        let sub_authorities = [18u32]; // SYSTEM
+        assert_eq!(sid_to_string(1, &authority, &sub_authorities), "S-1-5-18");
+    }
+
+    #[test]
+    fn sid_to_string_domain_admin() {
+        // S-1-5-21-{domain RIDs}-500 = domain Administrator
+        let authority = [0u8, 0, 0, 0, 0, 5];
+        let sub_authorities = [21u32, 1234567890, 987654321, 111222333, 500];
+        assert_eq!(
+            sid_to_string(1, &authority, &sub_authorities),
+            "S-1-5-21-1234567890-987654321-111222333-500"
+        );
+    }
+
+    #[test]
+    fn sid_to_string_high_authority_uses_hex() {
+        // If top 2 bytes of authority are non-zero, display as 0x hex
+        let authority = [0u8, 1, 0, 0, 0, 0]; // value = 0x010000000000
+        let sub_authorities = [42u32];
+        assert_eq!(
+            sid_to_string(1, &authority, &sub_authorities),
+            "S-1-0x010000000000-42"
+        );
+    }
+
+    #[test]
+    fn extracts_user_sid_from_token() {
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let token_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let sa_vaddr: u64 = 0xFFFF_8000_0010_3000; // _SID_AND_ATTRIBUTES array
+        let sid_vaddr: u64 = sa_vaddr + 0x100; // _SID data
+
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let token_paddr: u64 = 0x0080_2000;
+        let sa_paddr: u64 = 0x0080_3000;
+        let sid_paddr: u64 = sa_paddr + 0x100;
+
+        let token_ex_fast_ref = token_vaddr | 0x7;
+
+        // Build _SID for S-1-5-18 (LOCAL SYSTEM)
+        let mut sid_data = vec![0u8; 64];
+        sid_data[0] = 1; // Revision
+        sid_data[1] = 1; // SubAuthorityCount
+        // IdentifierAuthority@0x2: [0, 0, 0, 0, 0, 5] = NT Authority
+        sid_data[7] = 5;
+        // SubAuthority[0]@0x8: 18 (SYSTEM)
+        sid_data[8..12].copy_from_slice(&18u32.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
+            .map_4k(sa_vaddr, sa_paddr, flags::WRITABLE)
+            // Sentinel
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS)
+            // _EPROCESS
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1AB000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132800000000000000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_TOKEN, token_ex_fast_ref)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"System\0")
+            // _TOKEN: Privileges
+            .write_phys_u64(token_paddr + TOKEN_PRIVILEGES + SEP_PRESENT, 1 << 23)
+            .write_phys_u64(token_paddr + TOKEN_PRIVILEGES + SEP_ENABLED, 1 << 23)
+            // _TOKEN: UserAndGroupCount@0x88, UserAndGroups@0x90
+            .write_phys(token_paddr + 0x88, &1u32.to_le_bytes())
+            .write_phys_u64(token_paddr + 0x90, sa_vaddr)
+            // _SID_AND_ATTRIBUTES[0]: Sid@0x0 → sid_vaddr
+            .write_phys_u64(sa_paddr, sid_vaddr)
+            // _SID data
+            .write_phys(sid_paddr, &sid_data);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_tokens(&reader, head_vaddr).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].pid, 4);
+        assert_eq!(results[0].user_sid, "S-1-5-18");
     }
 }
