@@ -46,8 +46,8 @@ use os_detect::{AnalysisContext, OsProfile};
         memf ps memdump.dmp --symbols ntkrnlmp.json --privileges\n  \
         memf ps memdump.lime --symbols linux.json --elfinfo\n  \
         memf ps memdump.lime --symbols linux.json --bash-history\n  \
-        memf system memdump.dmp --symbols ntkrnlmp.json\n  \
-        memf system memdump.lime --symbols linux.json --mounts\n  \
+        memf sys memdump.dmp --symbols ntkrnlmp.json\n  \
+        memf sys memdump.lime --symbols linux.json --mounts\n  \
         memf net memdump.dmp --symbols ntkrnlmp.json --output csv\n  \
         memf check memdump.lime --symbols linux.json --syscalls\n  \
         memf check memdump.lime --symbols linux.json --hooks\n  \
@@ -142,8 +142,8 @@ enum Commands {
         bash_history: bool,
     },
     /// List kernel modules/drivers and system-level artifacts.
-    #[command(alias = "sys")]
-    System {
+    #[command(name = "sys", alias = "system")]
+    Sys {
         /// Path to the memory dump file.
         dump: PathBuf,
 
@@ -329,7 +329,7 @@ fn main() -> Result<()> {
                 resolved.is_extracted(),
             )
         }
-        Commands::System {
+        Commands::Sys {
             dump,
             symbols,
             output,
