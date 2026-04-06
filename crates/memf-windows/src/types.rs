@@ -272,6 +272,104 @@ pub struct WinMalfindInfo {
     pub first_bytes: Vec<u8>,
 }
 
+/// Windows TCP connection state (`MIB_TCP_STATE` values).
+///
+/// Maps to the `MIB_TCP_STATE` enum used by the Windows TCP/IP stack.
+/// Values are 1-indexed (unlike most Windows enums).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinTcpState {
+    /// Connection closed.
+    Closed,
+    /// Listening for incoming connections.
+    Listen,
+    /// SYN sent, awaiting SYN-ACK.
+    SynSent,
+    /// SYN received, awaiting ACK.
+    SynReceived,
+    /// Connection established.
+    Established,
+    /// FIN sent, waiting for ACK or FIN.
+    FinWait1,
+    /// FIN acknowledged, waiting for remote FIN.
+    FinWait2,
+    /// Remote FIN received, waiting for local close.
+    CloseWait,
+    /// Both sides closing simultaneously.
+    Closing,
+    /// FIN sent after receiving remote FIN, awaiting final ACK.
+    LastAck,
+    /// Waiting for sufficient time to ensure remote received ACK.
+    TimeWait,
+    /// Waiting for all packets to be received before deletion.
+    DeleteTcb,
+    /// Unknown or unrecognized state value.
+    Unknown(u32),
+}
+
+impl WinTcpState {
+    /// Convert a raw Windows `MIB_TCP_STATE` value to a `WinTcpState`.
+    pub fn from_raw(value: u32) -> Self {
+        match value {
+            1 => Self::Closed,
+            2 => Self::Listen,
+            3 => Self::SynSent,
+            4 => Self::SynReceived,
+            5 => Self::Established,
+            6 => Self::FinWait1,
+            7 => Self::FinWait2,
+            8 => Self::CloseWait,
+            9 => Self::Closing,
+            10 => Self::LastAck,
+            11 => Self::TimeWait,
+            12 => Self::DeleteTcb,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for WinTcpState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => write!(f, "CLOSED"),
+            Self::Listen => write!(f, "LISTENING"),
+            Self::SynSent => write!(f, "SYN_SENT"),
+            Self::SynReceived => write!(f, "SYN_RCVD"),
+            Self::Established => write!(f, "ESTABLISHED"),
+            Self::FinWait1 => write!(f, "FIN_WAIT1"),
+            Self::FinWait2 => write!(f, "FIN_WAIT2"),
+            Self::CloseWait => write!(f, "CLOSE_WAIT"),
+            Self::Closing => write!(f, "CLOSING"),
+            Self::LastAck => write!(f, "LAST_ACK"),
+            Self::TimeWait => write!(f, "TIME_WAIT"),
+            Self::DeleteTcb => write!(f, "DELETE_TCB"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// Windows network connection from `_TCP_ENDPOINT`.
+#[derive(Debug, Clone)]
+pub struct WinConnectionInfo {
+    /// Protocol string (e.g., `"TCPv4"`).
+    pub protocol: String,
+    /// Local IP address as dotted-decimal string.
+    pub local_addr: String,
+    /// Local port number.
+    pub local_port: u16,
+    /// Remote IP address as dotted-decimal string.
+    pub remote_addr: String,
+    /// Remote port number.
+    pub remote_port: u16,
+    /// TCP connection state.
+    pub state: WinTcpState,
+    /// Owning process ID from `_EPROCESS.UniqueProcessId`.
+    pub pid: u64,
+    /// Owning process name from `_EPROCESS.ImageFileName`.
+    pub process_name: String,
+    /// Connection creation time as Windows FILETIME.
+    pub create_time: u64,
+}
+
 /// Process token and privilege information.
 #[derive(Debug, Clone)]
 pub struct WinTokenInfo {
@@ -331,5 +429,40 @@ mod tests {
             "WaitingForProcessInSwap"
         );
         assert_eq!(ThreadState::Unknown(99).to_string(), "Unknown(99)");
+    }
+
+    #[test]
+    fn tcp_state_from_raw_values() {
+        assert_eq!(WinTcpState::from_raw(1), WinTcpState::Closed);
+        assert_eq!(WinTcpState::from_raw(2), WinTcpState::Listen);
+        assert_eq!(WinTcpState::from_raw(3), WinTcpState::SynSent);
+        assert_eq!(WinTcpState::from_raw(4), WinTcpState::SynReceived);
+        assert_eq!(WinTcpState::from_raw(5), WinTcpState::Established);
+        assert_eq!(WinTcpState::from_raw(6), WinTcpState::FinWait1);
+        assert_eq!(WinTcpState::from_raw(7), WinTcpState::FinWait2);
+        assert_eq!(WinTcpState::from_raw(8), WinTcpState::CloseWait);
+        assert_eq!(WinTcpState::from_raw(9), WinTcpState::Closing);
+        assert_eq!(WinTcpState::from_raw(10), WinTcpState::LastAck);
+        assert_eq!(WinTcpState::from_raw(11), WinTcpState::TimeWait);
+        assert_eq!(WinTcpState::from_raw(12), WinTcpState::DeleteTcb);
+        assert_eq!(WinTcpState::from_raw(42), WinTcpState::Unknown(42));
+        assert_eq!(WinTcpState::from_raw(0), WinTcpState::Unknown(0));
+    }
+
+    #[test]
+    fn tcp_state_display_strings() {
+        assert_eq!(WinTcpState::Closed.to_string(), "CLOSED");
+        assert_eq!(WinTcpState::Listen.to_string(), "LISTENING");
+        assert_eq!(WinTcpState::SynSent.to_string(), "SYN_SENT");
+        assert_eq!(WinTcpState::SynReceived.to_string(), "SYN_RCVD");
+        assert_eq!(WinTcpState::Established.to_string(), "ESTABLISHED");
+        assert_eq!(WinTcpState::FinWait1.to_string(), "FIN_WAIT1");
+        assert_eq!(WinTcpState::FinWait2.to_string(), "FIN_WAIT2");
+        assert_eq!(WinTcpState::CloseWait.to_string(), "CLOSE_WAIT");
+        assert_eq!(WinTcpState::Closing.to_string(), "CLOSING");
+        assert_eq!(WinTcpState::LastAck.to_string(), "LAST_ACK");
+        assert_eq!(WinTcpState::TimeWait.to_string(), "TIME_WAIT");
+        assert_eq!(WinTcpState::DeleteTcb.to_string(), "DELETE_TCB");
+        assert_eq!(WinTcpState::Unknown(99).to_string(), "Unknown(99)");
     }
 }

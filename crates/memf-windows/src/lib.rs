@@ -10,6 +10,7 @@ pub mod cmdline;
 pub mod dll;
 pub mod driver;
 pub mod envvars;
+pub mod network;
 pub mod process;
 pub mod ssdt;
 pub mod thread;
