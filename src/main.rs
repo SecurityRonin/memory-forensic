@@ -2772,6 +2772,60 @@ fn cmd_privileges(
 }
 
 // ---------------------------------------------------------------------------
+// cmd_system — kernel modules/drivers + system-level artifacts
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_system(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    mounts: bool,
+    raw_fallback: bool,
+) -> Result<()> {
+    todo!()
+}
+
+// ---------------------------------------------------------------------------
+// cmd_check — integrity and tampering detection
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+fn cmd_check(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    syscalls: bool,
+    hooks: bool,
+    irp: bool,
+    ssdt: bool,
+    callbacks: bool,
+    malfind: bool,
+    psxview: bool,
+    tty: bool,
+    modules: bool,
+    raw_fallback: bool,
+) -> Result<()> {
+    todo!()
+}
+
+// ---------------------------------------------------------------------------
+// cmd_handles — open handles (Linux FDs, Windows handle table)
+// ---------------------------------------------------------------------------
+
+fn cmd_handles(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    todo!()
+}
+
+// ---------------------------------------------------------------------------
 // Output formatters — SSDT hooks
 // ---------------------------------------------------------------------------
 
@@ -3683,6 +3737,111 @@ mod tests {
             false,
             false,
             false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    // --- CLI restructure: new dispatch function tests ---
+
+    #[test]
+    fn cmd_system_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("system");
+        let isf_path = make_temp_isf_file("system");
+        let result = cmd_system(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false, // mounts
+            false, // raw_fallback
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_system_with_mounts_flag() {
+        let dump_path = make_temp_lime_dump("system_mounts");
+        let isf_path = make_temp_isf_file("system_mounts");
+        let result = cmd_system(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            true, // mounts
+            false,
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_check_malfind_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("check_malfind");
+        let isf_path = make_temp_isf_file("check_malfind");
+        let result = cmd_check(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false, false, false, false, false, // syscalls, hooks, irp, ssdt, callbacks
+            true,  // malfind
+            false, false, false, // psxview, tty, modules
+            false, // raw_fallback
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_check_syscalls_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("check_syscalls");
+        let isf_path = make_temp_isf_file("check_syscalls");
+        let result = cmd_check(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            true,  // syscalls
+            false, false, false, false, // hooks, irp, ssdt, callbacks
+            false, false, false, false, // malfind, psxview, tty, modules
+            false, // raw_fallback
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_handles_with_lime_dump_attempts_analysis() {
+        let dump_path = make_temp_lime_dump("handles");
+        let isf_path = make_temp_isf_file("handles");
+        let result = cmd_handles(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false, // raw_fallback
         );
         if let Err(e) = &result {
             let msg = format!("{e}");
