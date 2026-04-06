@@ -15,6 +15,9 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{Result, WinConnectionInfo, WinTcpState};
 
+/// Maximum entries per bucket chain to prevent infinite loops.
+const MAX_CHAIN_LENGTH: usize = 4096;
+
 /// Walk a TCP endpoint hash table and return connection information.
 ///
 /// `table_vaddr` is the base address of the hash table (an array of
@@ -29,13 +32,147 @@ pub fn walk_tcp_endpoints<P: PhysicalMemoryProvider>(
     table_vaddr: u64,
     bucket_count: u32,
 ) -> Result<Vec<WinConnectionInfo>> {
-    todo!()
+    let hash_entry_off = reader
+        .symbols()
+        .field_offset("_TCP_ENDPOINT", "HashEntry")
+        .ok_or_else(|| crate::Error::Walker("missing _TCP_ENDPOINT.HashEntry offset".into()))?;
+
+    let mut results = Vec::new();
+
+    for i in 0..u64::from(bucket_count) {
+        let bucket_addr = table_vaddr + i * 16; // each _LIST_ENTRY is 16 bytes
+
+        // Read Flink from this bucket head
+        let flink: u64 = reader.read_field(bucket_addr, "_LIST_ENTRY", "Flink")?;
+
+        // Empty bucket: Flink points back to self
+        if flink == bucket_addr {
+            continue;
+        }
+
+        let mut current = flink;
+        let mut chain_len = 0;
+
+        while current != bucket_addr && chain_len < MAX_CHAIN_LENGTH {
+            // CONTAINING_RECORD: endpoint base = HashEntry addr - HashEntry offset
+            let ep_addr = current.wrapping_sub(hash_entry_off);
+
+            if let Ok(conn) = read_tcp_endpoint(reader, ep_addr) {
+                results.push(conn);
+            }
+
+            // Follow Flink to next entry in chain
+            current = match reader.read_field(current, "_LIST_ENTRY", "Flink") {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            chain_len += 1;
+        }
+    }
+
+    Ok(results)
+}
+
+/// Read a single `_TCP_ENDPOINT` and resolve its addresses and owner.
+fn read_tcp_endpoint<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    ep_addr: u64,
+) -> Result<WinConnectionInfo> {
+    let state_raw: u32 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "State")?;
+    let state = WinTcpState::from_raw(state_raw);
+
+    // Ports are stored in network byte order (big-endian)
+    let local_port_raw: u16 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "LocalPort")?;
+    let local_port = u16::from_be(local_port_raw);
+
+    let remote_port_raw: u16 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "RemotePort")?;
+    let remote_port = u16::from_be(remote_port_raw);
+
+    let create_time: u64 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "CreateTime")?;
+
+    // Resolve addresses through AddrInfo pointer chain
+    let (local_addr, remote_addr) = read_addresses(reader, ep_addr)?;
+
+    // Resolve owning process
+    let (pid, process_name) = read_owner(reader, ep_addr)?;
+
+    Ok(WinConnectionInfo {
+        protocol: "TCPv4".to_string(),
+        local_addr,
+        local_port,
+        remote_addr,
+        remote_port,
+        state,
+        pid,
+        process_name,
+        create_time,
+    })
+}
+
+/// Resolve local and remote IPv4 addresses from the `AddrInfo` pointer chain.
+///
+/// Chain: `_TCP_ENDPOINT.AddrInfo` -> `_ADDR_INFO.Local` ->
+/// `_LOCAL_ADDRESS.pData` -> raw IPv4. Remote is at `_ADDR_INFO.Remote`.
+fn read_addresses<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    ep_addr: u64,
+) -> Result<(String, String)> {
+    let addr_info: u64 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "AddrInfo")?;
+    if addr_info == 0 {
+        return Ok(("0.0.0.0".to_string(), "0.0.0.0".to_string()));
+    }
+
+    // Remote address: direct u32 in _ADDR_INFO
+    let remote_raw: u32 = reader.read_field(addr_info, "_ADDR_INFO", "Remote")?;
+    let remote_addr = ipv4_to_string(remote_raw);
+
+    // Local address: pointer chain _ADDR_INFO.Local -> _LOCAL_ADDRESS.pData -> u32
+    let local_addr_ptr: u64 = reader.read_field(addr_info, "_ADDR_INFO", "Local")?;
+    let local_addr = if local_addr_ptr != 0 {
+        let pdata: u64 = reader.read_field(local_addr_ptr, "_LOCAL_ADDRESS", "pData")?;
+        if pdata != 0 {
+            let bytes = reader.read_bytes(pdata, 4)?;
+            let raw = u32::from_le_bytes(bytes.try_into().expect("4 bytes"));
+            ipv4_to_string(raw)
+        } else {
+            "0.0.0.0".to_string()
+        }
+    } else {
+        "0.0.0.0".to_string()
+    };
+
+    Ok((local_addr, remote_addr))
+}
+
+/// Read the owning process PID and image name from `_TCP_ENDPOINT.Owner`.
+fn read_owner<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    ep_addr: u64,
+) -> Result<(u64, String)> {
+    let owner: u64 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "Owner")?;
+    if owner == 0 {
+        return Ok((0, "<unknown>".to_string()));
+    }
+
+    let pid: u64 = reader.read_field(owner, "_EPROCESS", "UniqueProcessId")?;
+
+    let name_off = reader
+        .symbols()
+        .field_offset("_EPROCESS", "ImageFileName")
+        .unwrap_or(0);
+    let name_bytes = reader.read_bytes(owner + name_off, 15)?;
+    let process_name = String::from_utf8_lossy(&name_bytes)
+        .trim_end_matches('\0')
+        .to_string();
+
+    Ok((pid, process_name))
 }
 
 /// Convert a raw IPv4 address (stored in network byte order, read as LE u32)
 /// to a dotted-decimal string.
 fn ipv4_to_string(addr: u32) -> String {
-    todo!()
+    let bytes = addr.to_le_bytes();
+    format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
 }
 
 #[cfg(test)]
