@@ -438,6 +438,28 @@ pub struct WinHollowingInfo {
     pub reason: String,
 }
 
+/// Windows handle table entry extracted from `_HANDLE_TABLE`.
+///
+/// Each process has an object table (`_EPROCESS.ObjectTable`) containing
+/// handles to kernel objects (files, registry keys, mutexes, etc.).
+/// The `object_type` field is derived from `_OBJECT_HEADER.TypeIndex`
+/// looked up in `ObTypeIndexTable`.
+#[derive(Debug, Clone)]
+pub struct WinHandleInfo {
+    /// Process ID owning this handle.
+    pub pid: u64,
+    /// Image file name of the owning process.
+    pub image_name: String,
+    /// Handle value (index × 4, starting at 4).
+    pub handle_value: u32,
+    /// Address of the `_OBJECT_HEADER` (ObjectPointerBits decoded).
+    pub object_addr: u64,
+    /// Kernel object type name (e.g., "File", "Key", "Mutant").
+    pub object_type: String,
+    /// Granted access mask from `_HANDLE_TABLE_ENTRY.GrantedAccessBits`.
+    pub granted_access: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

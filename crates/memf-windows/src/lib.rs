@@ -10,6 +10,7 @@ pub mod cmdline;
 pub mod dll;
 pub mod driver;
 pub mod envvars;
+pub mod handles;
 pub mod hollowing;
 pub mod network;
 pub mod process;
