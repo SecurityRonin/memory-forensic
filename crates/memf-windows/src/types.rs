@@ -410,6 +410,34 @@ pub struct WinTokenInfo {
     pub user_sid: String,
 }
 
+/// Process hollowing detection result.
+///
+/// Compares the PE header at `PEB.ImageBaseAddress` against the expected
+/// image for each process. If the memory at the image base lacks a valid
+/// MZ/PE signature or the PE `SizeOfImage` doesn't match, the process
+/// may have been hollowed (original code replaced with malicious payload).
+#[derive(Debug, Clone)]
+pub struct WinHollowingInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Image file name from `_EPROCESS.ImageFileName`.
+    pub image_name: String,
+    /// `PEB.ImageBaseAddress` value.
+    pub image_base: u64,
+    /// Whether a valid MZ header was found at `ImageBaseAddress`.
+    pub has_mz: bool,
+    /// Whether a valid PE signature (`PE\0\0`) was found at the PE offset.
+    pub has_pe: bool,
+    /// `SizeOfImage` from the PE optional header (0 if PE header invalid).
+    pub pe_size_of_image: u32,
+    /// Expected image size from the first DLL entry in `InLoadOrderModuleList` (0 if unavailable).
+    pub ldr_size_of_image: u64,
+    /// Whether this process appears hollowed (suspicious).
+    pub suspicious: bool,
+    /// Human-readable reason for the suspicion.
+    pub reason: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
