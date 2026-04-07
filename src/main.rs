@@ -102,7 +102,7 @@ enum Commands {
         #[arg(long)]
         pid: Option<u64>,
 
-        /// Display processes as a tree (Windows only).
+        /// Display processes as a tree.
         #[arg(long)]
         tree: bool,
 

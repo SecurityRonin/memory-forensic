@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, ProcessInfo, ProcessState, Result};
+use crate::{Error, ProcessInfo, ProcessState, PsTreeEntry, Result};
 
 /// Walk the Linux process list starting from `init_task`.
 pub fn walk_processes<P: PhysicalMemoryProvider>(
@@ -41,6 +41,15 @@ pub fn walk_processes<P: PhysicalMemoryProvider>(
 
     processes.sort_by_key(|p| p.pid);
     Ok(processes)
+}
+
+/// Build a process tree from a flat process list.
+///
+/// Produces a depth-annotated flat list suitable for indented display.
+/// Processes whose parent PID is 0 or whose parent is not in the list
+/// are treated as roots. Children are sorted by PID within each parent.
+pub fn build_pstree(procs: &[ProcessInfo]) -> Vec<PsTreeEntry> {
+    todo!()
 }
 
 fn read_process_info<P: PhysicalMemoryProvider>(
@@ -213,5 +222,125 @@ mod tests {
 
         let result = walk_processes(&reader);
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_pstree tests (pure function, no ObjectReader needed)
+    // -----------------------------------------------------------------------
+
+    fn make_proc(pid: u64, ppid: u64, comm: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid,
+            comm: comm.to_string(),
+            state: ProcessState::Running,
+            vaddr: 0xFFFF_0000_0000_0000 + pid * 0x1000,
+            cr3: None,
+        }
+    }
+
+    /// Single root process (PID 1, PPID 0) → depth 0, single entry.
+    #[test]
+    fn pstree_single_root() {
+        let procs = vec![make_proc(1, 0, "init")];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].process.pid, 1);
+        assert_eq!(tree[0].depth, 0);
+    }
+
+    /// Linear chain: init(1) → bash(100) → vim(200).
+    /// Expected DFS order: init@0, bash@1, vim@2.
+    #[test]
+    fn pstree_linear_chain() {
+        let procs = vec![
+            make_proc(1, 0, "init"),
+            make_proc(100, 1, "bash"),
+            make_proc(200, 100, "vim"),
+        ];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 3);
+        assert_eq!(tree[0].process.pid, 1);
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[1].process.pid, 100);
+        assert_eq!(tree[1].depth, 1);
+        assert_eq!(tree[2].process.pid, 200);
+        assert_eq!(tree[2].depth, 2);
+    }
+
+    /// Branching: init(1) has children sshd(50) and cron(30).
+    /// Children sorted by PID → cron@1 before sshd@1.
+    #[test]
+    fn pstree_branching_sorted_by_pid() {
+        let procs = vec![
+            make_proc(1, 0, "init"),
+            make_proc(50, 1, "sshd"),
+            make_proc(30, 1, "cron"),
+        ];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 3);
+        assert_eq!(tree[0].process.pid, 1);
+        assert_eq!(tree[0].depth, 0);
+        // cron (PID 30) before sshd (PID 50) because sorted by PID
+        assert_eq!(tree[1].process.pid, 30);
+        assert_eq!(tree[1].process.comm, "cron");
+        assert_eq!(tree[1].depth, 1);
+        assert_eq!(tree[2].process.pid, 50);
+        assert_eq!(tree[2].process.comm, "sshd");
+        assert_eq!(tree[2].depth, 1);
+    }
+
+    /// Orphaned process: parent PID not in the list → treated as root.
+    #[test]
+    fn pstree_orphan_becomes_root() {
+        let procs = vec![
+            make_proc(1, 0, "init"),
+            make_proc(999, 777, "orphan"), // PPID 777 not in list
+        ];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 2);
+        // Both are roots, sorted by PID
+        assert_eq!(tree[0].process.pid, 1);
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[1].process.pid, 999);
+        assert_eq!(tree[1].depth, 0);
+    }
+
+    /// Empty input produces empty output.
+    #[test]
+    fn pstree_empty() {
+        let tree = build_pstree(&[]);
+        assert!(tree.is_empty());
+    }
+
+    /// Full tree: init(1) → systemd(2) → sshd(10) → bash(20), plus cron(3) under init.
+    /// Tests DFS ordering with mixed branching and depth.
+    #[test]
+    fn pstree_full_tree_dfs_order() {
+        let procs = vec![
+            make_proc(1, 0, "init"),
+            make_proc(2, 1, "systemd"),
+            make_proc(3, 1, "cron"),
+            make_proc(10, 2, "sshd"),
+            make_proc(20, 10, "bash"),
+        ];
+        let tree = build_pstree(&procs);
+
+        assert_eq!(tree.len(), 5);
+        // DFS: init(0) → systemd(1) → sshd(2) → bash(3) → cron(1)
+        assert_eq!(tree[0].process.pid, 1);
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[1].process.pid, 2);
+        assert_eq!(tree[1].depth, 1);
+        assert_eq!(tree[2].process.pid, 10);
+        assert_eq!(tree[2].depth, 2);
+        assert_eq!(tree[3].process.pid, 20);
+        assert_eq!(tree[3].depth, 3);
+        assert_eq!(tree[4].process.pid, 3);
+        assert_eq!(tree[4].depth, 1);
     }
 }

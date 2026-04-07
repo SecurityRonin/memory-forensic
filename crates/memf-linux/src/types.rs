@@ -242,6 +242,22 @@ pub struct ModuleInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Process tree types
+// ---------------------------------------------------------------------------
+
+/// A process tree entry with depth annotation for display.
+///
+/// Used by [`crate::process::build_pstree`] to produce a flat, depth-annotated
+/// list from a process list, suitable for rendering as an indented tree.
+#[derive(Debug, Clone)]
+pub struct PsTreeEntry {
+    /// The process information.
+    pub process: ProcessInfo,
+    /// Tree depth (0 = root, 1 = child of root, etc.).
+    pub depth: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Thread types
 // ---------------------------------------------------------------------------
 
