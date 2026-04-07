@@ -642,6 +642,14 @@ fn cmd_ps(
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
+            // Expand --all into platform-appropriate flags (excludes tree, pid, dlls)
+            let threads = threads || all;
+            let cmdline = cmdline || all;
+            let maps = maps || all;
+            let envvars = envvars || all;
+            let elfinfo = elfinfo || all;
+            let bash_history = bash_history || all;
+
             if masquerade {
                 anyhow::bail!("--masquerade is only supported for Windows dumps");
             }
@@ -726,6 +734,14 @@ fn cmd_ps(
             }
         }
         OsProfile::Windows => {
+            // Expand --all into platform-appropriate flags (excludes tree, pid, dlls)
+            let threads = threads || all;
+            let masquerade = masquerade || all;
+            let envvars = envvars || all;
+            let cmdline = cmdline || all;
+            let vad = vad || all;
+            let privileges = privileges || all;
+
             if maps {
                 anyhow::bail!("--maps is only supported for Linux dumps");
             }
