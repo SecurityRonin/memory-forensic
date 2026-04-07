@@ -3064,14 +3064,24 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "Process", "Enabled Privileges"]);
+            table.set_header(vec!["PID", "Process", "User SID", "Enabled Privileges"]);
             for t in tokens {
                 let privs = if t.privilege_names.is_empty() {
                     "(none)".to_string()
                 } else {
                     t.privilege_names.join(", ")
                 };
-                table.add_row(vec![format!("{}", t.pid), t.image_name.clone(), privs]);
+                let sid = if t.user_sid.is_empty() {
+                    "-".to_string()
+                } else {
+                    t.user_sid.clone()
+                };
+                table.add_row(vec![
+                    format!("{}", t.pid),
+                    t.image_name.clone(),
+                    sid,
+                    privs,
+                ]);
             }
             println!("{table}");
             let elevated: Vec<_> = tokens
@@ -3093,6 +3103,7 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
                 let json = serde_json::json!({
                     "pid": t.pid,
                     "image_name": t.image_name,
+                    "user_sid": t.user_sid,
                     "privileges_enabled": format!("{:#x}", t.privileges_enabled),
                     "privileges_present": format!("{:#x}", t.privileges_present),
                     "privilege_names": t.privilege_names,
@@ -3101,12 +3112,12 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
             }
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,privileges_enabled,privileges_present,privilege_names");
+            println!("pid,image_name,user_sid,privileges_enabled,privileges_present,privilege_names");
             for t in tokens {
                 let privs = t.privilege_names.join(";");
                 println!(
-                    "{},{},{:#x},{:#x},\"{}\"",
-                    t.pid, t.image_name, t.privileges_enabled, t.privileges_present, privs
+                    "{},{},{},{:#x},{:#x},\"{}\"",
+                    t.pid, t.image_name, t.user_sid, t.privileges_enabled, t.privileges_present, privs
                 );
             }
         }
