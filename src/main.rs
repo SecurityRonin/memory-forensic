@@ -110,7 +110,8 @@ enum Commands {
         #[arg(long)]
         masquerade: bool,
 
-        /// List loaded DLLs (Windows) or shared libraries per process.
+        /// List loaded DLLs (Windows). Shows DLLs for a single process
+        /// when --pid is given, or for all processes when --pid is omitted.
         #[arg(long)]
         dlls: bool,
 
@@ -734,9 +735,10 @@ fn cmd_ps(
             }
         }
         OsProfile::Windows => {
-            // Expand --all into platform-appropriate flags (excludes tree, pid, dlls)
+            // Expand --all into platform-appropriate flags (excludes tree, pid)
             let threads = threads || all;
             let masquerade = masquerade || all;
+            let dlls = dlls || all;
             let envvars = envvars || all;
             let cmdline = cmdline || all;
             let vad = vad || all;
@@ -791,6 +793,9 @@ fn cmd_ps(
             }
 
             if dlls {
+                // TODO(GREEN): use all_process_mode to iterate all processes
+                // when --pid is not given instead of bailing.
+                let all_process_mode = pid_filter.is_none();
                 let pid = pid_filter
                     .context("--dlls requires --pid to specify which process to list DLLs for")?;
                 let target = procs
