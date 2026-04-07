@@ -629,9 +629,6 @@ fn cmd_ps(
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
-            if threads {
-                anyhow::bail!("--threads is not yet supported for Linux dumps");
-            }
             if tree {
                 anyhow::bail!("--tree is not yet supported for Linux dumps");
             }
@@ -653,6 +650,28 @@ fn cmd_ps(
             let procs = memf_linux::process::walk_processes(&reader)
                 .context("failed to walk Linux processes")?;
             print_linux_processes(&procs, output);
+
+            if threads {
+                let mut all_threads = Vec::new();
+                for proc in &procs {
+                    if let Some(pid) = pid_filter {
+                        if proc.pid != pid {
+                            continue;
+                        }
+                    }
+                    match memf_linux::thread::walk_threads(&reader, proc.vaddr, proc.pid) {
+                        Ok(t) => all_threads.extend(t),
+                        Err(e) => {
+                            eprintln!(
+                                "warning: failed to walk threads for PID {}: {e}",
+                                proc.pid
+                            );
+                        }
+                    }
+                }
+                println!();
+                print_linux_threads(&all_threads, output);
+            }
 
             if maps {
                 let vmas =
@@ -1231,6 +1250,47 @@ fn print_linux_processes(procs: &[memf_linux::ProcessInfo], output: OutputFormat
             println!("pid,ppid,name,state,vaddr");
             for p in procs {
                 println!("{},{},{},{},{:#x}", p.pid, p.ppid, p.comm, p.state, p.vaddr);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Linux threads
+// ---------------------------------------------------------------------------
+
+fn print_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["TID", "TGID", "State", "Comm"]);
+            for t in threads {
+                table.add_row(vec![
+                    format!("{}", t.tid),
+                    format!("{}", t.tgid),
+                    format!("{}", t.state),
+                    t.comm.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} threads", threads.len());
+        }
+        OutputFormat::Json => {
+            for t in threads {
+                let json = serde_json::json!({
+                    "tid": t.tid,
+                    "tgid": t.tgid,
+                    "state": format!("{}", t.state),
+                    "comm": t.comm,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("tid,tgid,state,comm");
+            for t in threads {
+                println!("{},{},{},{}", t.tid, t.tgid, t.state, t.comm);
             }
         }
     }
