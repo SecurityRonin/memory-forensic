@@ -238,6 +238,10 @@ enum Commands {
         /// Cross-reference PEB LDR module lists for DLL hiding (Windows only).
         #[arg(long)]
         ldrmodules: bool,
+
+        /// Detect process hollowing via PE header validation (Windows only).
+        #[arg(long)]
+        hollowing: bool,
     },
     /// List open handles (Windows) or file descriptors (Linux).
     Handles {
@@ -381,6 +385,7 @@ fn main() -> Result<()> {
             tty,
             modules,
             ldrmodules,
+            hollowing,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_check(
@@ -398,6 +403,7 @@ fn main() -> Result<()> {
                 tty,
                 modules,
                 ldrmodules,
+                hollowing,
                 resolved.is_extracted(),
             )
         }
@@ -2648,6 +2654,7 @@ fn cmd_check(
     tty: bool,
     modules: bool,
     ldrmodules: bool,
+    hollowing: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     if !(syscalls
@@ -2659,12 +2666,13 @@ fn cmd_check(
         || psxview
         || tty
         || modules
-        || ldrmodules)
+        || ldrmodules
+        || hollowing)
     {
         anyhow::bail!(
             "no check flags specified. Available checks:\n  \
              Linux:   --syscalls  --hooks  --malfind  --psxview  --tty  --modules\n  \
-             Windows: --ssdt  --callbacks  --irp  --malfind  --ldrmodules"
+             Windows: --ssdt  --callbacks  --irp  --malfind  --ldrmodules  --hollowing"
         );
     }
 
@@ -2683,6 +2691,9 @@ fn cmd_check(
             }
             if ldrmodules {
                 anyhow::bail!("--ldrmodules is only available for Windows memory dumps");
+            }
+            if hollowing {
+                anyhow::bail!("--hollowing is only available for Windows memory dumps");
             }
             if syscalls {
                 let entries = memf_linux::syscalls::check_syscall_table(&reader)
@@ -2801,16 +2812,23 @@ fn cmd_check(
                     }
                     // Switch to process address space (user-mode PEB)
                     let proc_reader = reader.with_cr3(proc.cr3);
-                    match memf_windows::dll::walk_ldr_modules(&proc_reader, proc.peb_addr) {
-                        Ok(mods) => {
-                            for m in mods {
-                                all_mods.push((proc.pid, proc.image_name.clone(), m));
-                            }
+                    if let Ok(mods) =
+                        memf_windows::dll::walk_ldr_modules(&proc_reader, proc.peb_addr)
+                    {
+                        for m in mods {
+                            all_mods.push((proc.pid, proc.image_name.clone(), m));
                         }
-                        Err(_) => {} // paged out or inaccessible PEB
                     }
                 }
                 print_ldr_modules(&all_mods, output);
+            }
+            if hollowing {
+                let ps_head = ctx
+                    .ps_active_process_head
+                    .context("missing PsActiveProcessHead for hollowing check")?;
+                let findings = memf_windows::hollowing::check_hollowing(&reader, ps_head)
+                    .context("failed to check for process hollowing")?;
+                print_hollowing(&findings, output);
             }
         }
         OsProfile::MacOs => anyhow::bail!("macOS integrity checks not yet supported"),
@@ -3164,6 +3182,98 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
                 println!(
                     "{},{},{:#x},{},\"{}\",{},{},{}",
                     pid, image_name, m.base_addr, m.name, escaped, m.in_load, m.in_mem, m.in_init
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — process hollowing
+// ---------------------------------------------------------------------------
+
+fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                "PID",
+                "Process",
+                "ImageBase",
+                "MZ",
+                "PE",
+                "PE SizeOfImage",
+                "LDR SizeOfImage",
+                "Suspicious",
+                "Reason",
+            ]);
+            for f in findings {
+                let flag = |b: bool| if b { "Yes" } else { "No" };
+                table.add_row(vec![
+                    format!("{}", f.pid),
+                    f.image_name.clone(),
+                    format!("{:#x}", f.image_base),
+                    flag(f.has_mz).to_string(),
+                    flag(f.has_pe).to_string(),
+                    format!("{:#x}", f.pe_size_of_image),
+                    format!("{:#x}", f.ldr_size_of_image),
+                    flag(f.suspicious).to_string(),
+                    if f.reason.is_empty() {
+                        "-".to_string()
+                    } else {
+                        f.reason.clone()
+                    },
+                ]);
+            }
+            println!("{table}");
+            let suspicious_count = findings.iter().filter(|f| f.suspicious).count();
+            if suspicious_count > 0 {
+                println!(
+                    "\nTotal: {} processes checked, {} suspicious (possible hollowing)",
+                    findings.len(),
+                    suspicious_count
+                );
+            } else if findings.is_empty() {
+                println!("\nNo user-mode processes with PEB found.");
+            } else {
+                println!(
+                    "\nTotal: {} processes checked, no hollowing detected",
+                    findings.len()
+                );
+            }
+        }
+        OutputFormat::Json => {
+            for f in findings {
+                let json = serde_json::json!({
+                    "pid": f.pid,
+                    "image_name": f.image_name,
+                    "image_base": format!("{:#x}", f.image_base),
+                    "has_mz": f.has_mz,
+                    "has_pe": f.has_pe,
+                    "pe_size_of_image": format!("{:#x}", f.pe_size_of_image),
+                    "ldr_size_of_image": format!("{:#x}", f.ldr_size_of_image),
+                    "suspicious": f.suspicious,
+                    "reason": f.reason,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,image_base,has_mz,has_pe,pe_size_of_image,ldr_size_of_image,suspicious,reason");
+            for f in findings {
+                let escaped = f.reason.replace('"', "\"\"");
+                println!(
+                    "{},{},{:#x},{},{},{:#x},{:#x},{},\"{}\"",
+                    f.pid,
+                    f.image_name,
+                    f.image_base,
+                    f.has_mz,
+                    f.has_pe,
+                    f.pe_size_of_image,
+                    f.ldr_size_of_image,
+                    f.suspicious,
+                    escaped
                 );
             }
         }
@@ -3853,6 +3963,7 @@ mod tests {
             false, // tty
             false, // modules
             false, // ldrmodules
+            false, // hollowing
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -3924,6 +4035,7 @@ mod tests {
             false,
             false, // psxview, tty, modules
             false, // ldrmodules
+            false, // hollowing
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -3953,6 +4065,7 @@ mod tests {
             false,
             false, // malfind, psxview, tty, modules
             false, // ldrmodules
+            false, // hollowing
             false, // raw_fallback
         );
         if let Err(e) = &result {
