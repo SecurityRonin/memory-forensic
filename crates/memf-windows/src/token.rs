@@ -47,10 +47,7 @@ pub fn sid_to_string(
 /// Follows `_TOKEN.UserAndGroups` → `_SID_AND_ATTRIBUTES[0].Sid` → `_SID`
 /// and formats the result as a string like `S-1-5-18`.
 /// Returns an empty string if any pointer in the chain is null.
-fn read_user_sid<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    token_addr: u64,
-) -> String {
+fn read_user_sid<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, token_addr: u64) -> String {
     // Read _TOKEN.UserAndGroups pointer
     let user_and_groups: u64 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroups") {
         Ok(v) => v,
@@ -405,7 +402,7 @@ mod tests {
         let mut sid_data = vec![0u8; 64];
         sid_data[0] = 1; // Revision
         sid_data[1] = 1; // SubAuthorityCount
-        // IdentifierAuthority@0x2: [0, 0, 0, 0, 0, 5] = NT Authority
+                         // IdentifierAuthority@0x2: [0, 0, 0, 0, 0, 5] = NT Authority
         sid_data[7] = 5;
         // SubAuthority[0]@0x8: 18 (SYSTEM)
         sid_data[8..12].copy_from_slice(&18u32.to_le_bytes());

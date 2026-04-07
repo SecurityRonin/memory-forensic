@@ -239,7 +239,7 @@ fn parse_pdb<'s, S: pdb::Source<'s> + 's>(
 ///
 /// Provides struct layout and symbol resolution from Windows PDB files.
 /// Implements [`SymbolResolver`] with backend name `"PDB"`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PdbResolver {
     structs: HashMap<String, StructInfo>,
     symbols: HashMap<String, u64>,
@@ -341,6 +341,10 @@ impl SymbolResolver for PdbResolver {
 
     fn backend_name(&self) -> &str {
         "PDB"
+    }
+
+    fn clone_boxed(&self) -> Box<dyn SymbolResolver> {
+        Box::new(self.clone())
     }
 }
 

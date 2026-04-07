@@ -74,7 +74,7 @@ impl BtfKind {
 ///
 /// Provides struct and type resolution from BTF data.
 /// Does NOT provide symbol addresses -- `symbol_address()` always returns `None`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BtfResolver {
     structs: HashMap<String, StructInfo>,
 }
@@ -198,6 +198,10 @@ impl SymbolResolver for BtfResolver {
 
     fn backend_name(&self) -> &str {
         "BTF"
+    }
+
+    fn clone_boxed(&self) -> Box<dyn SymbolResolver> {
+        Box::new(self.clone())
     }
 }
 

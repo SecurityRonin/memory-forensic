@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::{FieldInfo, Result, StructInfo, SymbolResolver};
 
 /// ISF JSON symbol resolver.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IsfResolver {
     structs: HashMap<String, StructInfo>,
     symbols: HashMap<String, u64>,
@@ -158,6 +158,10 @@ impl SymbolResolver for IsfResolver {
 
     fn backend_name(&self) -> &str {
         "ISF JSON"
+    }
+
+    fn clone_boxed(&self) -> Box<dyn SymbolResolver> {
+        Box::new(self.clone())
     }
 }
 

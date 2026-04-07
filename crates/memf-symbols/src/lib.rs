@@ -93,6 +93,9 @@ pub trait SymbolResolver: Send + Sync {
 
     /// Human-readable name for this backend (e.g., "ISF JSON", "BTF").
     fn backend_name(&self) -> &str;
+
+    /// Clone this resolver into a new boxed trait object.
+    fn clone_boxed(&self) -> Box<dyn SymbolResolver>;
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use memf_core::object_reader::ObjectReader;
 use memf_core::vas::{TranslationMode, VirtualAddressSpace};
@@ -233,6 +234,10 @@ enum Commands {
         /// Detect hidden kernel modules (Linux only).
         #[arg(long)]
         modules: bool,
+
+        /// Cross-reference PEB LDR module lists for DLL hiding (Windows only).
+        #[arg(long)]
+        ldrmodules: bool,
     },
     /// List open handles (Windows) or file descriptors (Linux).
     Handles {
@@ -375,6 +380,7 @@ fn main() -> Result<()> {
             psxview,
             tty,
             modules,
+            ldrmodules,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_check(
@@ -391,6 +397,7 @@ fn main() -> Result<()> {
                 psxview,
                 tty,
                 modules,
+                ldrmodules,
                 resolved.is_extracted(),
             )
         }
@@ -487,7 +494,7 @@ fn setup_analysis(
     raw_fallback: bool,
 ) -> Result<(
     AnalysisContext,
-    ObjectReader<Box<dyn PhysicalMemoryProvider>>,
+    ObjectReader<Arc<dyn PhysicalMemoryProvider>>,
 )> {
     let provider = open_dump_for(dump, raw_fallback)?;
     let resolver = if symbols_path.is_some() {
@@ -516,6 +523,8 @@ fn setup_analysis(
 
     eprintln!("OS: {}, CR3: {:#x}", ctx.os, ctx.cr3);
 
+    // Wrap in Arc so per-process readers can cheaply share the physical provider.
+    let provider: Arc<dyn PhysicalMemoryProvider> = Arc::from(provider);
     let vas = VirtualAddressSpace::new(provider, ctx.cr3, TranslationMode::X86_64FourLevel);
     let reader = ObjectReader::new(vas, resolver);
 
@@ -793,18 +802,14 @@ fn cmd_net(
             // TCP hash table discovery requires tcpip.sys symbols.
             // TcpBTable: global pointer to the hash table array.
             // TcpBTableSize: global u32 holding the number of buckets.
-            let tcp_table_sym = reader
-                .symbols()
-                .symbol_address("TcpBTable")
-                .context(
-                    "missing 'TcpBTable' symbol; Windows TCP connection listing \
+            let tcp_table_sym = reader.symbols().symbol_address("TcpBTable").context(
+                "missing 'TcpBTable' symbol; Windows TCP connection listing \
                      requires tcpip.sys symbols in the ISF file",
-                )?;
+            )?;
             let ptr_bytes = reader
                 .read_bytes(tcp_table_sym, 8)
                 .context("failed to dereference TcpBTable pointer")?;
-            let table_vaddr =
-                u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
+            let table_vaddr = u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
 
             let tcp_size_sym = reader
                 .symbols()
@@ -813,15 +818,11 @@ fn cmd_net(
             let size_bytes = reader
                 .read_bytes(tcp_size_sym, 4)
                 .context("failed to read TcpBTableSize")?;
-            let bucket_count =
-                u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
+            let bucket_count = u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
 
-            let conns = memf_windows::network::walk_tcp_endpoints(
-                &reader,
-                table_vaddr,
-                bucket_count,
-            )
-            .context("failed to walk Windows TCP endpoints")?;
+            let conns =
+                memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
+                    .context("failed to walk Windows TCP endpoints")?;
             print_win_connections(&conns, output);
         }
         OsProfile::MacOs => anyhow::bail!("macOS network walking not yet supported"),
@@ -2646,13 +2647,24 @@ fn cmd_check(
     psxview: bool,
     tty: bool,
     modules: bool,
+    ldrmodules: bool,
     raw_fallback: bool,
 ) -> Result<()> {
-    if !(syscalls || hooks || irp || ssdt || callbacks || malfind || psxview || tty || modules) {
+    if !(syscalls
+        || hooks
+        || irp
+        || ssdt
+        || callbacks
+        || malfind
+        || psxview
+        || tty
+        || modules
+        || ldrmodules)
+    {
         anyhow::bail!(
             "no check flags specified. Available checks:\n  \
              Linux:   --syscalls  --hooks  --malfind  --psxview  --tty  --modules\n  \
-             Windows: --ssdt  --callbacks  --irp  --malfind"
+             Windows: --ssdt  --callbacks  --irp  --malfind  --ldrmodules"
         );
     }
 
@@ -2668,6 +2680,9 @@ fn cmd_check(
             }
             if callbacks {
                 anyhow::bail!("--callbacks is only available for Windows memory dumps");
+            }
+            if ldrmodules {
+                anyhow::bail!("--ldrmodules is only available for Windows memory dumps");
             }
             if syscalls {
                 let entries = memf_linux::syscalls::check_syscall_table(&reader)
@@ -2772,6 +2787,30 @@ fn cmd_check(
                 let findings = memf_windows::vad::walk_malfind(&reader, ps_head)
                     .context("failed to scan Windows memory for suspicious regions")?;
                 print_windows_malfind(&findings, output);
+            }
+            if ldrmodules {
+                let ps_head = ctx
+                    .ps_active_process_head
+                    .context("missing PsActiveProcessHead for LdrModules check")?;
+                let procs = memf_windows::process::walk_processes(&reader, ps_head)
+                    .context("failed to walk processes for LdrModules")?;
+                let mut all_mods = Vec::new();
+                for proc in &procs {
+                    if proc.peb_addr == 0 {
+                        continue;
+                    }
+                    // Switch to process address space (user-mode PEB)
+                    let proc_reader = reader.with_cr3(proc.cr3);
+                    match memf_windows::dll::walk_ldr_modules(&proc_reader, proc.peb_addr) {
+                        Ok(mods) => {
+                            for m in mods {
+                                all_mods.push((proc.pid, proc.image_name.clone(), m));
+                            }
+                        }
+                        Err(_) => {} // paged out or inaccessible PEB
+                    }
+                }
+                print_ldr_modules(&all_mods, output);
             }
         }
         OsProfile::MacOs => anyhow::bail!("macOS integrity checks not yet supported"),
@@ -3056,6 +3095,82 @@ fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Outp
 }
 
 // ---------------------------------------------------------------------------
+// Output formatters — LdrModules cross-reference
+// ---------------------------------------------------------------------------
+
+fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                "PID", "Process", "Base", "InLoad", "InMem", "InInit", "DLL Path",
+            ]);
+            for (pid, image_name, m) in mods {
+                let flag = |b: bool| if b { "True" } else { "False" };
+                table.add_row(vec![
+                    format!("{pid}"),
+                    image_name.clone(),
+                    format!("{:#x}", m.base_addr),
+                    flag(m.in_load).to_string(),
+                    flag(m.in_mem).to_string(),
+                    flag(m.in_init).to_string(),
+                    if m.full_path.is_empty() {
+                        m.name.clone()
+                    } else {
+                        m.full_path.clone()
+                    },
+                ]);
+            }
+            println!("{table}");
+            let hidden = mods
+                .iter()
+                .filter(|(_, _, m)| !m.in_load || !m.in_mem || !m.in_init)
+                .count();
+            if hidden > 0 {
+                println!(
+                    "\nTotal: {} modules, {} potentially hidden (missing from one or more lists)",
+                    mods.len(),
+                    hidden
+                );
+            } else if mods.is_empty() {
+                println!("\nNo user-mode modules found.");
+            } else {
+                println!(
+                    "\nTotal: {} modules, all present in all 3 lists",
+                    mods.len()
+                );
+            }
+        }
+        OutputFormat::Json => {
+            for (pid, image_name, m) in mods {
+                let json = serde_json::json!({
+                    "pid": pid,
+                    "image_name": image_name,
+                    "base_addr": format!("{:#x}", m.base_addr),
+                    "name": m.name,
+                    "full_path": m.full_path,
+                    "in_load": m.in_load,
+                    "in_mem": m.in_mem,
+                    "in_init": m.in_init,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,base_addr,name,full_path,in_load,in_mem,in_init");
+            for (pid, image_name, m) in mods {
+                let escaped = m.full_path.replace('"', "\"\"");
+                println!(
+                    "{},{},{:#x},{},\"{}\",{},{},{}",
+                    pid, image_name, m.base_addr, m.name, escaped, m.in_load, m.in_mem, m.in_init
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Output formatters — Windows token privileges
 // ---------------------------------------------------------------------------
 
@@ -3076,12 +3191,7 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
                 } else {
                     t.user_sid.clone()
                 };
-                table.add_row(vec![
-                    format!("{}", t.pid),
-                    t.image_name.clone(),
-                    sid,
-                    privs,
-                ]);
+                table.add_row(vec![format!("{}", t.pid), t.image_name.clone(), sid, privs]);
             }
             println!("{table}");
             let elevated: Vec<_> = tokens
@@ -3112,12 +3222,19 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
             }
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,user_sid,privileges_enabled,privileges_present,privilege_names");
+            println!(
+                "pid,image_name,user_sid,privileges_enabled,privileges_present,privilege_names"
+            );
             for t in tokens {
                 let privs = t.privilege_names.join(";");
                 println!(
                     "{},{},{},{:#x},{:#x},\"{}\"",
-                    t.pid, t.image_name, t.user_sid, t.privileges_enabled, t.privileges_present, privs
+                    t.pid,
+                    t.image_name,
+                    t.user_sid,
+                    t.privileges_enabled,
+                    t.privileges_present,
+                    privs
                 );
             }
         }
@@ -3735,6 +3852,7 @@ mod tests {
             false, // psxview
             false, // tty
             false, // modules
+            false, // ldrmodules
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -3805,6 +3923,7 @@ mod tests {
             false,
             false,
             false, // psxview, tty, modules
+            false, // ldrmodules
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -3833,6 +3952,7 @@ mod tests {
             false,
             false,
             false, // malfind, psxview, tty, modules
+            false, // ldrmodules
             false, // raw_fallback
         );
         if let Err(e) = &result {

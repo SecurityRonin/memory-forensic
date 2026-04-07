@@ -101,8 +101,7 @@ pub fn walk_ldr_modules<P: PhysicalMemoryProvider>(
         )?;
         let mut bases = Vec::new();
         for addr in entries {
-            let base: u64 =
-                reader.read_field(addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+            let base: u64 = reader.read_field(addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
             if base != 0 {
                 bases.push(base);
             }
@@ -140,8 +139,7 @@ pub fn walk_ldr_modules<P: PhysicalMemoryProvider>(
     // Map DllBase → entry_addr from the InLoadOrder walk.
     let mut base_to_entry: BTreeMap<u64, u64> = BTreeMap::new();
     for addr in &load_entries {
-        let base: u64 =
-            reader.read_field(*addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+        let base: u64 = reader.read_field(*addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
         if base != 0 {
             base_to_entry.entry(base).or_insert(*addr);
         }
@@ -157,8 +155,7 @@ pub fn walk_ldr_modules<P: PhysicalMemoryProvider>(
         "InMemoryOrderLinks",
     )?;
     for addr in &mem_entries {
-        let base: u64 =
-            reader.read_field(*addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+        let base: u64 = reader.read_field(*addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
         if base != 0 {
             base_to_entry.entry(base).or_insert(*addr);
         }
@@ -608,8 +605,8 @@ mod tests {
         let init_head = ldr_vaddr + 48;
 
         // Entry addresses
-        let ea = vp2;         // entry A at page2 offset 0
-        let eb = vp2 + 256;   // entry B at page2 offset 256
+        let ea = vp2; // entry A at page2 offset 0
+        let eb = vp2 + 256; // entry B at page2 offset 256
 
         // --- InLoadOrderModuleList: head → A → B → head ---
         // head.Flink → entry_A + 0 (InLoadOrderLinks)
@@ -639,24 +636,38 @@ mod tests {
 
         // Entry A: all three lists → B, blink → head
         build_ldr_entry_full(
-            &mut p2, 0,
-            eb,             load_head,       // InLoadOrder: Flink→B, Blink→head
-            eb + 16,        mem_head,        // InMemoryOrder: Flink→B+16, Blink→head
-            eb + 32,        init_head,       // InInitOrder: Flink→B+32, Blink→head
-            0x7FF8_0000_0000, 0x001F_0000,
-            vp2 + 1024, fa_len,
-            vp2 + 1200, ba_len,
+            &mut p2,
+            0,
+            eb,
+            load_head, // InLoadOrder: Flink→B, Blink→head
+            eb + 16,
+            mem_head, // InMemoryOrder: Flink→B+16, Blink→head
+            eb + 32,
+            init_head, // InInitOrder: Flink→B+32, Blink→head
+            0x7FF8_0000_0000,
+            0x001F_0000,
+            vp2 + 1024,
+            fa_len,
+            vp2 + 1200,
+            ba_len,
         );
 
         // Entry B: all three lists → head, blink → A
         build_ldr_entry_full(
-            &mut p2, 256,
-            load_head,      ea,              // InLoadOrder: Flink→head, Blink→A
-            mem_head,       ea + 16,         // InMemoryOrder: Flink→head, Blink→A+16
-            init_head,      ea + 32,         // InInitOrder: Flink→head, Blink→A+32
-            0x7FF8_1000_0000, 0x0012_0000,
-            vp2 + 1400, fb_len,
-            vp2 + 1600, bb_len,
+            &mut p2,
+            256,
+            load_head,
+            ea, // InLoadOrder: Flink→head, Blink→A
+            mem_head,
+            ea + 16, // InMemoryOrder: Flink→head, Blink→A+16
+            init_head,
+            ea + 32, // InInitOrder: Flink→head, Blink→A+32
+            0x7FF8_1000_0000,
+            0x0012_0000,
+            vp2 + 1400,
+            fb_len,
+            vp2 + 1600,
+            bb_len,
         );
 
         let isf = IsfBuilder::windows_kernel_preset().build_json();
@@ -735,24 +746,38 @@ mod tests {
 
         // Entry A: in all three lists
         build_ldr_entry_full(
-            &mut p2, 0,
-            eb,             load_head,       // InLoadOrder → B → head
-            eb + 16,        mem_head,        // InMemoryOrder → B+16 → head
-            init_head,      init_head,       // InInitOrder → head (A is only entry, wraps)
-            0x7FF8_0000_0000, 0x001F_0000,
-            vp2 + 1024, fa_len,
-            vp2 + 1200, ba_len,
+            &mut p2,
+            0,
+            eb,
+            load_head, // InLoadOrder → B → head
+            eb + 16,
+            mem_head, // InMemoryOrder → B+16 → head
+            init_head,
+            init_head, // InInitOrder → head (A is only entry, wraps)
+            0x7FF8_0000_0000,
+            0x001F_0000,
+            vp2 + 1024,
+            fa_len,
+            vp2 + 1200,
+            ba_len,
         );
 
         // Entry B: in Load + Memory, but NOT in Init
         build_ldr_entry_full(
-            &mut p2, 256,
-            load_head,      ea,              // InLoadOrder → head
-            mem_head,       ea + 16,         // InMemoryOrder → head
-            0,              0,               // InInitOrder: zeroed (unlinked)
-            0x7FF8_DEAD_0000, 0x0001_0000,
-            vp2 + 1400, fb_len,
-            vp2 + 1600, bb_len,
+            &mut p2,
+            256,
+            load_head,
+            ea, // InLoadOrder → head
+            mem_head,
+            ea + 16, // InMemoryOrder → head
+            0,
+            0, // InInitOrder: zeroed (unlinked)
+            0x7FF8_DEAD_0000,
+            0x0001_0000,
+            vp2 + 1400,
+            fb_len,
+            vp2 + 1600,
+            bb_len,
         );
 
         let isf = IsfBuilder::windows_kernel_preset().build_json();

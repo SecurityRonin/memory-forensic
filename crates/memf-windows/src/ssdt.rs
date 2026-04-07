@@ -45,8 +45,8 @@ pub fn check_ssdt_hooks<P: PhysicalMemoryProvider>(
 
         // Decode: target = Base + (entry >> 4)
         let relative_offset = entry >> 4; // arithmetic shift preserves sign
-        // SSDT offsets are signed (can point before table base), so these
-        // casts through i64 are intentional and correct for kernel addresses.
+                                          // SSDT offsets are signed (can point before table base), so these
+                                          // casts through i64 are intentional and correct for kernel addresses.
         #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
         let target_addr = (base as i64).wrapping_add(i64::from(relative_offset)) as u64;
 

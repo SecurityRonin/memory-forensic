@@ -241,7 +241,12 @@ mod tests {
             .add_field("_LOCAL_ADDRESS", "pData", LA_PDATA as u64, "pointer")
             .add_struct("_EPROCESS", 2048)
             .add_field("_EPROCESS", "UniqueProcessId", EPROC_PID as u64, "pointer")
-            .add_field("_EPROCESS", "ImageFileName", EPROC_IMAGE_NAME as u64, "char")
+            .add_field(
+                "_EPROCESS",
+                "ImageFileName",
+                EPROC_IMAGE_NAME as u64,
+                "char",
+            )
             .add_struct("_LIST_ENTRY", 16)
             .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
             .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
@@ -474,9 +479,9 @@ mod tests {
         write_endpoint(
             &mut ep1_page,
             0,
-            ep2_hash,  // Flink -> ep2.HashEntry
-            bucket0,   // Blink -> bucket head
-            5,         // ESTABLISHED
+            ep2_hash, // Flink -> ep2.HashEntry
+            bucket0,  // Blink -> bucket head
+            5,        // ESTABLISHED
             8080,
             443,
             ai1_vaddr,
@@ -488,9 +493,9 @@ mod tests {
         write_endpoint(
             &mut ep2_page,
             0,
-            bucket0,   // Flink -> bucket head (end of chain)
-            ep1_hash,  // Blink -> ep1.HashEntry
-            2,         // LISTEN
+            bucket0,  // Flink -> bucket head (end of chain)
+            ep1_hash, // Blink -> ep1.HashEntry
+            2,        // LISTEN
             3389,
             0,
             ai2_vaddr,
@@ -597,7 +602,7 @@ mod tests {
             0,
             bucket0,
             bucket0,
-            5,    // ESTABLISHED
+            5, // ESTABLISHED
             12345,
             53,
             ai1_vaddr,

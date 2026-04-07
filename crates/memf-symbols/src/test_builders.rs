@@ -217,8 +217,18 @@ impl IsfBuilder {
             .add_field("_PEB_LDR_DATA", "Length", 0, "unsigned int")
             .add_field("_PEB_LDR_DATA", "Initialized", 4, "unsigned char")
             .add_field("_PEB_LDR_DATA", "InLoadOrderModuleList", 16, "_LIST_ENTRY")
-            .add_field("_PEB_LDR_DATA", "InMemoryOrderModuleList", 32, "_LIST_ENTRY")
-            .add_field("_PEB_LDR_DATA", "InInitializationOrderModuleList", 48, "_LIST_ENTRY")
+            .add_field(
+                "_PEB_LDR_DATA",
+                "InMemoryOrderModuleList",
+                32,
+                "_LIST_ENTRY",
+            )
+            .add_field(
+                "_PEB_LDR_DATA",
+                "InInitializationOrderModuleList",
+                48,
+                "_LIST_ENTRY",
+            )
             // _LDR_DATA_TABLE_ENTRY for DLL list entries
             .add_struct("_LDR_DATA_TABLE_ENTRY", 256)
             .add_field(

@@ -30,6 +30,20 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         self.symbols.as_ref()
     }
 
+    /// Create a new reader sharing the same physical memory and symbols but
+    /// using a different page table root (CR3). Useful for switching to a
+    /// process's user-mode address space.
+    pub fn with_cr3(&self, cr3: u64) -> Self
+    where
+        P: Clone,
+    {
+        let vas = VirtualAddressSpace::new(self.vas.physical().clone(), cr3, self.vas.mode());
+        Self {
+            vas,
+            symbols: self.symbols.clone_boxed(),
+        }
+    }
+
     /// Read a field from a struct at `base_vaddr` and interpret it as type `T`.
     ///
     /// Looks up the field offset from the symbol resolver, reads `size_of::<T>()`

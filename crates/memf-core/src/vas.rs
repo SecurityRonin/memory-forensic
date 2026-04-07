@@ -152,6 +152,11 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         &self.physical
     }
 
+    /// Return the translation mode.
+    pub fn mode(&self) -> TranslationMode {
+        self.mode
+    }
+
     fn read_pte(&self, addr: u64) -> Result<u64> {
         let mut buf = [0u8; 8];
         let n = self.physical.read_phys(addr, &mut buf)?;
