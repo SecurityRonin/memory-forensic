@@ -379,6 +379,25 @@ pub struct EnvVarInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Command line types
+// ---------------------------------------------------------------------------
+
+/// Process command line extracted from `mm_struct.arg_start`..`arg_end`.
+///
+/// The kernel stores argv as null-separated strings in the process's
+/// address space. This struct holds the reconstructed full command line
+/// with arguments joined by spaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CmdlineInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process name (`task_struct.comm`).
+    pub comm: String,
+    /// Full command line (argv entries joined with spaces).
+    pub cmdline: String,
+}
+
+// ---------------------------------------------------------------------------
 // Malfind types
 // ---------------------------------------------------------------------------
 

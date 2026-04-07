@@ -8,6 +8,7 @@
 pub mod bash;
 pub mod check_hooks;
 pub mod check_modules;
+pub mod cmdline;
 pub mod elfinfo;
 pub mod envvars;
 pub mod files;
