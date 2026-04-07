@@ -793,22 +793,32 @@ fn cmd_ps(
             }
 
             if dlls {
-                // TODO(GREEN): use all_process_mode to iterate all processes
-                // when --pid is not given instead of bailing.
-                let all_process_mode = pid_filter.is_none();
-                let pid = pid_filter
-                    .context("--dlls requires --pid to specify which process to list DLLs for")?;
-                let target = procs
-                    .iter()
-                    .find(|p| p.pid == pid)
-                    .with_context(|| format!("process with PID {pid} not found"))?;
-                if target.peb_addr == 0 {
-                    anyhow::bail!("process PID {pid} has no PEB (kernel process?)");
-                }
-                let dll_list = memf_windows::dll::walk_dlls(&reader, target.peb_addr)
-                    .with_context(|| format!("failed to walk DLLs for PID {pid}"))?;
                 println!();
-                print_libs(&dll_list, output);
+                if let Some(pid) = pid_filter {
+                    // Single-process mode: list DLLs for the specified PID.
+                    let target = procs
+                        .iter()
+                        .find(|p| p.pid == pid)
+                        .with_context(|| format!("process with PID {pid} not found"))?;
+                    if target.peb_addr == 0 {
+                        anyhow::bail!("process PID {pid} has no PEB (kernel process?)");
+                    }
+                    let dll_list = memf_windows::dll::walk_dlls(&reader, target.peb_addr)
+                        .with_context(|| format!("failed to walk DLLs for PID {pid}"))?;
+                    print_libs(None, &dll_list, output);
+                } else {
+                    // All-process mode: iterate every process with a valid PEB.
+                    for proc in &procs {
+                        if proc.peb_addr == 0 {
+                            continue;
+                        }
+                        if let Ok(dll_list) = memf_windows::dll::walk_dlls(&reader, proc.peb_addr) {
+                            if !dll_list.is_empty() {
+                                print_libs(Some((proc.pid, &proc.image_name)), &dll_list, output);
+                            }
+                        }
+                    }
+                }
             }
 
             if envvars {
@@ -1627,7 +1637,17 @@ fn print_threads(threads: &[memf_windows::WinThreadInfo], output: OutputFormat) 
 // Output formatters — libraries (DLLs, .so, dylibs)
 // ---------------------------------------------------------------------------
 
-fn print_libs(dlls: &[memf_windows::WinDllInfo], output: OutputFormat) {
+fn print_libs(
+    process_ctx: Option<(u64, &str)>,
+    dlls: &[memf_windows::WinDllInfo],
+    output: OutputFormat,
+) {
+    if let Some((pid, name)) = process_ctx {
+        match output {
+            OutputFormat::Table => println!("=== {name} (PID {pid}) ==="),
+            OutputFormat::Json | OutputFormat::Csv => {}
+        }
+    }
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -1643,28 +1663,43 @@ fn print_libs(dlls: &[memf_windows::WinDllInfo], output: OutputFormat) {
                 ]);
             }
             println!("{table}");
-            println!("\nTotal: {} DLLs", dlls.len());
+            println!("Total: {} DLLs\n", dlls.len());
         }
         OutputFormat::Json => {
             for d in dlls {
-                let json = serde_json::json!({
+                let mut json = serde_json::json!({
                     "name": d.name,
                     "base_addr": format!("{:#x}", d.base_addr),
                     "size": d.size,
                     "load_order": d.load_order,
                     "path": d.full_path,
                 });
+                if let Some((pid, name)) = process_ctx {
+                    json["pid"] = serde_json::json!(pid);
+                    json["image_name"] = serde_json::json!(name);
+                }
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("name,base_addr,size,load_order,path");
+            if process_ctx.is_some() {
+                println!("pid,image_name,name,base_addr,size,load_order,path");
+            } else {
+                println!("name,base_addr,size,load_order,path");
+            }
             for d in dlls {
                 let escaped = d.full_path.replace('"', "\"\"");
-                println!(
-                    "{},{:#x},{},{},\"{}\"",
-                    d.name, d.base_addr, d.size, d.load_order, escaped
-                );
+                if let Some((pid, name)) = process_ctx {
+                    println!(
+                        "{pid},{name},{},{:#x},{},{},\"{}\"",
+                        d.name, d.base_addr, d.size, d.load_order, escaped
+                    );
+                } else {
+                    println!(
+                        "{},{:#x},{},{},\"{}\"",
+                        d.name, d.base_addr, d.size, d.load_order, escaped
+                    );
+                }
             }
         }
     }
