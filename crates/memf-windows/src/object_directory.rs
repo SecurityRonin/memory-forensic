@@ -30,7 +30,36 @@ pub fn read_object_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     object_body_addr: u64,
 ) -> Result<String> {
-    todo!()
+    let body_offset = reader
+        .symbols()
+        .field_offset("_OBJECT_HEADER", "Body")
+        .ok_or_else(|| crate::Error::Walker("missing _OBJECT_HEADER.Body offset".into()))?;
+    let header_addr = object_body_addr.wrapping_sub(body_offset);
+
+    let info_mask: u8 = reader.read_field(header_addr, "_OBJECT_HEADER", "InfoMask")?;
+    if info_mask & 0x02 == 0 {
+        return Ok(String::new());
+    }
+
+    // Compute offset from _OBJECT_HEADER to _OBJECT_HEADER_NAME_INFO.
+    // Name info (bit 1) is pushed further back if creator info (bit 0) is present.
+    let mut name_info_dist = reader
+        .symbols()
+        .struct_size("_OBJECT_HEADER_NAME_INFO")
+        .ok_or_else(|| crate::Error::Walker("missing _OBJECT_HEADER_NAME_INFO size".into()))?;
+    if info_mask & 0x01 != 0 {
+        name_info_dist += CREATOR_INFO_SIZE;
+    }
+
+    let name_info_addr = header_addr.wrapping_sub(name_info_dist);
+    let name_offset = reader
+        .symbols()
+        .field_offset("_OBJECT_HEADER_NAME_INFO", "Name")
+        .ok_or_else(|| {
+            crate::Error::Walker("missing _OBJECT_HEADER_NAME_INFO.Name offset".into())
+        })?;
+
+    Ok(read_unicode_string(reader, name_info_addr.wrapping_add(name_offset)).unwrap_or_default())
 }
 
 /// Walk an `_OBJECT_DIRECTORY` hash table and return all entries.
@@ -41,7 +70,32 @@ pub fn walk_directory<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     dir_addr: u64,
 ) -> Result<Vec<(String, u64)>> {
-    todo!()
+    let bucket_bytes = reader.read_bytes(dir_addr, HASH_BUCKET_COUNT * 8)?;
+    let mut entries = Vec::new();
+
+    for bucket_idx in 0..HASH_BUCKET_COUNT {
+        let off = bucket_idx * 8;
+        let mut entry_ptr =
+            u64::from_le_bytes(bucket_bytes[off..off + 8].try_into().expect("8 bytes"));
+
+        let mut chain_len = 0;
+        while entry_ptr != 0 && chain_len < MAX_CHAIN_LENGTH {
+            let chain_link: u64 =
+                reader.read_field(entry_ptr, "_OBJECT_DIRECTORY_ENTRY", "ChainLink")?;
+            let object_body: u64 =
+                reader.read_field(entry_ptr, "_OBJECT_DIRECTORY_ENTRY", "Object")?;
+
+            if object_body != 0 {
+                let name = read_object_name(reader, object_body).unwrap_or_default();
+                entries.push((name, object_body));
+            }
+
+            entry_ptr = chain_link;
+            chain_len += 1;
+        }
+    }
+
+    Ok(entries)
 }
 
 /// Find `\Driver` within the root object directory and return all
@@ -54,7 +108,16 @@ pub fn walk_driver_objects<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     root_dir_addr: u64,
 ) -> Result<Vec<u64>> {
-    todo!()
+    let root_entries = walk_directory(reader, root_dir_addr)?;
+
+    for (name, body_addr) in &root_entries {
+        if name == "Driver" {
+            let driver_entries = walk_directory(reader, *body_addr)?;
+            return Ok(driver_entries.into_iter().map(|(_, addr)| addr).collect());
+        }
+    }
+
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -160,7 +223,7 @@ mod tests {
     fn read_name_no_info_returns_empty() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
-        let mut page = vec![0u8; 4096];
+        let page = vec![0u8; 4096];
 
         // Object header at offset 0x100 with InfoMask = 0 (no name info)
         // Body at 0x100 + 0x30 = 0x130
