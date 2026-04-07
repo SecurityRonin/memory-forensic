@@ -662,10 +662,7 @@ fn cmd_ps(
                     match memf_linux::thread::walk_threads(&reader, proc.vaddr, proc.pid) {
                         Ok(t) => all_threads.extend(t),
                         Err(e) => {
-                            eprintln!(
-                                "warning: failed to walk threads for PID {}: {e}",
-                                proc.pid
-                            );
+                            eprintln!("warning: failed to walk threads for PID {}: {e}", proc.pid);
                         }
                     }
                 }
@@ -871,7 +868,6 @@ fn cmd_net(
     }
     Ok(())
 }
-
 
 // ---------------------------------------------------------------------------
 // cmd_strings
@@ -2586,9 +2582,31 @@ fn cmd_check(
                 print_callbacks(&cbs, output);
             }
             if irp {
-                anyhow::bail!(
-                    "--irp requires _DRIVER_OBJECT enumeration via pool scanning (not yet implemented)"
-                );
+                let mod_list = ctx
+                    .ps_loaded_module_list
+                    .context("missing PsLoadedModuleList for IRP hook check")?;
+                let drivers = memf_windows::driver::walk_drivers(&reader, mod_list)
+                    .context("failed to walk Windows drivers for IRP hook check")?;
+                let root_dir_sym = reader
+                    .symbols()
+                    .symbol_address("ObpRootDirectoryObject")
+                    .context("missing ObpRootDirectoryObject symbol for IRP hook check")?;
+                let ptr_bytes = reader
+                    .read_bytes(root_dir_sym, 8)
+                    .context("failed to dereference ObpRootDirectoryObject")?;
+                let root_dir_ptr = u64::from_le_bytes(ptr_bytes[..8].try_into().unwrap());
+                let driver_addrs =
+                    memf_windows::object_directory::walk_driver_objects(&reader, root_dir_ptr)
+                        .context("failed to walk \\Driver object directory")?;
+                let mut all_hooks = Vec::new();
+                for &drv_addr in &driver_addrs {
+                    if let Ok(hooks) =
+                        memf_windows::driver::check_irp_hooks(&reader, drv_addr, &drivers)
+                    {
+                        all_hooks.extend(hooks);
+                    }
+                }
+                print_irp_hooks(&all_hooks, output);
             }
             if malfind {
                 let ps_head = ctx
@@ -2779,6 +2797,83 @@ fn print_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputForma
                 println!(
                     "{},{:#x},{},{}",
                     h.index,
+                    h.target_addr,
+                    h.target_module.as_deref().unwrap_or(""),
+                    h.suspicious
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — IRP dispatch hooks
+// ---------------------------------------------------------------------------
+
+fn print_irp_hooks(hooks: &[memf_windows::WinIrpHookInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let suspicious: Vec<_> = hooks.iter().filter(|h| h.suspicious).collect();
+            if suspicious.is_empty() {
+                println!(
+                    "\nIRP dispatch: {} entries checked across all drivers, no hooks detected.",
+                    hooks.len()
+                );
+            } else {
+                let mut table = Table::new();
+                table.load_preset(UTF8_FULL_CONDENSED);
+                table.set_header(vec![
+                    "Driver",
+                    "IRP Index",
+                    "IRP Name",
+                    "Target",
+                    "Module",
+                    "Suspicious",
+                ]);
+                for h in &suspicious {
+                    table.add_row(vec![
+                        h.driver_name.clone(),
+                        format!("{}", h.irp_index),
+                        h.irp_name.clone(),
+                        format!("{:#x}", h.target_addr),
+                        h.target_module
+                            .as_deref()
+                            .unwrap_or("<unknown>")
+                            .to_string(),
+                        "YES".to_string(),
+                    ]);
+                }
+                println!("{table}");
+                println!(
+                    "\nIRP dispatch: {} entries checked, {} suspicious hooks",
+                    hooks.len(),
+                    suspicious.len()
+                );
+            }
+        }
+        OutputFormat::Json => {
+            for h in hooks {
+                let json = serde_json::json!({
+                    "driver_name": h.driver_name,
+                    "driver_obj_addr": format!("{:#x}", h.driver_obj_addr),
+                    "irp_index": h.irp_index,
+                    "irp_name": h.irp_name,
+                    "target_addr": format!("{:#x}", h.target_addr),
+                    "target_module": h.target_module,
+                    "suspicious": h.suspicious,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("driver_name,driver_obj_addr,irp_index,irp_name,target_addr,target_module,suspicious");
+            for h in hooks {
+                println!(
+                    "{},{:#x},{},{},{:#x},{},{}",
+                    h.driver_name,
+                    h.driver_obj_addr,
+                    h.irp_index,
+                    h.irp_name,
                     h.target_addr,
                     h.target_module.as_deref().unwrap_or(""),
                     h.suspicious
