@@ -331,11 +331,26 @@ impl IsfBuilder {
             // _HANDLE_TABLE (per-process handle table)
             .add_struct("_HANDLE_TABLE", 256)
             .add_field("_HANDLE_TABLE", "TableCode", 0x08, "unsigned long")
-            .add_field("_HANDLE_TABLE", "NextHandleNeedingPool", 0x3C, "unsigned int")
+            .add_field(
+                "_HANDLE_TABLE",
+                "NextHandleNeedingPool",
+                0x3C,
+                "unsigned int",
+            )
             // _HANDLE_TABLE_ENTRY (16 bytes per handle slot)
             .add_struct("_HANDLE_TABLE_ENTRY", 16)
-            .add_field("_HANDLE_TABLE_ENTRY", "ObjectPointerBits", 0x0, "unsigned long")
-            .add_field("_HANDLE_TABLE_ENTRY", "GrantedAccessBits", 0x8, "unsigned int")
+            .add_field(
+                "_HANDLE_TABLE_ENTRY",
+                "ObjectPointerBits",
+                0x0,
+                "unsigned long",
+            )
+            .add_field(
+                "_HANDLE_TABLE_ENTRY",
+                "GrantedAccessBits",
+                0x8,
+                "unsigned int",
+            )
             // _OBJECT_HEADER (precedes every kernel object)
             .add_struct("_OBJECT_HEADER", 56)
             .add_field("_OBJECT_HEADER", "TypeIndex", 0x18, "unsigned char")
