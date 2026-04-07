@@ -18,11 +18,28 @@ use crate::{Result, WinTokenInfo};
 /// two bytes are zero, it displays as decimal (e.g. `5` for NT Authority);
 /// otherwise as `0x` hex.
 pub fn sid_to_string(
-    _revision: u8,
-    _identifier_authority: &[u8; 6],
-    _sub_authorities: &[u32],
+    revision: u8,
+    identifier_authority: &[u8; 6],
+    sub_authorities: &[u32],
 ) -> String {
-    todo!()
+    use std::fmt::Write;
+
+    let auth_value = u64::from(identifier_authority[0]) << 40
+        | u64::from(identifier_authority[1]) << 32
+        | u64::from(identifier_authority[2]) << 24
+        | u64::from(identifier_authority[3]) << 16
+        | u64::from(identifier_authority[4]) << 8
+        | u64::from(identifier_authority[5]);
+
+    let mut s = if auth_value >= 0x1_0000_0000 {
+        format!("S-{revision}-0x{auth_value:012X}")
+    } else {
+        format!("S-{revision}-{auth_value}")
+    };
+    for &sub in sub_authorities {
+        write!(s, "-{sub}").expect("write to String");
+    }
+    s
 }
 
 /// Read the user SID from a `_TOKEN` address.
@@ -54,8 +71,46 @@ fn read_user_sid<P: PhysicalMemoryProvider>(
         return String::new();
     }
 
-    // Read _SID fields and format
-    todo!()
+    // Read _SID.Revision (u8 at offset 0x0)
+    let Ok(rev_bytes) = reader.read_bytes(sid_ptr, 1) else {
+        return String::new();
+    };
+    let revision = rev_bytes[0];
+
+    // Read _SID.SubAuthorityCount (u8 at offset 0x1)
+    let Ok(count_bytes) = reader.read_bytes(sid_ptr + 1, 1) else {
+        return String::new();
+    };
+    let sub_count = count_bytes[0] as usize;
+
+    if sub_count > 15 {
+        // SID can have at most 15 sub-authorities
+        return String::new();
+    }
+
+    // Read _SID.IdentifierAuthority (6 bytes at offset 0x2)
+    let Ok(auth_bytes) = reader.read_bytes(sid_ptr + 2, 6) else {
+        return String::new();
+    };
+    let mut authority = [0u8; 6];
+    authority.copy_from_slice(&auth_bytes[..6]);
+
+    // Read _SID.SubAuthority array (sub_count × u32 at offset 0x8)
+    if sub_count == 0 {
+        return sid_to_string(revision, &authority, &[]);
+    }
+
+    let Ok(sub_bytes) = reader.read_bytes(sid_ptr + 8, sub_count * 4) else {
+        return String::new();
+    };
+    let sub_authorities: Vec<u32> = (0..sub_count)
+        .map(|i| {
+            let off = i * 4;
+            u32::from_le_bytes(sub_bytes[off..off + 4].try_into().expect("4 bytes"))
+        })
+        .collect();
+
+    sid_to_string(revision, &authority, &sub_authorities)
 }
 
 /// Well-known Windows privilege LUID values and their names.
@@ -322,7 +377,7 @@ mod tests {
     #[test]
     fn sid_to_string_high_authority_uses_hex() {
         // If top 2 bytes of authority are non-zero, display as 0x hex
-        let authority = [0u8, 1, 0, 0, 0, 0]; // value = 0x010000000000
+        let authority = [1u8, 0, 0, 0, 0, 0]; // value = 0x010000000000
         let sub_authorities = [42u32];
         assert_eq!(
             sid_to_string(1, &authority, &sub_authorities),
