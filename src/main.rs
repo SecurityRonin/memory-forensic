@@ -268,6 +268,10 @@ enum Commands {
         /// Optional kernel page table root (CR3) physical address (hex).
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
+
+        /// Filter by process ID.
+        #[arg(long)]
+        pid: Option<u64>,
     },
     /// Extract and classify strings from a memory dump or strings file.
     Strings {
@@ -425,6 +429,7 @@ fn main() -> Result<()> {
             symbols,
             output,
             cr3,
+            pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_handles(
@@ -432,6 +437,7 @@ fn main() -> Result<()> {
                 symbols.as_deref(),
                 output,
                 cr3,
+                pid,
                 resolved.is_extracted(),
             )
         }
@@ -2750,6 +2756,7 @@ fn cmd_handles(
     symbols_path: Option<&Path>,
     output: OutputFormat,
     cr3_override: Option<u64>,
+    pid_filter: Option<u64>,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -4123,6 +4130,7 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
+            None,  // pid
             false, // raw_fallback
         );
         if let Err(e) = &result {
