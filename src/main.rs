@@ -2855,11 +2855,76 @@ fn cmd_handles(
             print_file_descriptors(&fds, output);
         }
         OsProfile::Windows => {
-            anyhow::bail!("Windows handle table walking not yet implemented")
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead for handle walking")?;
+            let handles = memf_windows::handles::walk_handles(&reader, ps_head)
+                .context("failed to walk Windows handle tables")?;
+            print_handles(&handles, output);
         }
         OsProfile::MacOs => anyhow::bail!("macOS handle walking not yet supported"),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — handles
+// ---------------------------------------------------------------------------
+
+fn print_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                "PID",
+                "Process",
+                "Handle",
+                "Type",
+                "Object",
+                "GrantedAccess",
+            ]);
+            for h in handles {
+                table.add_row(vec![
+                    format!("{}", h.pid),
+                    h.image_name.clone(),
+                    format!("{:#x}", h.handle_value),
+                    h.object_type.clone(),
+                    format!("{:#018x}", h.object_addr),
+                    format!("{:#010x}", h.granted_access),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} handles", handles.len());
+        }
+        OutputFormat::Json => {
+            for h in handles {
+                let json = serde_json::json!({
+                    "pid": h.pid,
+                    "image_name": h.image_name,
+                    "handle_value": h.handle_value,
+                    "object_type": h.object_type,
+                    "object_addr": format!("{:#x}", h.object_addr),
+                    "granted_access": format!("{:#x}", h.granted_access),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,handle_value,object_type,object_addr,granted_access");
+            for h in handles {
+                println!(
+                    "{},{},{:#x},{},{:#x},{:#x}",
+                    h.pid,
+                    h.image_name,
+                    h.handle_value,
+                    h.object_type,
+                    h.object_addr,
+                    h.granted_access,
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
