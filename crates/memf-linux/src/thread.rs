@@ -7,19 +7,58 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, ThreadInfo};
+use crate::{Error, ProcessState, Result, ThreadInfo};
 
 /// Walk threads for a given process (thread group leader).
 ///
 /// Takes the virtual address of the leader `task_struct` and its `tgid`,
 /// then walks the `thread_group` list to enumerate all threads in the group.
-/// The leader itself is always included in the results.
+/// The leader itself is always included in the results. Results are sorted
+/// by TID.
 pub fn walk_threads<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _leader_task_addr: u64,
-    _tgid: u64,
+    reader: &ObjectReader<P>,
+    leader_task_addr: u64,
+    tgid: u64,
 ) -> Result<Vec<ThreadInfo>> {
-    todo!()
+    let mut threads = Vec::new();
+
+    // Always include the leader itself.
+    threads.push(read_thread_info(reader, leader_task_addr, tgid)?);
+
+    // Walk the thread_group list for additional threads.
+    let thread_group_offset = reader
+        .symbols()
+        .field_offset("task_struct", "thread_group")
+        .ok_or_else(|| Error::Walker("task_struct.thread_group field not found".into()))?;
+
+    let head_vaddr = leader_task_addr + thread_group_offset;
+    let sibling_addrs = reader.walk_list(head_vaddr, "task_struct", "thread_group")?;
+
+    for &task_addr in &sibling_addrs {
+        if let Ok(info) = read_thread_info(reader, task_addr, tgid) {
+            threads.push(info);
+        }
+    }
+
+    threads.sort_by_key(|t| t.tid);
+    Ok(threads)
+}
+
+fn read_thread_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    tgid: u64,
+) -> Result<ThreadInfo> {
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
+    let state: i64 = reader.read_field(task_addr, "task_struct", "state")?;
+    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
+
+    Ok(ThreadInfo {
+        tgid,
+        tid: u64::from(pid),
+        comm,
+        state: ProcessState::from_raw(state),
+    })
 }
 
 #[cfg(test)]
