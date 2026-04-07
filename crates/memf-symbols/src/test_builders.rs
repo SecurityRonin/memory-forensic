@@ -354,11 +354,24 @@ impl IsfBuilder {
             // _OBJECT_HEADER (precedes every kernel object)
             .add_struct("_OBJECT_HEADER", 56)
             .add_field("_OBJECT_HEADER", "TypeIndex", 0x18, "unsigned char")
+            .add_field("_OBJECT_HEADER", "InfoMask", 0x1a, "unsigned char")
             .add_field("_OBJECT_HEADER", "Body", 0x30, "unsigned char")
             // _OBJECT_TYPE (kernel object type descriptor)
             .add_struct("_OBJECT_TYPE", 216)
             .add_field("_OBJECT_TYPE", "Name", 0x10, "_UNICODE_STRING")
             .add_field("_OBJECT_TYPE", "Index", 0xC8, "unsigned char")
+            // _OBJECT_DIRECTORY (kernel namespace directory, 37-bucket hash table)
+            .add_struct("_OBJECT_DIRECTORY", 336)
+            .add_field("_OBJECT_DIRECTORY", "HashBuckets", 0, "pointer")
+            // _OBJECT_DIRECTORY_ENTRY (hash bucket chain entry)
+            .add_struct("_OBJECT_DIRECTORY_ENTRY", 24)
+            .add_field("_OBJECT_DIRECTORY_ENTRY", "ChainLink", 0, "pointer")
+            .add_field("_OBJECT_DIRECTORY_ENTRY", "Object", 8, "pointer")
+            .add_field("_OBJECT_DIRECTORY_ENTRY", "HashValue", 0x10, "unsigned int")
+            // _OBJECT_HEADER_NAME_INFO (optional header with object name)
+            .add_struct("_OBJECT_HEADER_NAME_INFO", 32)
+            .add_field("_OBJECT_HEADER_NAME_INFO", "Directory", 0, "pointer")
+            .add_field("_OBJECT_HEADER_NAME_INFO", "Name", 0x10, "_UNICODE_STRING")
             // Kernel symbols
             .add_symbol("ObTypeIndexTable", 0xFFFFF805_5A490000)
             .add_symbol("PsActiveProcessHead", 0xFFFFF805_5A400000)
@@ -370,6 +383,7 @@ impl IsfBuilder {
             .add_symbol("PspCreateProcessNotifyRoutine", 0xFFFFF805_5A460000)
             .add_symbol("PspCreateThreadNotifyRoutine", 0xFFFFF805_5A470000)
             .add_symbol("PspLoadImageNotifyRoutine", 0xFFFFF805_5A480000)
+            .add_symbol("ObpRootDirectoryObject", 0xFFFFF805_5A4A0000)
     }
 
     /// Build a minimal ISF JSON for Linux process walking tests.

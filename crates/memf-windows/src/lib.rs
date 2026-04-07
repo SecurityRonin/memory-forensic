@@ -13,6 +13,7 @@ pub mod envvars;
 pub mod handles;
 pub mod hollowing;
 pub mod network;
+pub mod object_directory;
 pub mod process;
 pub mod ssdt;
 pub mod thread;
