@@ -19,7 +19,33 @@ const MAX_ARG_SIZE: u64 = 256 * 1024;
 pub fn walk_cmdlines<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<CmdlineInfo>> {
-    todo!()
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut cmdlines = Vec::new();
+
+    // Include init_task itself
+    if let Ok(info) = walk_process_cmdline(reader, init_task_addr) {
+        cmdlines.push(info);
+    }
+
+    for &task_addr in &task_addrs {
+        if let Ok(info) = walk_process_cmdline(reader, task_addr) {
+            cmdlines.push(info);
+        }
+    }
+
+    Ok(cmdlines)
 }
 
 /// Read command line for a single process.
@@ -27,12 +53,50 @@ pub fn walk_process_cmdline<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     task_addr: u64,
 ) -> Result<CmdlineInfo> {
-    todo!()
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
+    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
+    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
+
+    if mm_ptr == 0 {
+        return Err(Error::Walker(format!(
+            "task {comm} (PID {pid}) has NULL mm (kernel thread)"
+        )));
+    }
+
+    let arg_start: u64 = reader.read_field(mm_ptr, "mm_struct", "arg_start")?;
+    let arg_end: u64 = reader.read_field(mm_ptr, "mm_struct", "arg_end")?;
+
+    if arg_start == 0 || arg_end <= arg_start {
+        return Ok(CmdlineInfo {
+            pid: u64::from(pid),
+            comm,
+            cmdline: String::new(),
+        });
+    }
+
+    let size = (arg_end - arg_start).min(MAX_ARG_SIZE);
+    let data = reader.read_bytes(arg_start, size as usize)?;
+
+    Ok(CmdlineInfo {
+        pid: u64::from(pid),
+        comm,
+        cmdline: parse_arg_region(&data),
+    })
 }
 
 /// Parse null-separated argv entries into a single space-joined string.
 fn parse_arg_region(data: &[u8]) -> String {
-    todo!()
+    let args: Vec<&str> = data
+        .split(|&b| b == 0)
+        .filter_map(|chunk| {
+            if chunk.is_empty() {
+                None
+            } else {
+                Some(std::str::from_utf8(chunk).unwrap_or_default())
+            }
+        })
+        .collect();
+    args.join(" ")
 }
 
 #[cfg(test)]
