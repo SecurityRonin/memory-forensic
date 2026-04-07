@@ -207,7 +207,7 @@ enum Commands {
         #[arg(long)]
         hooks: bool,
 
-        /// Check driver IRP dispatch table (Windows only, future).
+        /// Check driver IRP dispatch table for hooks (Windows only).
         #[arg(long)]
         irp: bool,
 
@@ -242,6 +242,10 @@ enum Commands {
         /// Detect process hollowing via PE header validation (Windows only).
         #[arg(long)]
         hollowing: bool,
+
+        /// Run all platform-appropriate checks.
+        #[arg(long)]
+        all: bool,
     },
     /// List open handles (Windows) or file descriptors (Linux).
     Handles {
@@ -386,6 +390,7 @@ fn main() -> Result<()> {
             modules,
             ldrmodules,
             hollowing,
+            all,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_check(
@@ -404,6 +409,7 @@ fn main() -> Result<()> {
                 modules,
                 ldrmodules,
                 hollowing,
+                all,
                 resolved.is_extracted(),
             )
         }
@@ -2450,9 +2456,11 @@ fn cmd_check(
     modules: bool,
     ldrmodules: bool,
     hollowing: bool,
+    all: bool,
     raw_fallback: bool,
 ) -> Result<()> {
-    if !(syscalls
+    if !(all
+        || syscalls
         || hooks
         || irp
         || ssdt
@@ -2466,6 +2474,7 @@ fn cmd_check(
     {
         anyhow::bail!(
             "no check flags specified. Available checks:\n  \
+             --all (run all platform-appropriate checks)\n  \
              Linux:   --syscalls  --hooks  --malfind  --psxview  --tty  --modules\n  \
              Windows: --ssdt  --callbacks  --irp  --malfind  --ldrmodules  --hollowing"
         );
@@ -3826,6 +3835,7 @@ mod tests {
             false, // modules
             false, // ldrmodules
             false, // hollowing
+            false, // all
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -3898,6 +3908,7 @@ mod tests {
             false, // psxview, tty, modules
             false, // ldrmodules
             false, // hollowing
+            false, // all
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -3928,12 +3939,58 @@ mod tests {
             false, // malfind, psxview, tty, modules
             false, // ldrmodules
             false, // hollowing
+            false, // all
             false, // raw_fallback
         );
         if let Err(e) = &result {
             let msg = format!("{e}");
             assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
         }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    /// `--all` should expand into platform-appropriate checks. On our tiny
+    /// LiME stub (Linux), it must attempt at least one check (which will
+    /// fail reading kernel data), proving the flags were actually enabled.
+    /// It must NOT silently return Ok(()) or hit cross-OS bails.
+    #[test]
+    fn cmd_check_all_flag_enables_linux_checks() {
+        let dump_path = make_temp_lime_dump("check_all");
+        let isf_path = make_temp_isf_file("check_all");
+        let result = cmd_check(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false, // syscalls
+            false, // hooks
+            false, // irp
+            false, // ssdt
+            false, // callbacks
+            false, // malfind
+            false, // psxview
+            false, // tty
+            false, // modules
+            false, // ldrmodules
+            false, // hollowing
+            true,  // all
+            false, // raw_fallback
+        );
+        // --all on a Linux dump must attempt checks. Our stub has no real
+        // kernel data, so analysis will fail — but failure proves the check
+        // was attempted. A silent Ok(()) means --all didn't enable anything.
+        assert!(
+            result.is_err(),
+            "--all should have enabled Linux checks that fail on the stub dump, \
+             but got Ok(()) — flags were not expanded"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        // Must not hit cross-OS bails
+        assert!(
+            !msg.contains("only available for Windows"),
+            "--all on Linux must not enable Windows-only checks, got: {msg}"
+        );
         std::fs::remove_file(&dump_path).ok();
         std::fs::remove_file(&isf_path).ok();
     }

@@ -88,9 +88,7 @@ mod tests {
     const TGID_OFF: usize = 64;
     const THREAD_GROUP_OFF: usize = 72;
 
-    fn build_reader_with_pages(
-        pages: &[(u64, u64, &[u8])],
-    ) -> ObjectReader<SyntheticPhysMem> {
+    fn build_reader_with_pages(pages: &[(u64, u64, &[u8])]) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::new()
             .add_struct("task_struct", 128)
             .add_field("task_struct", "pid", 0, "int")
