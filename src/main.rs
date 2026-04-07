@@ -635,9 +635,6 @@ fn cmd_ps(
             if dlls {
                 anyhow::bail!("--dlls is only supported for Windows dumps");
             }
-            if cmdline {
-                anyhow::bail!("--cmdline is only supported for Windows dumps");
-            }
             if vad {
                 anyhow::bail!("--vad is only supported for Windows dumps");
             }
@@ -674,6 +671,23 @@ fn cmd_ps(
                 }
                 println!();
                 print_linux_threads(&all_threads, output);
+            }
+
+            if cmdline {
+                let mut cmdlines = Vec::new();
+                for proc in &procs {
+                    if let Some(pid) = pid_filter {
+                        if proc.pid != pid {
+                            continue;
+                        }
+                    }
+                    match memf_linux::cmdline::walk_process_cmdline(&reader, proc.vaddr) {
+                        Ok(info) => cmdlines.push(info),
+                        Err(_) => {} // skip kernel threads / unreadable
+                    }
+                }
+                println!();
+                print_linux_cmdlines(&cmdlines, output);
             }
 
             if maps {
@@ -1341,6 +1355,45 @@ fn print_linux_pstree(entries: &[memf_linux::PsTreeEntry], output: OutputFormat)
                     "{},{},{},{},{}",
                     e.process.pid, e.process.ppid, e.process.state, e.process.comm, e.depth
                 );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Linux command lines
+// ---------------------------------------------------------------------------
+
+fn print_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Comm", "Command Line"]);
+            for c in cmdlines {
+                table.add_row(vec![
+                    format!("{}", c.pid),
+                    c.comm.clone(),
+                    c.cmdline.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} processes with command lines", cmdlines.len());
+        }
+        OutputFormat::Json => {
+            for c in cmdlines {
+                let json = serde_json::json!({
+                    "pid": c.pid,
+                    "comm": c.comm,
+                    "cmdline": c.cmdline,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,comm,cmdline");
+            for c in cmdlines {
+                println!("{},{},{}", c.pid, c.comm, c.cmdline);
             }
         }
     }
