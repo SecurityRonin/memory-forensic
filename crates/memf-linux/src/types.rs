@@ -242,6 +242,27 @@ pub struct ModuleInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Thread types
+// ---------------------------------------------------------------------------
+
+/// Information about a Linux thread extracted from `task_struct`.
+///
+/// In Linux, threads are `task_struct` entries linked via the `thread_group`
+/// list. Each thread has its own PID (acting as TID) while sharing the
+/// same `tgid` (thread group ID, i.e. the process PID).
+#[derive(Debug, Clone)]
+pub struct ThreadInfo {
+    /// Thread group ID (the process PID, from `task_struct.tgid`).
+    pub tgid: u64,
+    /// Thread ID (the thread's own PID, from `task_struct.pid`).
+    pub tid: u64,
+    /// Thread command name (`task_struct.comm`).
+    pub comm: String,
+    /// Thread state.
+    pub state: ProcessState,
+}
+
+// ---------------------------------------------------------------------------
 // VMA / memory map types
 // ---------------------------------------------------------------------------
 

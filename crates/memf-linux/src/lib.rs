@@ -20,6 +20,7 @@ pub mod network;
 pub mod process;
 pub mod psxview;
 pub mod syscalls;
+pub mod thread;
 pub mod tty_check;
 pub mod types;
 
