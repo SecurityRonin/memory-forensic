@@ -141,6 +141,10 @@ enum Commands {
         /// Recover bash command history from process heaps (Linux only).
         #[arg(long, name = "bash-history")]
         bash_history: bool,
+
+        /// Enable all platform-appropriate process sub-flags.
+        #[arg(long)]
+        all: bool,
     },
     /// List kernel modules/drivers and system-level artifacts.
     #[command(name = "sys", alias = "system")]
@@ -320,6 +324,7 @@ fn main() -> Result<()> {
             privileges,
             elfinfo,
             bash_history,
+            all,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_ps(
@@ -339,6 +344,7 @@ fn main() -> Result<()> {
                 privileges,
                 elfinfo,
                 bash_history,
+                all,
                 resolved.is_extracted(),
             )
         }
@@ -630,6 +636,7 @@ fn cmd_ps(
     privileges: bool,
     elfinfo: bool,
     bash_history: bool,
+    all: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -3418,24 +3425,64 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
+            false, // threads
+            None,  // pid
+            false, // tree
+            false, // masquerade
+            false, // dlls
+            false, // maps
+            false, // envvars
+            false, // cmdline
+            false, // vad
+            false, // privileges
+            false, // elfinfo
+            false, // bash_history
+            false, // all
+            false, // raw_fallback
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
         if let Err(e) = &result {
             let msg = format!("{e}");
             assert!(!msg.contains("CR3 auto-detection"), "got old bail: {msg}");
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    /// `ps --all` on a Linux dump must not trigger Windows-only bails
+    /// (e.g. "masquerade is only supported for Windows"). The compiler
+    /// warning `unused variable: all` in cmd_ps is the RED signal that
+    /// the parameter isn't yet wired into flag expansion.
+    #[test]
+    fn cmd_ps_all_flag_no_cross_os_bail() {
+        let dump_path = make_temp_lime_dump("ps_all");
+        let isf_path = make_temp_isf_file("ps_all");
+        let result = cmd_ps(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false, // threads
+            None,  // pid
+            false, // tree
+            false, // masquerade
+            false, // dlls
+            false, // maps
+            false, // envvars
+            false, // cmdline
+            false, // vad
+            false, // privileges
+            false, // elfinfo
+            false, // bash_history
+            true,  // all
+            false, // raw_fallback
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("only supported for Windows"),
+                "ps --all on Linux must not enable Windows-only flags, got: {msg}"
+            );
         }
         std::fs::remove_file(&dump_path).ok();
         std::fs::remove_file(&isf_path).ok();
