@@ -12,7 +12,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, WinHollowingInfo};
+use crate::{process, Result, WinHollowingInfo};
 
 /// Check all running processes for signs of process hollowing.
 ///
@@ -26,7 +26,72 @@ pub fn check_hollowing<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinHollowingInfo>> {
-    todo!()
+    let procs = process::walk_processes(reader, ps_head_vaddr)?;
+    let mut results = Vec::new();
+
+    for proc in &procs {
+        // Skip processes with no PEB (System, Idle, etc.)
+        if proc.peb_addr == 0 {
+            continue;
+        }
+
+        // Switch to process address space
+        let proc_reader = reader.with_cr3(proc.cr3);
+
+        // Read PEB.ImageBaseAddress
+        let image_base: u64 =
+            match proc_reader.read_field(proc.peb_addr, "_PEB", "ImageBaseAddress") {
+                Ok(v) => v,
+                Err(_) => continue, // PEB not readable (paged out)
+            };
+
+        if image_base == 0 {
+            continue;
+        }
+
+        // Read and validate PE header at ImageBaseAddress
+        let (has_mz, has_pe, pe_size_of_image) = read_pe_header(&proc_reader, image_base);
+
+        // Get LDR first module size for comparison
+        let ldr_size = ldr_first_image_size(&proc_reader, proc.peb_addr);
+
+        // Determine if suspicious
+        let mut suspicious = false;
+        let mut reasons = Vec::new();
+
+        if !has_mz {
+            suspicious = true;
+            reasons.push("no MZ header at ImageBaseAddress".to_string());
+        } else if !has_pe {
+            suspicious = true;
+            reasons.push("MZ present but PE signature invalid".to_string());
+        }
+
+        if has_mz && has_pe && ldr_size > 0 && u64::from(pe_size_of_image) != ldr_size {
+            suspicious = true;
+            reasons.push(format!(
+                "SizeOfImage mismatch: PE={pe_size_of_image:#x} vs LDR={ldr_size:#x}"
+            ));
+        }
+
+        results.push(WinHollowingInfo {
+            pid: proc.pid,
+            image_name: proc.image_name.clone(),
+            image_base,
+            has_mz,
+            has_pe,
+            pe_size_of_image,
+            ldr_size_of_image: ldr_size,
+            suspicious,
+            reason: if reasons.is_empty() {
+                String::new()
+            } else {
+                reasons.join("; ")
+            },
+        });
+    }
+
+    Ok(results)
 }
 
 /// Read and validate the PE header at the given virtual address.
@@ -37,18 +102,113 @@ fn read_pe_header<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     image_base: u64,
 ) -> (bool, bool, u32) {
-    todo!()
+    // Read first 512 bytes (enough for DOS header + PE header + optional header)
+    let Ok(header) = reader.read_bytes(image_base, 512) else {
+        return (false, false, 0);
+    };
+
+    // Check MZ magic (0x4D5A)
+    if header.len() < 2 || header[0] != 0x4D || header[1] != 0x5A {
+        return (false, false, 0);
+    }
+
+    // Read e_lfanew (PE header offset) at DOS header offset 0x3C
+    if header.len() < 0x40 {
+        return (true, false, 0);
+    }
+    let e_lfanew = u32::from_le_bytes([header[0x3C], header[0x3D], header[0x3E], header[0x3F]]);
+    let pe_off = e_lfanew as usize;
+
+    // Validate PE signature "PE\0\0"
+    if header.len() < pe_off + 4 {
+        // PE header is beyond our 512-byte read — try reading more
+        let Ok(extended) = reader.read_bytes(image_base + u64::from(e_lfanew), 128) else {
+            return (true, false, 0);
+        };
+        if extended.len() < 4
+            || extended[0] != b'P'
+            || extended[1] != b'E'
+            || extended[2] != 0
+            || extended[3] != 0
+        {
+            return (true, false, 0);
+        }
+        // Optional header starts at +24 from PE sig, SizeOfImage at +56 within optional
+        if extended.len() < 24 + 56 + 4 {
+            return (true, true, 0);
+        }
+        let soi = u32::from_le_bytes([extended[80], extended[81], extended[82], extended[83]]);
+        return (true, true, soi);
+    }
+
+    if header[pe_off] != b'P'
+        || header[pe_off + 1] != b'E'
+        || header[pe_off + 2] != 0
+        || header[pe_off + 3] != 0
+    {
+        return (true, false, 0);
+    }
+
+    // Optional header starts at pe_off + 24, SizeOfImage at optional + 56
+    let soi_off = pe_off + 24 + 56;
+    if header.len() < soi_off + 4 {
+        return (true, true, 0);
+    }
+    let size_of_image = u32::from_le_bytes([
+        header[soi_off],
+        header[soi_off + 1],
+        header[soi_off + 2],
+        header[soi_off + 3],
+    ]);
+
+    (true, true, size_of_image)
 }
 
 /// Get the image size from the first entry in `InLoadOrderModuleList`.
 ///
 /// The first entry typically represents the process's main executable.
 /// Returns 0 if the LDR data is unreadable.
-fn ldr_first_image_size<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    peb_addr: u64,
-) -> u64 {
-    todo!()
+fn ldr_first_image_size<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, peb_addr: u64) -> u64 {
+    // PEB.Ldr → _PEB_LDR_DATA
+    let ldr_addr: u64 = match reader.read_field(peb_addr, "_PEB", "Ldr") {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    if ldr_addr == 0 {
+        return 0;
+    }
+
+    // _PEB_LDR_DATA.InLoadOrderModuleList.Flink → first _LDR_DATA_TABLE_ENTRY
+    let Some(in_load_off) = reader
+        .symbols()
+        .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
+    else {
+        return 0;
+    };
+
+    let first_entry: u64 =
+        match reader.read_field(ldr_addr, "_PEB_LDR_DATA", "InLoadOrderModuleList") {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+
+    // Check if the list is empty (Flink points back to list head)
+    let list_head = ldr_addr + in_load_off;
+    if first_entry == 0 || first_entry == list_head {
+        return 0;
+    }
+
+    // The Flink points to the InLoadOrderLinks of the first entry,
+    // which IS the start of _LDR_DATA_TABLE_ENTRY (offset 0).
+    // _LDR_DATA_TABLE_ENTRY.SizeOfImage is at offset 64 (from the preset).
+    // Read it as u32 (it's an unsigned long).
+    let size_off = first_entry + 64; // SizeOfImage offset within _LDR_DATA_TABLE_ENTRY
+    match reader.read_bytes(size_off, 4) {
+        Ok(bytes) if bytes.len() == 4 => {
+            u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        }
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -82,7 +242,7 @@ mod tests {
         // PE32+ magic
         let opt_abs = pe_abs + 24;
         buf[opt_abs..opt_abs + 2].copy_from_slice(&0x020Bu16.to_le_bytes()); // PE32+
-        // SizeOfImage is at optional header offset 56
+                                                                             // SizeOfImage is at optional header offset 56
         buf[opt_abs + 56..opt_abs + 60].copy_from_slice(&size_of_image.to_le_bytes());
         size_of_image
     }
@@ -170,7 +330,7 @@ mod tests {
         // InLoadOrderLinks@0: circular back to PEB_LDR_DATA.InLoadOrderModuleList
         ldr_entry_data[0..8].copy_from_slice(&ldr_in_load_head.to_le_bytes()); // Flink
         ldr_entry_data[8..16].copy_from_slice(&ldr_in_load_head.to_le_bytes()); // Blink
-        // DllBase@48
+                                                                                // DllBase@48
         ldr_entry_data[48..56].copy_from_slice(&image_base_vaddr.to_le_bytes());
         // SizeOfImage@64 (as u32, but stored in u64 slot effectively — read 4 bytes)
         ldr_entry_data[64..68].copy_from_slice(&(ldr_size as u32).to_le_bytes());
@@ -202,10 +362,22 @@ mod tests {
             .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
             // User space mappings (process-specific via shared CR3 for simplicity)
             .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE | flags::USER)
-            .map_4k(image_base_vaddr, image_base_paddr, flags::WRITABLE | flags::USER)
+            .map_4k(
+                image_base_vaddr,
+                image_base_paddr,
+                flags::WRITABLE | flags::USER,
+            )
             .map_4k(ldr_vaddr, ldr_paddr, flags::WRITABLE | flags::USER)
-            .map_4k(ldr_entry_vaddr, ldr_entry_paddr, flags::WRITABLE | flags::USER)
-            .map_4k(ldr_strings_vaddr, ldr_strings_paddr, flags::WRITABLE | flags::USER)
+            .map_4k(
+                ldr_entry_vaddr,
+                ldr_entry_paddr,
+                flags::WRITABLE | flags::USER,
+            )
+            .map_4k(
+                ldr_strings_vaddr,
+                ldr_strings_paddr,
+                flags::WRITABLE | flags::USER,
+            )
             .write_phys(head_paddr, &head_data)
             .write_phys(eproc_paddr, &eproc_data[..4096])
             .write_phys(eproc_paddr + 0x1000, &eproc_data[4096..])
@@ -254,7 +426,10 @@ mod tests {
         assert!(results[0].has_mz, "should detect MZ header");
         assert!(results[0].has_pe, "should detect PE signature");
         assert_eq!(results[0].pe_size_of_image, size_of_image);
-        assert!(!results[0].suspicious, "legitimate process should not be flagged");
+        assert!(
+            !results[0].suspicious,
+            "legitimate process should not be flagged"
+        );
     }
 
     #[test]
@@ -287,7 +462,10 @@ mod tests {
         assert!(!results[0].has_mz, "zeroed memory should lack MZ");
         assert!(!results[0].has_pe, "zeroed memory should lack PE");
         assert!(results[0].suspicious, "hollowed process must be flagged");
-        assert!(results[0].reason.contains("MZ"), "reason should mention missing MZ");
+        assert!(
+            results[0].reason.contains("MZ"),
+            "reason should mention missing MZ"
+        );
     }
 
     #[test]
@@ -360,7 +538,7 @@ mod tests {
         eproc_data[0x30..0x38].copy_from_slice(&tl.to_le_bytes());
         eproc_data[0x38..0x40].copy_from_slice(&tl.to_le_bytes());
 
-        let (cr3, mut mem) = PageTableBuilder::new()
+        let (cr3, mem) = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
             .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
@@ -390,7 +568,7 @@ mod tests {
         let mut image_data = vec![0u8; 4096];
         image_data[0] = 0x4D; // 'M'
         image_data[1] = 0x5A; // 'Z'
-        // e_lfanew points to offset 0x80
+                              // e_lfanew points to offset 0x80
         image_data[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
         // But at 0x80 we have garbage, not "PE\0\0"
         image_data[0x80] = 0xFF;
