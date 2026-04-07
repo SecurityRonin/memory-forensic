@@ -49,7 +49,43 @@ pub fn walk_processes<P: PhysicalMemoryProvider>(
 /// Processes whose parent PID is 0 or whose parent is not in the list
 /// are treated as roots. Children are sorted by PID within each parent.
 pub fn build_pstree(procs: &[ProcessInfo]) -> Vec<PsTreeEntry> {
-    todo!()
+    use std::collections::{HashMap, HashSet};
+
+    let pid_set: HashSet<u64> = procs.iter().map(|p| p.pid).collect();
+    let mut children: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut roots = Vec::new();
+
+    for (i, proc) in procs.iter().enumerate() {
+        if proc.ppid == 0 || !pid_set.contains(&proc.ppid) {
+            roots.push(i);
+        } else {
+            children.entry(proc.ppid).or_default().push(i);
+        }
+    }
+
+    // Sort roots and children by PID for deterministic output
+    roots.sort_by_key(|&i| procs[i].pid);
+    for kids in children.values_mut() {
+        kids.sort_by_key(|&i| procs[i].pid);
+    }
+
+    // DFS walk
+    let mut result = Vec::with_capacity(procs.len());
+    let mut stack: Vec<(usize, u32)> = roots.into_iter().rev().map(|i| (i, 0)).collect();
+
+    while let Some((idx, depth)) = stack.pop() {
+        result.push(PsTreeEntry {
+            process: procs[idx].clone(),
+            depth,
+        });
+        if let Some(kids) = children.get(&procs[idx].pid) {
+            for &kid_idx in kids.iter().rev() {
+                stack.push((kid_idx, depth + 1));
+            }
+        }
+    }
+
+    result
 }
 
 fn read_process_info<P: PhysicalMemoryProvider>(
