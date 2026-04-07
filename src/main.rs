@@ -629,9 +629,6 @@ fn cmd_ps(
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
-            if tree {
-                anyhow::bail!("--tree is not yet supported for Linux dumps");
-            }
             if masquerade {
                 anyhow::bail!("--masquerade is only supported for Windows dumps");
             }
@@ -649,7 +646,13 @@ fn cmd_ps(
             }
             let procs = memf_linux::process::walk_processes(&reader)
                 .context("failed to walk Linux processes")?;
-            print_linux_processes(&procs, output);
+
+            if tree {
+                let tree_entries = memf_linux::process::build_pstree(&procs);
+                print_linux_pstree(&tree_entries, output);
+            } else {
+                print_linux_processes(&procs, output);
+            }
 
             if threads {
                 let mut all_threads = Vec::new();
@@ -1291,6 +1294,53 @@ fn print_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat)
             println!("tid,tgid,state,comm");
             for t in threads {
                 println!("{},{},{},{}", t.tid, t.tgid, t.state, t.comm);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — Linux process tree
+// ---------------------------------------------------------------------------
+
+fn print_linux_pstree(entries: &[memf_linux::PsTreeEntry], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "PPID", "State", "Comm"]);
+            for e in entries {
+                let indent = "  ".repeat(e.depth as usize);
+                let name = format!("{}{}", indent, e.process.comm);
+                table.add_row(vec![
+                    format!("{}", e.process.pid),
+                    format!("{}", e.process.ppid),
+                    format!("{}", e.process.state),
+                    name,
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} processes", entries.len());
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "pid": e.process.pid,
+                    "ppid": e.process.ppid,
+                    "state": format!("{}", e.process.state),
+                    "comm": e.process.comm,
+                    "depth": e.depth,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,ppid,state,comm,depth");
+            for e in entries {
+                println!(
+                    "{},{},{},{},{}",
+                    e.process.pid, e.process.ppid, e.process.state, e.process.comm, e.depth
+                );
             }
         }
     }
