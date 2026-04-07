@@ -94,7 +94,7 @@ enum Commands {
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
 
-        /// Also enumerate threads for each process (Windows only).
+        /// Also enumerate threads for each process.
         #[arg(long)]
         threads: bool,
 
@@ -122,7 +122,7 @@ enum Commands {
         #[arg(long)]
         envvars: bool,
 
-        /// Extract process command lines from PEB (Windows only).
+        /// Extract process command lines.
         #[arg(long)]
         cmdline: bool,
 
