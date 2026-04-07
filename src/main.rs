@@ -2483,6 +2483,14 @@ fn cmd_check(
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
+            // Expand --all into platform-appropriate flags
+            let syscalls = syscalls || all;
+            let hooks = hooks || all;
+            let malfind = malfind || all;
+            let psxview = psxview || all;
+            let tty = tty || all;
+            let modules = modules || all;
+
             // Cross-OS validation: bail on Windows-only checks
             if irp {
                 anyhow::bail!("--irp is only available for Windows memory dumps");
@@ -2531,6 +2539,14 @@ fn cmd_check(
             }
         }
         OsProfile::Windows => {
+            // Expand --all into platform-appropriate flags
+            let irp = irp || all;
+            let ssdt = ssdt || all;
+            let callbacks = callbacks || all;
+            let malfind = malfind || all;
+            let ldrmodules = ldrmodules || all;
+            let hollowing = hollowing || all;
+
             // Cross-OS validation: bail on Linux-only checks
             if syscalls {
                 anyhow::bail!("--syscalls is only available for Linux memory dumps");
