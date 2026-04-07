@@ -8,7 +8,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 use crate::unicode::read_unicode_string;
-use crate::{Error, Result, WinDllInfo};
+use crate::{Error, LdrModuleInfo, Result, WinDllInfo};
 
 /// Walk DLLs loaded in a process.
 ///
@@ -51,6 +51,21 @@ pub fn walk_dlls<P: PhysicalMemoryProvider>(
         .enumerate()
         .map(|(idx, entry_addr)| read_dll_info(reader, entry_addr, idx as u32))
         .collect()
+}
+
+/// Cross-reference all three PEB LDR module lists.
+///
+/// Walks `InLoadOrderModuleList`, `InMemoryOrderModuleList`, and
+/// `InInitializationOrderModuleList`, then merges results by `DllBase`.
+/// Each returned entry indicates which lists contained that module.
+///
+/// A module missing from one or more lists may indicate DLL unlinking
+/// (a technique used by malware to hide injected DLLs).
+pub fn walk_ldr_modules<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    peb_addr: u64,
+) -> Result<Vec<LdrModuleInfo>> {
+    todo!("walk_ldr_modules")
 }
 
 /// Read DLL info from a single `_LDR_DATA_TABLE_ENTRY`.
@@ -390,5 +405,273 @@ mod tests {
         assert_eq!(dlls[0].base_addr, 0x7FF8_2000_0000);
         assert_eq!(dlls[0].size, 0x0019_E000);
         assert_eq!(dlls[0].load_order, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // LdrModules cross-reference tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a _LDR_DATA_TABLE_ENTRY with all three link sets.
+    ///
+    /// Offsets within _LDR_DATA_TABLE_ENTRY:
+    ///   InLoadOrderLinks          @ 0  (Flink@0,  Blink@8)
+    ///   InMemoryOrderLinks        @ 16 (Flink@16, Blink@24)
+    ///   InInitializationOrderLinks@ 32 (Flink@32, Blink@40)
+    ///   DllBase                   @ 48
+    ///   SizeOfImage               @ 64
+    ///   FullDllName               @ 72
+    ///   BaseDllName               @ 88
+    #[allow(clippy::too_many_arguments)]
+    fn build_ldr_entry_full(
+        buf: &mut [u8],
+        off: usize,
+        load_flink: u64,
+        load_blink: u64,
+        mem_flink: u64,
+        mem_blink: u64,
+        init_flink: u64,
+        init_blink: u64,
+        dll_base: u64,
+        size_of_image: u32,
+        full_name_ptr: u64,
+        full_name_len: u16,
+        base_name_ptr: u64,
+        base_name_len: u16,
+    ) {
+        // InLoadOrderLinks (offset 0)
+        buf[off..off + 8].copy_from_slice(&load_flink.to_le_bytes());
+        buf[off + 8..off + 16].copy_from_slice(&load_blink.to_le_bytes());
+        // InMemoryOrderLinks (offset 16)
+        buf[off + 16..off + 24].copy_from_slice(&mem_flink.to_le_bytes());
+        buf[off + 24..off + 32].copy_from_slice(&mem_blink.to_le_bytes());
+        // InInitializationOrderLinks (offset 32)
+        buf[off + 32..off + 40].copy_from_slice(&init_flink.to_le_bytes());
+        buf[off + 40..off + 48].copy_from_slice(&init_blink.to_le_bytes());
+        // DllBase (offset 48)
+        buf[off + 48..off + 56].copy_from_slice(&dll_base.to_le_bytes());
+        // SizeOfImage (offset 64)
+        buf[off + 64..off + 68].copy_from_slice(&size_of_image.to_le_bytes());
+        // FullDllName (offset 72)
+        build_unicode_string_at(buf, off + 72, full_name_len, full_name_ptr);
+        // BaseDllName (offset 88)
+        build_unicode_string_at(buf, off + 88, base_name_len, base_name_ptr);
+    }
+
+    #[test]
+    fn ldr_modules_all_three_lists() {
+        // Two DLLs present in all three lists → in_load, in_mem, in_init all true.
+        let vp1 = 0xFFFF_8000_0000_0000u64; // PEB + LDR
+        let vp2 = 0xFFFF_8000_0000_1000u64; // entries + strings
+        let pp1 = 0x10_0000u64;
+        let pp2 = 0x11_0000u64;
+
+        let mut p1 = vec![0u8; 4096];
+        let mut p2 = vec![0u8; 4096];
+
+        let peb_vaddr = vp1;
+        let ldr_vaddr = vp1 + 2048;
+
+        // PEB.Ldr → ldr_vaddr
+        p1[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        // List heads within _PEB_LDR_DATA:
+        let load_head = ldr_vaddr + 16;
+        let mem_head = ldr_vaddr + 32;
+        let init_head = ldr_vaddr + 48;
+
+        // Entry addresses
+        let ea = vp2;         // entry A at page2 offset 0
+        let eb = vp2 + 256;   // entry B at page2 offset 256
+
+        // --- InLoadOrderModuleList: head → A → B → head ---
+        // head.Flink → entry_A + 0 (InLoadOrderLinks)
+        let ldr_off = 2048usize;
+        p1[ldr_off + 16..ldr_off + 24].copy_from_slice(&(ea).to_le_bytes());
+        p1[ldr_off + 24..ldr_off + 32].copy_from_slice(&(eb).to_le_bytes());
+
+        // --- InMemoryOrderModuleList: head → A → B → head ---
+        // head.Flink → entry_A + 16 (InMemoryOrderLinks)
+        p1[ldr_off + 32..ldr_off + 40].copy_from_slice(&(ea + 16).to_le_bytes());
+        p1[ldr_off + 40..ldr_off + 48].copy_from_slice(&(eb + 16).to_le_bytes());
+
+        // --- InInitializationOrderModuleList: head → A → B → head ---
+        // head.Flink → entry_A + 32 (InInitializationOrderLinks)
+        p1[ldr_off + 48..ldr_off + 56].copy_from_slice(&(ea + 32).to_le_bytes());
+        p1[ldr_off + 56..ldr_off + 64].copy_from_slice(&(eb + 32).to_le_bytes());
+
+        // Strings
+        let full_a = r"C:\Windows\System32\ntdll.dll";
+        let base_a = "ntdll.dll";
+        let full_b = r"C:\Windows\System32\kernel32.dll";
+        let base_b = "kernel32.dll";
+        let fa_len = place_utf16_string(&mut p2, 1024, full_a);
+        let ba_len = place_utf16_string(&mut p2, 1200, base_a);
+        let fb_len = place_utf16_string(&mut p2, 1400, full_b);
+        let bb_len = place_utf16_string(&mut p2, 1600, base_b);
+
+        // Entry A: all three lists → B, blink → head
+        build_ldr_entry_full(
+            &mut p2, 0,
+            eb,             load_head,       // InLoadOrder: Flink→B, Blink→head
+            eb + 16,        mem_head,        // InMemoryOrder: Flink→B+16, Blink→head
+            eb + 32,        init_head,       // InInitOrder: Flink→B+32, Blink→head
+            0x7FF8_0000_0000, 0x001F_0000,
+            vp2 + 1024, fa_len,
+            vp2 + 1200, ba_len,
+        );
+
+        // Entry B: all three lists → head, blink → A
+        build_ldr_entry_full(
+            &mut p2, 256,
+            load_head,      ea,              // InLoadOrder: Flink→head, Blink→A
+            mem_head,       ea + 16,         // InMemoryOrder: Flink→head, Blink→A+16
+            init_head,      ea + 32,         // InInitOrder: Flink→head, Blink→A+32
+            0x7FF8_1000_0000, 0x0012_0000,
+            vp2 + 1400, fb_len,
+            vp2 + 1600, bb_len,
+        );
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vp1, pp1, flags::WRITABLE)
+            .map_4k(vp2, pp2, flags::WRITABLE)
+            .write_phys(pp1, &p1)
+            .write_phys(pp2, &p2)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let mods = walk_ldr_modules(&reader, peb_vaddr).unwrap();
+        assert_eq!(mods.len(), 2);
+
+        let ntdll = mods.iter().find(|m| m.name == "ntdll.dll").unwrap();
+        assert_eq!(ntdll.base_addr, 0x7FF8_0000_0000);
+        assert!(ntdll.in_load);
+        assert!(ntdll.in_mem);
+        assert!(ntdll.in_init);
+
+        let k32 = mods.iter().find(|m| m.name == "kernel32.dll").unwrap();
+        assert_eq!(k32.base_addr, 0x7FF8_1000_0000);
+        assert!(k32.in_load);
+        assert!(k32.in_mem);
+        assert!(k32.in_init);
+    }
+
+    #[test]
+    fn ldr_modules_detects_unlinked_dll() {
+        // One DLL (B) is unlinked from InInitializationOrderModuleList.
+        // Expected: B.in_init = false, everything else = true.
+        let vp1 = 0xFFFF_8000_0000_0000u64;
+        let vp2 = 0xFFFF_8000_0000_1000u64;
+        let pp1 = 0x10_0000u64;
+        let pp2 = 0x11_0000u64;
+
+        let mut p1 = vec![0u8; 4096];
+        let mut p2 = vec![0u8; 4096];
+
+        let peb_vaddr = vp1;
+        let ldr_vaddr = vp1 + 2048;
+        p1[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        let load_head = ldr_vaddr + 16;
+        let mem_head = ldr_vaddr + 32;
+        let init_head = ldr_vaddr + 48;
+
+        let ea = vp2;
+        let eb = vp2 + 256;
+
+        let ldr_off = 2048usize;
+
+        // InLoadOrder: head → A → B → head (both present)
+        p1[ldr_off + 16..ldr_off + 24].copy_from_slice(&ea.to_le_bytes());
+        p1[ldr_off + 24..ldr_off + 32].copy_from_slice(&(eb).to_le_bytes());
+
+        // InMemoryOrder: head → A → B → head (both present)
+        p1[ldr_off + 32..ldr_off + 40].copy_from_slice(&(ea + 16).to_le_bytes());
+        p1[ldr_off + 40..ldr_off + 48].copy_from_slice(&(eb + 16).to_le_bytes());
+
+        // InInitializationOrder: head → A → head (B MISSING — unlinked)
+        p1[ldr_off + 48..ldr_off + 56].copy_from_slice(&(ea + 32).to_le_bytes());
+        p1[ldr_off + 56..ldr_off + 64].copy_from_slice(&(ea + 32).to_le_bytes());
+
+        // Strings
+        let full_a = r"C:\Windows\System32\ntdll.dll";
+        let base_a = "ntdll.dll";
+        let full_b = r"C:\evil\injected.dll";
+        let base_b = "injected.dll";
+        let fa_len = place_utf16_string(&mut p2, 1024, full_a);
+        let ba_len = place_utf16_string(&mut p2, 1200, base_a);
+        let fb_len = place_utf16_string(&mut p2, 1400, full_b);
+        let bb_len = place_utf16_string(&mut p2, 1600, base_b);
+
+        // Entry A: in all three lists
+        build_ldr_entry_full(
+            &mut p2, 0,
+            eb,             load_head,       // InLoadOrder → B → head
+            eb + 16,        mem_head,        // InMemoryOrder → B+16 → head
+            init_head,      init_head,       // InInitOrder → head (A is only entry, wraps)
+            0x7FF8_0000_0000, 0x001F_0000,
+            vp2 + 1024, fa_len,
+            vp2 + 1200, ba_len,
+        );
+
+        // Entry B: in Load + Memory, but NOT in Init
+        build_ldr_entry_full(
+            &mut p2, 256,
+            load_head,      ea,              // InLoadOrder → head
+            mem_head,       ea + 16,         // InMemoryOrder → head
+            0,              0,               // InInitOrder: zeroed (unlinked)
+            0x7FF8_DEAD_0000, 0x0001_0000,
+            vp2 + 1400, fb_len,
+            vp2 + 1600, bb_len,
+        );
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vp1, pp1, flags::WRITABLE)
+            .map_4k(vp2, pp2, flags::WRITABLE)
+            .write_phys(pp1, &p1)
+            .write_phys(pp2, &p2)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let mods = walk_ldr_modules(&reader, peb_vaddr).unwrap();
+        assert_eq!(mods.len(), 2);
+
+        let ntdll = mods.iter().find(|m| m.name == "ntdll.dll").unwrap();
+        assert!(ntdll.in_load);
+        assert!(ntdll.in_mem);
+        assert!(ntdll.in_init);
+
+        let injected = mods.iter().find(|m| m.name == "injected.dll").unwrap();
+        assert_eq!(injected.base_addr, 0x7FF8_DEAD_0000);
+        assert!(injected.in_load, "should be in InLoadOrder");
+        assert!(injected.in_mem, "should be in InMemoryOrder");
+        assert!(!injected.in_init, "should NOT be in InInitializationOrder");
+    }
+
+    #[test]
+    fn ldr_modules_null_ldr_returns_error() {
+        let vaddr = 0xFFFF_8000_0000_0000u64;
+        let paddr = 0x10_0000u64;
+
+        let mut page = vec![0u8; 4096];
+        page[0x18..0x20].copy_from_slice(&0u64.to_le_bytes()); // PEB.Ldr = 0
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_ldr_modules(&reader, vaddr);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Ldr"));
     }
 }

@@ -145,6 +145,27 @@ pub struct WinDllInfo {
     pub load_order: u32,
 }
 
+/// Cross-reference result from walking all three PEB LDR module lists.
+///
+/// Each boolean indicates whether the DLL was found in that particular list.
+/// A legitimate DLL is typically present in all three; absence from one or more
+/// lists suggests unlinking (a common DLL-hiding technique).
+#[derive(Debug, Clone)]
+pub struct LdrModuleInfo {
+    /// Base address where the DLL is loaded.
+    pub base_addr: u64,
+    /// Base name of the DLL (e.g. `ntdll.dll`).
+    pub name: String,
+    /// Full path to the DLL file.
+    pub full_path: String,
+    /// Present in `InLoadOrderModuleList`.
+    pub in_load: bool,
+    /// Present in `InMemoryOrderModuleList`.
+    pub in_mem: bool,
+    /// Present in `InInitializationOrderModuleList`.
+    pub in_init: bool,
+}
+
 /// Command line extracted from a Windows process's PEB.
 #[derive(Debug, Clone)]
 pub struct WinCmdlineInfo {
