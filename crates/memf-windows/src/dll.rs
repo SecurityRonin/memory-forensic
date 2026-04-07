@@ -61,11 +61,162 @@ pub fn walk_dlls<P: PhysicalMemoryProvider>(
 ///
 /// A module missing from one or more lists may indicate DLL unlinking
 /// (a technique used by malware to hide injected DLLs).
+#[allow(clippy::too_many_lines)]
 pub fn walk_ldr_modules<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     peb_addr: u64,
 ) -> Result<Vec<LdrModuleInfo>> {
-    todo!("walk_ldr_modules")
+    use std::collections::BTreeMap;
+
+    let ldr_addr: u64 = reader.read_field(peb_addr, "_PEB", "Ldr")?;
+    if ldr_addr == 0 {
+        return Err(Error::Walker("PEB.Ldr is NULL".into()));
+    }
+
+    // Resolve list head offsets within _PEB_LDR_DATA.
+    let load_head_off = reader
+        .symbols()
+        .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
+        .ok_or_else(|| Error::Walker("missing _PEB_LDR_DATA.InLoadOrderModuleList".into()))?;
+    let mem_head_off = reader
+        .symbols()
+        .field_offset("_PEB_LDR_DATA", "InMemoryOrderModuleList")
+        .ok_or_else(|| Error::Walker("missing _PEB_LDR_DATA.InMemoryOrderModuleList".into()))?;
+    let init_head_off = reader
+        .symbols()
+        .field_offset("_PEB_LDR_DATA", "InInitializationOrderModuleList")
+        .ok_or_else(|| {
+            Error::Walker("missing _PEB_LDR_DATA.InInitializationOrderModuleList".into())
+        })?;
+
+    // Walk each list, collecting (entry_addr → DllBase).
+    let walk_list = |head_off: u64, link_field: &str| -> Result<Vec<u64>> {
+        let head = ldr_addr.wrapping_add(head_off);
+        let entries = reader.walk_list_with(
+            head,
+            "_LIST_ENTRY",
+            "Flink",
+            "_LDR_DATA_TABLE_ENTRY",
+            link_field,
+        )?;
+        let mut bases = Vec::new();
+        for addr in entries {
+            let base: u64 =
+                reader.read_field(addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+            if base != 0 {
+                bases.push(base);
+            }
+        }
+        Ok(bases)
+    };
+
+    let load_bases = walk_list(load_head_off, "InLoadOrderLinks")?;
+    let mem_bases = walk_list(mem_head_off, "InMemoryOrderLinks")?;
+    let init_bases = walk_list(init_head_off, "InInitializationOrderLinks")?;
+
+    // Build a set of all unique DllBase values, keyed for stable ordering.
+    let mut all_bases: BTreeMap<u64, (bool, bool, bool)> = BTreeMap::new();
+    for &b in &load_bases {
+        all_bases.entry(b).or_insert((false, false, false)).0 = true;
+    }
+    for &b in &mem_bases {
+        all_bases.entry(b).or_insert((false, false, false)).1 = true;
+    }
+    for &b in &init_bases {
+        all_bases.entry(b).or_insert((false, false, false)).2 = true;
+    }
+
+    // For each unique base, read DLL name from the InLoadOrder list
+    // (the canonical source). We need the entry address, not just DllBase.
+    let load_head = ldr_addr.wrapping_add(load_head_off);
+    let load_entries = reader.walk_list_with(
+        load_head,
+        "_LIST_ENTRY",
+        "Flink",
+        "_LDR_DATA_TABLE_ENTRY",
+        "InLoadOrderLinks",
+    )?;
+
+    // Map DllBase → entry_addr from the InLoadOrder walk.
+    let mut base_to_entry: BTreeMap<u64, u64> = BTreeMap::new();
+    for addr in &load_entries {
+        let base: u64 =
+            reader.read_field(*addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+        if base != 0 {
+            base_to_entry.entry(base).or_insert(*addr);
+        }
+    }
+
+    // Also check InMemoryOrder for entries not in InLoadOrder.
+    let mem_head = ldr_addr.wrapping_add(mem_head_off);
+    let mem_entries = reader.walk_list_with(
+        mem_head,
+        "_LIST_ENTRY",
+        "Flink",
+        "_LDR_DATA_TABLE_ENTRY",
+        "InMemoryOrderLinks",
+    )?;
+    for addr in &mem_entries {
+        let base: u64 =
+            reader.read_field(*addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+        if base != 0 {
+            base_to_entry.entry(base).or_insert(*addr);
+        }
+    }
+
+    let mut results = Vec::new();
+    for (&base_addr, &(in_load, in_mem, in_init)) in &all_bases {
+        let (name, full_path) = if let Some(&entry_addr) = base_to_entry.get(&base_addr) {
+            let n = read_dll_name(reader, entry_addr).unwrap_or_default();
+            let f = read_dll_full_path(reader, entry_addr).unwrap_or_default();
+            (n, f)
+        } else {
+            (String::new(), String::new())
+        };
+
+        results.push(LdrModuleInfo {
+            base_addr,
+            name,
+            full_path,
+            in_load,
+            in_mem,
+            in_init,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Read the base DLL name from a `_LDR_DATA_TABLE_ENTRY`.
+fn read_dll_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    entry_addr: u64,
+) -> Result<String> {
+    let offset = reader
+        .symbols()
+        .field_offset("_LDR_DATA_TABLE_ENTRY", "BaseDllName")
+        .ok_or_else(|| {
+            Error::Core(memf_core::Error::MissingSymbol(
+                "_LDR_DATA_TABLE_ENTRY.BaseDllName".into(),
+            ))
+        })?;
+    read_unicode_string(reader, entry_addr.wrapping_add(offset))
+}
+
+/// Read the full DLL path from a `_LDR_DATA_TABLE_ENTRY`.
+fn read_dll_full_path<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    entry_addr: u64,
+) -> Result<String> {
+    let offset = reader
+        .symbols()
+        .field_offset("_LDR_DATA_TABLE_ENTRY", "FullDllName")
+        .ok_or_else(|| {
+            Error::Core(memf_core::Error::MissingSymbol(
+                "_LDR_DATA_TABLE_ENTRY.FullDllName".into(),
+            ))
+        })?;
+    read_unicode_string(reader, entry_addr.wrapping_add(offset))
 }
 
 /// Read DLL info from a single `_LDR_DATA_TABLE_ENTRY`.
@@ -74,34 +225,11 @@ fn read_dll_info<P: PhysicalMemoryProvider>(
     entry_addr: u64,
     load_order: u32,
 ) -> Result<WinDllInfo> {
-    // DllBase (pointer at offset 48)
     let base_addr: u64 = reader.read_field(entry_addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
-
-    // SizeOfImage (u32 at offset 64)
     let size_of_image: u32 =
         reader.read_field(entry_addr, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage")?;
-
-    // FullDllName (_UNICODE_STRING at offset 72)
-    let full_dll_name_offset = reader
-        .symbols()
-        .field_offset("_LDR_DATA_TABLE_ENTRY", "FullDllName")
-        .ok_or_else(|| {
-            Error::Core(memf_core::Error::MissingSymbol(
-                "_LDR_DATA_TABLE_ENTRY.FullDllName".into(),
-            ))
-        })?;
-    let full_path = read_unicode_string(reader, entry_addr.wrapping_add(full_dll_name_offset))?;
-
-    // BaseDllName (_UNICODE_STRING at offset 88)
-    let base_dll_name_offset = reader
-        .symbols()
-        .field_offset("_LDR_DATA_TABLE_ENTRY", "BaseDllName")
-        .ok_or_else(|| {
-            Error::Core(memf_core::Error::MissingSymbol(
-                "_LDR_DATA_TABLE_ENTRY.BaseDllName".into(),
-            ))
-        })?;
-    let name = read_unicode_string(reader, entry_addr.wrapping_add(base_dll_name_offset))?;
+    let full_path = read_dll_full_path(reader, entry_addr)?;
+    let name = read_dll_name(reader, entry_addr)?;
 
     Ok(WinDllInfo {
         name,
