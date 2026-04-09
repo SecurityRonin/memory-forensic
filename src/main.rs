@@ -199,6 +199,10 @@ enum Commands {
         /// Filter by process ID.
         #[arg(long)]
         pid: Option<u64>,
+
+        /// Show ARP cache entries (Linux only).
+        #[arg(long)]
+        arp: bool,
     },
     /// Run integrity and tampering detection checks.
     Check {
@@ -453,6 +457,7 @@ fn main() -> Result<()> {
             output,
             cr3,
             pid,
+            arp,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_net(
@@ -461,6 +466,7 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 pid,
+                arp,
                 resolved.is_extracted(),
             )
         }
@@ -1040,11 +1046,18 @@ fn cmd_net(
     output: OutputFormat,
     cr3_override: Option<u64>,
     pid_filter: Option<u64>,
+    show_arp: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
+            if show_arp {
+                let entries =
+                    memf_linux::arp::walk_arp_cache(&reader).context("failed to walk ARP cache")?;
+                print_arp_entries(&entries, output);
+                return Ok(());
+            }
             let mut conns = memf_linux::network::walk_connections(&reader)
                 .context("failed to walk Linux connections")?;
             if let Some(pid) = pid_filter {
@@ -1871,6 +1884,43 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
 // ---------------------------------------------------------------------------
 // Output formatters — connections
 // ---------------------------------------------------------------------------
+
+fn print_arp_entries(entries: &[memf_linux::ArpEntryInfo], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["IP Address", "MAC Address", "Device", "State"]);
+            for e in entries {
+                table.add_row(vec![
+                    &e.ip_addr,
+                    &e.mac_addr,
+                    &e.dev_name,
+                    &e.state.to_string(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} ARP entries", entries.len());
+        }
+        OutputFormat::Json => {
+            for e in entries {
+                let json = serde_json::json!({
+                    "ip_addr": e.ip_addr,
+                    "mac_addr": e.mac_addr,
+                    "dev_name": e.dev_name,
+                    "state": e.state.to_string(),
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("ip_addr,mac_addr,dev_name,state");
+            for e in entries {
+                println!("{},{},{},{}", e.ip_addr, e.mac_addr, e.dev_name, e.state);
+            }
+        }
+    }
+}
 
 fn print_connections(conns: &[memf_linux::ConnectionInfo], output: OutputFormat) {
     match output {
@@ -4714,7 +4764,8 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            None, // pid
+            None,  // pid
+            false, // show_arp
             false,
         );
         if let Err(e) = &result {

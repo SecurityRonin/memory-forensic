@@ -11,6 +11,7 @@ pub mod boot_time;
 pub mod check_hooks;
 pub mod check_modules;
 pub mod cmdline;
+pub mod crontab;
 pub mod elfinfo;
 pub mod envvars;
 pub mod files;
