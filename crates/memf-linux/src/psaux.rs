@@ -8,13 +8,21 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::Result;
+use std::collections::HashSet;
+
+use crate::{Error, Result};
 
 /// Linux `PF_KTHREAD` flag — set on kernel threads.
 const PF_KTHREAD: u64 = 0x0020_0000;
 
 /// Threshold for extremely large virtual memory size (100 GB).
 const VSIZE_ABUSE_THRESHOLD: u64 = 100 * 1024 * 1024 * 1024;
+
+/// Maximum number of processes to enumerate (safety bound).
+const MAX_PROCESSES: usize = 8192;
+
+/// x86_64 page size (4 KiB).
+const PAGE_SIZE: u64 = 4096;
 
 /// Detailed process information similar to `ps aux` output.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -103,9 +111,175 @@ pub fn classify_psaux(state: u64, uid: u32, flags: u64, vsize: u64) -> bool {
 /// Returns `Ok(Vec::new())` when the `init_task` symbol is not found
 /// (e.g., wrong profile or missing symbols).
 pub fn walk_psaux<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<PsAuxInfo>> {
-    todo!()
+    let init_task_addr = match reader.symbols().symbol_address("init_task") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Include init_task itself (it's the list head, not in walk results)
+    if let Ok(info) = read_psaux_info(reader, init_task_addr) {
+        seen.insert(init_task_addr);
+        results.push(info);
+    }
+
+    for &task_addr in &task_addrs {
+        if results.len() >= MAX_PROCESSES {
+            break;
+        }
+        if !seen.insert(task_addr) {
+            // Cycle detected
+            break;
+        }
+        if let Ok(info) = read_psaux_info(reader, task_addr) {
+            results.push(info);
+        }
+    }
+
+    results.sort_by_key(|p| p.pid);
+    Ok(results)
+}
+
+/// Read detailed process info from a single `task_struct`.
+fn read_psaux_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Result<PsAuxInfo> {
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
+    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
+
+    // State — read as u64 to handle both `long` and `unsigned long` layouts.
+    let state: u64 = reader
+        .read_field::<i64>(task_addr, "task_struct", "state")
+        .map(|v| v as u64)
+        .unwrap_or(0);
+
+    let ppid = read_parent_pid(reader, task_addr).unwrap_or(0);
+
+    // Credentials (uid, gid) from task_struct.cred pointer
+    let (uid, gid) = read_cred_ids(reader, task_addr).unwrap_or((0, 0));
+
+    // Nice value: static_prio - 120
+    let nice: i32 = reader
+        .read_field::<i32>(task_addr, "task_struct", "static_prio")
+        .map(|prio| prio - 120)
+        .unwrap_or(0);
+
+    // Flags
+    let flags: u64 = reader
+        .read_field::<u32>(task_addr, "task_struct", "flags")
+        .map(u64::from)
+        .unwrap_or(0);
+
+    // Virtual memory size and RSS from mm_struct
+    let (vsize, rss) = read_mm_stats(reader, task_addr).unwrap_or((0, 0));
+
+    // TTY name from signal->tty
+    let tty = read_tty_name(reader, task_addr).unwrap_or_default();
+
+    // Start time
+    let start_time: u64 = reader
+        .read_field(task_addr, "task_struct", "real_start_time")
+        .or_else(|_| reader.read_field(task_addr, "task_struct", "start_time"))
+        .unwrap_or(0);
+
+    let state_name = task_state_name(state);
+    let is_suspicious = classify_psaux(state, uid, flags, vsize);
+
+    Ok(PsAuxInfo {
+        pid,
+        ppid,
+        uid,
+        gid,
+        comm,
+        state: state_name,
+        nice,
+        vsize,
+        rss,
+        tty,
+        start_time,
+        flags,
+        is_suspicious,
+    })
+}
+
+/// Read parent PID by following `task_struct.real_parent`.
+fn read_parent_pid<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Result<u32> {
+    let parent_ptr: u64 = reader.read_field(task_addr, "task_struct", "real_parent")?;
+    if parent_ptr == 0 {
+        return Ok(0);
+    }
+    let ppid: u32 = reader.read_field(parent_ptr, "task_struct", "pid")?;
+    Ok(ppid)
+}
+
+/// Read UID and GID from the `cred` structure pointed to by `task_struct.cred`.
+fn read_cred_ids<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Result<(u32, u32)> {
+    let cred_ptr: u64 = reader.read_field(task_addr, "task_struct", "cred")?;
+    if cred_ptr == 0 {
+        return Ok((0, 0));
+    }
+    let uid: u32 = reader.read_field(cred_ptr, "cred", "uid").unwrap_or(0);
+    let gid: u32 = reader.read_field(cred_ptr, "cred", "gid").unwrap_or(0);
+    Ok((uid, gid))
+}
+
+/// Read virtual memory size and RSS from `task_struct.mm`.
+fn read_mm_stats<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Result<(u64, u64)> {
+    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
+    if mm_ptr == 0 {
+        // Kernel thread — no mm
+        return Ok((0, 0));
+    }
+    let total_vm: u64 = reader
+        .read_field::<u64>(mm_ptr, "mm_struct", "total_vm")
+        .unwrap_or(0);
+    let rss: u64 = reader
+        .read_field::<u64>(mm_ptr, "mm_struct", "rss_stat")
+        .unwrap_or(0);
+    Ok((total_vm * PAGE_SIZE, rss))
+}
+
+/// Read the controlling TTY name from `task_struct.signal->tty`.
+fn read_tty_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Result<String> {
+    let signal_ptr: u64 = reader.read_field(task_addr, "task_struct", "signal")?;
+    if signal_ptr == 0 {
+        return Ok(String::new());
+    }
+    let tty_ptr: u64 = reader
+        .read_field(signal_ptr, "signal_struct", "tty")
+        .unwrap_or(0);
+    if tty_ptr == 0 {
+        return Ok(String::new());
+    }
+    let name = reader
+        .read_field_string(tty_ptr, "tty_struct", "name", 64)
+        .unwrap_or_default();
+    Ok(name)
 }
 
 #[cfg(test)]
