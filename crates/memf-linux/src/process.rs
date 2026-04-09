@@ -98,6 +98,12 @@ fn read_process_info<P: PhysicalMemoryProvider>(
     let ppid = read_parent_pid(reader, task_addr).unwrap_or(0);
     let cr3 = read_cr3(reader, task_addr).ok();
 
+    // Try start_time first, then real_start_time (renamed in newer kernels).
+    let start_time: u64 = reader
+        .read_field(task_addr, "task_struct", "start_time")
+        .or_else(|_| reader.read_field(task_addr, "task_struct", "real_start_time"))
+        .unwrap_or(0);
+
     Ok(ProcessInfo {
         pid: u64::from(pid),
         ppid,
@@ -105,7 +111,7 @@ fn read_process_info<P: PhysicalMemoryProvider>(
         state: ProcessState::from_raw(state),
         vaddr: task_addr,
         cr3,
-        start_time: 0, // TODO: extract from task_struct
+        start_time,
     })
 }
 
