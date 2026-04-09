@@ -17,6 +17,7 @@ pub mod direct_syscalls;
 pub mod dll;
 pub mod dns_cache;
 pub mod driver;
+pub mod driver_irp;
 pub mod envvars;
 pub mod etw;
 pub mod evtx;
