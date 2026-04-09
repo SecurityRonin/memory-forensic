@@ -38,6 +38,7 @@ pub mod shellbags;
 pub mod shimcache;
 pub mod ssdt;
 pub mod thread;
+pub mod timers;
 pub mod token;
 pub mod types;
 pub mod unicode;
