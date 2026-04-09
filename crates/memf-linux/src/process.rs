@@ -98,10 +98,12 @@ fn read_process_info<P: PhysicalMemoryProvider>(
     let ppid = read_parent_pid(reader, task_addr).unwrap_or(0);
     let cr3 = read_cr3(reader, task_addr).ok();
 
-    // Try start_time first, then real_start_time (renamed in newer kernels).
+    // Prefer real_start_time (CLOCK_BOOTTIME, includes suspend) for DFIR
+    // timeline accuracy. Fall back to start_time (CLOCK_MONOTONIC) on older
+    // kernels where real_start_time doesn't exist.
     let start_time: u64 = reader
-        .read_field(task_addr, "task_struct", "start_time")
-        .or_else(|_| reader.read_field(task_addr, "task_struct", "real_start_time"))
+        .read_field(task_addr, "task_struct", "real_start_time")
+        .or_else(|_| reader.read_field(task_addr, "task_struct", "start_time"))
         .unwrap_or(0);
 
     Ok(ProcessInfo {
