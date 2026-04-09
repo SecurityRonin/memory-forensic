@@ -16,6 +16,9 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::process;
+use crate::unicode::read_unicode_string;
+
 /// A single command extracted from a console history buffer.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConsoleHistoryInfo {
@@ -82,6 +85,18 @@ pub fn classify_console_command(command: &str) -> bool {
     false
 }
 
+/// Console host process names to search for.
+const CONSOLE_HOST_NAMES: &[&str] = &["conhost.exe", "csrss.exe"];
+
+/// Maximum number of command history entries per console (safety limit).
+const MAX_HISTORY_ENTRIES: usize = 4096;
+
+/// Maximum number of commands per history buffer (safety limit).
+const MAX_COMMANDS_PER_HISTORY: usize = 4096;
+
+/// Scan window size for _CONSOLE_INFORMATION signature search (bytes).
+const SCAN_WINDOW_SIZE: usize = 512 * 1024; // 512 KB
+
 /// Walk console command history from `conhost.exe` / `csrss.exe` memory.
 ///
 /// Finds console host processes, locates `_CONSOLE_INFORMATION` structures,
@@ -93,7 +108,347 @@ pub fn classify_console_command(command: &str) -> bool {
 pub fn walk_consoles<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<ConsoleHistoryInfo>> {
-    todo!()
+    // Resolve PsActiveProcessHead; graceful degradation if missing.
+    let ps_head = match reader.symbols().symbol_address("PsActiveProcessHead") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    // Walk process list.
+    let procs = match process::walk_processes(reader, ps_head) {
+        Ok(p) => p,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut results = Vec::new();
+
+    for proc in &procs {
+        let name_lower = proc.image_name.to_ascii_lowercase();
+        if !CONSOLE_HOST_NAMES.contains(&name_lower.as_str()) {
+            continue;
+        }
+
+        // Skip kernel processes with no valid address space.
+        if proc.cr3 == 0 || proc.peb_addr == 0 {
+            continue;
+        }
+
+        // Switch to the console host process's address space.
+        let proc_reader = reader.with_cr3(proc.cr3);
+
+        // Extract commands from this console host process.
+        let pid = proc.pid as u32;
+        let proc_name = proc.image_name.clone();
+
+        if let Ok(commands) = extract_console_commands(&proc_reader, pid, &proc_name, proc.peb_addr) {
+            results.extend(commands);
+        }
+    }
+
+    Ok(results)
+}
+
+/// Extract console commands from a single console host process.
+///
+/// Scans the process heap region for `_CONSOLE_INFORMATION` signature,
+/// then walks `HistoryList` to find `_COMMAND_HISTORY` entries and their
+/// command buffers.
+fn extract_console_commands<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    pid: u32,
+    process_name: &str,
+    peb_addr: u64,
+) -> crate::Result<Vec<ConsoleHistoryInfo>> {
+    // Try to resolve console-specific structure offsets.
+    // _CONSOLE_INFORMATION.HistoryList is a _LIST_ENTRY pointing to
+    // _COMMAND_HISTORY entries.
+    let hist_list_off = reader
+        .symbols()
+        .field_offset("_CONSOLE_INFORMATION", "HistoryList")
+        .unwrap_or(0x40);
+
+    let cmd_hist_app_off = reader
+        .symbols()
+        .field_offset("_COMMAND_HISTORY", "Application")
+        .unwrap_or(0x10);
+
+    let cmd_hist_count_off = reader
+        .symbols()
+        .field_offset("_COMMAND_HISTORY", "CommandCount")
+        .unwrap_or(0x20);
+
+    let cmd_hist_buf_off = reader
+        .symbols()
+        .field_offset("_COMMAND_HISTORY", "CommandBucket")
+        .unwrap_or(0x28);
+
+    let cmd_hist_list_off = reader
+        .symbols()
+        .field_offset("_COMMAND_HISTORY", "ListEntry")
+        .unwrap_or(0x00);
+
+    let cmd_entry_size_off = reader
+        .symbols()
+        .field_offset("_COMMAND", "CommandLength")
+        .unwrap_or(0x00);
+
+    let cmd_entry_data_off = reader
+        .symbols()
+        .field_offset("_COMMAND", "Command")
+        .unwrap_or(0x08);
+
+    // Locate the console information block by scanning the PEB heap area.
+    // Read from PEB to find ProcessHeap, then scan for the console info
+    // signature. On failure, try a broader scan approach.
+    if peb_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Try to read ProcessHeap from PEB.
+    let heap_addr: u64 = reader
+        .read_field(peb_addr, "_PEB", "ProcessHeap")
+        .unwrap_or(0);
+
+    if heap_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Scan the heap region for _CONSOLE_INFORMATION structures.
+    // The signature approach: look for a region that has a valid
+    // HistoryList (Flink/Blink both non-null and self-consistent).
+    let console_infos = scan_for_console_info(reader, heap_addr, hist_list_off);
+
+    let mut results = Vec::new();
+
+    for console_addr in console_infos {
+        // Walk the HistoryList doubly-linked list.
+        let history_list_head = console_addr.wrapping_add(hist_list_off);
+
+        let history_entries = walk_history_list(
+            reader,
+            history_list_head,
+            cmd_hist_list_off,
+        );
+
+        for hist_addr in history_entries {
+            // Read ApplicationName (_UNICODE_STRING).
+            let app_name = read_unicode_string(reader, hist_addr.wrapping_add(cmd_hist_app_off))
+                .unwrap_or_default();
+
+            // Read command count.
+            let cmd_count_raw: u32 = reader
+                .read_field(hist_addr, "_COMMAND_HISTORY", "CommandCount")
+                .unwrap_or_else(|_| {
+                    read_u32(reader, hist_addr.wrapping_add(cmd_hist_count_off))
+                });
+            let cmd_count = (cmd_count_raw as usize).min(MAX_COMMANDS_PER_HISTORY);
+
+            // Read pointer to command bucket (array of pointers to _COMMAND).
+            let bucket_ptr: u64 = reader
+                .read_field(hist_addr, "_COMMAND_HISTORY", "CommandBucket")
+                .unwrap_or_else(|_| read_ptr(reader, hist_addr.wrapping_add(cmd_hist_buf_off)));
+
+            if bucket_ptr == 0 {
+                continue;
+            }
+
+            // Each entry in the bucket is a pointer to a _COMMAND structure.
+            for idx in 0..cmd_count {
+                let cmd_ptr_addr = bucket_ptr.wrapping_add((idx as u64) * 8);
+                let cmd_addr = read_ptr(reader, cmd_ptr_addr);
+                if cmd_addr == 0 {
+                    continue;
+                }
+
+                // Read command length and data.
+                let cmd_len = read_u16(reader, cmd_addr.wrapping_add(cmd_entry_size_off));
+                if cmd_len == 0 || cmd_len > 8192 {
+                    continue;
+                }
+
+                // Read UTF-16LE command text.
+                let cmd_text = read_utf16_string(
+                    reader,
+                    cmd_addr.wrapping_add(cmd_entry_data_off),
+                    cmd_len as usize,
+                );
+
+                if cmd_text.is_empty() {
+                    continue;
+                }
+
+                let is_suspicious = classify_console_command(&cmd_text);
+
+                results.push(ConsoleHistoryInfo {
+                    pid,
+                    process_name: process_name.to_string(),
+                    application: app_name.clone(),
+                    command: cmd_text,
+                    command_index: idx as u32,
+                    is_suspicious,
+                });
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Scan a memory region for potential `_CONSOLE_INFORMATION` structures.
+///
+/// Looks for addresses where the HistoryList field contains a valid
+/// doubly-linked list (Flink and Blink are non-null kernel-mode pointers).
+fn scan_for_console_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    base_addr: u64,
+    hist_list_off: u64,
+) -> Vec<u64> {
+    let mut found = Vec::new();
+
+    // Read a window of memory from the heap base.
+    let data = match reader.read_bytes(base_addr, SCAN_WINDOW_SIZE) {
+        Ok(d) => d,
+        Err(_) => return found,
+    };
+
+    // Scan for potential _CONSOLE_INFORMATION by checking every pointer-aligned
+    // offset for a valid HistoryList _LIST_ENTRY pattern.
+    let hist_off = hist_list_off as usize;
+    if hist_off + 16 > data.len() {
+        return found;
+    }
+
+    let mut offset = 0;
+    while offset + hist_off + 16 <= data.len() {
+        let flink = u64::from_le_bytes(
+            data[offset + hist_off..offset + hist_off + 8]
+                .try_into()
+                .unwrap_or([0; 8]),
+        );
+        let blink = u64::from_le_bytes(
+            data[offset + hist_off + 8..offset + hist_off + 16]
+                .try_into()
+                .unwrap_or([0; 8]),
+        );
+
+        // Valid list entry: both pointers non-null and look like valid addresses.
+        // For user-mode: addresses typically < 0x0000_8000_0000_0000
+        // For kernel-mode: addresses typically > 0xFFFF_8000_0000_0000
+        // We check that both pointers are in the same address space half and non-null.
+        if flink != 0
+            && blink != 0
+            && is_plausible_pointer(flink)
+            && is_plausible_pointer(blink)
+        {
+            // Verify the list is self-consistent: flink->blink should point back.
+            let candidate_addr = base_addr.wrapping_add(offset as u64);
+            let head_addr = candidate_addr.wrapping_add(hist_list_off);
+
+            // Read flink->blink and check it points back to our list head.
+            if let Ok(flink_blink) = reader.read_bytes(flink.wrapping_add(8), 8) {
+                if flink_blink.len() == 8 {
+                    let flink_blink_val = u64::from_le_bytes(
+                        flink_blink[..8].try_into().unwrap_or([0; 8]),
+                    );
+                    if flink_blink_val == head_addr {
+                        found.push(candidate_addr);
+                    }
+                }
+            }
+        }
+
+        offset += 8; // pointer-aligned scan
+    }
+
+    found
+}
+
+/// Walk a `_LIST_ENTRY` doubly-linked list to find `_COMMAND_HISTORY` entries.
+///
+/// Starting from the list head, follows Flink pointers and adjusts each
+/// back to the containing `_COMMAND_HISTORY` structure using `list_entry_off`.
+fn walk_history_list<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    list_head: u64,
+    list_entry_off: u64,
+) -> Vec<u64> {
+    let mut entries = Vec::new();
+    let mut current = read_ptr(reader, list_head);
+    let mut seen = std::collections::HashSet::new();
+
+    while current != 0
+        && current != list_head
+        && entries.len() < MAX_HISTORY_ENTRIES
+        && seen.insert(current)
+    {
+        // The list entry is embedded at list_entry_off inside _COMMAND_HISTORY.
+        // Subtract that offset to get the base of the _COMMAND_HISTORY struct.
+        let hist_addr = current.wrapping_sub(list_entry_off);
+        entries.push(hist_addr);
+
+        // Follow Flink (first field of _LIST_ENTRY).
+        current = read_ptr(reader, current);
+    }
+
+    entries
+}
+
+/// Check whether a pointer value looks plausible (not obviously garbage).
+fn is_plausible_pointer(addr: u64) -> bool {
+    // Null pointer — not valid.
+    if addr == 0 {
+        return false;
+    }
+    // Canonical user-mode: 0x0000_0000_0001_0000 .. 0x0000_7FFF_FFFF_FFFF
+    // Canonical kernel-mode: 0xFFFF_8000_0000_0000 .. 0xFFFF_FFFF_FFFF_FFFF
+    // Non-canonical (bits 48..63 don't sign-extend bit 47) is invalid.
+    let upper = addr >> 47;
+    upper == 0 || upper == 0x1_FFFF
+}
+
+/// Read a pointer (u64) from virtual memory, returning 0 on failure.
+fn read_ptr<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u64 {
+    match reader.read_bytes(addr, 8) {
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        _ => 0,
+    }
+}
+
+/// Read a u32 from virtual memory, returning 0 on failure.
+fn read_u32<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u32 {
+    match reader.read_bytes(addr, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => 0,
+    }
+}
+
+/// Read a u16 from virtual memory, returning 0 on failure.
+fn read_u16<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u16 {
+    match reader.read_bytes(addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        _ => 0,
+    }
+}
+
+/// Read a UTF-16LE string of `byte_len` bytes from virtual memory.
+fn read_utf16_string<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    addr: u64,
+    byte_len: usize,
+) -> String {
+    let raw = match reader.read_bytes(addr, byte_len) {
+        Ok(d) => d,
+        Err(_) => return String::new(),
+    };
+
+    let u16_vec: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+
+    String::from_utf16_lossy(&u16_vec)
+        .trim_end_matches('\0')
+        .to_string()
 }
 
 #[cfg(test)]

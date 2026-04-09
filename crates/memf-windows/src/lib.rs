@@ -16,6 +16,7 @@ pub mod cmdline;
 pub mod consoles;
 pub mod debug_registers;
 pub mod desktops;
+pub mod device_tree;
 pub mod direct_syscalls;
 pub mod dll;
 pub mod dns_cache;
