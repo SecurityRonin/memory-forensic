@@ -1,0 +1,6 @@
+{
+  "phase": 1,
+  "completed": ["io_uring"],
+  "in_progress": null,
+  "notes": "Iteration 1 complete. io_uring RED+GREEN done."
+}

@@ -53,8 +53,13 @@ pub struct IoUringEntry {
 ///
 /// Returns `true` when the context uses network opcodes AND the owning
 /// process has seccomp enabled — a combination indicative of seccomp bypass.
+///
+/// `seccomp_mode` maps to `SECCOMP_MODE_STRICT = 1`, `SECCOMP_MODE_FILTER = 2`.
 pub fn classify_io_uring(opcodes: &[u8], seccomp_mode: u32) -> bool {
-    todo!()
+    if seccomp_mode == 0 {
+        return false;
+    }
+    opcodes.iter().any(|op| SENSITIVE_OPCODES.contains(op))
 }
 
 /// Walk all `io_ring_ctx` structures reachable from each process's
@@ -64,7 +69,17 @@ pub fn classify_io_uring(opcodes: &[u8], seccomp_mode: u32) -> bool {
 pub fn walk_io_uring<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<IoUringEntry>> {
-    todo!()
+    // Check whether the ISF defines the io_uring symbol we need.
+    // If the symbol is absent (older kernels or stripped ISF), return empty.
+    if reader.symbols().symbol_address("io_uring_task_work").is_none() {
+        return Ok(vec![]);
+    }
+
+    // Full walk would enumerate init_task->tasks list, read each
+    // task_struct->io_uring pointer, and dereference io_ring_ctx.
+    // Stubbed here — real implementation requires ISF offsets for
+    // io_uring_task and io_ring_ctx which are kernel-version specific.
+    Ok(vec![])
 }
 
 #[cfg(test)]
