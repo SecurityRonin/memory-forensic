@@ -617,6 +617,93 @@ pub struct SyscallInfo {
     pub expected_name: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Boot time estimation
+// ---------------------------------------------------------------------------
+
+/// Source of a boot time estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootTimeSource {
+    /// Derived from kernel timekeeper (wall_to_monotonic + offs_boot).
+    Timekeeper,
+    /// User-provided via --btime flag (e.g., from /proc/stat btime).
+    UserProvided,
+}
+
+impl std::fmt::Display for BootTimeSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timekeeper => write!(f, "timekeeper"),
+            Self::UserProvided => write!(f, "user-provided"),
+        }
+    }
+}
+
+/// A single boot time estimate from a specific source.
+#[derive(Debug, Clone)]
+pub struct BootTimeEstimate {
+    /// Where this estimate came from.
+    pub source: BootTimeSource,
+    /// Unix epoch seconds of the estimated boot time.
+    pub boot_epoch_secs: i64,
+}
+
+/// Aggregated boot time information from multiple sources.
+///
+/// Holds all collected estimates and detects inconsistencies between
+/// them (clock manipulation indicator in DFIR). The `best_estimate`
+/// is the first (highest-priority) source's epoch value.
+#[derive(Debug, Clone)]
+pub struct BootTimeInfo {
+    /// Best estimated boot epoch (Unix seconds), if any source was available.
+    pub best_estimate: Option<i64>,
+    /// All collected estimates for cross-validation.
+    pub estimates: Vec<BootTimeEstimate>,
+    /// Whether sources disagree beyond the drift threshold (60s).
+    pub inconsistent: bool,
+    /// Maximum drift between any two sources, in seconds.
+    pub max_drift_secs: i64,
+}
+
+/// Drift threshold (seconds) for boot time inconsistency detection.
+const BOOT_TIME_DRIFT_THRESHOLD: i64 = 60;
+
+impl BootTimeInfo {
+    /// Build from a collection of estimates.
+    ///
+    /// The first estimate is treated as highest-priority ("best").
+    /// Inconsistency is flagged when any pair of estimates differs
+    /// by more than 60 seconds.
+    pub fn from_estimates(estimates: Vec<BootTimeEstimate>) -> Self {
+        let best_estimate = estimates.first().map(|e| e.boot_epoch_secs);
+
+        let mut max_drift: i64 = 0;
+        for i in 0..estimates.len() {
+            for j in (i + 1)..estimates.len() {
+                let drift = (estimates[i].boot_epoch_secs - estimates[j].boot_epoch_secs).abs();
+                if drift > max_drift {
+                    max_drift = drift;
+                }
+            }
+        }
+
+        Self {
+            best_estimate,
+            estimates,
+            inconsistent: max_drift > BOOT_TIME_DRIFT_THRESHOLD,
+            max_drift_secs: max_drift,
+        }
+    }
+
+    /// Convert boot-relative nanoseconds to absolute Unix epoch seconds.
+    ///
+    /// Returns `None` if no boot time estimate is available.
+    pub fn absolute_secs(&self, boot_ns: u64) -> Option<i64> {
+        self.best_estimate
+            .map(|epoch| epoch + (boot_ns / 1_000_000_000) as i64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,5 +836,84 @@ mod tests {
         assert_eq!(ElfType::SharedObject.to_string(), "DYN");
         assert_eq!(ElfType::Core.to_string(), "CORE");
         assert_eq!(ElfType::Unknown(42).to_string(), "UNKNOWN(42)");
+    }
+
+    // --- Boot time types ---
+
+    #[test]
+    fn boot_time_source_display() {
+        assert_eq!(BootTimeSource::Timekeeper.to_string(), "timekeeper");
+        assert_eq!(BootTimeSource::UserProvided.to_string(), "user-provided");
+    }
+
+    #[test]
+    fn from_estimates_empty_has_no_best() {
+        let info = BootTimeInfo::from_estimates(vec![]);
+        assert_eq!(info.best_estimate, None);
+        assert!(!info.inconsistent);
+        assert_eq!(info.max_drift_secs, 0);
+    }
+
+    #[test]
+    fn from_estimates_single_source() {
+        let info = BootTimeInfo::from_estimates(vec![BootTimeEstimate {
+            source: BootTimeSource::Timekeeper,
+            boot_epoch_secs: 1_712_000_000,
+        }]);
+        assert_eq!(info.best_estimate, Some(1_712_000_000));
+        assert!(!info.inconsistent);
+        assert_eq!(info.max_drift_secs, 0);
+    }
+
+    #[test]
+    fn from_estimates_consistent_sources() {
+        let info = BootTimeInfo::from_estimates(vec![
+            BootTimeEstimate {
+                source: BootTimeSource::Timekeeper,
+                boot_epoch_secs: 1_712_000_000,
+            },
+            BootTimeEstimate {
+                source: BootTimeSource::UserProvided,
+                boot_epoch_secs: 1_712_000_030, // 30s drift (< 60s threshold)
+            },
+        ]);
+        assert_eq!(info.best_estimate, Some(1_712_000_000));
+        assert!(!info.inconsistent);
+        assert_eq!(info.max_drift_secs, 30);
+    }
+
+    #[test]
+    fn from_estimates_inconsistent_sources() {
+        let info = BootTimeInfo::from_estimates(vec![
+            BootTimeEstimate {
+                source: BootTimeSource::Timekeeper,
+                boot_epoch_secs: 1_712_000_000,
+            },
+            BootTimeEstimate {
+                source: BootTimeSource::UserProvided,
+                boot_epoch_secs: 1_712_000_120, // 120s drift (> 60s threshold)
+            },
+        ]);
+        assert_eq!(info.best_estimate, Some(1_712_000_000));
+        assert!(info.inconsistent);
+        assert_eq!(info.max_drift_secs, 120);
+    }
+
+    #[test]
+    fn absolute_secs_with_boot_epoch() {
+        let info = BootTimeInfo::from_estimates(vec![BootTimeEstimate {
+            source: BootTimeSource::UserProvided,
+            boot_epoch_secs: 1_712_000_000,
+        }]);
+        // 500ms after boot → epoch + 0 (sub-second truncates)
+        assert_eq!(info.absolute_secs(500_000_000), Some(1_712_000_000));
+        // 3600s after boot
+        assert_eq!(info.absolute_secs(3_600_000_000_000), Some(1_712_003_600));
+    }
+
+    #[test]
+    fn absolute_secs_without_boot_epoch() {
+        let info = BootTimeInfo::from_estimates(vec![]);
+        assert_eq!(info.absolute_secs(500_000_000), None);
     }
 }
