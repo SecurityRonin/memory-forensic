@@ -146,6 +146,10 @@ enum Commands {
         /// Enable all platform-appropriate process sub-flags.
         #[arg(long)]
         all: bool,
+
+        /// Sort processes by field (pid, ppid, name). Default: pid.
+        #[arg(long, default_value = "pid")]
+        sort: PsSortField,
     },
     /// List kernel modules/drivers and system-level artifacts.
     #[command(name = "sys", alias = "system")]
@@ -311,6 +315,20 @@ enum OutputFormat {
     Csv,
 }
 
+/// Sort field for the `ps` subcommand.
+#[derive(Clone, Copy, Default, clap::ValueEnum)]
+enum PsSortField {
+    /// Sort by process ID (default).
+    #[default]
+    Pid,
+    /// Sort by parent process ID.
+    Ppid,
+    /// Sort by process name.
+    Name,
+    /// Sort by creation time (Windows only; falls back to PID on Linux).
+    Time,
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -338,6 +356,7 @@ fn main() -> Result<()> {
             elfinfo,
             bash_history,
             all,
+            sort,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_ps(
@@ -358,6 +377,7 @@ fn main() -> Result<()> {
                 elfinfo,
                 bash_history,
                 all,
+                sort,
                 resolved.is_extracted(),
             )
         }
@@ -656,6 +676,7 @@ fn cmd_ps(
     elfinfo: bool,
     bash_history: bool,
     all: bool,
+    sort_field: PsSortField,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -3568,6 +3589,7 @@ mod tests {
             false, // elfinfo
             false, // bash_history
             false, // all
+            PsSortField::Pid, // sort
             false, // raw_fallback
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
@@ -3605,6 +3627,7 @@ mod tests {
             false, // elfinfo
             false, // bash_history
             true,  // all
+            PsSortField::Pid, // sort
             false, // raw_fallback
         );
         if let Err(e) = &result {
