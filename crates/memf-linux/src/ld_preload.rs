@@ -37,7 +37,11 @@ pub struct LdPreloadInfo {
 /// LD_PRELOAD entries are separated by `:` or whitespace. Empty entries
 /// (from consecutive delimiters) are filtered out.
 pub fn parse_ld_preload(value: &str) -> Vec<String> {
-    todo!("parse LD_PRELOAD value into individual library paths")
+    value
+        .split(|c: char| c == ':' || c.is_ascii_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// Classify an LD_PRELOAD value as suspicious or benign.
@@ -48,7 +52,47 @@ pub fn parse_ld_preload(value: &str) -> Vec<String> {
 /// - Contains a hidden path component (directory or file starting with `.`)
 /// - Resides outside standard library directories (`/usr/lib`, `/lib`, etc.)
 pub fn classify_ld_preload(value: &str) -> bool {
-    todo!("classify LD_PRELOAD value as suspicious or benign")
+    /// Standard library directories considered benign.
+    const SAFE_PREFIXES: &[&str] = &[
+        "/usr/lib/",
+        "/usr/lib64/",
+        "/usr/lib32/",
+        "/usr/local/lib/",
+        "/usr/local/lib64/",
+        "/lib/",
+        "/lib64/",
+        "/lib32/",
+    ];
+
+    let libraries = parse_ld_preload(value);
+    libraries.iter().any(|lib| is_suspicious_path(lib, SAFE_PREFIXES))
+}
+
+/// Check whether a single library path looks suspicious.
+fn is_suspicious_path(path: &str, safe_prefixes: &[&str]) -> bool {
+    // Libraries in /tmp are suspicious (attacker staging area).
+    if path.starts_with("/tmp/") || path == "/tmp" {
+        return true;
+    }
+
+    // Libraries in /dev/shm are suspicious (shared memory, no disk footprint).
+    if path.starts_with("/dev/shm/") || path == "/dev/shm" {
+        return true;
+    }
+
+    // Hidden path components (directories or files starting with '.') are suspicious.
+    if path.split('/').any(|component| {
+        !component.is_empty() && component.starts_with('.')
+    }) {
+        return true;
+    }
+
+    // Libraries outside standard directories are suspicious.
+    if !safe_prefixes.iter().any(|prefix| path.starts_with(prefix)) {
+        return true;
+    }
+
+    false
 }
 
 /// Scan processes for LD_PRELOAD environment variable injection.
@@ -64,7 +108,79 @@ pub fn scan_ld_preload<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     processes: &[ProcessInfo],
 ) -> Result<Vec<LdPreloadInfo>> {
-    todo!("scan processes for LD_PRELOAD injection")
+    if processes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+
+    for proc in processes {
+        if let Some(info) = scan_process_ld_preload(reader, proc) {
+            results.push(info);
+        }
+    }
+
+    Ok(results)
+}
+
+/// Scan a single process for LD_PRELOAD in its environment block.
+///
+/// Returns `None` if the process has no mm_struct, unreadable environment,
+/// or no LD_PRELOAD variable set.
+fn scan_process_ld_preload<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    proc: &ProcessInfo,
+) -> Option<LdPreloadInfo> {
+    // Read mm pointer from task_struct.
+    let mm_ptr: u64 = reader.read_field(proc.vaddr, "task_struct", "mm").ok()?;
+    if mm_ptr == 0 {
+        return None; // kernel thread
+    }
+
+    // Read env_start and env_end from mm_struct.
+    let env_start: u64 = reader.read_field(mm_ptr, "mm_struct", "env_start").ok()?;
+    let env_end: u64 = reader.read_field(mm_ptr, "mm_struct", "env_end").ok()?;
+
+    if env_start == 0 || env_end <= env_start {
+        return None;
+    }
+
+    let size = (env_end - env_start).min(MAX_ENV_SIZE);
+    let data = reader.read_bytes(env_start, size as usize).ok()?;
+
+    // Scan null-terminated strings for LD_PRELOAD=
+    let ld_preload_value = extract_ld_preload(&data)?;
+
+    let preloaded_libraries = parse_ld_preload(&ld_preload_value);
+    let is_suspicious = classify_ld_preload(&ld_preload_value);
+
+    Some(LdPreloadInfo {
+        pid: proc.pid as u32,
+        process_name: proc.comm.clone(),
+        ld_preload_value,
+        preloaded_libraries,
+        is_suspicious,
+    })
+}
+
+/// Extract the LD_PRELOAD value from a raw environment block.
+///
+/// The environment block contains null-separated `KEY=VALUE\0` strings.
+/// Returns `Some(value)` if an `LD_PRELOAD=...` entry is found.
+fn extract_ld_preload(data: &[u8]) -> Option<String> {
+    const PREFIX: &[u8] = b"LD_PRELOAD=";
+
+    for chunk in data.split(|&b| b == 0) {
+        if chunk.starts_with(PREFIX) {
+            let value = String::from_utf8_lossy(&chunk[PREFIX.len()..]);
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
