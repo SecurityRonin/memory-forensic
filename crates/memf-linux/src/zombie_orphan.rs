@@ -10,7 +10,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::{Error, ProcessState, Result};
 
 /// Common daemon-like process names that are suspicious when found as
 /// orphans reparented to init. Legitimate daemons are started by init
@@ -99,7 +99,105 @@ pub fn classify_zombie_orphan(
 pub fn walk_zombie_orphan<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<ZombieOrphanInfo>> {
-    todo!()
+    // --- Graceful degradation: bail with empty vec if symbols are absent ---
+    let init_task_addr = match reader.symbols().symbol_address("init_task") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    let tasks_offset = match reader.symbols().field_offset("task_struct", "tasks") {
+        Some(off) => off,
+        None => return Ok(Vec::new()),
+    };
+
+    // --- Walk the task list -------------------------------------------------
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results = Vec::new();
+
+    // Helper: extract zombie/orphan info from a single task_struct address.
+    let read_task = |addr: u64| -> Option<ZombieOrphanInfo> {
+        let pid: u32 = reader.read_field(addr, "task_struct", "pid").ok()?;
+        let state_raw: i64 = reader.read_field(addr, "task_struct", "state").ok()?;
+        let exit_code: i32 = reader
+            .read_field(addr, "task_struct", "exit_code")
+            .unwrap_or(0);
+        let comm = reader
+            .read_field_string(addr, "task_struct", "comm", 16)
+            .unwrap_or_else(|_| "<unknown>".to_string());
+
+        // Read real_parent->pid (current parent after possible reparenting).
+        let real_parent_ptr: u64 =
+            reader.read_field(addr, "task_struct", "real_parent").ok()?;
+        let ppid: u32 = if real_parent_ptr != 0 {
+            reader
+                .read_field(real_parent_ptr, "task_struct", "pid")
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Read parent->pid (original parent before reparenting).
+        let parent_ptr: u64 = reader
+            .read_field(addr, "task_struct", "parent")
+            .unwrap_or(0);
+        let original_ppid: u32 = if parent_ptr != 0 {
+            reader
+                .read_field(parent_ptr, "task_struct", "pid")
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let state = ProcessState::from_raw(state_raw);
+        let is_zombie = matches!(state, ProcessState::Zombie);
+
+        // Orphan: real_parent is init (pid 1) but original parent was different.
+        // This means the process was reparented after its original parent died.
+        let is_orphan = ppid == 1 && original_ppid != ppid && pid != 1;
+
+        // Skip processes that are neither zombie nor orphan.
+        if !is_zombie && !is_orphan {
+            return None;
+        }
+
+        // Classify using the heuristic function, plus the walker-level
+        // exit_code check for crashed zombies.
+        let mut is_suspicious = classify_zombie_orphan(is_zombie, is_orphan, ppid, &comm);
+
+        // Additional walker-level heuristic: zombie with non-zero exit code
+        // indicates a crash (e.g. SIGSEGV = 139).
+        if is_zombie && exit_code != 0 {
+            is_suspicious = true;
+        }
+
+        Some(ZombieOrphanInfo {
+            pid,
+            ppid,
+            comm,
+            state: state.to_string(),
+            exit_code,
+            original_ppid,
+            is_zombie,
+            is_orphan,
+            is_suspicious,
+        })
+    };
+
+    // Include init_task itself.
+    if let Some(info) = read_task(init_task_addr) {
+        results.push(info);
+    }
+
+    for &task_addr in &task_addrs {
+        if let Some(info) = read_task(task_addr) {
+            results.push(info);
+        }
+    }
+
+    results.sort_by_key(|r| r.pid);
+    Ok(results)
 }
 
 #[cfg(test)]
