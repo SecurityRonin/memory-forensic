@@ -4280,7 +4280,32 @@ fn cmd_timeline(
                 Vec::new()
             });
 
-            build_windows_timeline(&procs, &conns)
+            // Walk threads for all processes (non-fatal per process).
+            let mut all_threads = Vec::new();
+            for p in &procs {
+                match memf_windows::thread::walk_threads(&reader, p.vaddr, p.pid) {
+                    Ok(threads) => all_threads.extend(threads),
+                    Err(_) => {}
+                }
+            }
+
+            // Walk DLLs for all processes (non-fatal per process).
+            let mut proc_dlls: Vec<(u64, Vec<memf_windows::WinDllInfo>)> = Vec::new();
+            for p in &procs {
+                if p.peb_addr != 0 {
+                    match memf_windows::dll::walk_dlls(&reader, p.peb_addr) {
+                        Ok(dlls) => proc_dlls.push((p.pid, dlls)),
+                        Err(_) => {}
+                    }
+                }
+            }
+
+            let mut events = build_windows_timeline(&procs, &conns);
+            events.extend(build_windows_thread_events(&all_threads));
+            events.extend(build_windows_dll_events(&procs, &proc_dlls));
+            events.sort_by_key(|e| e.timestamp_secs);
+            tag_suspicious_windows(&mut events, &procs, &conns, &all_threads, &proc_dlls);
+            events
         }
         OsProfile::Linux => {
             let procs = memf_linux::process::walk_processes(&reader)
@@ -4308,7 +4333,16 @@ fn cmd_timeline(
                 );
             }
 
-            build_linux_timeline(&procs, boot_info.best_estimate)
+            // Walk bash history (non-fatal).
+            let bash_entries = memf_linux::bash::walk_bash_history(&reader).unwrap_or_else(|e| {
+                eprintln!("warning: could not walk bash history: {e}");
+                Vec::new()
+            });
+
+            let mut events = build_linux_timeline(&procs, boot_info.best_estimate);
+            events.extend(build_linux_bash_events(&bash_entries));
+            events.sort_by_key(|e| e.timestamp_secs);
+            events
         }
         OsProfile::MacOs => anyhow::bail!("macOS timeline not yet supported"),
     };
@@ -4317,7 +4351,11 @@ fn cmd_timeline(
         eprintln!("warning: no timeline events found");
     }
 
-    print_timeline(&events, output);
+    if bodyfile {
+        print_timeline_bodyfile(&events);
+    } else {
+        print_timeline(&events, output);
+    }
     Ok(())
 }
 
@@ -5892,5 +5930,114 @@ mod tests {
             .filter(|e| e.tags.contains(&"pivot-point".to_string()))
             .collect();
         assert!(!tagged.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Full Windows pipeline: all event sources merged + tagged + sorted
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn full_windows_pipeline_merges_all_event_types() {
+        use memf_windows::{WinConnectionInfo, WinDllInfo, WinProcessInfo, WinThreadInfo};
+
+        let procs = vec![WinProcessInfo {
+            pid: 4,
+            ppid: 0,
+            image_name: "System".into(),
+            create_time: 133_574_400_000_000_000, // 2024-04-02 00:00:00 UTC
+            exit_time: 0,
+            cr3: 0x1000,
+            peb_addr: 0,
+            vaddr: 0xFFFF_F000,
+            thread_count: 50,
+            is_wow64: false,
+        }];
+        let conns = vec![WinConnectionInfo {
+            pid: 4,
+            local_addr: "0.0.0.0".into(),
+            local_port: 445,
+            remote_addr: "10.0.0.5".into(),
+            remote_port: 49152,
+            state: memf_windows::WinTcpState::Established,
+            protocol: "TCP".into(),
+            process_name: "System".into(),
+            create_time: 133_574_401_000_000_000,
+        }];
+        let threads = vec![WinThreadInfo {
+            tid: 100,
+            pid: 4,
+            create_time: 133_574_400_500_000_000,
+            start_address: 0xFFFFF800_01000000,
+            teb_addr: 0,
+            state: memf_windows::ThreadState::Running,
+            vaddr: 0,
+        }];
+        let proc_dlls: Vec<(u64, Vec<WinDllInfo>)> = vec![(
+            4,
+            vec![WinDllInfo {
+                name: "ntoskrnl.exe".into(),
+                full_path: "\\SystemRoot\\system32\\ntoskrnl.exe".into(),
+                base_addr: 0xFFFFF800_01000000,
+                size: 0x100_0000,
+                load_order: 0,
+            }],
+        )];
+
+        // Build all event types
+        let mut events = build_windows_timeline(&procs, &conns);
+        events.extend(build_windows_thread_events(&threads));
+        events.extend(build_windows_dll_events(&procs, &proc_dlls));
+        events.sort_by_key(|e| e.timestamp_secs);
+        tag_suspicious_windows(&mut events, &procs, &conns, &threads, &proc_dlls);
+
+        // Verify we have all event types
+        let types: std::collections::HashSet<&str> =
+            events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(types.contains("process_create"), "missing process_create");
+        assert!(
+            types.contains("connection_create"),
+            "missing connection_create"
+        );
+        assert!(types.contains("thread_create"), "missing thread_create");
+        assert!(types.contains("dll_load"), "missing dll_load");
+
+        // Verify events are sorted by timestamp
+        for w in events.windows(2) {
+            assert!(w[0].timestamp_secs <= w[1].timestamp_secs);
+        }
+    }
+
+    #[test]
+    fn full_linux_pipeline_merges_bash_events() {
+        let procs = vec![memf_linux::ProcessInfo {
+            pid: 1000,
+            ppid: 1,
+            comm: "bash".into(),
+            state: memf_linux::ProcessState::Sleeping,
+            vaddr: 0,
+            cr3: None,
+            start_time: 50_000_000_000,
+        }];
+        let bash_entries = vec![memf_linux::BashHistoryInfo {
+            pid: 1000,
+            comm: "bash".into(),
+            command: "whoami".into(),
+            timestamp: Some(1_712_000_100),
+            index: 0,
+        }];
+
+        let mut events = build_linux_timeline(&procs, Some(1_712_000_000));
+        events.extend(build_linux_bash_events(&bash_entries));
+        events.sort_by_key(|e| e.timestamp_secs);
+
+        let types: std::collections::HashSet<&str> =
+            events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(types.contains("process_start"), "missing process_start");
+        assert!(types.contains("bash_command"), "missing bash_command");
+
+        // Verify sorted
+        for w in events.windows(2) {
+            assert!(w[0].timestamp_secs <= w[1].timestamp_secs);
+        }
     }
 }
