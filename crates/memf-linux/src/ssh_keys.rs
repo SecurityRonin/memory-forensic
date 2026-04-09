@@ -187,9 +187,7 @@ fn scan_region_for_keys<P: PhysicalMemoryProvider>(
 
 /// Find the first occurrence of `needle` in `haystack`.
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Parse a key line into `(key_type, full_key_data, comment)`.

@@ -279,20 +279,11 @@ mod tests {
     #[test]
     fn service_start_type_from_raw() {
         assert_eq!(ServiceStartType::from_raw(0), ServiceStartType::BootStart);
-        assert_eq!(
-            ServiceStartType::from_raw(1),
-            ServiceStartType::SystemStart
-        );
+        assert_eq!(ServiceStartType::from_raw(1), ServiceStartType::SystemStart);
         assert_eq!(ServiceStartType::from_raw(2), ServiceStartType::AutoStart);
-        assert_eq!(
-            ServiceStartType::from_raw(3),
-            ServiceStartType::DemandStart
-        );
+        assert_eq!(ServiceStartType::from_raw(3), ServiceStartType::DemandStart);
         assert_eq!(ServiceStartType::from_raw(4), ServiceStartType::Disabled);
-        assert_eq!(
-            ServiceStartType::from_raw(5),
-            ServiceStartType::Unknown(5)
-        );
+        assert_eq!(ServiceStartType::from_raw(5), ServiceStartType::Unknown(5));
         assert_eq!(
             ServiceStartType::from_raw(42),
             ServiceStartType::Unknown(42)
@@ -349,8 +340,7 @@ mod tests {
         head_page[8..16].copy_from_slice(&svc_list_addr.to_le_bytes());
 
         // svc.ServiceList: Flink -> head, Blink -> head (single entry, circular)
-        svc_page[SR_SERVICE_LIST..SR_SERVICE_LIST + 8]
-            .copy_from_slice(&head_vaddr.to_le_bytes());
+        svc_page[SR_SERVICE_LIST..SR_SERVICE_LIST + 8].copy_from_slice(&head_vaddr.to_le_bytes());
         svc_page[SR_SERVICE_LIST + 8..SR_SERVICE_LIST + 16]
             .copy_from_slice(&head_vaddr.to_le_bytes());
 
@@ -358,25 +348,13 @@ mod tests {
         let name_ustr_vaddr = str_vaddr;
         svc_page[SR_SERVICE_NAME..SR_SERVICE_NAME + 8]
             .copy_from_slice(&name_ustr_vaddr.to_le_bytes());
-        write_unicode_string(
-            &mut str_page,
-            0x000,
-            str_vaddr + 0x100,
-            0x100,
-            "Dnscache",
-        );
+        write_unicode_string(&mut str_page, 0x000, str_vaddr + 0x100, 0x100, "Dnscache");
 
         // DisplayName -> _UNICODE_STRING at str_vaddr + 0x200, data at str_vaddr + 0x300
         let disp_ustr_vaddr = str_vaddr + 0x200;
         svc_page[SR_DISPLAY_NAME..SR_DISPLAY_NAME + 8]
             .copy_from_slice(&disp_ustr_vaddr.to_le_bytes());
-        write_unicode_string(
-            &mut str_page,
-            0x200,
-            str_vaddr + 0x300,
-            0x300,
-            "DNS Client",
-        );
+        write_unicode_string(&mut str_page, 0x200, str_vaddr + 0x300, 0x300, "DNS Client");
 
         // CurrentState = 4 (RUNNING)
         svc_page[SR_CURRENT_STATE..SR_CURRENT_STATE + 4].copy_from_slice(&4u32.to_le_bytes());
@@ -387,8 +365,7 @@ mod tests {
 
         // ImagePath -> _UNICODE_STRING at str_vaddr + 0x400, data at str_vaddr + 0x500
         let img_ustr_vaddr = str_vaddr + 0x400;
-        svc_page[SR_IMAGE_PATH..SR_IMAGE_PATH + 8]
-            .copy_from_slice(&img_ustr_vaddr.to_le_bytes());
+        svc_page[SR_IMAGE_PATH..SR_IMAGE_PATH + 8].copy_from_slice(&img_ustr_vaddr.to_le_bytes());
         write_unicode_string(
             &mut str_page,
             0x400,
@@ -399,8 +376,7 @@ mod tests {
 
         // ObjectName -> _UNICODE_STRING at str_vaddr + 0x700, data at str_vaddr + 0x800
         let obj_ustr_vaddr = str_vaddr + 0x700;
-        svc_page[SR_OBJECT_NAME..SR_OBJECT_NAME + 8]
-            .copy_from_slice(&obj_ustr_vaddr.to_le_bytes());
+        svc_page[SR_OBJECT_NAME..SR_OBJECT_NAME + 8].copy_from_slice(&obj_ustr_vaddr.to_le_bytes());
         write_unicode_string(
             &mut str_page,
             0x700,
@@ -461,26 +437,22 @@ mod tests {
         head_page[8..16].copy_from_slice(&svc2_list.to_le_bytes()); // Blink
 
         // svc1.ServiceList: Flink -> svc2, Blink -> head
-        svc1_page[SR_SERVICE_LIST..SR_SERVICE_LIST + 8]
-            .copy_from_slice(&svc2_list.to_le_bytes());
+        svc1_page[SR_SERVICE_LIST..SR_SERVICE_LIST + 8].copy_from_slice(&svc2_list.to_le_bytes());
         svc1_page[SR_SERVICE_LIST + 8..SR_SERVICE_LIST + 16]
             .copy_from_slice(&head_vaddr.to_le_bytes());
 
         // svc2.ServiceList: Flink -> head, Blink -> svc1
-        svc2_page[SR_SERVICE_LIST..SR_SERVICE_LIST + 8]
-            .copy_from_slice(&head_vaddr.to_le_bytes());
+        svc2_page[SR_SERVICE_LIST..SR_SERVICE_LIST + 8].copy_from_slice(&head_vaddr.to_le_bytes());
         svc2_page[SR_SERVICE_LIST + 8..SR_SERVICE_LIST + 16]
             .copy_from_slice(&svc1_list.to_le_bytes());
 
         // svc1: "Spooler" / "Print Spooler", RUNNING, AUTO_START, type=0x10
         let name1_ustr = str1_vaddr;
-        svc1_page[SR_SERVICE_NAME..SR_SERVICE_NAME + 8]
-            .copy_from_slice(&name1_ustr.to_le_bytes());
+        svc1_page[SR_SERVICE_NAME..SR_SERVICE_NAME + 8].copy_from_slice(&name1_ustr.to_le_bytes());
         write_unicode_string(&mut str1_page, 0x000, str1_vaddr + 0x100, 0x100, "Spooler");
 
         let disp1_ustr = str1_vaddr + 0x200;
-        svc1_page[SR_DISPLAY_NAME..SR_DISPLAY_NAME + 8]
-            .copy_from_slice(&disp1_ustr.to_le_bytes());
+        svc1_page[SR_DISPLAY_NAME..SR_DISPLAY_NAME + 8].copy_from_slice(&disp1_ustr.to_le_bytes());
         write_unicode_string(
             &mut str1_page,
             0x200,
@@ -494,8 +466,7 @@ mod tests {
         svc1_page[SR_START_TYPE..SR_START_TYPE + 4].copy_from_slice(&2u32.to_le_bytes());
 
         let img1_ustr = str1_vaddr + 0x400;
-        svc1_page[SR_IMAGE_PATH..SR_IMAGE_PATH + 8]
-            .copy_from_slice(&img1_ustr.to_le_bytes());
+        svc1_page[SR_IMAGE_PATH..SR_IMAGE_PATH + 8].copy_from_slice(&img1_ustr.to_le_bytes());
         write_unicode_string(
             &mut str1_page,
             0x400,
@@ -505,8 +476,7 @@ mod tests {
         );
 
         let obj1_ustr = str1_vaddr + 0x700;
-        svc1_page[SR_OBJECT_NAME..SR_OBJECT_NAME + 8]
-            .copy_from_slice(&obj1_ustr.to_le_bytes());
+        svc1_page[SR_OBJECT_NAME..SR_OBJECT_NAME + 8].copy_from_slice(&obj1_ustr.to_le_bytes());
         write_unicode_string(
             &mut str1_page,
             0x700,
@@ -519,13 +489,11 @@ mod tests {
 
         // svc2: "BITS" / "Background Intelligent Transfer Service", STOPPED, DEMAND_START
         let name2_ustr = str2_vaddr;
-        svc2_page[SR_SERVICE_NAME..SR_SERVICE_NAME + 8]
-            .copy_from_slice(&name2_ustr.to_le_bytes());
+        svc2_page[SR_SERVICE_NAME..SR_SERVICE_NAME + 8].copy_from_slice(&name2_ustr.to_le_bytes());
         write_unicode_string(&mut str2_page, 0x000, str2_vaddr + 0x100, 0x100, "BITS");
 
         let disp2_ustr = str2_vaddr + 0x200;
-        svc2_page[SR_DISPLAY_NAME..SR_DISPLAY_NAME + 8]
-            .copy_from_slice(&disp2_ustr.to_le_bytes());
+        svc2_page[SR_DISPLAY_NAME..SR_DISPLAY_NAME + 8].copy_from_slice(&disp2_ustr.to_le_bytes());
         write_unicode_string(
             &mut str2_page,
             0x200,
@@ -539,8 +507,7 @@ mod tests {
         svc2_page[SR_START_TYPE..SR_START_TYPE + 4].copy_from_slice(&3u32.to_le_bytes());
 
         let img2_ustr = str2_vaddr + 0x400;
-        svc2_page[SR_IMAGE_PATH..SR_IMAGE_PATH + 8]
-            .copy_from_slice(&img2_ustr.to_le_bytes());
+        svc2_page[SR_IMAGE_PATH..SR_IMAGE_PATH + 8].copy_from_slice(&img2_ustr.to_le_bytes());
         write_unicode_string(
             &mut str2_page,
             0x400,
@@ -550,8 +517,7 @@ mod tests {
         );
 
         let obj2_ustr = str2_vaddr + 0x700;
-        svc2_page[SR_OBJECT_NAME..SR_OBJECT_NAME + 8]
-            .copy_from_slice(&obj2_ustr.to_le_bytes());
+        svc2_page[SR_OBJECT_NAME..SR_OBJECT_NAME + 8].copy_from_slice(&obj2_ustr.to_le_bytes());
         write_unicode_string(
             &mut str2_page,
             0x700,
