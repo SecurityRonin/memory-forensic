@@ -44,16 +44,13 @@ pub fn extract_boot_time<P: PhysicalMemoryProvider>(
     let timekeeper_addr = tk_addr + tk_offset;
 
     // Read xtime_sec (wall-clock at dump time) — validates the timekeeper is readable.
-    let _xtime_sec: i64 =
-        reader.read_field(timekeeper_addr, "timekeeper", "xtime_sec")?;
+    let _xtime_sec: i64 = reader.read_field(timekeeper_addr, "timekeeper", "xtime_sec")?;
 
     // Read wall_to_monotonic (struct timespec64 embedded in timekeeper)
     let w2m_offset = reader
         .symbols()
         .field_offset("timekeeper", "wall_to_monotonic")
-        .ok_or_else(|| {
-            Error::Walker("timekeeper.wall_to_monotonic field not found".into())
-        })?;
+        .ok_or_else(|| Error::Walker("timekeeper.wall_to_monotonic field not found".into()))?;
     let w2m_addr = timekeeper_addr + w2m_offset;
     let w2m_tv_sec: i64 = reader.read_field(w2m_addr, "timespec64", "tv_sec")?;
 
@@ -119,13 +116,10 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let mut data = vec![0u8; 4096];
-        data[XTIME_SEC_OFF..XTIME_SEC_OFF + 8]
-            .copy_from_slice(&xtime_sec.to_le_bytes());
-        data[W2M_OFF..W2M_OFF + 8]
-            .copy_from_slice(&w2m_tv_sec.to_le_bytes());
+        data[XTIME_SEC_OFF..XTIME_SEC_OFF + 8].copy_from_slice(&xtime_sec.to_le_bytes());
+        data[W2M_OFF..W2M_OFF + 8].copy_from_slice(&w2m_tv_sec.to_le_bytes());
         // tv_nsec at W2M_OFF + 8 (leave as 0)
-        data[OFFS_BOOT_OFF..OFFS_BOOT_OFF + 8]
-            .copy_from_slice(&offs_boot_ns.to_le_bytes());
+        data[OFFS_BOOT_OFF..OFFS_BOOT_OFF + 8].copy_from_slice(&offs_boot_ns.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(vaddr, paddr, flags::WRITABLE)
@@ -142,9 +136,9 @@ mod tests {
     #[test]
     fn extract_boot_time_no_suspend() {
         let reader = build_boot_time_reader(
-            1_712_100_000,    // xtime_sec (wall-clock at dump)
-            -1_712_000_000,   // wall_to_monotonic.tv_sec
-            0,                // offs_boot (no suspend)
+            1_712_100_000,  // xtime_sec (wall-clock at dump)
+            -1_712_000_000, // wall_to_monotonic.tv_sec
+            0,              // offs_boot (no suspend)
         );
         let est = extract_boot_time(&reader).unwrap();
         assert_eq!(est.source, BootTimeSource::Timekeeper);

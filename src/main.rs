@@ -311,6 +311,27 @@ enum Commands {
         #[arg(long)]
         rules: Option<PathBuf>,
     },
+    /// Build a unified timeline of all timestamped events from a memory dump.
+    Timeline {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+
+        /// User-provided boot time (Unix epoch seconds) for Linux dumps.
+        #[arg(long)]
+        btime: Option<i64>,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -498,6 +519,23 @@ fn main() -> Result<()> {
                 output,
                 rules,
                 raw_fallback,
+            )
+        }
+        Commands::Timeline {
+            dump,
+            symbols,
+            output,
+            cr3,
+            btime,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_timeline(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                btime,
+                resolved.is_extracted(),
             )
         }
     }
@@ -3767,6 +3805,67 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
 }
 
 // ---------------------------------------------------------------------------
+// Timeline
+// ---------------------------------------------------------------------------
+
+/// A single timestamped event for the unified timeline.
+#[derive(Debug, Clone)]
+struct TimelineEvent {
+    /// Unix epoch seconds of the event.
+    timestamp_secs: i64,
+    /// Human-readable UTC timestamp.
+    timestamp: String,
+    /// Event category: "process_create", "process_exit", "process_start",
+    /// "connection_create".
+    event_type: String,
+    /// Process ID associated with the event.
+    pid: u64,
+    /// Description of the event source.
+    description: String,
+}
+
+/// Convert a Windows FILETIME to Unix epoch seconds.
+/// Returns `None` for zero or pre-1970 values.
+fn filetime_to_unix(ft: u64) -> Option<i64> {
+    todo!()
+}
+
+/// Build timeline events from Windows process and connection data.
+fn build_windows_timeline(
+    procs: &[memf_windows::WinProcessInfo],
+    conns: &[memf_windows::WinConnectionInfo],
+) -> Vec<TimelineEvent> {
+    todo!()
+}
+
+/// Build timeline events from Linux process data.
+/// Requires `boot_epoch` (Unix seconds) to convert boot-relative
+/// nanosecond timestamps to absolute wall-clock times.
+fn build_linux_timeline(
+    procs: &[memf_linux::ProcessInfo],
+    boot_epoch: Option<i64>,
+) -> Vec<TimelineEvent> {
+    todo!()
+}
+
+/// Print a sorted timeline to stdout.
+fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
+    todo!()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_timeline(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3: Option<u64>,
+    btime: Option<i64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    todo!()
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
@@ -4665,5 +4764,198 @@ mod tests {
         print_windows_processes(&procs, OutputFormat::Table);
         print_windows_processes(&procs, OutputFormat::Json);
         print_windows_processes(&procs, OutputFormat::Csv);
+    }
+
+    // --- Timeline tests ---
+
+    #[test]
+    fn filetime_to_unix_epoch_2000() {
+        // 2000-01-01 00:00:00 UTC = Unix 946_684_800
+        // FILETIME = FILETIME_UNIX_DIFF + 946_684_800 * 10_000_000
+        const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
+        let ft_2000 = FILETIME_UNIX_DIFF + 946_684_800 * 10_000_000;
+        assert_eq!(filetime_to_unix(ft_2000), Some(946_684_800));
+    }
+
+    #[test]
+    fn filetime_to_unix_zero_returns_none() {
+        assert_eq!(filetime_to_unix(0), None);
+    }
+
+    #[test]
+    fn filetime_to_unix_pre_1970_returns_none() {
+        // Any FILETIME before the Unix epoch offset
+        assert_eq!(filetime_to_unix(100), None);
+    }
+
+    #[test]
+    fn build_windows_timeline_processes_and_connections() {
+        use memf_windows::{WinConnectionInfo, WinProcessInfo, WinTcpState};
+
+        // create_time ~2021-10-29 18:13:20 UTC → Unix 1_635_526_400
+        let procs = vec![WinProcessInfo {
+            pid: 4,
+            ppid: 0,
+            image_name: "System".into(),
+            create_time: 132_800_000_000_000_000,
+            exit_time: 0, // still running → no exit event
+            cr3: 0x1AB000,
+            peb_addr: 0,
+            vaddr: 0xFFFF_8000_0020_0000,
+            thread_count: 100,
+            is_wow64: false,
+        }];
+
+        // connection create_time 10_000s later → Unix 1_635_536_400
+        let conns = vec![WinConnectionInfo {
+            protocol: "TCP".into(),
+            local_addr: "10.0.0.1".into(),
+            local_port: 445,
+            remote_addr: "10.0.0.2".into(),
+            remote_port: 49152,
+            state: WinTcpState::Established,
+            pid: 4,
+            process_name: "System".into(),
+            create_time: 132_800_100_000_000_000,
+        }];
+
+        let events = build_windows_timeline(&procs, &conns);
+
+        // Should have 2 events: 1 process_create + 1 connection_create
+        // (no exit event since exit_time is 0)
+        assert_eq!(events.len(), 2);
+
+        // Events sorted by timestamp
+        assert_eq!(events[0].event_type, "process_create");
+        assert_eq!(events[0].pid, 4);
+        assert_eq!(events[0].timestamp_secs, 1_635_526_400);
+        assert!(events[0].description.contains("System"));
+
+        assert_eq!(events[1].event_type, "connection_create");
+        assert_eq!(events[1].pid, 4);
+        assert_eq!(events[1].timestamp_secs, 1_635_536_400);
+    }
+
+    #[test]
+    fn build_windows_timeline_includes_exit_events() {
+        use memf_windows::WinProcessInfo;
+
+        // Process with both create and exit times
+        let procs = vec![WinProcessInfo {
+            pid: 1234,
+            ppid: 4,
+            image_name: "notepad.exe".into(),
+            create_time: 132_800_000_000_000_000, // Unix 1_635_526_400
+            exit_time: 132_800_100_000_000_000,   // Unix 1_635_536_400
+            cr3: 0x2AB000,
+            peb_addr: 0x7FFE_0000,
+            vaddr: 0xFFFF_8000_0030_0000,
+            thread_count: 1,
+            is_wow64: false,
+        }];
+
+        let events = build_windows_timeline(&procs, &[]);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "process_create");
+        assert_eq!(events[0].timestamp_secs, 1_635_526_400);
+        assert_eq!(events[1].event_type, "process_exit");
+        assert_eq!(events[1].timestamp_secs, 1_635_536_400);
+    }
+
+    #[test]
+    fn build_linux_timeline_with_boot_epoch() {
+        use memf_linux::{ProcessInfo, ProcessState};
+
+        let procs = vec![
+            ProcessInfo {
+                pid: 1,
+                ppid: 0,
+                comm: "systemd".into(),
+                state: ProcessState::Sleeping,
+                vaddr: 0xFFFF_8000_0010_0000,
+                cr3: None,
+                start_time: 500_000_000, // 0.5s after boot → epoch + 0
+            },
+            ProcessInfo {
+                pid: 100,
+                ppid: 1,
+                comm: "sshd".into(),
+                state: ProcessState::Sleeping,
+                vaddr: 0xFFFF_8000_0020_0000,
+                cr3: None,
+                start_time: 3_600_000_000_000, // 3600s after boot
+            },
+        ];
+
+        let boot_epoch = Some(1_712_000_000i64); // 2024-04-02 ~04:00 UTC
+        let events = build_linux_timeline(&procs, boot_epoch);
+
+        assert_eq!(events.len(), 2);
+
+        // Sorted by timestamp
+        assert_eq!(events[0].event_type, "process_start");
+        assert_eq!(events[0].pid, 1);
+        assert_eq!(events[0].timestamp_secs, 1_712_000_000); // boot + 0s
+        assert!(events[0].description.contains("systemd"));
+
+        assert_eq!(events[1].event_type, "process_start");
+        assert_eq!(events[1].pid, 100);
+        assert_eq!(events[1].timestamp_secs, 1_712_003_600); // boot + 3600s
+        assert!(events[1].description.contains("sshd"));
+    }
+
+    #[test]
+    fn build_linux_timeline_without_boot_epoch_is_empty() {
+        use memf_linux::{ProcessInfo, ProcessState};
+
+        let procs = vec![ProcessInfo {
+            pid: 1,
+            ppid: 0,
+            comm: "init".into(),
+            state: ProcessState::Running,
+            vaddr: 0xFFFF_8000_0010_0000,
+            cr3: None,
+            start_time: 500_000_000,
+        }];
+
+        let events = build_linux_timeline(&procs, None);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn print_timeline_table_does_not_panic() {
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_712_000_000,
+            timestamp: "2024-04-02 04:26:40 UTC".into(),
+            event_type: "process_start".into(),
+            pid: 1,
+            description: "systemd".into(),
+        }];
+        print_timeline(&events, OutputFormat::Table);
+    }
+
+    #[test]
+    fn print_timeline_json_does_not_panic() {
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_712_000_000,
+            timestamp: "2024-04-02 04:26:40 UTC".into(),
+            event_type: "process_create".into(),
+            pid: 4,
+            description: "System".into(),
+        }];
+        print_timeline(&events, OutputFormat::Json);
+    }
+
+    #[test]
+    fn print_timeline_csv_does_not_panic() {
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_712_000_000,
+            timestamp: "2024-04-02 04:26:40 UTC".into(),
+            event_type: "connection_create".into(),
+            pid: 4,
+            description: "TCP 10.0.0.1:445 -> 10.0.0.2:49152".into(),
+        }];
+        print_timeline(&events, OutputFormat::Csv);
     }
 }
