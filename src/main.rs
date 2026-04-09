@@ -890,8 +890,11 @@ fn cmd_net(
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
-            let conns = memf_linux::network::walk_connections(&reader)
+            let mut conns = memf_linux::network::walk_connections(&reader)
                 .context("failed to walk Linux connections")?;
+            if let Some(pid) = pid_filter {
+                conns.retain(|c| c.pid == Some(pid));
+            }
             print_connections(&conns, output);
         }
         OsProfile::Windows => {
@@ -916,9 +919,12 @@ fn cmd_net(
                 .context("failed to read TcpBTableSize")?;
             let bucket_count = u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
 
-            let conns =
+            let mut conns =
                 memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
                     .context("failed to walk Windows TCP endpoints")?;
+            if let Some(pid) = pid_filter {
+                conns.retain(|c| c.pid == pid);
+            }
             print_win_connections(&conns, output);
         }
         OsProfile::MacOs => anyhow::bail!("macOS network walking not yet supported"),
