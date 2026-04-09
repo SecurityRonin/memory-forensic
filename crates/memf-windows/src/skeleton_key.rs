@@ -15,6 +15,17 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::{dll, process};
+
+/// DLL modules targeted by the Skeleton Key attack.
+const TARGET_MODULES: &[&str] = &["msv1_0.dll", "kdcsvc.dll", "cryptdll.dll", "lsasrv.dll"];
+
+/// Minimum number of consecutive NOP bytes (0x90) to flag as a NOP sled.
+const NOP_SLED_THRESHOLD: usize = 5;
+
+/// Number of bytes to read from each target DLL's .text section for scanning.
+const TEXT_SECTION_SCAN_SIZE: usize = 4096;
+
 /// A single Skeleton Key attack indicator found in LSASS process memory.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SkeletonKeyIndicator {
@@ -65,7 +76,192 @@ pub fn classify_skeleton_key_pattern(module: &str, pattern_type: &str) -> (Strin
 pub fn walk_skeleton_key<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<SkeletonKeyIndicator>> {
-    todo!()
+    // Resolve PsActiveProcessHead; graceful degradation if missing.
+    let ps_head = match reader.symbols().symbol_address("PsActiveProcessHead") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    // Walk process list and find lsass.exe.
+    let procs = match process::walk_processes(reader, ps_head) {
+        Ok(p) => p,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let lsass = match procs
+        .iter()
+        .find(|p| p.image_name.eq_ignore_ascii_case("lsass.exe"))
+    {
+        Some(p) => p,
+        None => return Ok(Vec::new()),
+    };
+
+    // Switch to lsass.exe's address space (CR3).
+    if lsass.cr3 == 0 || lsass.peb_addr == 0 {
+        return Ok(Vec::new());
+    }
+    let lsass_reader = reader.with_cr3(lsass.cr3);
+
+    // Walk lsass.exe's loaded DLLs.
+    let dlls = match dll::walk_dlls(&lsass_reader, lsass.peb_addr) {
+        Ok(d) => d,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut indicators = Vec::new();
+
+    for target_dll in &dlls {
+        let dll_name_lower = target_dll.name.to_ascii_lowercase();
+        if !TARGET_MODULES.contains(&dll_name_lower.as_str()) {
+            continue;
+        }
+
+        // Check for non-standard load path (path masquerade).
+        if is_suspicious_dll_path(&target_dll.full_path) {
+            let (_desc, conf) = classify_skeleton_key_pattern(&dll_name_lower, "auth_patch");
+            indicators.push(SkeletonKeyIndicator {
+                indicator_type: "path_masquerade".into(),
+                address: target_dll.base_addr,
+                module: dll_name_lower.clone(),
+                description: format!(
+                    "{dll_name_lower} loaded from non-standard path: {}",
+                    target_dll.full_path
+                ),
+                confidence: conf.saturating_sub(20),
+                is_detected: true,
+            });
+        }
+
+        // Read the first bytes of the DLL's in-memory image (.text section).
+        // The .text section typically starts at offset 0x1000 from the base.
+        let text_vaddr = target_dll.base_addr.wrapping_add(0x1000);
+        let text_bytes = match lsass_reader.read_bytes(text_vaddr, TEXT_SECTION_SCAN_SIZE) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // Scan for module-specific Skeleton Key patterns.
+        scan_module_patterns(&dll_name_lower, text_vaddr, &text_bytes, &mut indicators);
+    }
+
+    Ok(indicators)
+}
+
+/// Check whether a DLL was loaded from a non-standard path.
+///
+/// Legitimate Windows system DLLs load from `\SystemRoot\System32\` or
+/// `C:\Windows\System32\`. A module loaded from elsewhere may indicate
+/// a DLL side-loading or masquerade attack.
+fn is_suspicious_dll_path(full_path: &str) -> bool {
+    let path_lower = full_path.to_ascii_lowercase();
+    if path_lower.is_empty() {
+        return false;
+    }
+    let standard_prefixes = [
+        "c:\\windows\\system32\\",
+        "\\systemroot\\system32\\",
+        "\\??\\c:\\windows\\system32\\",
+    ];
+    !standard_prefixes.iter().any(|p| path_lower.starts_with(p))
+}
+
+/// Scan a target module's .text section bytes for Skeleton Key byte patterns.
+fn scan_module_patterns(
+    module: &str,
+    text_vaddr: u64,
+    text_bytes: &[u8],
+    indicators: &mut Vec<SkeletonKeyIndicator>,
+) {
+    match module {
+        "msv1_0.dll" => scan_nop_sled(module, "auth_patch", text_vaddr, text_bytes, indicators),
+        "kdcsvc.dll" => scan_kdc_patterns(module, text_vaddr, text_bytes, indicators),
+        "cryptdll.dll" => scan_nop_sled(module, "rc4_patch", text_vaddr, text_bytes, indicators),
+        "lsasrv.dll" => scan_nop_sled(module, "auth_patch", text_vaddr, text_bytes, indicators),
+        _ => {}
+    }
+}
+
+/// Scan for NOP sled patterns (5+ consecutive 0x90 bytes).
+///
+/// The Skeleton Key attack patches authentication functions with NOP
+/// instructions to bypass credential validation checks.
+fn scan_nop_sled(
+    module: &str,
+    pattern_type: &str,
+    text_vaddr: u64,
+    text_bytes: &[u8],
+    indicators: &mut Vec<SkeletonKeyIndicator>,
+) {
+    if let Some(offset) = find_nop_sled(text_bytes, NOP_SLED_THRESHOLD) {
+        let (desc, conf) = classify_skeleton_key_pattern(module, pattern_type);
+        indicators.push(SkeletonKeyIndicator {
+            indicator_type: pattern_type.into(),
+            address: text_vaddr.wrapping_add(offset as u64),
+            module: module.into(),
+            description: desc,
+            confidence: conf,
+            is_detected: true,
+        });
+    }
+}
+
+/// Scan kdcsvc.dll for patched conditional jumps.
+///
+/// The attack replaces `JNZ` (0x75) instructions with `JMP` (0xEB) near
+/// `KdcVerifyPacSignature` to skip Kerberos PAC validation.
+fn scan_kdc_patterns(
+    module: &str,
+    text_vaddr: u64,
+    text_bytes: &[u8],
+    indicators: &mut Vec<SkeletonKeyIndicator>,
+) {
+    if let Some(offset) = find_patched_conditional_jump(text_bytes) {
+        let (desc, conf) = classify_skeleton_key_pattern(module, "kdc_patch");
+        indicators.push(SkeletonKeyIndicator {
+            indicator_type: "kdc_patch".into(),
+            address: text_vaddr.wrapping_add(offset as u64),
+            module: module.into(),
+            description: desc,
+            confidence: conf,
+            is_detected: true,
+        });
+    }
+}
+
+/// Find a NOP sled of at least `min_count` consecutive 0x90 bytes.
+///
+/// Returns the byte offset of the first NOP in the sled, or `None`.
+fn find_nop_sled(data: &[u8], min_count: usize) -> Option<usize> {
+    let mut run_start = 0;
+    let mut run_len = 0;
+    for (i, &b) in data.iter().enumerate() {
+        if b == 0x90 {
+            if run_len == 0 {
+                run_start = i;
+            }
+            run_len += 1;
+            if run_len >= min_count {
+                return Some(run_start);
+            }
+        } else {
+            run_len = 0;
+        }
+    }
+    None
+}
+
+/// Find a patched conditional jump: `0xEB` (JMP short) preceded by a
+/// comparison-family opcode, suggesting it replaced a `0x75` (JNZ).
+fn find_patched_conditional_jump(data: &[u8]) -> Option<usize> {
+    for i in 1..data.len().saturating_sub(1) {
+        if data[i] == 0xEB {
+            let prev = data[i - 1];
+            if matches!(prev, 0x83 | 0x85 | 0x3B | 0x84 | 0x39 | 0xF6 | 0xF7) {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -110,7 +306,7 @@ mod tests {
     #[test]
     fn walk_no_symbol_returns_empty() {
         // When PsActiveProcessHead is not in symbols, walker should return empty.
-        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::test_builders::PageTableBuilder;
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
@@ -132,7 +328,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_skeleton_key(&reader).unwrap();
-        assert!(results.is_empty(), "no PsActiveProcessHead should yield empty results");
+        assert!(
+            results.is_empty(),
+            "no PsActiveProcessHead should yield empty results"
+        );
     }
 
     #[test]

@@ -15,6 +15,12 @@ use crate::{dll, Result};
 /// Maximum number of hooks to collect per process before stopping.
 const MAX_HOOKS: usize = 4096;
 
+/// Maximum number of import descriptors to parse per module.
+const MAX_IMPORT_DESCRIPTORS: usize = 1024;
+
+/// Maximum number of thunk entries per import descriptor.
+const MAX_THUNKS: usize = 8192;
+
 /// Information about a single detected IAT hook.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct IatHookInfo {
@@ -44,7 +50,7 @@ pub struct IatHookInfo {
 /// - `hook_target` falls outside the expected module's address range, **or**
 /// - `hook_module` is empty or `"unknown"` (unresolvable destination).
 ///
-/// A zero `hook_target` is **not** suspicious — it indicates a NULL /
+/// A zero `hook_target` is **not** suspicious -- it indicates a NULL /
 /// not-yet-resolved import thunk and is common for delay-loaded DLLs.
 pub fn classify_iat_hook(
     hook_target: u64,
@@ -52,19 +58,16 @@ pub fn classify_iat_hook(
     expected_module_size: u32,
     hook_module: &str,
 ) -> bool {
-    // Zero target is benign (delay-load / not yet resolved)
     if hook_target == 0 {
         return false;
     }
 
     let end = expected_module_base.saturating_add(u64::from(expected_module_size));
 
-    // Outside expected module range → suspicious
     if hook_target < expected_module_base || hook_target >= end {
         return true;
     }
 
-    // Inside expected range but hook_module is empty/unknown → suspicious
     let normalized = hook_module.trim().to_ascii_lowercase();
     if normalized.is_empty() || normalized == "unknown" {
         return true;
@@ -76,36 +79,404 @@ pub fn classify_iat_hook(
 /// Walk the IAT of all loaded DLLs for a given process and detect hooks.
 ///
 /// `eprocess_addr` is the virtual address of the `_EPROCESS` structure.
-/// The function switches to the process address space (via `_KPROCESS.DirectoryTableBase`)
-/// and walks `PEB → PEB_LDR_DATA → InLoadOrderModuleList`. For each DLL it
-/// parses the PE Import Directory and compares each IAT entry against the
-/// expected target DLL's address range.
+/// The function switches to the process address space (via
+/// `_KPROCESS.DirectoryTableBase`) and walks
+/// `PEB -> PEB_LDR_DATA -> InLoadOrderModuleList`. For each DLL it parses
+/// the PE Import Directory and compares each IAT entry against the expected
+/// target DLL's address range.
 ///
 /// Returns a vector of [`IatHookInfo`] for every detected hook.
 /// At most [`MAX_HOOKS`] entries are returned per process.
-pub fn walk_iat_hooks<P: PhysicalMemoryProvider>(
+pub fn walk_iat_hooks<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     eprocess_addr: u64,
     pid: u32,
     process_name: &str,
 ) -> Result<Vec<IatHookInfo>> {
-    todo!("walk_iat_hooks: read PEB, enumerate DLLs, parse PE import tables, detect hooks")
+    let peb_addr: u64 = reader.read_field(eprocess_addr, "_EPROCESS", "Peb")?;
+    if peb_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    let cr3: u64 = reader.read_field(eprocess_addr, "_KPROCESS", "DirectoryTableBase")?;
+    if cr3 == 0 {
+        return Ok(Vec::new());
+    }
+    let proc_reader = reader.with_cr3(cr3);
+
+    let dlls = match dll::walk_dlls(&proc_reader, peb_addr) {
+        Ok(d) => d,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let module_ranges: Vec<(u64, u64, String)> = dlls
+        .iter()
+        .filter(|d| d.base_addr != 0 && d.size != 0)
+        .map(|d| {
+            (
+                d.base_addr,
+                d.base_addr.saturating_add(d.size),
+                d.name.clone(),
+            )
+        })
+        .collect();
+
+    let mut hooks = Vec::new();
+
+    for dll_info in &dlls {
+        if dll_info.base_addr == 0 {
+            continue;
+        }
+        if hooks.len() >= MAX_HOOKS {
+            break;
+        }
+
+        let module_hooks = parse_module_imports(
+            &proc_reader,
+            dll_info.base_addr,
+            &dll_info.name,
+            &module_ranges,
+            pid,
+            process_name,
+            MAX_HOOKS.saturating_sub(hooks.len()),
+        );
+        hooks.extend(module_hooks);
+    }
+
+    hooks.truncate(MAX_HOOKS);
+    Ok(hooks)
+}
+
+fn resolve_module(addr: u64, module_ranges: &[(u64, u64, String)]) -> String {
+    for (base, end, name) in module_ranges {
+        if addr >= *base && addr < *end {
+            return name.clone();
+        }
+    }
+    String::new()
+}
+
+fn find_module_range(name: &str, module_ranges: &[(u64, u64, String)]) -> Option<(u64, u32)> {
+    let lower = name.trim().to_ascii_lowercase();
+    for (base, end, mod_name) in module_ranges {
+        if mod_name.to_ascii_lowercase() == lower {
+            let size = end.saturating_sub(*base);
+            return Some((*base, size as u32));
+        }
+    }
+    None
+}
+
+fn read_ascii_string<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    vaddr: u64,
+) -> String {
+    match reader.read_bytes(vaddr, 256) {
+        Ok(bytes) => {
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            String::from_utf8_lossy(&bytes[..end]).into_owned()
+        }
+        Err(_) => String::new(),
+    }
+}
+
+fn le_u16(buf: &[u8], off: usize) -> u16 {
+    if off + 2 > buf.len() {
+        return 0;
+    }
+    u16::from_le_bytes([buf[off], buf[off + 1]])
+}
+
+fn le_u32(buf: &[u8], off: usize) -> u32 {
+    if off + 4 > buf.len() {
+        return 0;
+    }
+    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+}
+
+fn le_u64(buf: &[u8], off: usize) -> u64 {
+    if off + 8 > buf.len() {
+        return 0;
+    }
+    u64::from_le_bytes([
+        buf[off],
+        buf[off + 1],
+        buf[off + 2],
+        buf[off + 3],
+        buf[off + 4],
+        buf[off + 5],
+        buf[off + 6],
+        buf[off + 7],
+    ])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_module_imports<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    image_base: u64,
+    module_name: &str,
+    module_ranges: &[(u64, u64, String)],
+    pid: u32,
+    process_name: &str,
+    remaining: usize,
+) -> Vec<IatHookInfo> {
+    let Ok(header) = reader.read_bytes(image_base, 1024) else {
+        return Vec::new();
+    };
+
+    if header.len() < 0x40 || header[0] != 0x4D || header[1] != 0x5A {
+        return Vec::new();
+    }
+
+    let e_lfanew = le_u32(&header, 0x3C) as usize;
+    if e_lfanew == 0 || e_lfanew + 4 > header.len() {
+        return Vec::new();
+    }
+
+    if header.get(e_lfanew) != Some(&b'P')
+        || header.get(e_lfanew + 1) != Some(&b'E')
+        || header.get(e_lfanew + 2) != Some(&0)
+        || header.get(e_lfanew + 3) != Some(&0)
+    {
+        return Vec::new();
+    }
+
+    let coff_off = e_lfanew + 4;
+    if coff_off + 20 > header.len() {
+        return Vec::new();
+    }
+
+    let opt_off = coff_off + 20;
+    if opt_off + 2 > header.len() {
+        return Vec::new();
+    }
+
+    let opt_magic = le_u16(&header, opt_off);
+    let is_pe32plus = opt_magic == 0x020B;
+
+    let import_dir_off = if is_pe32plus {
+        opt_off + 120
+    } else {
+        opt_off + 104
+    };
+
+    let (import_rva, import_size) = if import_dir_off + 8 <= header.len() {
+        (
+            le_u32(&header, import_dir_off),
+            le_u32(&header, import_dir_off + 4),
+        )
+    } else {
+        let Ok(ext) = reader.read_bytes(image_base + import_dir_off as u64, 8) else {
+            return Vec::new();
+        };
+        if ext.len() < 8 {
+            return Vec::new();
+        }
+        (le_u32(&ext, 0), le_u32(&ext, 4))
+    };
+
+    if import_rva == 0 || import_size == 0 {
+        return Vec::new();
+    }
+
+    parse_import_descriptors(
+        reader,
+        image_base,
+        import_rva,
+        import_size,
+        is_pe32plus,
+        module_name,
+        module_ranges,
+        pid,
+        process_name,
+        remaining,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_import_descriptors<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    image_base: u64,
+    import_rva: u32,
+    import_size: u32,
+    is_pe32plus: bool,
+    module_name: &str,
+    module_ranges: &[(u64, u64, String)],
+    pid: u32,
+    process_name: &str,
+    remaining: usize,
+) -> Vec<IatHookInfo> {
+    let mut results = Vec::new();
+    let import_vaddr = image_base.wrapping_add(u64::from(import_rva));
+
+    let read_size = (import_size as usize).min(MAX_IMPORT_DESCRIPTORS * 20);
+    let Ok(import_data) = reader.read_bytes(import_vaddr, read_size) else {
+        return results;
+    };
+
+    let thunk_size: usize = if is_pe32plus { 8 } else { 4 };
+
+    let mut desc_off = 0;
+    while desc_off + 20 <= import_data.len() {
+        if results.len() >= remaining {
+            break;
+        }
+
+        let ilt_rva = le_u32(&import_data, desc_off);
+        let name_rva = le_u32(&import_data, desc_off + 12);
+        let iat_rva = le_u32(&import_data, desc_off + 16);
+
+        if ilt_rva == 0 && name_rva == 0 && iat_rva == 0 {
+            break;
+        }
+
+        desc_off += 20;
+
+        if iat_rva == 0 {
+            continue;
+        }
+
+        let original_target = if name_rva != 0 {
+            read_ascii_string(reader, image_base.wrapping_add(u64::from(name_rva)))
+        } else {
+            String::new()
+        };
+
+        let (expected_base, expected_size) =
+            find_module_range(&original_target, module_ranges).unwrap_or((0, 0));
+
+        let ilt_rva_effective = if ilt_rva != 0 { ilt_rva } else { iat_rva };
+
+        let iat_vaddr = image_base.wrapping_add(u64::from(iat_rva));
+        let ilt_vaddr = image_base.wrapping_add(u64::from(ilt_rva_effective));
+
+        let max_bytes = MAX_THUNKS * thunk_size;
+        let Ok(iat_bytes) = reader.read_bytes(iat_vaddr, max_bytes) else {
+            continue;
+        };
+        let ilt_bytes = if ilt_rva != 0 && ilt_rva != iat_rva {
+            reader.read_bytes(ilt_vaddr, max_bytes).ok()
+        } else {
+            None
+        };
+
+        let mut thunk_idx = 0;
+        while thunk_idx < MAX_THUNKS {
+            if results.len() >= remaining {
+                break;
+            }
+
+            let byte_off = thunk_idx * thunk_size;
+            if byte_off + thunk_size > iat_bytes.len() {
+                break;
+            }
+
+            let iat_entry = if is_pe32plus {
+                le_u64(&iat_bytes, byte_off)
+            } else {
+                u64::from(le_u32(&iat_bytes, byte_off))
+            };
+
+            if iat_entry == 0 {
+                break;
+            }
+
+            thunk_idx += 1;
+
+            let func_name = read_import_name(
+                reader,
+                &ilt_bytes,
+                byte_off,
+                thunk_size,
+                is_pe32plus,
+                image_base,
+            );
+
+            let hook_module_name = resolve_module(iat_entry, module_ranges);
+
+            let is_suspicious = if expected_base != 0 && expected_size != 0 {
+                classify_iat_hook(iat_entry, expected_base, expected_size, &hook_module_name)
+            } else {
+                false
+            };
+
+            if is_suspicious {
+                results.push(IatHookInfo {
+                    pid,
+                    process_name: process_name.to_string(),
+                    hooked_module: module_name.to_string(),
+                    hooked_function: func_name,
+                    iat_address: iat_vaddr + byte_off as u64,
+                    original_target: original_target.clone(),
+                    hook_target: iat_entry,
+                    hook_module: hook_module_name,
+                    is_suspicious,
+                });
+            }
+        }
+    }
+
+    results
+}
+
+fn read_import_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    ilt_bytes: &Option<Vec<u8>>,
+    byte_off: usize,
+    thunk_size: usize,
+    is_pe32plus: bool,
+    image_base: u64,
+) -> String {
+    let ilt_entry = if let Some(ref ilt) = ilt_bytes {
+        if byte_off + thunk_size <= ilt.len() {
+            if is_pe32plus {
+                le_u64(ilt, byte_off)
+            } else {
+                u64::from(le_u32(ilt, byte_off))
+            }
+        } else {
+            return String::new();
+        }
+    } else {
+        return String::new();
+    };
+
+    if ilt_entry == 0 {
+        return String::new();
+    }
+
+    let ordinal_flag = if is_pe32plus {
+        ilt_entry & (1u64 << 63) != 0
+    } else {
+        ilt_entry & (1u64 << 31) != 0
+    };
+
+    if ordinal_flag {
+        let ordinal = (ilt_entry & 0xFFFF) as u16;
+        return format!("Ordinal#{ordinal}");
+    }
+
+    let name_rva = (ilt_entry & 0x7FFF_FFFF) as u32;
+
+    if name_rva == 0 {
+        return String::new();
+    }
+
+    let name_vaddr = image_base
+        .wrapping_add(u64::from(name_rva))
+        .wrapping_add(2);
+    read_ascii_string(reader, name_vaddr)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ---------------------------------------------------------------
-    // classify_iat_hook unit tests
-    // ---------------------------------------------------------------
-
     #[test]
     fn classify_target_in_module_benign() {
-        // Hook target is inside expected module range → not suspicious
         let base: u64 = 0x7FF8_0000_0000;
-        let size: u32 = 0x10_0000; // 1 MiB
-        let target = base + 0x1234; // well within range
+        let size: u32 = 0x10_0000;
+        let target = base + 0x1234;
         assert!(
             !classify_iat_hook(target, base, size, "kernel32.dll"),
             "target inside module range should not be suspicious"
@@ -114,10 +485,9 @@ mod tests {
 
     #[test]
     fn classify_target_outside_module_suspicious() {
-        // Hook target outside expected module range → suspicious
         let base: u64 = 0x7FF8_0000_0000;
         let size: u32 = 0x10_0000;
-        let target = base + u64::from(size) + 0x1000; // past the end
+        let target = base + u64::from(size) + 0x1000;
         assert!(
             classify_iat_hook(target, base, size, "kernel32.dll"),
             "target outside module range should be suspicious"
@@ -126,7 +496,6 @@ mod tests {
 
     #[test]
     fn classify_unknown_hook_module_suspicious() {
-        // Target inside range but hook_module is empty → suspicious
         let base: u64 = 0x7FF8_0000_0000;
         let size: u32 = 0x10_0000;
         let target = base + 0x500;
@@ -142,7 +511,6 @@ mod tests {
 
     #[test]
     fn classify_zero_target_benign() {
-        // Zero target (delay-load / unresolved) → not suspicious
         let base: u64 = 0x7FF8_0000_0000;
         let size: u32 = 0x10_0000;
         assert!(
@@ -153,7 +521,6 @@ mod tests {
 
     #[test]
     fn walk_no_peb_returns_empty() {
-        // When PEB is null, walk_iat_hooks should return Ok(empty vec)
         use memf_core::object_reader::ObjectReader;
         use memf_core::test_builders::{flags, PageTableBuilder};
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
@@ -163,14 +530,11 @@ mod tests {
         let isf = IsfBuilder::windows_kernel_preset().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
-        // Build an _EPROCESS with PEB = 0 (like System process)
         let eproc_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let eproc_paddr: u64 = 0x0090_0000;
 
         let mut eproc_data = vec![0u8; 8192];
-        // DirectoryTableBase@0x28 — we'll patch after build
         eproc_data[0x28..0x30].copy_from_slice(&0x1AB000u64.to_le_bytes());
-        // Peb@0x550 = 0 (null)
         eproc_data[0x550..0x558].copy_from_slice(&0u64.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
@@ -209,8 +573,17 @@ mod tests {
         };
 
         let json = serde_json::to_string(&hook).expect("IatHookInfo should serialize to JSON");
-        assert!(json.contains("malware.exe"), "JSON should contain process name");
-        assert!(json.contains("NtCreateFile"), "JSON should contain function name");
-        assert!(json.contains("evil.dll"), "JSON should contain hook module");
+        assert!(
+            json.contains("malware.exe"),
+            "JSON should contain process name"
+        );
+        assert!(
+            json.contains("NtCreateFile"),
+            "JSON should contain function name"
+        );
+        assert!(
+            json.contains("evil.dll"),
+            "JSON should contain hook module"
+        );
     }
 }

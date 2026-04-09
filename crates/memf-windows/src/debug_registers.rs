@@ -12,6 +12,23 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::{process, thread};
+
+/// Maximum number of results to collect (safety limit).
+const MAX_RESULTS: usize = 4096;
+
+// Default offsets for Windows 10/11 x64 when symbols are unavailable.
+// _KTHREAD.TrapFrame offset (pointer to _KTRAP_FRAME).
+const DEFAULT_KTHREAD_TRAP_FRAME: u64 = 0x90;
+
+// _KTRAP_FRAME debug register offsets (Windows 10/11 x64).
+const DEFAULT_KTRAP_FRAME_DR0: u64 = 0x00;
+const DEFAULT_KTRAP_FRAME_DR1: u64 = 0x08;
+const DEFAULT_KTRAP_FRAME_DR2: u64 = 0x10;
+const DEFAULT_KTRAP_FRAME_DR3: u64 = 0x18;
+const DEFAULT_KTRAP_FRAME_DR6: u64 = 0x20;
+const DEFAULT_KTRAP_FRAME_DR7: u64 = 0x28;
+
 /// Information about debug register state for a single thread.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DebugRegisterInfo {
@@ -64,20 +81,134 @@ pub fn classify_debug_registers(dr0: u64, dr1: u64, dr2: u64, dr3: u64, dr7: u64
         .any(|&(dr, enable_bit)| dr != 0 && (dr7 & enable_bit) != 0)
 }
 
+/// Read a u64 value from memory, returning 0 on failure.
+fn read_u64<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u64 {
+    reader
+        .read_bytes(addr, 8)
+        .ok()
+        .and_then(|b| b[..8].try_into().ok().map(u64::from_le_bytes))
+        .unwrap_or(0)
+}
+
+/// Read the debug registers from a thread's trap frame.
+///
+/// Returns `None` if the trap frame pointer is null or unreadable.
+fn read_thread_debug_regs<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    kthread_addr: u64,
+) -> Option<(u64, u64, u64, u64, u64, u64)> {
+    // Resolve _KTHREAD.TrapFrame offset (pointer to _KTRAP_FRAME).
+    let trap_frame_off = reader
+        .symbols()
+        .field_offset("_KTHREAD", "TrapFrame")
+        .unwrap_or(DEFAULT_KTHREAD_TRAP_FRAME);
+
+    let trap_frame_ptr = read_u64(reader, kthread_addr.wrapping_add(trap_frame_off));
+    if trap_frame_ptr == 0 {
+        return None;
+    }
+
+    // Resolve _KTRAP_FRAME debug register offsets, falling back to defaults.
+    let dr0_off = reader
+        .symbols()
+        .field_offset("_KTRAP_FRAME", "Dr0")
+        .unwrap_or(DEFAULT_KTRAP_FRAME_DR0);
+    let dr1_off = reader
+        .symbols()
+        .field_offset("_KTRAP_FRAME", "Dr1")
+        .unwrap_or(DEFAULT_KTRAP_FRAME_DR1);
+    let dr2_off = reader
+        .symbols()
+        .field_offset("_KTRAP_FRAME", "Dr2")
+        .unwrap_or(DEFAULT_KTRAP_FRAME_DR2);
+    let dr3_off = reader
+        .symbols()
+        .field_offset("_KTRAP_FRAME", "Dr3")
+        .unwrap_or(DEFAULT_KTRAP_FRAME_DR3);
+    let dr6_off = reader
+        .symbols()
+        .field_offset("_KTRAP_FRAME", "Dr6")
+        .unwrap_or(DEFAULT_KTRAP_FRAME_DR6);
+    let dr7_off = reader
+        .symbols()
+        .field_offset("_KTRAP_FRAME", "Dr7")
+        .unwrap_or(DEFAULT_KTRAP_FRAME_DR7);
+
+    let dr0 = read_u64(reader, trap_frame_ptr.wrapping_add(dr0_off));
+    let dr1 = read_u64(reader, trap_frame_ptr.wrapping_add(dr1_off));
+    let dr2 = read_u64(reader, trap_frame_ptr.wrapping_add(dr2_off));
+    let dr3 = read_u64(reader, trap_frame_ptr.wrapping_add(dr3_off));
+    let dr6 = read_u64(reader, trap_frame_ptr.wrapping_add(dr6_off));
+    let dr7 = read_u64(reader, trap_frame_ptr.wrapping_add(dr7_off));
+
+    Some((dr0, dr1, dr2, dr3, dr6, dr7))
+}
+
 /// Walk all processes and threads to extract debug register state.
 ///
 /// For each thread, reads `_KTHREAD.TrapFrame` to locate the `_KTRAP_FRAME`,
 /// then reads the DR0-DR3, DR6, and DR7 fields to detect active hardware
 /// breakpoints.
 ///
-/// Returns `Ok(Vec::new())` if the `PsActiveProcessHead` symbol is missing
-/// (graceful degradation).
+/// Returns `Ok(Vec::new())` if the process list cannot be walked (graceful
+/// degradation).
 pub fn walk_debug_registers<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     process_list_head: u64,
 ) -> crate::Result<Vec<DebugRegisterInfo>> {
-    let _ = (reader, process_list_head);
-    todo!()
+    // Graceful degradation: if we cannot walk the process list (missing
+    // symbols for _EPROCESS.ActiveProcessLinks, etc.), return empty.
+    let procs = match process::walk_processes(reader, process_list_head) {
+        Ok(p) => p,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut results = Vec::new();
+
+    for proc in &procs {
+        let pid = proc.pid as u32;
+        let process_name = proc.image_name.clone();
+
+        // Walk threads for this process; skip on failure.
+        let threads = match thread::walk_threads(reader, proc.vaddr, proc.pid) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        for thr in &threads {
+            let (dr0, dr1, dr2, dr3, dr6, dr7) =
+                match read_thread_debug_regs(reader, thr.vaddr) {
+                    Some(regs) => regs,
+                    None => continue,
+                };
+
+            // Skip threads where all debug registers are zero (the common case).
+            if dr0 == 0 && dr1 == 0 && dr2 == 0 && dr3 == 0 && dr6 == 0 && dr7 == 0 {
+                continue;
+            }
+
+            let is_suspicious = classify_debug_registers(dr0, dr1, dr2, dr3, dr7);
+
+            results.push(DebugRegisterInfo {
+                pid,
+                tid: thr.tid as u32,
+                process_name: process_name.clone(),
+                dr0,
+                dr1,
+                dr2,
+                dr3,
+                dr6,
+                dr7,
+                is_suspicious,
+            });
+
+            if results.len() >= MAX_RESULTS {
+                return Ok(results);
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -158,7 +289,7 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        // Build a bare ISF with NO PsActiveProcessHead symbol.
+        // Build a bare ISF with NO _EPROCESS or related struct symbols.
         let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
@@ -174,8 +305,7 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         // The walker takes an explicit process_list_head, but with no symbols
-        // for _EPROCESS fields it should degrade gracefully. Since the walk
-        // function is still todo!(), this test will fail in RED phase.
+        // for _EPROCESS fields it should degrade gracefully and return empty.
         let results = walk_debug_registers(&reader, page_vaddr).unwrap();
         assert!(results.is_empty());
     }

@@ -14,6 +14,7 @@ pub mod cachedump;
 pub mod clipboard;
 pub mod cmdline;
 pub mod consoles;
+pub mod crashinfo;
 pub mod debug_registers;
 pub mod desktops;
 pub mod device_tree;
