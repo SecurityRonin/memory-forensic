@@ -21,6 +21,7 @@ pub mod fs;
 pub mod ipc;
 pub mod kthread;
 pub mod kaslr;
+pub mod ld_preload;
 pub mod malfind;
 pub mod maps;
 pub mod modules;
