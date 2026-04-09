@@ -103,7 +103,94 @@ pub fn classify_bigpool(tag: &str, size: u64) -> bool {
 pub fn walk_bigpools<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<BigPoolEntry>> {
-    todo!()
+    // Locate the PoolBigPageTable pointer symbol.
+    let Some(table_ptr_addr) = reader.symbols().symbol_address("PoolBigPageTable") else {
+        return Ok(Vec::new()); // graceful degradation
+    };
+
+    // PoolBigPageTable is a pointer — dereference to get the table VA.
+    let table_addr: u64 = match reader.read_bytes(table_ptr_addr, 8) {
+        Ok(bytes) => {
+            let arr: [u8; 8] = match bytes[..8].try_into() {
+                Ok(a) => a,
+                Err(_) => return Ok(Vec::new()),
+            };
+            u64::from_le_bytes(arr)
+        }
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if table_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read entry count from PoolBigPageTableSize.
+    let entry_count = match reader.symbols().symbol_address("PoolBigPageTableSize") {
+        Some(size_addr) => match reader.read_bytes(size_addr, 8) {
+            Ok(bytes) => {
+                let arr: [u8; 8] = match bytes[..8].try_into() {
+                    Ok(a) => a,
+                    Err(_) => return Ok(Vec::new()),
+                };
+                let raw = u64::from_le_bytes(arr);
+                raw.min(MAX_BIGPOOL_ENTRIES)
+            }
+            Err(_) => return Ok(Vec::new()),
+        },
+        None => return Ok(Vec::new()),
+    };
+
+    if entry_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Each _POOL_TRACKER_BIG_PAGES entry is 24 bytes:
+    //   Va:            u64 @ 0x00
+    //   Key:           u32 @ 0x08
+    //   PoolType:      u32 @ 0x0C
+    //   NumberOfBytes: u64 @ 0x10
+    const ENTRY_SIZE: u64 = 24;
+
+    let total_bytes = entry_count * ENTRY_SIZE;
+    let table_data = reader.read_bytes(table_addr, total_bytes as usize)?;
+
+    let mut results = Vec::new();
+
+    for i in 0..entry_count {
+        let offset = (i * ENTRY_SIZE) as usize;
+        let entry = &table_data[offset..offset + ENTRY_SIZE as usize];
+
+        let va = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let tag_raw = u32::from_le_bytes(entry[8..12].try_into().unwrap());
+        let pool_type_raw = u32::from_le_bytes(entry[12..16].try_into().unwrap());
+        let number_of_bytes = u64::from_le_bytes(entry[16..24].try_into().unwrap());
+
+        // Skip completely empty entries (all zeros).
+        if va == 0 && tag_raw == 0 && number_of_bytes == 0 {
+            continue;
+        }
+
+        // Free entries have bit 0 of Va set.
+        let is_free = (va & 1) != 0;
+        let address = va & !1u64; // mask off free bit
+
+        // Decode the 4-byte ASCII tag.
+        let tag_bytes = tag_raw.to_le_bytes();
+        let pool_tag: String = tag_bytes
+            .iter()
+            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '\0' })
+            .collect();
+
+        results.push(BigPoolEntry {
+            address,
+            pool_tag,
+            size: number_of_bytes,
+            pool_type: pool_type_name(pool_type_raw),
+            is_free,
+        });
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
