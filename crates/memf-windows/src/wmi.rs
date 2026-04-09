@@ -15,8 +15,9 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::unicode::read_unicode_string;
+
 /// Maximum number of WMI binding entries to iterate (safety limit).
-#[allow(dead_code)]
 const MAX_BINDINGS: usize = 4096;
 
 /// Information about a WMI persistent event subscription recovered from memory.
@@ -46,9 +47,108 @@ pub struct WmiSubscriptionInfo {
 /// Returns an error if memory reads fail for the binding table after
 /// the symbol has been located and validated.
 pub fn walk_wmi_subscriptions<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<WmiSubscriptionInfo>> {
-    todo!("DFIR-26: implement WMI subscription walker")
+    // Try WmipBindingTable first (Win10+), then CimBindingTable (older).
+    let table_addr = match reader.symbols().symbol_address("WmipBindingTable") {
+        Some(addr) => addr,
+        None => match reader.symbols().symbol_address("CimBindingTable") {
+            Some(addr) => addr,
+            None => return Ok(Vec::new()),
+        },
+    };
+
+    // Read the pointer to the actual binding array.
+    let array_addr: u64 = match reader.read_bytes(table_addr, 8) {
+        Ok(bytes) => {
+            let arr: [u8; 8] = match bytes[..8].try_into() {
+                Ok(a) => a,
+                Err(_) => return Ok(Vec::new()),
+            };
+            u64::from_le_bytes(arr)
+        }
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if array_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read binding count from WmipBindingCount symbol.
+    let binding_count = match reader.symbols().symbol_address("WmipBindingCount") {
+        Some(count_addr) => match reader.read_bytes(count_addr, 4) {
+            Ok(bytes) => {
+                let arr: [u8; 4] = match bytes[..4].try_into() {
+                    Ok(a) => a,
+                    Err(_) => return Ok(Vec::new()),
+                };
+                (u32::from_le_bytes(arr) as usize).min(MAX_BINDINGS)
+            }
+            Err(_) => return Ok(Vec::new()),
+        },
+        None => MAX_BINDINGS,
+    };
+
+    // Get field offsets for _WMI_BINDING structure.
+    let filter_name_offset = reader
+        .symbols()
+        .field_offset("_WMI_BINDING", "FilterName")
+        .unwrap_or(0x00);
+    let consumer_name_offset = reader
+        .symbols()
+        .field_offset("_WMI_BINDING", "ConsumerName")
+        .unwrap_or(0x10);
+    let consumer_type_offset = reader
+        .symbols()
+        .field_offset("_WMI_BINDING", "ConsumerType")
+        .unwrap_or(0x20);
+    let query_offset = reader
+        .symbols()
+        .field_offset("_WMI_BINDING", "Query")
+        .unwrap_or(0x30);
+
+    let binding_size = reader
+        .symbols()
+        .struct_size("_WMI_BINDING")
+        .unwrap_or(0x80) as u64;
+
+    let mut subscriptions = Vec::new();
+
+    for i in 0..binding_count {
+        let entry_addr = array_addr + (i as u64) * binding_size;
+
+        // Read filter name (UNICODE_STRING).
+        let filter_name =
+            read_unicode_string(reader, entry_addr + filter_name_offset).unwrap_or_default();
+
+        // Skip empty entries.
+        if filter_name.is_empty() {
+            continue;
+        }
+
+        // Read consumer name (UNICODE_STRING).
+        let consumer_name =
+            read_unicode_string(reader, entry_addr + consumer_name_offset).unwrap_or_default();
+
+        // Read consumer type (UNICODE_STRING).
+        let consumer_type =
+            read_unicode_string(reader, entry_addr + consumer_type_offset).unwrap_or_default();
+
+        // Read WQL query (UNICODE_STRING).
+        let query = read_unicode_string(reader, entry_addr + query_offset).unwrap_or_default();
+
+        let is_suspicious = classify_wmi_consumer(&consumer_type, &query);
+
+        subscriptions.push(WmiSubscriptionInfo {
+            filter_name,
+            consumer_name,
+            consumer_type,
+            query,
+            is_suspicious,
+        });
+    }
+
+    Ok(subscriptions)
 }
 
 /// Classify whether a WMI event subscription is suspicious.
@@ -57,8 +157,31 @@ pub fn walk_wmi_subscriptions<P: PhysicalMemoryProvider>(
 /// code (`CommandLineEventConsumer`, `ActiveScriptEventConsumer`) or if
 /// the WQL query targets process creation events -- common indicators of
 /// WMI-based persistence used by threat actors.
-pub fn classify_wmi_consumer(_consumer_type: &str, _query: &str) -> bool {
-    todo!("DFIR-26: implement WMI consumer classification")
+pub fn classify_wmi_consumer(consumer_type: &str, query: &str) -> bool {
+    // Suspicious consumer types that can execute arbitrary code.
+    let suspicious_types = [
+        "CommandLineEventConsumer",
+        "ActiveScriptEventConsumer",
+    ];
+
+    if suspicious_types
+        .iter()
+        .any(|t| consumer_type.contains(t))
+    {
+        return true;
+    }
+
+    // Suspicious WQL query patterns targeting process creation.
+    let query_lower = query.to_lowercase();
+    let suspicious_queries = [
+        "win32_processstarttrace",
+        "__instancecreationevent",
+        "win32_processstoptrace",
+    ];
+
+    suspicious_queries
+        .iter()
+        .any(|q| query_lower.contains(q))
 }
 
 #[cfg(test)]
