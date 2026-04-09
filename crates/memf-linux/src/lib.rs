@@ -47,6 +47,7 @@ pub mod ssh_keys;
 pub mod syscalls;
 pub mod thread;
 pub mod tty_check;
+pub mod unix_sockets;
 pub mod zombie_orphan;
 pub mod types;
 
