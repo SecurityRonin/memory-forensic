@@ -31,6 +31,7 @@ pub mod ld_preload;
 pub mod malfind;
 pub mod maps;
 pub mod modules;
+pub mod modxview;
 pub mod namespaces;
 pub mod netfilter;
 pub mod network;
