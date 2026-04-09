@@ -7,6 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::unicode::read_unicode_string;
 use crate::{FileObjectInfo, Result, WinHandleInfo};
 
 /// Maximum number of file objects to return (safety limit).
@@ -20,10 +21,37 @@ const MAX_FILE_OBJECTS: usize = 10_000;
 ///
 /// Returns file objects sorted by file name.
 pub fn walk_file_objects<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _handles: &[WinHandleInfo],
+    reader: &ObjectReader<P>,
+    handles: &[WinHandleInfo],
 ) -> Result<Vec<FileObjectInfo>> {
-    todo!("DFIR-13: implement walk_file_objects")
+    // Resolve _OBJECT_HEADER.Body offset to find the _FILE_OBJECT body
+    let body_offset = reader
+        .symbols()
+        .field_offset("_OBJECT_HEADER", "Body")
+        .ok_or_else(|| crate::Error::Walker("missing _OBJECT_HEADER.Body offset".into()))?;
+
+    let mut results = Vec::new();
+
+    for handle in handles {
+        if handle.object_type != "File" {
+            continue;
+        }
+
+        if results.len() >= MAX_FILE_OBJECTS {
+            break;
+        }
+
+        // The handle's object_addr points to the _OBJECT_HEADER.
+        // The _FILE_OBJECT body starts at object_addr + Body offset.
+        let file_obj_addr = handle.object_addr.wrapping_add(body_offset);
+
+        if let Ok(info) = read_file_object(reader, file_obj_addr, handle.granted_access) {
+            results.push(info);
+        }
+    }
+
+    results.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    Ok(results)
 }
 
 /// Convenience function that combines handle walking with file object extraction.
@@ -31,9 +59,107 @@ pub fn walk_file_objects<P: PhysicalMemoryProvider>(
 /// Calls `walk_handles` to enumerate all process handles, then passes them
 /// to `walk_file_objects`.  Falls back to an empty `Vec` on handle walking failure.
 pub fn scan_file_objects<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<FileObjectInfo>> {
-    todo!("DFIR-13: implement scan_file_objects")
+    let ps_head = reader
+        .symbols()
+        .symbol_address("PsActiveProcessHead")
+        .ok_or_else(|| crate::Error::Walker("missing PsActiveProcessHead symbol".into()))?;
+
+    let Ok(handles) = crate::handles::walk_handles(reader, ps_head) else {
+        return Ok(Vec::new());
+    };
+
+    walk_file_objects(reader, &handles)
+}
+
+/// Read a single `_FILE_OBJECT` at the given virtual address.
+fn read_file_object<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    file_obj_addr: u64,
+    access_mask: u32,
+) -> Result<FileObjectInfo> {
+    // Read FileName (_UNICODE_STRING)
+    let filename_off = reader
+        .symbols()
+        .field_offset("_FILE_OBJECT", "FileName")
+        .ok_or_else(|| crate::Error::Walker("missing _FILE_OBJECT.FileName offset".into()))?;
+    let file_name =
+        read_unicode_string(reader, file_obj_addr.wrapping_add(filename_off)).unwrap_or_default();
+
+    // Read Flags (u32)
+    let fo_flags: u32 = reader.read_field(file_obj_addr, "_FILE_OBJECT", "Flags")?;
+
+    // Read CurrentByteOffset as file size proxy
+    let size: u64 = reader
+        .read_field(file_obj_addr, "_FILE_OBJECT", "CurrentByteOffset")
+        .unwrap_or(0);
+
+    // Read boolean fields
+    let delete_pending: u8 = reader
+        .read_field(file_obj_addr, "_FILE_OBJECT", "DeletePending")
+        .unwrap_or(0);
+    let shared_read: u8 = reader
+        .read_field(file_obj_addr, "_FILE_OBJECT", "SharedRead")
+        .unwrap_or(0);
+    let shared_write: u8 = reader
+        .read_field(file_obj_addr, "_FILE_OBJECT", "SharedWrite")
+        .unwrap_or(0);
+    let shared_delete: u8 = reader
+        .read_field(file_obj_addr, "_FILE_OBJECT", "SharedDelete")
+        .unwrap_or(0);
+
+    // Read DeviceObject pointer and resolve device name
+    let device_ptr: u64 = reader
+        .read_field(file_obj_addr, "_FILE_OBJECT", "DeviceObject")
+        .unwrap_or(0);
+    let device_name = resolve_device_name(reader, device_ptr);
+
+    Ok(FileObjectInfo {
+        object_addr: file_obj_addr,
+        file_name,
+        device_name,
+        access_mask,
+        flags: fo_flags,
+        size,
+        delete_pending: delete_pending != 0,
+        shared_read: shared_read != 0,
+        shared_write: shared_write != 0,
+        shared_delete: shared_delete != 0,
+    })
+}
+
+/// Resolve the device name from a `_DEVICE_OBJECT` pointer.
+///
+/// Follows `DeviceObject` to `DriverObject`, then reads the driver name.
+/// Returns an empty string if the device pointer is null or unreadable.
+fn resolve_device_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    device_ptr: u64,
+) -> String {
+    if device_ptr == 0 {
+        return String::new();
+    }
+
+    // Read _DEVICE_OBJECT.DriverObject pointer
+    let driver_obj: u64 = match reader.read_field(device_ptr, "_DEVICE_OBJECT", "DriverObject") {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+
+    if driver_obj == 0 {
+        return String::new();
+    }
+
+    // Read _DRIVER_OBJECT.DriverName (_UNICODE_STRING)
+    let Some(name_off) = reader
+        .symbols()
+        .field_offset("_DRIVER_OBJECT", "DriverName")
+    else {
+        return String::new();
+    };
+
+    read_unicode_string(reader, driver_obj.wrapping_add(name_off)).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -765,6 +765,7 @@ pub struct PoolTagEntry {
 /// and sharing disposition.  Enumerating these is a key DFIR artifact
 /// for understanding what files were open at the time of capture.
 #[derive(Debug, Clone, serde::Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct FileObjectInfo {
     /// Virtual address of the `_FILE_OBJECT` in kernel memory.
     pub object_addr: u64,
