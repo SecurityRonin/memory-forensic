@@ -10,10 +10,10 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::object_directory::{read_object_name, walk_directory};
-use crate::Result;
+use crate::object_directory::walk_directory;
 
-/// Maximum recursion depth when walking nested object directories.
+/// Maximum recursion depth when walking nested object directories to
+/// reach `\Device\NamedPipe`.
 const MAX_DIR_DEPTH: usize = 8;
 
 /// Information about a single named pipe found in kernel memory.
@@ -35,14 +35,140 @@ pub struct NamedPipeInfo {
 pub fn walk_named_pipes<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<NamedPipeInfo>> {
-    todo!()
+    // Resolve ObpRootDirectoryObject → root _OBJECT_DIRECTORY pointer.
+    let root_ptr_addr = match reader.symbols().symbol_address("ObpRootDirectoryObject") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    let root_dir_addr = {
+        let bytes = match reader.read_bytes(root_ptr_addr, 8) {
+            Ok(b) => b,
+            Err(_) => return Ok(Vec::new()),
+        };
+        u64::from_le_bytes(bytes.try_into().expect("8 bytes"))
+    };
+
+    if root_dir_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Walk the path: root → "Device" → "NamedPipe".
+    let named_pipe_dir = match find_subdir_by_path(reader, root_dir_addr, &["Device", "NamedPipe"])
+    {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    // Enumerate all objects in the NamedPipe directory.
+    let entries = walk_directory(reader, named_pipe_dir)?;
+
+    let pipes = entries
+        .into_iter()
+        .map(|(name, _body_addr)| {
+            let classification = classify_pipe(&name);
+            NamedPipeInfo {
+                name,
+                is_suspicious: classification.is_some(),
+                suspicion_reason: classification,
+            }
+        })
+        .collect();
+
+    Ok(pipes)
+}
+
+/// Walk a path of subdirectory names from a starting directory address.
+///
+/// Returns the object body address of the final directory in the path,
+/// or `None` if any segment is not found.
+fn find_subdir_by_path<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    mut dir_addr: u64,
+    segments: &[&str],
+) -> Option<u64> {
+    for (depth, segment) in segments.iter().enumerate() {
+        if depth >= MAX_DIR_DEPTH {
+            return None;
+        }
+        let entries = walk_directory(reader, dir_addr).ok()?;
+        let found = entries.into_iter().find(|(name, _)| name == segment);
+        match found {
+            Some((_name, body_addr)) => dir_addr = body_addr,
+            None => return None,
+        }
+    }
+    Some(dir_addr)
 }
 
 /// Check if a pipe name matches known C2/lateral-movement patterns.
 ///
 /// Returns `Some(reason)` if the name is suspicious, `None` otherwise.
+/// Patterns are checked in order of specificity to avoid false positives.
 pub fn classify_pipe(name: &str) -> Option<String> {
-    todo!()
+    let lower = name.to_ascii_lowercase();
+
+    // ── Cobalt Strike beacon / SSH / post-exploitation pipes ──
+    if lower.starts_with("msagent_") {
+        return Some("Cobalt Strike beacon pipe (msagent_*)".into());
+    }
+    if lower.starts_with("msse-") && lower.ends_with("-server") {
+        return Some("Cobalt Strike beacon pipe (MSSE-*-server)".into());
+    }
+    // postex_ssh_* is Cobalt Strike SSH, must match BEFORE generic postex_*
+    if lower.starts_with("postex_ssh_") {
+        return Some("Cobalt Strike SSH pipe (postex_ssh_*)".into());
+    }
+
+    // ── PsExec / lateral-movement variants ──
+    if lower.starts_with("psexec") {
+        return Some("PsExec lateral movement pipe".into());
+    }
+    if lower.starts_with("remcom") {
+        return Some("PsExec variant (RemCom) lateral movement pipe".into());
+    }
+    if lower.starts_with("csexec") {
+        return Some("PsExec variant (CsExec) lateral movement pipe".into());
+    }
+
+    // ── Meterpreter post-exploitation ──
+    // Generic postex_* (without ssh_) is Meterpreter
+    if lower.starts_with("postex_") {
+        return Some("Meterpreter post-exploitation pipe (postex_*)".into());
+    }
+
+    // ── GUID-like random pipe names (8-4-4-4-12 hex) ──
+    if is_guid_like(&lower) {
+        return Some("GUID-like random pipe name (possible C2 channel)".into());
+    }
+
+    None
+}
+
+/// Check whether a string matches the GUID format: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+/// where each `x` is a hex digit.
+fn is_guid_like(s: &str) -> bool {
+    // GUID = 8-4-4-4-12 = 36 characters total with hyphens
+    if s.len() != 36 {
+        return false;
+    }
+
+    let bytes = s.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match i {
+            8 | 13 | 18 | 23 => {
+                if b != b'-' {
+                    return false;
+                }
+            }
+            _ => {
+                if !b.is_ascii_hexdigit() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
