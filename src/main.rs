@@ -900,6 +900,9 @@ fn cmd_net(
                 .context("failed to walk Linux connections")?;
             if let Some(pid) = pid_filter {
                 conns.retain(|c| c.pid == Some(pid));
+                if conns.is_empty() {
+                    eprintln!("warning: no connections found for PID {pid}");
+                }
             }
             print_connections(&conns, output);
         }
@@ -930,6 +933,9 @@ fn cmd_net(
                     .context("failed to walk Windows TCP endpoints")?;
             if let Some(pid) = pid_filter {
                 conns.retain(|c| c.pid == pid);
+                if conns.is_empty() {
+                    eprintln!("warning: no connections found for PID {pid}");
+                }
             }
             print_win_connections(&conns, output);
         }
@@ -2611,6 +2617,9 @@ fn cmd_check(
                     .context("failed to scan for suspicious memory regions")?;
                 if let Some(pid) = pid_filter {
                     findings.retain(|f| f.pid == pid);
+                    if findings.is_empty() {
+                        eprintln!("warning: no suspicious regions found for PID {pid}");
+                    }
                 }
                 print_malfind(&findings, output);
             }
@@ -2733,6 +2742,9 @@ fn cmd_check(
                     .context("failed to scan Windows memory for suspicious regions")?;
                 if let Some(pid) = pid_filter {
                     findings.retain(|f| f.pid == pid);
+                    if findings.is_empty() {
+                        eprintln!("warning: no suspicious regions found for PID {pid}");
+                    }
                 }
                 print_windows_malfind(&findings, output);
             }
@@ -2762,6 +2774,12 @@ fn cmd_check(
                         }
                     }
                 }
+                if pid_filter.is_some() && all_mods.is_empty() {
+                    eprintln!(
+                        "warning: no LDR modules found for PID {}",
+                        pid_filter.unwrap()
+                    );
+                }
                 print_ldr_modules(&all_mods, output);
             }
             if hollowing {
@@ -2772,6 +2790,9 @@ fn cmd_check(
                     .context("failed to check for process hollowing")?;
                 if let Some(pid) = pid_filter {
                     findings.retain(|f| f.pid == pid);
+                    if findings.is_empty() {
+                        eprintln!("warning: no hollowing findings for PID {pid}");
+                    }
                 }
                 print_hollowing(&findings, output);
             }
@@ -2800,6 +2821,9 @@ fn cmd_handles(
                 .context("failed to walk Linux file descriptors")?;
             if let Some(pid) = pid_filter {
                 fds.retain(|f| f.pid == pid);
+                if fds.is_empty() {
+                    eprintln!("warning: no file descriptors found for PID {pid}");
+                }
             }
             print_file_descriptors(&fds, output);
         }
@@ -2811,6 +2835,9 @@ fn cmd_handles(
                 .context("failed to walk Windows handle tables")?;
             if let Some(pid) = pid_filter {
                 handles.retain(|h| h.pid == pid);
+                if handles.is_empty() {
+                    eprintln!("warning: no handles found for PID {pid}");
+                }
             }
             print_handles(&handles, output);
         }
