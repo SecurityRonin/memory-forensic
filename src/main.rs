@@ -744,7 +744,9 @@ fn cmd_ps(
             match sort_field {
                 PsSortField::Pid => procs.sort_by_key(|p| p.pid),
                 PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
-                PsSortField::Name => procs.sort_by(|a, b| a.comm.to_lowercase().cmp(&b.comm.to_lowercase())),
+                PsSortField::Name => {
+                    procs.sort_by(|a, b| a.comm.to_lowercase().cmp(&b.comm.to_lowercase()))
+                }
                 PsSortField::Time => procs.sort_by_key(|p| p.start_time),
             }
 
@@ -844,7 +846,11 @@ fn cmd_ps(
             match sort_field {
                 PsSortField::Pid => procs.sort_by_key(|p| p.pid),
                 PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
-                PsSortField::Name => procs.sort_by(|a, b| a.image_name.to_lowercase().cmp(&b.image_name.to_lowercase())),
+                PsSortField::Name => procs.sort_by(|a, b| {
+                    a.image_name
+                        .to_lowercase()
+                        .cmp(&b.image_name.to_lowercase())
+                }),
                 PsSortField::Time => procs.sort_by_key(|p| p.create_time),
             }
 
@@ -1101,6 +1107,23 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
+/// Convert a Windows FILETIME (100-nanosecond intervals since 1601-01-01)
+/// to "YYYY-MM-DD HH:MM:SS UTC". Returns "-" for zero (unset).
+fn format_filetime(ft: u64) -> String {
+    if ft == 0 {
+        return "-".to_string();
+    }
+    // FILETIME epoch is 1601-01-01. Unix epoch is 1970-01-01.
+    // Difference: 11644473600 seconds = 116444736000000000 in 100ns ticks.
+    const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
+    if ft < FILETIME_UNIX_DIFF {
+        // Pre-Unix-epoch date; rare in forensics but handle gracefully.
+        return format!("pre-1970 ({ft:#x})");
+    }
+    let unix_secs = (ft - FILETIME_UNIX_DIFF) / 10_000_000;
+    format_epoch(unix_secs as i64)
+}
+
 /// Format nanoseconds-since-boot into a human-readable uptime string.
 fn format_boot_ns(ns: u64) -> String {
     if ns == 0 {
@@ -1137,7 +1160,15 @@ fn print_linux_processes(
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
             if has_boot {
-                table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Start (UTC)", "Vaddr"]);
+                table.set_header(vec![
+                    "PID",
+                    "PPID",
+                    "Name",
+                    "State",
+                    "Start",
+                    "Start (UTC)",
+                    "Vaddr",
+                ]);
             } else {
                 table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Vaddr"]);
             }
@@ -1191,7 +1222,9 @@ fn print_linux_processes(
         }
         OutputFormat::Csv => {
             if has_boot {
-                println!("pid,ppid,name,state,start_time_ns,start_time,start_epoch,start_utc,vaddr");
+                println!(
+                    "pid,ppid,name,state,start_time_ns,start_time,start_epoch,start_utc,vaddr"
+                );
             } else {
                 println!("pid,ppid,name,state,start_time_ns,start_time,vaddr");
             }
@@ -1200,14 +1233,26 @@ fn print_linux_processes(
                     let abs = boot_info.absolute_secs(p.start_time).unwrap_or(0);
                     println!(
                         "{},{},{},{},{},{},{},{},{:#x}",
-                        p.pid, p.ppid, p.comm, p.state, p.start_time,
-                        format_boot_ns(p.start_time), abs, format_epoch(abs), p.vaddr,
+                        p.pid,
+                        p.ppid,
+                        p.comm,
+                        p.state,
+                        p.start_time,
+                        format_boot_ns(p.start_time),
+                        abs,
+                        format_epoch(abs),
+                        p.vaddr,
                     );
                 } else {
                     println!(
                         "{},{},{},{},{},{},{:#x}",
-                        p.pid, p.ppid, p.comm, p.state, p.start_time,
-                        format_boot_ns(p.start_time), p.vaddr,
+                        p.pid,
+                        p.ppid,
+                        p.comm,
+                        p.state,
+                        p.start_time,
+                        format_boot_ns(p.start_time),
+                        p.vaddr,
                     );
                 }
             }
@@ -1331,8 +1376,14 @@ fn print_linux_pstree(
                     let abs = boot_info.absolute_secs(e.process.start_time).unwrap_or(0);
                     println!(
                         "{},{},{},{},{},{},{},{}",
-                        e.process.pid, e.process.ppid, e.process.state, e.process.comm,
-                        e.depth, e.process.start_time, abs, format_epoch(abs),
+                        e.process.pid,
+                        e.process.ppid,
+                        e.process.state,
+                        e.process.comm,
+                        e.depth,
+                        e.process.start_time,
+                        abs,
+                        format_epoch(abs),
                     );
                 } else {
                     println!(
@@ -1393,13 +1444,19 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "PPID", "Image Name", "Create Time", "CR3"]);
+            table.set_header(vec![
+                "PID",
+                "PPID",
+                "Image Name",
+                "Create Time (UTC)",
+                "CR3",
+            ]);
             for p in procs {
                 table.add_row(vec![
                     format!("{}", p.pid),
                     format!("{}", p.ppid),
                     p.image_name.clone(),
-                    format!("{:#x}", p.create_time),
+                    format_filetime(p.create_time),
                     format!("{:#x}", p.cr3),
                 ]);
             }
@@ -1412,18 +1469,24 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
                     "pid": p.pid,
                     "ppid": p.ppid,
                     "image_name": p.image_name,
-                    "create_time": format!("{:#x}", p.create_time),
+                    "create_time": format_filetime(p.create_time),
+                    "create_time_raw": p.create_time,
                     "cr3": format!("{:#x}", p.cr3),
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("pid,ppid,image_name,create_time,cr3");
+            println!("pid,ppid,image_name,create_time,create_time_raw,cr3");
             for p in procs {
                 println!(
-                    "{},{},{},{:#x},{:#x}",
-                    p.pid, p.ppid, p.image_name, p.create_time, p.cr3
+                    "{},{},{},{},{},{:#x}",
+                    p.pid,
+                    p.ppid,
+                    p.image_name,
+                    format_filetime(p.create_time),
+                    p.create_time,
+                    p.cr3
                 );
             }
         }
@@ -1610,7 +1673,13 @@ fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) 
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "PPID", "Image Name", "Create Time", "CR3"]);
+            table.set_header(vec![
+                "PID",
+                "PPID",
+                "Image Name",
+                "Create Time (UTC)",
+                "CR3",
+            ]);
             for e in entries {
                 let indent = "  ".repeat(e.depth as usize);
                 let name = format!("{}{}", indent, e.process.image_name);
@@ -1618,7 +1687,7 @@ fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) 
                     format!("{}", e.process.pid),
                     format!("{}", e.process.ppid),
                     name,
-                    format!("{:#x}", e.process.create_time),
+                    format_filetime(e.process.create_time),
                     format!("{:#x}", e.process.cr3),
                 ]);
             }
@@ -1632,21 +1701,23 @@ fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) 
                     "ppid": e.process.ppid,
                     "image_name": e.process.image_name,
                     "depth": e.depth,
-                    "create_time": format!("{:#x}", e.process.create_time),
+                    "create_time": format_filetime(e.process.create_time),
+                    "create_time_raw": e.process.create_time,
                     "cr3": format!("{:#x}", e.process.cr3),
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("pid,ppid,image_name,depth,create_time,cr3");
+            println!("pid,ppid,image_name,depth,create_time,create_time_raw,cr3");
             for e in entries {
                 println!(
-                    "{},{},{},{},{:#x},{:#x}",
+                    "{},{},{},{},{},{},{:#x}",
                     e.process.pid,
                     e.process.ppid,
                     e.process.image_name,
                     e.depth,
+                    format_filetime(e.process.create_time),
                     e.process.create_time,
                     e.process.cr3
                 );
@@ -1778,11 +1849,6 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
             for c in conns {
                 let local = format!("{}:{}", c.local_addr, c.local_port);
                 let remote = format!("{}:{}", c.remote_addr, c.remote_port);
-                let created = if c.create_time != 0 {
-                    format!("{:#x}", c.create_time)
-                } else {
-                    "-".to_string()
-                };
                 table.add_row(vec![
                     c.protocol.clone(),
                     local,
@@ -1790,7 +1856,7 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
                     format!("{}", c.state),
                     format!("{}", c.pid),
                     c.process_name.clone(),
-                    created,
+                    format_filetime(c.create_time),
                 ]);
             }
             println!("{table}");
@@ -1807,21 +1873,17 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
                     "state": format!("{}", c.state),
                     "pid": c.pid,
                     "process_name": c.process_name,
-                    "create_time": format!("{:#x}", c.create_time),
+                    "create_time": format_filetime(c.create_time),
+                    "create_time_raw": c.create_time,
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("proto,local,remote,state,pid,process,created");
+            println!("proto,local,remote,state,pid,process,created,created_raw");
             for c in conns {
-                let created = if c.create_time != 0 {
-                    format!("{:#x}", c.create_time)
-                } else {
-                    "-".to_string()
-                };
                 println!(
-                    "{},{}:{},{}:{},{},{},{},{}",
+                    "{},{}:{},{}:{},{},{},{},{},{}",
                     c.protocol,
                     c.local_addr,
                     c.local_port,
@@ -1830,7 +1892,8 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
                     c.state,
                     c.pid,
                     c.process_name,
-                    created,
+                    format_filetime(c.create_time),
+                    c.create_time,
                 );
             }
         }
@@ -1846,14 +1909,20 @@ fn print_threads(threads: &[memf_windows::WinThreadInfo], output: OutputFormat) 
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["TID", "PID", "Start Address", "State", "Create Time"]);
+            table.set_header(vec![
+                "TID",
+                "PID",
+                "Start Address",
+                "State",
+                "Create Time (UTC)",
+            ]);
             for t in threads {
                 table.add_row(vec![
                     format!("{}", t.tid),
                     format!("{}", t.pid),
                     format!("{:#x}", t.start_address),
                     format!("{}", t.state),
-                    format!("{:#x}", t.create_time),
+                    format_filetime(t.create_time),
                 ]);
             }
             println!("{table}");
@@ -1866,17 +1935,23 @@ fn print_threads(threads: &[memf_windows::WinThreadInfo], output: OutputFormat) 
                     "pid": t.pid,
                     "start_address": format!("{:#x}", t.start_address),
                     "state": format!("{}", t.state),
-                    "create_time": format!("{:#x}", t.create_time),
+                    "create_time": format_filetime(t.create_time),
+                    "create_time_raw": t.create_time,
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("tid,pid,start_address,state,create_time");
+            println!("tid,pid,start_address,state,create_time,create_time_raw");
             for t in threads {
                 println!(
-                    "{},{},{:#x},{},{:#x}",
-                    t.tid, t.pid, t.start_address, t.state, t.create_time
+                    "{},{},{:#x},{},{},{}",
+                    t.tid,
+                    t.pid,
+                    t.start_address,
+                    t.state,
+                    format_filetime(t.create_time),
+                    t.create_time
                 );
             }
         }
@@ -3774,22 +3849,22 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false, // threads
-            None,  // pid
-            false, // tree
-            false, // masquerade
-            false, // dlls
-            false, // maps
-            false, // envvars
-            false, // cmdline
-            false, // vad
-            false, // privileges
-            false, // elfinfo
-            false, // bash_history
-            false, // all
+            false,            // threads
+            None,             // pid
+            false,            // tree
+            false,            // masquerade
+            false,            // dlls
+            false,            // maps
+            false,            // envvars
+            false,            // cmdline
+            false,            // vad
+            false,            // privileges
+            false,            // elfinfo
+            false,            // bash_history
+            false,            // all
             PsSortField::Pid, // sort
-            None,  // btime
-            false, // raw_fallback
+            None,             // btime
+            false,            // raw_fallback
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
         if let Err(e) = &result {
@@ -3813,22 +3888,22 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false, // threads
-            None,  // pid
-            false, // tree
-            false, // masquerade
-            false, // dlls
-            false, // maps
-            false, // envvars
-            false, // cmdline
-            false, // vad
-            false, // privileges
-            false, // elfinfo
-            false, // bash_history
-            true,  // all
+            false,            // threads
+            None,             // pid
+            false,            // tree
+            false,            // masquerade
+            false,            // dlls
+            false,            // maps
+            false,            // envvars
+            false,            // cmdline
+            false,            // vad
+            false,            // privileges
+            false,            // elfinfo
+            false,            // bash_history
+            true,             // all
             PsSortField::Pid, // sort
-            None,  // btime
-            false, // raw_fallback
+            None,             // btime
+            false,            // raw_fallback
         );
         if let Err(e) = &result {
             let msg = format!("{e}");
@@ -4473,7 +4548,9 @@ mod tests {
 
     #[test]
     fn pstree_table_includes_absolute_timestamps_when_boot_known() {
-        use memf_linux::{BootTimeEstimate, BootTimeInfo, BootTimeSource, ProcessInfo, ProcessState, PsTreeEntry};
+        use memf_linux::{
+            BootTimeEstimate, BootTimeInfo, BootTimeSource, ProcessInfo, ProcessState, PsTreeEntry,
+        };
 
         let boot_info = BootTimeInfo::from_estimates(vec![BootTimeEstimate {
             source: BootTimeSource::UserProvided,
