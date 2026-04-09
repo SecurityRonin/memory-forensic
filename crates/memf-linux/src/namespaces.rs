@@ -45,16 +45,90 @@ pub struct NamespaceInfo {
 ///
 /// Processes with a null `nsproxy` (e.g., zombie/dead) are skipped.
 pub fn walk_namespaces<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _processes: &[ProcessInfo],
+    reader: &ObjectReader<P>,
+    processes: &[ProcessInfo],
 ) -> Result<Vec<NamespaceInfo>> {
-    todo!("DFIR-43: implement namespace enumeration")
+    if processes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::with_capacity(processes.len());
+
+    // First pass: read namespace pointers for every process.
+    for proc in processes {
+        if let Ok(ns) = read_namespace_info(reader, proc) {
+            results.push(ns);
+        }
+    }
+
+    // Determine the root namespace set from PID 1. If PID 1 is not in the
+    // list, fall back to the first process (heuristic: the lowest PID is
+    // most likely to be in the init namespace).
+    let root_ns = results
+        .iter()
+        .find(|n| n.pid == 1)
+        .or_else(|| results.first());
+
+    if let Some(root) = root_ns {
+        let root_uts = root.uts_ns_addr;
+        let root_ipc = root.ipc_ns_addr;
+        let root_mnt = root.mnt_ns_addr;
+        let root_pid = root.pid_ns_addr;
+        let root_net = root.net_ns_addr;
+        let root_cgroup = root.cgroup_ns_addr;
+
+        for ns in &mut results {
+            ns.is_root_ns = ns.uts_ns_addr == root_uts
+                && ns.ipc_ns_addr == root_ipc
+                && ns.mnt_ns_addr == root_mnt
+                && ns.pid_ns_addr == root_pid
+                && ns.net_ns_addr == root_net
+                && ns.cgroup_ns_addr == root_cgroup;
+        }
+    }
+
+    Ok(results)
+}
+
+/// Read namespace pointers from a single process's `task_struct.nsproxy`.
+fn read_namespace_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    proc: &ProcessInfo,
+) -> Result<NamespaceInfo> {
+    let nsproxy_ptr: u64 = reader.read_pointer(proc.vaddr, "task_struct", "nsproxy")?;
+
+    if nsproxy_ptr == 0 {
+        return Err(crate::Error::Walker(format!(
+            "PID {} has null nsproxy (zombie/dead process)",
+            proc.pid
+        )));
+    }
+
+    let uts_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "uts_ns")?;
+    let ipc_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "ipc_ns")?;
+    let mnt_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "mnt_ns")?;
+    let pid_ns_addr: u64 =
+        reader.read_pointer(nsproxy_ptr, "nsproxy", "pid_ns_for_children")?;
+    let net_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "net_ns")?;
+    let cgroup_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "cgroup_ns")?;
+
+    Ok(NamespaceInfo {
+        pid: proc.pid,
+        image_name: proc.comm.clone(),
+        uts_ns_addr,
+        pid_ns_addr,
+        net_ns_addr,
+        mnt_ns_addr,
+        ipc_ns_addr,
+        cgroup_ns_addr,
+        is_root_ns: false, // set in second pass
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
