@@ -5,3 +5,4 @@
 
 # Binary test data (memory dumps, disk images, archives)
 tests/data/
+.DS_Store
