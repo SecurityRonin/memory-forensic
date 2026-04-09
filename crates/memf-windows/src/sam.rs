@@ -103,10 +103,550 @@ pub fn classify_sam_user(username: &str, rid: u32, flags: u32) -> bool {
 /// `SAM\Domains\Account\Users` to enumerate user accounts.
 /// Returns an empty `Vec` if the hive is unreadable or the path is missing.
 pub fn walk_sam_users<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _hive_addr: u64,
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
 ) -> crate::Result<Vec<SamUserInfo>> {
-    todo!()
+    if hive_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read _HHIVE.BaseBlock pointer (at offset 0x10 typically) to get _HBASE_BLOCK.
+    let base_block_off = reader
+        .symbols()
+        .field_offset("_HHIVE", "BaseBlock")
+        .unwrap_or(0x10);
+
+    let base_block_addr = match reader.read_bytes(hive_addr + base_block_off, 8) {
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if base_block_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read root cell offset from _HBASE_BLOCK (at offset 0x24, u32).
+    let root_cell_off = match reader.read_bytes(base_block_addr + 0x24, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if root_cell_off == 0 || root_cell_off == u32::MAX {
+        return Ok(Vec::new());
+    }
+
+    // The storage base is at _HHIVE + Hive.Storage[Stable].Map or we can compute
+    // cell addresses as hive_addr + 0x1000 (hbin start) + cell_offset + 4 (cell header).
+    // For simplicity, we use the dual-mapping approach: read from base_block + 0x1000 + offset.
+    let storage_base = reader
+        .symbols()
+        .field_offset("_HHIVE", "Storage")
+        .unwrap_or(0x30);
+
+    // Try to read the flat storage base pointer (Stable storage BlockList).
+    let flat_base = match reader.read_bytes(hive_addr + storage_base, 8) {
+        Ok(bytes) if bytes.len() == 8 => {
+            let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            if addr != 0 { addr } else { base_block_addr + 0x1000 }
+        }
+        _ => base_block_addr + 0x1000,
+    };
+
+    // Navigate: root → SAM → Domains → Account → Users → Names
+    // Each _CM_KEY_NODE has Signature at 0x0 (should be "nk" = 0x6B6E),
+    // SubKeyCount at 0x18 (u32), SubKeyLists at 0x20 (u32 offset).
+    // We navigate by reading subkey lists and matching key names.
+    let root_addr = read_cell_addr(reader, flat_base, root_cell_off);
+    if root_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Walk SAM\Domains\Account\Users\Names to get username→RID mappings,
+    // then read the F/V values from SAM\Domains\Account\Users\<RID>.
+    // For the simplified walker, we enumerate child keys under the
+    // Users\Names path and extract metadata from each user's RID key.
+
+    // Navigate: root → SAM → Domains → Account → Users
+    let sam_key = find_subkey_by_name(reader, flat_base, root_addr, "SAM");
+    if sam_key == 0 {
+        return Ok(Vec::new());
+    }
+    let domains_key = find_subkey_by_name(reader, flat_base, sam_key, "Domains");
+    if domains_key == 0 {
+        return Ok(Vec::new());
+    }
+    let account_key = find_subkey_by_name(reader, flat_base, domains_key, "Account");
+    if account_key == 0 {
+        return Ok(Vec::new());
+    }
+    let users_key = find_subkey_by_name(reader, flat_base, account_key, "Users");
+    if users_key == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read the Names subkey to get username→RID mappings.
+    let names_key = find_subkey_by_name(reader, flat_base, users_key, "Names");
+
+    let mut users = Vec::new();
+
+    // Enumerate RID subkeys under Users (hex RID strings like "000001F4").
+    let subkey_count: u32 = match reader.read_bytes(users_key + 0x18, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => 0,
+    };
+
+    if subkey_count == 0 || subkey_count > MAX_USERS as u32 {
+        return Ok(users);
+    }
+
+    let subkey_list_off: u32 = match reader.read_bytes(users_key + 0x20, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return Ok(users),
+    };
+
+    let list_addr = read_cell_addr(reader, flat_base, subkey_list_off);
+    if list_addr == 0 {
+        return Ok(users);
+    }
+
+    // Read list signature (lf/lh/li).
+    let list_sig = match reader.read_bytes(list_addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
+        _ => return Ok(users),
+    };
+
+    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
+        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        _ => return Ok(users),
+    };
+
+    for i in 0..count.min(MAX_USERS as u16) {
+        let entry_off = match list_sig {
+            [b'l', b'f'] | [b'l', b'h'] => {
+                // lf/lh: 8-byte entries (offset + hash) starting at +4
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            [b'l', b'i'] => {
+                // li: 4-byte entries (offset only) starting at +4
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+
+        let key_addr = read_cell_addr(reader, flat_base, entry_off);
+        if key_addr == 0 {
+            continue;
+        }
+
+        // Read key name (at offset 0x4C in _CM_KEY_NODE, length at 0x4A).
+        let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if name_len == 0 || name_len > 256 {
+            continue;
+        }
+
+        let key_name = match reader.read_bytes(key_addr + 0x4C, name_len as usize) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            _ => continue,
+        };
+
+        // Skip the "Names" subkey — we only want RID keys (hex strings).
+        if key_name.eq_ignore_ascii_case("Names") {
+            continue;
+        }
+
+        // Parse RID from hex key name (e.g., "000001F4" → 500).
+        let rid = match u32::from_str_radix(&key_name, 16) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // Try to find the username from the Names subkey.
+        let username = if names_key != 0 {
+            find_name_for_rid(reader, flat_base, names_key, rid)
+        } else {
+            format!("RID-{}", rid)
+        };
+
+        // Read the F value for account metadata.
+        // F value is at the Values list of this key.
+        let (account_flags, last_login_time, last_password_change, account_created, login_count) =
+            read_f_value(reader, flat_base, key_addr);
+
+        let is_disabled = (account_flags & UAC_ACCOUNT_DISABLED) != 0;
+        let has_empty_password = (account_flags & UAC_PASSWORD_NOT_REQUIRED) != 0;
+        let is_suspicious = classify_sam_user(&username, rid, account_flags);
+
+        users.push(SamUserInfo {
+            username,
+            rid,
+            account_flags,
+            is_disabled,
+            has_empty_password,
+            last_login_time,
+            last_password_change,
+            account_created,
+            login_count,
+            is_suspicious,
+        });
+    }
+
+    Ok(users)
+}
+
+/// Read a cell address from the flat storage base + cell offset.
+fn read_cell_addr<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    cell_off: u32,
+) -> u64 {
+    // Cell data starts 4 bytes after the cell offset (cell size header).
+    let addr = flat_base + (cell_off as u64) + 4;
+    // Verify we can read from this address.
+    match reader.read_bytes(addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => addr,
+        _ => 0,
+    }
+}
+
+/// Find a subkey by name under a parent _CM_KEY_NODE.
+fn find_subkey_by_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    parent_addr: u64,
+    target_name: &str,
+) -> u64 {
+    let subkey_count: u32 = match reader.read_bytes(parent_addr + 0x18, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    if subkey_count == 0 || subkey_count > 4096 {
+        return 0;
+    }
+
+    let list_off: u32 = match reader.read_bytes(parent_addr + 0x20, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    let list_addr = read_cell_addr(reader, flat_base, list_off);
+    if list_addr == 0 {
+        return 0;
+    }
+
+    let list_sig = match reader.read_bytes(list_addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
+        _ => return 0,
+    };
+
+    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
+        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    for i in 0..count.min(4096) {
+        let entry_off = match list_sig {
+            [b'l', b'f'] | [b'l', b'h'] => {
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            [b'l', b'i'] => {
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            _ => return 0,
+        };
+
+        let key_addr = read_cell_addr(reader, flat_base, entry_off);
+        if key_addr == 0 {
+            continue;
+        }
+
+        let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if name_len == 0 || name_len > 256 {
+            continue;
+        }
+
+        let name = match reader.read_bytes(key_addr + 0x4C, name_len as usize) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            _ => continue,
+        };
+
+        if name.eq_ignore_ascii_case(target_name) {
+            return key_addr;
+        }
+    }
+
+    0
+}
+
+/// Find the username associated with a RID from the Names subkey.
+fn find_name_for_rid<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    names_key: u64,
+    target_rid: u32,
+) -> String {
+    // Under Names, each subkey's name IS the username, and the default value
+    // type encodes the RID. We read each subkey name and check the value type.
+    let subkey_count: u32 = match reader.read_bytes(names_key + 0x18, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return format!("RID-{}", target_rid),
+    };
+
+    if subkey_count == 0 || subkey_count > 4096 {
+        return format!("RID-{}", target_rid);
+    }
+
+    let list_off: u32 = match reader.read_bytes(names_key + 0x20, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return format!("RID-{}", target_rid),
+    };
+
+    let list_addr = read_cell_addr(reader, flat_base, list_off);
+    if list_addr == 0 {
+        return format!("RID-{}", target_rid);
+    }
+
+    let list_sig = match reader.read_bytes(list_addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
+        _ => return format!("RID-{}", target_rid),
+    };
+
+    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
+        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        _ => return format!("RID-{}", target_rid),
+    };
+
+    for i in 0..count.min(4096) {
+        let entry_off = match list_sig {
+            [b'l', b'f'] | [b'l', b'h'] => {
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            [b'l', b'i'] => {
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            _ => break,
+        };
+
+        let key_addr = read_cell_addr(reader, flat_base, entry_off);
+        if key_addr == 0 {
+            continue;
+        }
+
+        // The default value's type field encodes the RID.
+        // In the Names key, each name key has a single default value
+        // whose data type is the RID (a Windows registry trick).
+        // The value list offset is at _CM_KEY_NODE + 0x2C, count at +0x28.
+        let val_count: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if val_count == 0 {
+            continue;
+        }
+
+        let val_list_off: u32 = match reader.read_bytes(key_addr + 0x2C, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
+        if val_list_addr == 0 {
+            continue;
+        }
+
+        // Read first value offset.
+        let val_off: u32 = match reader.read_bytes(val_list_addr, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        let val_addr = read_cell_addr(reader, flat_base, val_off);
+        if val_addr == 0 {
+            continue;
+        }
+
+        // _CM_KEY_VALUE: Type at offset 0x10 (u32).
+        let val_type: u32 = match reader.read_bytes(val_addr + 0x10, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if val_type == target_rid {
+            // Read the key name as the username.
+            let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+                Ok(bytes) if bytes.len() == 2 => {
+                    u16::from_le_bytes(bytes[..2].try_into().unwrap())
+                }
+                _ => continue,
+            };
+
+            if name_len > 0 && name_len <= 256 {
+                if let Ok(bytes) = reader.read_bytes(key_addr + 0x4C, name_len as usize) {
+                    return String::from_utf8_lossy(&bytes).to_string();
+                }
+            }
+        }
+    }
+
+    format!("RID-{}", target_rid)
+}
+
+/// Read account metadata from the F value of a user's RID key.
+/// Returns (flags, last_login, last_pw_change, created, login_count).
+fn read_f_value<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    key_addr: u64,
+) -> (u32, u64, u64, u64, u32) {
+    let default = (0u32, 0u64, 0u64, 0u64, 0u32);
+
+    // Read value count and list.
+    let val_count: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return default,
+    };
+
+    if val_count == 0 {
+        return default;
+    }
+
+    let val_list_off: u32 = match reader.read_bytes(key_addr + 0x2C, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return default,
+    };
+
+    let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
+    if val_list_addr == 0 {
+        return default;
+    }
+
+    // Scan values for "F".
+    for v in 0..val_count.min(64) {
+        let val_off: u32 = match reader.read_bytes(val_list_addr + (v as u64) * 4, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        let val_addr = read_cell_addr(reader, flat_base, val_off);
+        if val_addr == 0 {
+            continue;
+        }
+
+        // _CM_KEY_VALUE: NameLength at 0x02 (u16), Name at 0x18.
+        let vname_len: u16 = match reader.read_bytes(val_addr + 0x02, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if vname_len != 1 {
+            continue;
+        }
+
+        let vname = match reader.read_bytes(val_addr + 0x18, 1) {
+            Ok(bytes) if !bytes.is_empty() => bytes[0],
+            _ => continue,
+        };
+
+        if vname != b'F' {
+            continue;
+        }
+
+        // F value data: DataLength at 0x08 (u32), DataOffset at 0x0C (u32).
+        let data_len: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
+            Ok(bytes) if bytes.len() == 4 => {
+                u32::from_le_bytes(bytes[..4].try_into().unwrap()) & 0x7FFFFFFF
+            }
+            _ => return default,
+        };
+
+        if data_len < 0x38 {
+            return default;
+        }
+
+        let data_off: u32 = match reader.read_bytes(val_addr + 0x0C, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => return default,
+        };
+
+        let data_addr = read_cell_addr(reader, flat_base, data_off);
+        if data_addr == 0 {
+            return default;
+        }
+
+        // F value layout:
+        // 0x08: last login time (FILETIME, 8 bytes)
+        // 0x18: last password change (FILETIME, 8 bytes)
+        // 0x20: account creation time (FILETIME, 8 bytes)
+        // 0x30: account flags (u16)
+        // 0x38: login count (u16)
+        let last_login = match reader.read_bytes(data_addr + 0x08, 8) {
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            _ => 0,
+        };
+
+        let last_pw = match reader.read_bytes(data_addr + 0x18, 8) {
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            _ => 0,
+        };
+
+        let created = match reader.read_bytes(data_addr + 0x20, 8) {
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            _ => 0,
+        };
+
+        let flags_raw: u16 = match reader.read_bytes(data_addr + 0x30, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => 0,
+        };
+
+        let login_cnt: u16 = match reader.read_bytes(data_addr + 0x38, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => 0,
+        };
+
+        return (flags_raw as u32, last_login, last_pw, created, login_cnt as u32);
+    }
+
+    default
 }
 
 #[cfg(test)]
