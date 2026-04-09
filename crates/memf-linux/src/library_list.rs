@@ -94,7 +94,133 @@ pub fn walk_library_list<P: PhysicalMemoryProvider>(
     pid: u32,
     process_name: &str,
 ) -> Result<Vec<SharedLibraryInfo>> {
-    todo!("walk_library_list: VMA walking not yet implemented")
+    // Read mm pointer -- kernel threads have NULL mm.
+    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
+    if mm_ptr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Resolve struct field offsets for the dentry path chain.
+    let f_path_offset = reader
+        .symbols()
+        .field_offset("file", "f_path")
+        .ok_or_else(|| Error::Walker("file.f_path field not found".into()))?;
+    let dentry_in_path_offset = reader
+        .symbols()
+        .field_offset("path", "dentry")
+        .ok_or_else(|| Error::Walker("path.dentry field not found".into()))?;
+    let d_name_offset = reader
+        .symbols()
+        .field_offset("dentry", "d_name")
+        .ok_or_else(|| Error::Walker("dentry.d_name field not found".into()))?;
+    let name_in_qstr_offset = reader
+        .symbols()
+        .field_offset("qstr", "name")
+        .ok_or_else(|| Error::Walker("qstr.name field not found".into()))?;
+
+    // Get head of the VMA linked list.
+    let mmap_ptr: u64 = reader.read_field(mm_ptr, "mm_struct", "mmap")?;
+
+    // Track per-library aggregated info: (min vm_start, total size).
+    let mut lib_map: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut seen_addrs: HashSet<u64> = HashSet::new();
+    let mut vma_addr = mmap_ptr;
+
+    // Walk the singly-linked vm_next chain (NULL-terminated).
+    while vma_addr != 0 {
+        // Cycle detection.
+        if !seen_addrs.insert(vma_addr) {
+            break;
+        }
+        if lib_map.len() >= MAX_LIBS {
+            break;
+        }
+
+        let vm_start: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_start")?;
+        let vm_end: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_end")?;
+        let vm_file: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_file")?;
+
+        if vm_file != 0 {
+            // Read file path: file.f_path.dentry → d_name.name
+            if let Some(name) = read_vma_file_path(
+                reader,
+                vm_file,
+                f_path_offset,
+                dentry_in_path_offset,
+                d_name_offset,
+                name_in_qstr_offset,
+            ) {
+                // Only include mappings that look like shared libraries.
+                if name.contains(".so") {
+                    let size = vm_end.saturating_sub(vm_start);
+                    let entry = lib_map.entry(name).or_insert((vm_start, 0));
+                    // Track lowest base address and accumulate size.
+                    entry.0 = entry.0.min(vm_start);
+                    entry.1 += size;
+                }
+            }
+        }
+
+        vma_addr = reader.read_field(vma_addr, "vm_area_struct", "vm_next")?;
+    }
+
+    // Build result vector from deduplicated map.
+    let mut libs: Vec<SharedLibraryInfo> = lib_map
+        .into_iter()
+        .map(|(lib_path, (base_addr, size))| {
+            let is_suspicious = classify_library(&lib_path);
+            SharedLibraryInfo {
+                pid,
+                process_name: process_name.to_string(),
+                lib_path,
+                base_addr,
+                size,
+                is_suspicious,
+            }
+        })
+        .collect();
+
+    // Sort by base address for deterministic output.
+    libs.sort_by_key(|lib| lib.base_addr);
+
+    Ok(libs)
+}
+
+/// Read the file path from a VMA's `vm_file` pointer.
+///
+/// Navigates `file.f_path.dentry → d_name.name` to extract the filename.
+/// Returns `None` if any pointer in the chain is NULL or unreadable.
+fn read_vma_file_path<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    file_ptr: u64,
+    f_path_offset: u64,
+    dentry_in_path_offset: u64,
+    d_name_offset: u64,
+    name_in_qstr_offset: u64,
+) -> Option<String> {
+    // file.f_path is an embedded struct; dentry pointer lives at
+    // file_ptr + f_path_offset + dentry_in_path_offset.
+    let dentry_addr = file_ptr + f_path_offset + dentry_in_path_offset;
+    let dentry_raw = reader.read_bytes(dentry_addr, 8).ok()?;
+    let dentry_ptr = u64::from_le_bytes(dentry_raw.try_into().ok()?);
+    if dentry_ptr == 0 {
+        return None;
+    }
+
+    // dentry.d_name is an embedded qstr; name pointer at qstr.name offset.
+    let name_addr = dentry_ptr + d_name_offset + name_in_qstr_offset;
+    let name_raw = reader.read_bytes(name_addr, 8).ok()?;
+    let name_ptr = u64::from_le_bytes(name_raw.try_into().ok()?);
+    if name_ptr == 0 {
+        return None;
+    }
+
+    let name = reader.read_string(name_ptr, 256).ok()?;
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(name)
 }
 
 #[cfg(test)]
@@ -193,14 +319,56 @@ mod tests {
     // walk_library_list tests
     // -------------------------------------------------------------------
 
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    /// Build an [`ObjectReader`] with all struct definitions needed by the
+    /// library list walker (task_struct, mm_struct, vm_area_struct, file,
+    /// path, dentry, qstr).
+    fn make_test_reader(data: &[u8], vaddr: u64, paddr: u64) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            // task_struct
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            // mm_struct
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "mmap", 8, "pointer")
+            // vm_area_struct
+            .add_struct("vm_area_struct", 64)
+            .add_field("vm_area_struct", "vm_start", 0, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 8, "unsigned long")
+            .add_field("vm_area_struct", "vm_next", 16, "pointer")
+            .add_field("vm_area_struct", "vm_file", 40, "pointer")
+            // file
+            .add_struct("file", 64)
+            .add_field("file", "f_path", 0, "path")
+            // path (embedded in struct file)
+            .add_struct("path", 16)
+            .add_field("path", "dentry", 8, "pointer")
+            // dentry
+            .add_struct("dentry", 64)
+            .add_field("dentry", "d_name", 0, "qstr")
+            // qstr
+            .add_struct("qstr", 16)
+            .add_field("qstr", "name", 8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
     #[test]
     fn walk_no_vma_returns_empty() {
         // A kernel thread (mm == NULL) should produce an empty library list.
-        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
-        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
-        use memf_symbols::isf::IsfResolver;
-        use memf_symbols::test_builders::IsfBuilder;
-
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
         let mut data = vec![0u8; 4096];
@@ -210,29 +378,188 @@ mod tests {
         data[32..41].copy_from_slice(b"kthreadd\0"); // comm
         data[48..56].copy_from_slice(&0u64.to_le_bytes()); // mm = NULL
 
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "int")
-            .add_field("task_struct", "comm", 32, "char")
-            .add_field("task_struct", "mm", 48, "pointer")
-            .add_struct("mm_struct", 128)
-            .add_field("mm_struct", "mmap", 8, "pointer")
-            .add_struct("vm_area_struct", 64)
-            .add_field("vm_area_struct", "vm_start", 0, "unsigned long")
-            .add_field("vm_area_struct", "vm_end", 8, "unsigned long")
-            .add_field("vm_area_struct", "vm_next", 16, "pointer")
-            .add_field("vm_area_struct", "vm_file", 40, "pointer")
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(vaddr, paddr, flags::WRITABLE)
-            .write_phys(paddr, &data)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let reader = make_test_reader(&data, vaddr, paddr);
 
         let result = walk_library_list(&reader, vaddr, 2, "kthreadd").unwrap();
         assert!(result.is_empty(), "kernel thread should have no libraries");
+    }
+
+    #[test]
+    fn walk_single_so_library() {
+        // Process with one VMA mapping libc.so.6
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct at base: PID 1, "bash", mm at +0x200
+        data[0..4].copy_from_slice(&1u32.to_le_bytes()); // pid
+        data[32..36].copy_from_slice(b"bash"); // comm
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes()); // mm
+
+        // mm_struct at +0x200: mmap at offset 8 → VMA at +0x300
+        let vma_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma_addr.to_le_bytes()); // mmap
+
+        // vm_area_struct at +0x300
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes()); // vm_start
+        data[0x308..0x310].copy_from_slice(&0x7F01_0000u64.to_le_bytes()); // vm_end
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
+        // vm_file at offset 40 → file struct at +0x400
+        let file_addr = vaddr + 0x400;
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes()); // vm_file
+
+        // struct file at +0x400: f_path at offset 0, path.dentry at offset 8
+        let dentry_addr = vaddr + 0x500;
+        data[0x408..0x410].copy_from_slice(&dentry_addr.to_le_bytes()); // f_path.dentry
+
+        // dentry at +0x500: d_name (qstr) at offset 0, qstr.name at offset 8
+        let name_str_addr = vaddr + 0x600;
+        data[0x508..0x510].copy_from_slice(&name_str_addr.to_le_bytes()); // d_name.name
+
+        // Name string at +0x600
+        let name = b"libc.so.6";
+        data[0x600..0x600 + name.len()].copy_from_slice(name);
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 1, "bash").unwrap();
+
+        assert_eq!(libs.len(), 1);
+        assert_eq!(libs[0].pid, 1);
+        assert_eq!(libs[0].process_name, "bash");
+        assert_eq!(libs[0].lib_path, "libc.so.6");
+        assert_eq!(libs[0].base_addr, 0x7F00_0000);
+        assert_eq!(libs[0].size, 0x0001_0000);
+        assert!(!libs[0].is_suspicious);
+    }
+
+    #[test]
+    fn walk_deduplicates_multi_vma_library() {
+        // A single .so mapped across two VMAs (text + data) should produce one entry.
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct
+        data[0..4].copy_from_slice(&1u32.to_le_bytes()); // pid
+        data[32..36].copy_from_slice(b"cat\0"); // comm
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes()); // mm
+
+        // mm_struct at +0x200
+        let vma1_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma1_addr.to_le_bytes()); // mmap → VMA1
+
+        // Both VMAs share the same file struct (same vm_file pointer).
+        let file_addr = vaddr + 0x500;
+
+        // VMA1 at +0x300: text segment
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes()); // vm_start
+        data[0x308..0x310].copy_from_slice(&0x7F00_4000u64.to_le_bytes()); // vm_end
+        let vma2_addr = vaddr + 0x400;
+        data[0x310..0x318].copy_from_slice(&vma2_addr.to_le_bytes()); // vm_next → VMA2
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes()); // vm_file
+
+        // VMA2 at +0x400: data segment (higher address)
+        data[0x400..0x408].copy_from_slice(&0x7F00_4000u64.to_le_bytes()); // vm_start
+        data[0x408..0x410].copy_from_slice(&0x7F00_6000u64.to_le_bytes()); // vm_end
+        data[0x410..0x418].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
+        data[0x428..0x430].copy_from_slice(&file_addr.to_le_bytes()); // vm_file
+
+        // file struct at +0x500
+        let dentry_addr = vaddr + 0x600;
+        data[0x508..0x510].copy_from_slice(&dentry_addr.to_le_bytes()); // f_path.dentry
+
+        // dentry at +0x600
+        let name_addr = vaddr + 0x700;
+        data[0x608..0x610].copy_from_slice(&name_addr.to_le_bytes()); // d_name.name
+
+        // Name string at +0x700
+        let name = b"libpthread.so.0";
+        data[0x700..0x700 + name.len()].copy_from_slice(name);
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 1, "cat").unwrap();
+
+        // Should be deduplicated to one entry.
+        assert_eq!(libs.len(), 1);
+        assert_eq!(libs[0].lib_path, "libpthread.so.0");
+        assert_eq!(libs[0].base_addr, 0x7F00_0000);
+        // Total size = 0x4000 + 0x2000 = 0x6000
+        assert_eq!(libs[0].size, 0x6000);
+        assert!(!libs[0].is_suspicious);
+    }
+
+    #[test]
+    fn walk_skips_non_file_backed_vmas() {
+        // Anonymous VMAs (vm_file == 0) should be skipped.
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct
+        data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        data[32..36].copy_from_slice(b"test");
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        // mm_struct at +0x200
+        let vma_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma_addr.to_le_bytes()); // mmap
+
+        // VMA at +0x300: anonymous mapping (vm_file = 0)
+        data[0x300..0x308].copy_from_slice(&0x7FFF_0000u64.to_le_bytes()); // vm_start
+        data[0x308..0x310].copy_from_slice(&0x7FFF_2000u64.to_le_bytes()); // vm_end
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
+        data[0x328..0x330].copy_from_slice(&0u64.to_le_bytes()); // vm_file = NULL
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 1, "test").unwrap();
+
+        assert!(libs.is_empty(), "anonymous VMA should not produce library entries");
+    }
+
+    #[test]
+    fn walk_classifies_suspicious_library() {
+        // A library from /tmp should be flagged as suspicious.
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct
+        data[0..4].copy_from_slice(&42u32.to_le_bytes());
+        data[32..37].copy_from_slice(b"sshd\0");
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        // mm_struct at +0x200
+        let vma_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma_addr.to_le_bytes());
+
+        // VMA at +0x300
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes());
+        data[0x308..0x310].copy_from_slice(&0x7F00_2000u64.to_le_bytes());
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
+        let file_addr = vaddr + 0x400;
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes());
+
+        // file at +0x400
+        let dentry_addr = vaddr + 0x500;
+        data[0x408..0x410].copy_from_slice(&dentry_addr.to_le_bytes());
+
+        // dentry at +0x500
+        let name_addr = vaddr + 0x600;
+        data[0x508..0x510].copy_from_slice(&name_addr.to_le_bytes());
+
+        // Name: suspicious library in /tmp
+        let name = b"/tmp/evil.so";
+        data[0x600..0x600 + name.len()].copy_from_slice(name);
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 42, "sshd").unwrap();
+
+        assert_eq!(libs.len(), 1);
+        assert_eq!(libs[0].lib_path, "/tmp/evil.so");
+        assert!(libs[0].is_suspicious, "/tmp library should be suspicious");
     }
 }
