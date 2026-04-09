@@ -1580,6 +1580,7 @@ dependencies = [
  "memf-core",
  "memf-format",
  "memf-symbols",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
 ]
@@ -1615,6 +1616,7 @@ dependencies = [
  "memf-core",
  "memf-format",
  "memf-symbols",
+ "serde",
  "thiserror 2.0.18",
 ]
 
