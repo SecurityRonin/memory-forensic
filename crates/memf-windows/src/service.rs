@@ -12,7 +12,11 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, ServiceInfo};
+use crate::unicode::read_unicode_string;
+use crate::{Result, ServiceInfo, ServiceStartType, ServiceState};
+
+/// Maximum service records to walk before stopping (prevents infinite loops).
+const MAX_SERVICE_RECORDS: usize = 10_000;
 
 /// Walk the SCM service record list and return service information.
 ///
@@ -23,10 +27,92 @@ use crate::{Result, ServiceInfo};
 /// For each `_SERVICE_RECORD`, reads the service name, display name,
 /// state, start type, service type, image path, object name, and PID.
 pub fn walk_services<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _list_head_vaddr: u64,
+    reader: &ObjectReader<P>,
+    list_head_vaddr: u64,
 ) -> Result<Vec<ServiceInfo>> {
-    todo!("DFIR-7: implement service record list walking")
+    let entries = reader.walk_list_with(
+        list_head_vaddr,
+        "_LIST_ENTRY",
+        "Flink",
+        "_SERVICE_RECORD",
+        "ServiceList",
+    )?;
+
+    let mut results = Vec::new();
+
+    for (i, entry_addr) in entries.into_iter().enumerate() {
+        if i >= MAX_SERVICE_RECORDS {
+            break;
+        }
+        if let Ok(info) = read_service_record(reader, entry_addr) {
+            results.push(info);
+        }
+    }
+
+    Ok(results)
+}
+
+/// Read a single `_SERVICE_RECORD` and extract all fields.
+fn read_service_record<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    record_addr: u64,
+) -> Result<ServiceInfo> {
+    // ServiceName: pointer to a _UNICODE_STRING
+    let name_ptr: u64 = reader.read_field(record_addr, "_SERVICE_RECORD", "ServiceName")?;
+    let name = if name_ptr != 0 {
+        read_unicode_string(reader, name_ptr).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // DisplayName: pointer to a _UNICODE_STRING
+    let display_ptr: u64 = reader.read_field(record_addr, "_SERVICE_RECORD", "DisplayName")?;
+    let display_name = if display_ptr != 0 {
+        read_unicode_string(reader, display_ptr).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // ServiceStatus.dwCurrentState (u32)
+    let state_raw: u32 = reader.read_field(record_addr, "_SERVICE_RECORD", "CurrentState")?;
+    let state = ServiceState::from_raw(state_raw);
+
+    // ServiceStatus.dwServiceType (u32)
+    let service_type: u32 = reader.read_field(record_addr, "_SERVICE_RECORD", "ServiceType")?;
+
+    // StartType (u32)
+    let start_raw: u32 = reader.read_field(record_addr, "_SERVICE_RECORD", "StartType")?;
+    let start_type = ServiceStartType::from_raw(start_raw);
+
+    // ImagePath: pointer to a _UNICODE_STRING
+    let image_ptr: u64 = reader.read_field(record_addr, "_SERVICE_RECORD", "ImagePath")?;
+    let image_path = if image_ptr != 0 {
+        read_unicode_string(reader, image_ptr).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // ObjectName: pointer to a _UNICODE_STRING
+    let obj_ptr: u64 = reader.read_field(record_addr, "_SERVICE_RECORD", "ObjectName")?;
+    let object_name = if obj_ptr != 0 {
+        read_unicode_string(reader, obj_ptr).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // ProcessId (u32)
+    let pid: u32 = reader.read_field(record_addr, "_SERVICE_RECORD", "ProcessId")?;
+
+    Ok(ServiceInfo {
+        name,
+        display_name,
+        state,
+        start_type,
+        service_type,
+        image_path,
+        object_name,
+        pid,
+    })
 }
 
 #[cfg(test)]
