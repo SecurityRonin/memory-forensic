@@ -82,7 +82,220 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     security_hive_addr: u64,
 ) -> crate::Result<Vec<CachedCredentialInfo>> {
-    todo!()
+    if security_hive_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read _HHIVE.BaseBlock pointer to get _HBASE_BLOCK address.
+    let base_block_off = reader
+        .symbols()
+        .field_offset("_HHIVE", "BaseBlock")
+        .unwrap_or(0x10);
+
+    let base_block_addr = match reader.read_bytes(security_hive_addr + base_block_off, 8) {
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if base_block_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read root cell offset from _HBASE_BLOCK (at offset 0x24, u32).
+    let root_cell_off = match reader.read_bytes(base_block_addr + 0x24, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if root_cell_off == 0 || root_cell_off == u32::MAX {
+        return Ok(Vec::new());
+    }
+
+    // Compute flat storage base for cell address resolution.
+    let storage_off = reader
+        .symbols()
+        .field_offset("_HHIVE", "Storage")
+        .unwrap_or(0x30);
+
+    let flat_base = match reader.read_bytes(security_hive_addr + storage_off, 8) {
+        Ok(bytes) if bytes.len() == 8 => {
+            let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            if addr != 0 { addr } else { base_block_addr + 0x1000 }
+        }
+        _ => base_block_addr + 0x1000,
+    };
+
+    // Navigate: root → Cache
+    let root_addr = read_cell_addr(reader, flat_base, root_cell_off);
+    if root_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    let cache_key = find_subkey_by_name(reader, flat_base, root_addr, "Cache");
+    if cache_key == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Enumerate NL$1 through NL$10 value entries under the Cache key.
+    let val_count: u32 = match reader.read_bytes(cache_key + 0x28, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if val_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let val_list_off: u32 = match reader.read_bytes(cache_key + 0x2C, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
+    if val_list_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+    let mut seen_addrs: HashSet<u64> = HashSet::new();
+
+    // Scan all values, looking for NL$1..NL$10 by name.
+    for v in 0..val_count.min(MAX_CACHED_CREDS as u32) {
+        let val_off: u32 = match reader.read_bytes(val_list_addr + (v as u64) * 4, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        let val_addr = read_cell_addr(reader, flat_base, val_off);
+        if val_addr == 0 {
+            continue;
+        }
+
+        // Cycle detection.
+        if !seen_addrs.insert(val_addr) {
+            continue;
+        }
+
+        // _CM_KEY_VALUE: NameLength at 0x02 (u16), Name at 0x18.
+        let vname_len: u16 = match reader.read_bytes(val_addr + 0x02, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if vname_len == 0 || vname_len > 256 {
+            continue;
+        }
+
+        let vname = match reader.read_bytes(val_addr + 0x18, vname_len as usize) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            _ => continue,
+        };
+
+        // Only process NL$1 through NL$10 entries.
+        if !is_nl_entry(&vname) {
+            continue;
+        }
+
+        // Read value data: DataLength at 0x08 (u32), DataOffset at 0x0C (u32).
+        let data_len: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
+            Ok(bytes) if bytes.len() == 4 => {
+                u32::from_le_bytes(bytes[..4].try_into().unwrap()) & 0x7FFF_FFFF
+            }
+            _ => continue,
+        };
+
+        // DCC2 header is 96 bytes minimum; skip entries with insufficient data.
+        if data_len < 96 {
+            continue;
+        }
+
+        let data_off: u32 = match reader.read_bytes(val_addr + 0x0C, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        let data_addr = read_cell_addr(reader, flat_base, data_off);
+        if data_addr == 0 {
+            continue;
+        }
+
+        // Parse DCC2 header:
+        //   offset 0x00: username length (u16, in bytes)
+        //   offset 0x04: domain length (u16, in bytes)
+        //   offset 0x28 (40): iteration count (u32)
+        let username_len: u16 = match reader.read_bytes(data_addr, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        let domain_len: u16 = match reader.read_bytes(data_addr + 4, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        let iteration_count: u32 = match reader.read_bytes(data_addr + 40, 4) {
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            _ => continue,
+        };
+
+        // Skip empty entries (username_len == 0 means unused cache slot).
+        if username_len == 0 {
+            continue;
+        }
+
+        // Sanity-check string lengths.
+        if username_len > 512 || domain_len > 512 {
+            continue;
+        }
+
+        // Username starts at offset 96 (after the 96-byte header), UTF-16LE.
+        let username = match reader.read_bytes(data_addr + 96, username_len as usize) {
+            Ok(bytes) => decode_utf16le(&bytes),
+            _ => continue,
+        };
+
+        // Domain follows username (aligned to 2-byte boundary, but typically
+        // directly after username_len bytes from offset 96).
+        let domain_offset = 96 + username_len as u64;
+        let domain = match reader.read_bytes(data_addr + domain_offset, domain_len as usize) {
+            Ok(bytes) => decode_utf16le(&bytes),
+            _ => continue,
+        };
+
+        // Hash data length is the total data minus the header and string data.
+        let strings_total = username_len as u32 + domain_len as u32;
+        let hash_data_length = data_len.saturating_sub(96 + strings_total);
+
+        let is_suspicious = classify_cached_credential(&username, &domain, iteration_count);
+
+        results.push(CachedCredentialInfo {
+            username,
+            domain,
+            domain_sid: String::new(), // SID extraction requires additional parsing
+            iteration_count,
+            hash_data_length,
+            is_suspicious,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Check if a value name is a cached credential entry (`NL$1` through `NL$10`).
+fn is_nl_entry(name: &str) -> bool {
+    if let Some(suffix) = name.strip_prefix("NL$") {
+        matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10")
+    } else {
+        false
+    }
+}
+
+/// Decode a UTF-16LE byte slice into a String.
+fn decode_utf16le(bytes: &[u8]) -> String {
+    let u16_iter = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+    String::from_utf16_lossy(&u16_iter.collect::<Vec<u16>>())
 }
 
 /// Read a cell address from the flat storage base + cell offset.
@@ -268,10 +481,9 @@ mod tests {
         assert!(result.is_empty(), "Zero hive address should return empty Vec");
     }
 
-    /// Walker with todo!() body panics (proves stub is unimplemented).
+    /// Non-zero but unmapped hive address degrades gracefully to empty Vec.
     #[test]
-    #[should_panic(expected = "not yet implemented")]
-    fn walk_cached_credentials_todo_panics() {
+    fn walk_cached_credentials_unmapped_addr_graceful() {
         let isf = IsfBuilder::new()
             .add_struct("_HHIVE", 0x600)
             .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
@@ -282,7 +494,8 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        // Non-zero address triggers the todo!() path
-        let _ = walk_cached_credentials(&reader, 0xDEAD_BEEF);
+        // Non-zero but unmapped address should return empty Vec, not panic.
+        let result = walk_cached_credentials(&reader, 0xDEAD_BEEF).unwrap();
+        assert!(result.is_empty(), "Unmapped hive address should degrade gracefully");
     }
 }
