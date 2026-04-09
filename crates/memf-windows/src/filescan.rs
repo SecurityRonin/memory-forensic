@@ -180,7 +180,7 @@ mod tests {
     }
 
     fn utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     // _OBJECT_HEADER offsets (from ISF preset)

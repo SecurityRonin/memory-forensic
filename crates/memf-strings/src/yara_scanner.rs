@@ -84,11 +84,7 @@ impl YaraMemoryScanner {
     ///
     /// `region_base` is the virtual address of the memory region being scanned
     /// (used for reporting, not for the scan itself).
-    pub fn scan_region(
-        &self,
-        data: &[u8],
-        region_base: u64,
-    ) -> crate::Result<Vec<YaraScanMatch>> {
+    pub fn scan_region(&self, data: &[u8], region_base: u64) -> crate::Result<Vec<YaraScanMatch>> {
         if data.is_empty() {
             return Ok(Vec::new());
         }
@@ -112,9 +108,8 @@ impl YaraMemoryScanner {
                     if offset < first_offset {
                         first_offset = offset;
                     }
-                    let matched_data: Vec<u8> = data
-                        [m.range().start..m.range().end.min(m.range().start + 64)]
-                        .to_vec();
+                    let matched_data: Vec<u8> =
+                        data[m.range().start..m.range().end.min(m.range().start + 64)].to_vec();
                     matched_strings.push(MatchedPattern {
                         identifier: pattern.identifier().to_string(),
                         offset,
@@ -143,10 +138,7 @@ impl YaraMemoryScanner {
     /// Scan multiple memory regions and aggregate results.
     ///
     /// Each tuple is `(region_base_vaddr, region_bytes)`.
-    pub fn scan_regions(
-        &self,
-        regions: &[(u64, &[u8])],
-    ) -> crate::Result<Vec<YaraScanMatch>> {
+    pub fn scan_regions(&self, regions: &[(u64, &[u8])]) -> crate::Result<Vec<YaraScanMatch>> {
         let mut all_matches = Vec::new();
         for &(base, data) in regions {
             let mut region_matches = self.scan_region(data, base)?;
@@ -182,7 +174,7 @@ rule shellcode_nopsled : shellcode suspicious {
 }
 "#;
 
-    const MULTI_RULE: &str = r#"
+    const MULTI_RULE: &str = r"
 rule detect_mz {
     strings:
         $mz = { 4D 5A }
@@ -196,7 +188,7 @@ rule detect_elf {
     condition:
         $elf
 }
-"#;
+";
 
     #[test]
     fn from_source_compiles_valid_rules() {
@@ -275,10 +267,7 @@ rule detect_elf {
         region2[2] = 0x4C; // L
         region2[3] = 0x46; // F
 
-        let regions: Vec<(u64, &[u8])> = vec![
-            (0x1000, &region1),
-            (0x2000, &region2),
-        ];
+        let regions: Vec<(u64, &[u8])> = vec![(0x1000, &region1), (0x2000, &region2)];
         let matches = scanner.scan_regions(&regions).unwrap();
 
         // Should find detect_mz in region1 and detect_elf in region2
@@ -290,7 +279,10 @@ rule detect_elf {
         // Verify correct region_base assignment
         let mz_match = matches.iter().find(|m| m.rule_name == "detect_mz").unwrap();
         assert_eq!(mz_match.region_base, 0x1000);
-        let elf_match = matches.iter().find(|m| m.rule_name == "detect_elf").unwrap();
+        let elf_match = matches
+            .iter()
+            .find(|m| m.rule_name == "detect_elf")
+            .unwrap();
         assert_eq!(elf_match.region_base, 0x2000);
     }
 
@@ -304,14 +296,14 @@ rule detect_elf {
     #[test]
     fn matched_pattern_data_truncated_to_64_bytes() {
         // Rule that matches a long pattern
-        let rule = r#"
+        let rule = r"
 rule long_match {
     strings:
         $zeros = { 00 00 00 00 00 00 00 00 00 00 }
     condition:
         $zeros
 }
-"#;
+";
         let scanner = YaraMemoryScanner::from_source(rule).unwrap();
         let data = vec![0u8; 256];
         let matches = scanner.scan_region(&data, 0x5000).unwrap();

@@ -187,7 +187,7 @@ mod tests {
         use memf_symbols::test_builders::IsfBuilder;
 
         fn utf16le(s: &str) -> Vec<u8> {
-            s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+            s.encode_utf16().flat_map(u16::to_le_bytes).collect()
         }
 
         let isf = IsfBuilder::windows_kernel_preset().build_json();

@@ -130,7 +130,7 @@ mod tests {
 
     /// Encode a Rust &str as UTF-16LE bytes.
     fn utf16le_bytes(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     /// Write a named object into a page buffer at `obj_offset`.

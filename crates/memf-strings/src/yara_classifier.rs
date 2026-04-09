@@ -85,14 +85,14 @@ mod tests {
 
     #[test]
     fn match_simple_rule() {
-        let source = r#"
+        let source = r"
 rule test_url {
     strings:
         $url = /https?:\/\/[^\s]+/
     condition:
         $url
 }
-"#;
+";
         let classifier = YaraClassifier::from_source(source).unwrap();
         let matches = classifier.scan_string("https://malware.example.com/payload");
         assert_eq!(matches.len(), 1);
@@ -180,7 +180,7 @@ rule detect_hello {
             if entry
                 .path()
                 .extension()
-                .map_or(false, |e| e == "yar" || e == "yara")
+                .is_some_and(|e| e == "yar" || e == "yara")
             {
                 std::fs::remove_file(entry.path()).ok();
             }

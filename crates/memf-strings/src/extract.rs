@@ -235,8 +235,7 @@ mod tests {
         assert_eq!(
             strings.len(),
             2,
-            "expected exactly 2 strings, got {:?}",
-            strings
+            "expected exactly 2 strings, got {strings:?}"
         );
 
         let hello = strings
@@ -294,8 +293,7 @@ mod tests {
         let found = strings.iter().find(|s| s.value == "Test");
         assert!(
             found.is_some(),
-            "expected UTF-16LE \"Test\", got {:?}",
-            strings
+            "expected UTF-16LE \"Test\", got {strings:?}"
         );
         assert_eq!(found.unwrap().encoding, StringEncoding::Utf16Le);
         assert_eq!(found.unwrap().physical_offset, offset as u64);
