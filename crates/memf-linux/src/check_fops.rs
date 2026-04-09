@@ -9,7 +9,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// Function pointer field names within the `file_operations` struct.
 const FOP_FIELDS: &[&str] = &[
@@ -53,7 +53,7 @@ pub struct HookedFop {
 ///
 /// Returns `true` if `addr` is in `[kernel_start, kernel_end]`.
 pub fn is_kernel_text_address(addr: u64, kernel_start: u64, kernel_end: u64) -> bool {
-    todo!("RED: implement kernel text range check")
+    addr >= kernel_start && addr <= kernel_end
 }
 
 /// Read function pointers from a `file_operations` struct and classify each.
@@ -66,13 +66,36 @@ pub fn check_fops_entry<P: PhysicalMemoryProvider>(
     kernel_start: u64,
     kernel_end: u64,
 ) -> Vec<HookedFop> {
-    todo!("RED: implement file_operations entry checking")
+    let mut results = Vec::new();
+
+    for &field_name in FOP_FIELDS {
+        let ptr: u64 = match reader.read_pointer(fops_addr, "file_operations", field_name) {
+            Ok(p) => p,
+            Err(_) => continue, // Field not in symbol table, skip
+        };
+
+        // Skip null pointers — they mean the operation is not implemented
+        if ptr == 0 {
+            continue;
+        }
+
+        results.push(HookedFop {
+            function_name: field_name.to_string(),
+            target_address: ptr,
+            is_in_kernel_text: is_kernel_text_address(ptr, kernel_start, kernel_end),
+        });
+    }
+
+    results
 }
+
+/// Maximum number of /proc entries to walk (cycle protection).
+const MAX_PROC_ENTRIES: usize = 10_000;
 
 /// Scan key /proc entries for file_operations hooks.
 ///
 /// Looks up `proc_root` (the root /proc directory entry), walks the
-/// `proc_dir_entry` linked list via `subdir`/`next`, and for each entry
+/// `proc_dir_entry` tree via `subdir`/`next`, and for each entry
 /// with a non-null `proc_fops` pointer, reads the `file_operations` struct
 /// and checks function pointers against the kernel text range.
 ///
@@ -81,7 +104,77 @@ pub fn check_fops_entry<P: PhysicalMemoryProvider>(
 pub fn scan_proc_fops<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<FopsHookInfo>> {
-    todo!("RED: implement /proc file_operations scan")
+    // Look up required symbols; return empty if missing (graceful degradation)
+    let Some(proc_root) = reader.symbols().symbol_address("proc_root") else {
+        return Ok(Vec::new());
+    };
+    let Some(kernel_start) = reader.symbols().symbol_address("_stext") else {
+        return Ok(Vec::new());
+    };
+    let Some(kernel_end) = reader.symbols().symbol_address("_etext") else {
+        return Ok(Vec::new());
+    };
+
+    let mut results = Vec::new();
+
+    // Walk the proc_dir_entry tree starting from proc_root's subdir
+    let mut stack = Vec::new();
+    let subdir: u64 = reader
+        .read_pointer(proc_root, "proc_dir_entry", "subdir")
+        .unwrap_or(0);
+    if subdir != 0 {
+        stack.push((subdir, "/proc".to_string()));
+    }
+
+    let mut visited = 0usize;
+    while let Some((entry_addr, parent_path)) = stack.pop() {
+        if visited >= MAX_PROC_ENTRIES {
+            break;
+        }
+        visited += 1;
+
+        // Read the entry name
+        let name = reader
+            .read_field_string(entry_addr, "proc_dir_entry", "name", 128)
+            .unwrap_or_else(|_| "<unknown>".to_string());
+        let path = format!("{parent_path}/{name}");
+
+        // Check if this entry has a proc_fops pointer
+        let fops_addr: u64 = reader
+            .read_pointer(entry_addr, "proc_dir_entry", "proc_fops")
+            .unwrap_or(0);
+
+        if fops_addr != 0 {
+            let hooked_functions =
+                check_fops_entry(reader, fops_addr, kernel_start, kernel_end);
+            let is_suspicious = hooked_functions.iter().any(|f| !f.is_in_kernel_text);
+
+            results.push(FopsHookInfo {
+                path: path.clone(),
+                struct_address: fops_addr,
+                hooked_functions,
+                is_suspicious,
+            });
+        }
+
+        // Recurse into subdirectories
+        let child: u64 = reader
+            .read_pointer(entry_addr, "proc_dir_entry", "subdir")
+            .unwrap_or(0);
+        if child != 0 {
+            stack.push((child, path));
+        }
+
+        // Follow the next sibling
+        let next: u64 = reader
+            .read_pointer(entry_addr, "proc_dir_entry", "next")
+            .unwrap_or(0);
+        if next != 0 {
+            stack.push((next, parent_path));
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
