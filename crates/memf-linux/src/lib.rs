@@ -18,6 +18,7 @@ pub mod check_idt;
 pub mod check_modules;
 pub mod cmdline;
 pub mod crontab;
+pub mod deleted_exe;
 pub mod dmesg;
 pub mod elfinfo;
 pub mod envvars;

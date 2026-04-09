@@ -13,6 +13,8 @@ pub mod callbacks;
 pub mod cachedump;
 pub mod clipboard;
 pub mod cmdline;
+pub mod consoles;
+pub mod debug_registers;
 pub mod desktops;
 pub mod direct_syscalls;
 pub mod dll;
