@@ -33,7 +33,26 @@ pub struct ClipboardEntry {
 
 /// Map a clipboard format code to a human-readable name.
 pub fn format_name(format: u32) -> &'static str {
-    todo!()
+    match format {
+        1 => "CF_TEXT",
+        2 => "CF_BITMAP",
+        3 => "CF_METAFILEPICT",
+        4 => "CF_SYLK",
+        5 => "CF_DIF",
+        6 => "CF_TIFF",
+        7 => "CF_OEMTEXT",
+        8 => "CF_DIB",
+        9 => "CF_PALETTE",
+        10 => "CF_PENDATA",
+        11 => "CF_RIFF",
+        12 => "CF_WAVE",
+        13 => "CF_UNICODETEXT",
+        14 => "CF_ENHMETAFILE",
+        15 => "CF_HDROP",
+        16 => "CF_LOCALE",
+        17 => "CF_DIBV5",
+        _ => "Unknown",
+    }
 }
 
 /// Classify clipboard text content as suspicious.
@@ -41,7 +60,57 @@ pub fn format_name(format: u32) -> &'static str {
 /// Returns `true` for content that may indicate credential theft,
 /// encoded commands, or other malicious activity.
 pub fn classify_clipboard(preview: &str) -> bool {
-    todo!()
+    if preview.is_empty() {
+        return false;
+    }
+
+    let lower = preview.to_ascii_lowercase();
+
+    // Contains "password" or "passwd" (case-insensitive)
+    if lower.contains("password") || lower.contains("passwd") {
+        return true;
+    }
+
+    // Contains PowerShell encoded commands (-enc, -encodedcommand)
+    if lower.contains("-enc ") || lower.contains("-encodedcommand ") {
+        return true;
+    }
+
+    // Contains URLs with raw IP addresses (http(s)://digits.digits.digits.digits)
+    if contains_ip_url(&lower) {
+        return true;
+    }
+
+    // Very long base64-like strings (>100 chars, no spaces)
+    if preview.len() > 100 && !preview.contains(' ') {
+        return true;
+    }
+
+    false
+}
+
+/// Check whether text contains an HTTP(S) URL with a raw IP address.
+fn contains_ip_url(text: &str) -> bool {
+    for prefix in &["http://", "https://"] {
+        if let Some(start) = text.find(prefix) {
+            let after = &text[start + prefix.len()..];
+            // Check if the host portion starts with a digit (simple IP heuristic)
+            if let Some(first) = after.chars().next() {
+                if first.is_ascii_digit() {
+                    // Verify it looks like an IP: digits and dots before the next / or :
+                    let host_end = after
+                        .find(|c: char| c == '/' || c == ':')
+                        .unwrap_or(after.len());
+                    let host = &after[..host_end];
+                    if host.chars().all(|c| c.is_ascii_digit() || c == '.') && host.contains('.')
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Recover clipboard entries from Windows kernel memory.
@@ -52,7 +121,171 @@ pub fn classify_clipboard(preview: &str) -> bool {
 pub fn walk_clipboard<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<ClipboardEntry>> {
-    todo!()
+    // Look up grpWinStaList -> _WINSTATION_OBJECT list head.
+    let winsta_head = match reader.symbols().symbol_address("grpWinStaList") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    let clip_base_off = reader
+        .symbols()
+        .field_offset("_WINSTATION_OBJECT", "pClipBase")
+        .unwrap_or(0x58);
+
+    let num_formats_off = reader
+        .symbols()
+        .field_offset("_WINSTATION_OBJECT", "cNumClipFormats")
+        .unwrap_or(0x60);
+
+    let clip_fmt_off = reader
+        .symbols()
+        .field_offset("_CLIP", "fmt")
+        .unwrap_or(0x00);
+
+    let clip_hdata_off = reader
+        .symbols()
+        .field_offset("_CLIP", "hData")
+        .unwrap_or(0x08);
+
+    let clip_struct_size = reader.symbols().struct_size("_CLIP").unwrap_or(0x10);
+
+    // Read the _WINSTATION_OBJECT pointer from grpWinStaList.
+    let winsta_ptr = match reader.read_bytes(winsta_head, 8) {
+        Ok(bytes) if bytes.len() == 8 => {
+            let ptr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            if ptr == 0 {
+                return Ok(Vec::new());
+            }
+            ptr
+        }
+        _ => return Ok(Vec::new()),
+    };
+
+    // Read cNumClipFormats to know how many _CLIP entries exist.
+    let num_formats = match reader.read_bytes(winsta_ptr + num_formats_off, 4) {
+        Ok(bytes) if bytes.len() == 4 => {
+            u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize
+        }
+        _ => return Ok(Vec::new()),
+    };
+
+    if num_formats == 0 || num_formats > MAX_CLIP_ENTRIES {
+        return Ok(Vec::new());
+    }
+
+    // Read pClipBase pointer -> array of _CLIP structures.
+    let clip_base = match reader.read_bytes(winsta_ptr + clip_base_off, 8) {
+        Ok(bytes) if bytes.len() == 8 => {
+            let ptr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            if ptr == 0 {
+                return Ok(Vec::new());
+            }
+            ptr
+        }
+        _ => return Ok(Vec::new()),
+    };
+
+    let mut entries = Vec::new();
+
+    for i in 0..num_formats {
+        let clip_addr = clip_base + (i as u64) * clip_struct_size;
+
+        // Read format code.
+        let fmt = match reader.read_bytes(clip_addr + clip_fmt_off, 4) {
+            Ok(bytes) if bytes.len() == 4 => {
+                u32::from_le_bytes(bytes[..4].try_into().unwrap())
+            }
+            _ => continue,
+        };
+
+        // Read data handle.
+        let h_data = match reader.read_bytes(clip_addr + clip_hdata_off, 8) {
+            Ok(bytes) if bytes.len() == 8 => {
+                u64::from_le_bytes(bytes[..8].try_into().unwrap())
+            }
+            _ => continue,
+        };
+
+        // Try to read text content for text formats.
+        let (data_size, preview) = if fmt == 1 || fmt == 7 {
+            // CF_TEXT / CF_OEMTEXT: ANSI string
+            read_ansi_preview(reader, h_data)
+        } else if fmt == 13 {
+            // CF_UNICODETEXT: UTF-16LE string
+            read_unicode_preview(reader, h_data)
+        } else {
+            (0, String::new())
+        };
+
+        let name = format_name(fmt).to_string();
+        let is_suspicious = classify_clipboard(&preview);
+
+        entries.push(ClipboardEntry {
+            format: fmt,
+            format_name: name,
+            data_size,
+            preview,
+            owner_pid: 0, // Owner PID requires walking the clipboard owner chain
+            is_suspicious,
+        });
+    }
+
+    Ok(entries)
+}
+
+/// Read an ANSI (single-byte) string from a memory address for preview.
+fn read_ansi_preview<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    addr: u64,
+) -> (usize, String) {
+    if addr == 0 {
+        return (0, String::new());
+    }
+
+    let max_read = 512;
+    match reader.read_bytes(addr, max_read) {
+        Ok(buf) => {
+            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            let text = String::from_utf8_lossy(&buf[..end]);
+            let preview: String = text.chars().take(256).collect();
+            (end, preview)
+        }
+        Err(_) => (0, String::new()),
+    }
+}
+
+/// Read a UTF-16LE string from a memory address for preview.
+fn read_unicode_preview<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    addr: u64,
+) -> (usize, String) {
+    if addr == 0 {
+        return (0, String::new());
+    }
+
+    let max_read = 1024;
+    match reader.read_bytes(addr, max_read) {
+        Ok(buf) => {
+            // Find null terminator (two zero bytes on u16 boundary)
+            let mut end = buf.len();
+            for i in (0..buf.len()).step_by(2) {
+                if i + 1 < buf.len() && buf[i] == 0 && buf[i + 1] == 0 {
+                    end = i;
+                    break;
+                }
+            }
+
+            let u16s: Vec<u16> = buf[..end]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+
+            let text = String::from_utf16_lossy(&u16s);
+            let preview: String = text.chars().take(256).collect();
+            (end, preview)
+        }
+        Err(_) => (0, String::new()),
+    }
 }
 
 #[cfg(test)]
