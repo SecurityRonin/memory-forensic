@@ -7,6 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::unicode::read_unicode_string;
 use crate::{RegistryHive, Result};
 
 /// Maximum number of hives to walk before bailing out (safety limit).
@@ -46,8 +47,87 @@ fn walk_hive_list_from<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     head_vaddr: u64,
 ) -> Result<Vec<RegistryHive>> {
-    let _ = (reader, head_vaddr, MAX_HIVE_COUNT);
-    todo!("implement registry hive list walking")
+    let entries =
+        reader.walk_list_with(head_vaddr, "_LIST_ENTRY", "Flink", "_CMHIVE", "HiveList")?;
+
+    let mut hives = Vec::new();
+    for (i, cmhive_addr) in entries.into_iter().enumerate() {
+        if i >= MAX_HIVE_COUNT {
+            break;
+        }
+        hives.push(read_hive_info(reader, cmhive_addr)?);
+    }
+    Ok(hives)
+}
+
+/// Read registry hive info from a single `_CMHIVE` structure.
+fn read_hive_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    cmhive_addr: u64,
+) -> Result<RegistryHive> {
+    // FileFullPath (_UNICODE_STRING)
+    let file_full_path_offset = reader
+        .symbols()
+        .field_offset("_CMHIVE", "FileFullPath")
+        .ok_or_else(|| {
+            crate::Error::Core(memf_core::Error::MissingSymbol(
+                "_CMHIVE.FileFullPath".into(),
+            ))
+        })?;
+    let file_full_path =
+        read_unicode_string(reader, cmhive_addr.wrapping_add(file_full_path_offset))?;
+
+    // FileUserName (_UNICODE_STRING)
+    let file_user_name_offset = reader
+        .symbols()
+        .field_offset("_CMHIVE", "FileUserName")
+        .ok_or_else(|| {
+            crate::Error::Core(memf_core::Error::MissingSymbol(
+                "_CMHIVE.FileUserName".into(),
+            ))
+        })?;
+    let file_user_name =
+        read_unicode_string(reader, cmhive_addr.wrapping_add(file_user_name_offset))?;
+
+    // Hive._HHIVE.BaseBlock (pointer)
+    let hive_offset = reader
+        .symbols()
+        .field_offset("_CMHIVE", "Hive")
+        .ok_or_else(|| {
+            crate::Error::Core(memf_core::Error::MissingSymbol("_CMHIVE.Hive".into()))
+        })?;
+    let hhive_addr = cmhive_addr.wrapping_add(hive_offset);
+
+    let base_block: u64 = reader.read_field(hhive_addr, "_HHIVE", "BaseBlock")?;
+
+    // Hive.Storage[Stable].Length — _DUAL at _HHIVE.Storage offset
+    let storage_offset = reader
+        .symbols()
+        .field_offset("_HHIVE", "Storage")
+        .ok_or_else(|| {
+            crate::Error::Core(memf_core::Error::MissingSymbol("_HHIVE.Storage".into()))
+        })?;
+    let dual_size = reader
+        .symbols()
+        .struct_size("_DUAL")
+        .ok_or_else(|| crate::Error::Core(memf_core::Error::MissingSymbol("_DUAL size".into())))?;
+
+    // Storage[0] = Stable
+    let stable_dual_addr = hhive_addr.wrapping_add(storage_offset);
+    let stable_length: u32 = reader.read_field(stable_dual_addr, "_DUAL", "Length")?;
+
+    // Storage[1] = Volatile (next _DUAL element after Storage[0])
+    let volatile_dual_addr = stable_dual_addr.wrapping_add(dual_size);
+    let volatile_length: u32 = reader.read_field(volatile_dual_addr, "_DUAL", "Length")?;
+
+    Ok(RegistryHive {
+        base_addr: cmhive_addr,
+        file_full_path,
+        file_user_name,
+        hive_addr: base_block,
+        stable_length,
+        volatile_length,
+    })
 }
 
 #[cfg(test)]
