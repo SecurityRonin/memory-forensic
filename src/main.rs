@@ -2607,8 +2607,11 @@ fn cmd_check(
                 print_check_hooks(&entries, output);
             }
             if malfind {
-                let findings = memf_linux::malfind::scan_malfind(&reader)
+                let mut findings = memf_linux::malfind::scan_malfind(&reader)
                     .context("failed to scan for suspicious memory regions")?;
+                if let Some(pid) = pid_filter {
+                    findings.retain(|f| f.pid == pid);
+                }
                 print_malfind(&findings, output);
             }
             if psxview {
@@ -2726,8 +2729,11 @@ fn cmd_check(
                 let ps_head = ctx
                     .ps_active_process_head
                     .context("missing PsActiveProcessHead for Windows malfind")?;
-                let findings = memf_windows::vad::walk_malfind(&reader, ps_head)
+                let mut findings = memf_windows::vad::walk_malfind(&reader, ps_head)
                     .context("failed to scan Windows memory for suspicious regions")?;
+                if let Some(pid) = pid_filter {
+                    findings.retain(|f| f.pid == pid);
+                }
                 print_windows_malfind(&findings, output);
             }
             if ldrmodules {
@@ -2740,6 +2746,11 @@ fn cmd_check(
                 for proc in &procs {
                     if proc.peb_addr == 0 {
                         continue;
+                    }
+                    if let Some(pid) = pid_filter {
+                        if proc.pid != pid {
+                            continue;
+                        }
                     }
                     // Switch to process address space (user-mode PEB)
                     let proc_reader = reader.with_cr3(proc.cr3);
@@ -2757,8 +2768,11 @@ fn cmd_check(
                 let ps_head = ctx
                     .ps_active_process_head
                     .context("missing PsActiveProcessHead for hollowing check")?;
-                let findings = memf_windows::hollowing::check_hollowing(&reader, ps_head)
+                let mut findings = memf_windows::hollowing::check_hollowing(&reader, ps_head)
                     .context("failed to check for process hollowing")?;
+                if let Some(pid) = pid_filter {
+                    findings.retain(|f| f.pid == pid);
+                }
                 print_hollowing(&findings, output);
             }
         }
