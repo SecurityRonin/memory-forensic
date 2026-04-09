@@ -89,15 +89,70 @@ pub fn scan_prefetch<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     search_regions: &[(u64, u64)],
 ) -> Result<Vec<PrefetchInfo>> {
-    todo!("implement prefetch scanning")
+    let mut entries = Vec::new();
+
+    for &(region_start, region_len) in search_regions {
+        // Align the start address up to the next page boundary.
+        let aligned_start = (region_start + SCAN_ALIGNMENT - 1) & !(SCAN_ALIGNMENT - 1);
+        let region_end = region_start.saturating_add(region_len);
+
+        let mut addr = aligned_start;
+        while addr + MIN_PARSE_SIZE as u64 <= region_end {
+            if entries.len() >= MAX_ENTRIES {
+                return Ok(entries);
+            }
+
+            // Read the first 8 bytes to check for the Prefetch v30 magic.
+            if let Ok(magic_bytes) = reader.read_bytes(addr, 8) {
+                if magic_bytes.len() == 8 && magic_bytes[..8] == PREFETCH_MAGIC {
+                    if let Some(info) = parse_prefetch_header(reader, addr) {
+                        entries.push(info);
+                    }
+                }
+            }
+
+            addr += SCAN_ALIGNMENT;
+        }
+    }
+
+    Ok(entries)
 }
 
 /// Parse a single Prefetch v30 header at the given virtual address.
+///
+/// Reads the executable name (UTF-16LE at offset 0x10), path hash
+/// (u32 at offset 0x4C), last run time (FILETIME at offset 0x80),
+/// and run count (u32 at offset 0xD0).
 fn parse_prefetch_header<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     addr: u64,
 ) -> Option<PrefetchInfo> {
-    todo!("implement prefetch header parsing")
+    // Read the executable name (UTF-16LE, 30 wchars = 60 bytes).
+    let name_bytes = reader.read_bytes(addr + EXE_NAME_OFFSET as u64, EXE_NAME_LEN).ok()?;
+    if name_bytes.len() < EXE_NAME_LEN {
+        return None;
+    }
+    let executable_name = utf16le_to_string(&name_bytes);
+    if executable_name.is_empty() {
+        return None;
+    }
+
+    // Read the path hash.
+    let hash = read_u32_at(reader, addr + HASH_OFFSET as u64)?;
+
+    // Read the last run time (FILETIME).
+    let last_run_time = read_u64_at(reader, addr + LAST_RUN_TIME_OFFSET as u64).unwrap_or(0);
+
+    // Read the run count.
+    let run_count = read_u32_at(reader, addr + RUN_COUNT_OFFSET as u64).unwrap_or(0);
+
+    Some(PrefetchInfo {
+        offset: addr,
+        executable_name,
+        hash,
+        run_count,
+        last_run_time,
+    })
 }
 
 /// Read a little-endian u32 from virtual memory, returning `None` on failure.
