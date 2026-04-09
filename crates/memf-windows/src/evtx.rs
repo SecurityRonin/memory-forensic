@@ -161,31 +161,21 @@ fn parse_chunk_header<P: PhysicalMemoryProvider>(
 }
 
 /// Read a little-endian u64 from virtual memory, returning `None` on failure.
-fn read_u64_at<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    vaddr: u64,
-) -> Option<u64> {
+fn read_u64_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<u64> {
     let bytes = reader.read_bytes(vaddr, 8).ok()?;
     if bytes.len() < 8 {
         return None;
     }
-    Some(u64::from_le_bytes(
-        bytes[..8].try_into().expect("8 bytes"),
-    ))
+    Some(u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")))
 }
 
 /// Read a little-endian u32 from virtual memory, returning `None` on failure.
-fn read_u32_at<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    vaddr: u64,
-) -> Option<u32> {
+fn read_u32_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<u32> {
     let bytes = reader.read_bytes(vaddr, 4).ok()?;
     if bytes.len() < 4 {
         return None;
     }
-    Some(u32::from_le_bytes(
-        bytes[..4].try_into().expect("4 bytes"),
-    ))
+    Some(u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")))
 }
 
 /// Attempt to identify the log channel name from event XML in a chunk.
@@ -196,20 +186,8 @@ fn identify_channel<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     chunk_addr: u64,
 ) -> String {
-    // Try to find a channel name by scanning the chunk data for known
-    // channel name strings. EVTX BinXml is complex to parse fully, so
-    // we do a best-effort search for common channel name patterns in
-    // the raw chunk bytes.
-    let search_start = chunk_addr + RECORDS_OFFSET;
-    // Read a limited window (first 4 KiB of records area) to search.
-    let search_len: usize = 4096;
-    let bytes = match reader.read_bytes(search_start, search_len) {
-        Ok(b) => b,
-        Err(_) => return "Unknown".to_string(),
-    };
-
-    // Look for well-known channel names as UTF-16LE strings in the data.
-    static KNOWN_CHANNELS: &[&str] = &[
+    // Well-known channel names to search for as UTF-16LE in chunk data.
+    const KNOWN_CHANNELS: &[&str] = &[
         "Security",
         "System",
         "Application",
@@ -221,11 +199,19 @@ fn identify_channel<P: PhysicalMemoryProvider>(
         "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
     ];
 
+    // Try to find a channel name by scanning the chunk data for known
+    // channel name strings. EVTX BinXml is complex to parse fully, so
+    // we do a best-effort search for common channel name patterns in
+    // the raw chunk bytes.
+    let search_start = chunk_addr + RECORDS_OFFSET;
+    // Read a limited window (first 4 KiB of records area) to search.
+    let search_len: usize = 4096;
+    let Ok(bytes) = reader.read_bytes(search_start, search_len) else {
+        return "Unknown".to_string();
+    };
+
     for channel in KNOWN_CHANNELS {
-        let utf16: Vec<u8> = channel
-            .encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
-            .collect();
+        let utf16: Vec<u8> = channel.encode_utf16().flat_map(u16::to_le_bytes).collect();
         if bytes.windows(utf16.len()).any(|w| w == utf16) {
             return (*channel).to_string();
         }
