@@ -6,6 +6,7 @@
 //! by walking Windows NT kernel data structures in physical memory dumps.
 
 pub mod alpc;
+pub mod amcache;
 pub mod atom_table;
 pub mod callbacks;
 pub mod cmdline;
@@ -28,6 +29,7 @@ pub mod process;
 pub mod psxview;
 pub mod registry;
 pub mod registry_keys;
+pub mod scheduled_tasks;
 pub mod service;
 pub mod shimcache;
 pub mod ssdt;
