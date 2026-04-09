@@ -9,7 +9,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::object_directory::{read_object_name, walk_directory};
+use crate::object_directory::walk_directory;
 use crate::unicode::read_unicode_string;
 use crate::{MutantInfo, Result};
 
@@ -25,7 +25,43 @@ const MAX_DIR_DEPTH: usize = 8;
 pub fn walk_mutants<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<MutantInfo>> {
-    todo!()
+    // Read the pointer stored at ObpRootDirectoryObject.
+    let root_ptr_addr = reader
+        .symbols()
+        .symbol_address("ObpRootDirectoryObject")
+        .ok_or_else(|| crate::Error::Walker("missing ObpRootDirectoryObject symbol".into()))?;
+
+    // ObpRootDirectoryObject is a pointer TO the root _OBJECT_DIRECTORY.
+    let root_dir_addr = {
+        let bytes = reader.read_bytes(root_ptr_addr, 8)?;
+        u64::from_le_bytes(bytes.try_into().expect("8 bytes"))
+    };
+
+    if root_dir_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    let ob_type_table_addr = reader
+        .symbols()
+        .symbol_address("ObTypeIndexTable")
+        .ok_or_else(|| crate::Error::Walker("missing ObTypeIndexTable symbol".into()))?;
+
+    let body_offset = reader
+        .symbols()
+        .field_offset("_OBJECT_HEADER", "Body")
+        .ok_or_else(|| crate::Error::Walker("missing _OBJECT_HEADER.Body offset".into()))?;
+
+    let mut results = Vec::new();
+    walk_directory_recursive(
+        reader,
+        root_dir_addr,
+        ob_type_table_addr,
+        body_offset,
+        0,
+        &mut results,
+    )?;
+
+    Ok(results)
 }
 
 /// Recursively walk an `_OBJECT_DIRECTORY` and collect mutant objects.
@@ -37,7 +73,48 @@ fn walk_directory_recursive<P: PhysicalMemoryProvider>(
     depth: usize,
     results: &mut Vec<MutantInfo>,
 ) -> Result<()> {
-    todo!()
+    if depth >= MAX_DIR_DEPTH {
+        return Ok(());
+    }
+
+    let entries = walk_directory(reader, dir_addr)?;
+
+    for (name, object_body) in entries {
+        // Resolve the type of this object via _OBJECT_HEADER.TypeIndex.
+        let header_addr = object_body.wrapping_sub(body_offset);
+        let type_index: u8 = match reader.read_bytes(
+            header_addr.wrapping_add(
+                reader
+                    .symbols()
+                    .field_offset("_OBJECT_HEADER", "TypeIndex")
+                    .unwrap_or(0x18),
+            ),
+            1,
+        ) {
+            Ok(bytes) => bytes[0],
+            Err(_) => continue,
+        };
+
+        let type_name = resolve_type_name(reader, ob_type_table_addr, type_index);
+
+        if type_name == "Mutant" {
+            if let Ok(info) = read_mutant_info(reader, object_body, name) {
+                results.push(info);
+            }
+        } else if type_name == "Directory" {
+            // The object body IS the _OBJECT_DIRECTORY — recurse into it.
+            let _ = walk_directory_recursive(
+                reader,
+                object_body,
+                ob_type_table_addr,
+                body_offset,
+                depth + 1,
+                results,
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Resolve the object type name from `ObTypeIndexTable[type_index]`.
@@ -46,7 +123,25 @@ fn resolve_type_name<P: PhysicalMemoryProvider>(
     ob_table_addr: u64,
     type_index: u8,
 ) -> String {
-    todo!()
+    let slot_addr = ob_table_addr.wrapping_add(u64::from(type_index) * 8);
+    let obj_type_addr: u64 = match reader.read_bytes(slot_addr, 8) {
+        Ok(bytes) => u64::from_le_bytes(bytes.try_into().expect("8 bytes")),
+        Err(_) => return String::from("<unknown>"),
+    };
+
+    if obj_type_addr == 0 {
+        return String::from("<unknown>");
+    }
+
+    let name_off = reader
+        .symbols()
+        .field_offset("_OBJECT_TYPE", "Name")
+        .unwrap_or(0x10);
+
+    match read_unicode_string(reader, obj_type_addr.wrapping_add(name_off)) {
+        Ok(name) if !name.is_empty() => name,
+        _ => String::from("<unknown>"),
+    }
 }
 
 /// Read mutant details from the object body (`_KMUTANT`).
@@ -55,7 +150,51 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
     object_body_addr: u64,
     name: String,
 ) -> Result<MutantInfo> {
-    todo!()
+    // Read OwnerThread pointer from _KMUTANT.
+    let owner_thread: u64 = reader.read_field(object_body_addr, "_KMUTANT", "OwnerThread")?;
+
+    // Read Abandoned flag.
+    let abandoned_byte: u8 = reader.read_field(object_body_addr, "_KMUTANT", "Abandoned")?;
+    let abandoned = abandoned_byte != 0;
+
+    // Resolve owner PID and TID from _ETHREAD.Cid if thread pointer is valid.
+    // _CLIENT_ID is an embedded struct within _ETHREAD at the Cid offset.
+    // UniqueProcess is at _CLIENT_ID+0, UniqueThread is at _CLIENT_ID+8.
+    let (owner_pid, owner_thread_id) = if owner_thread != 0 {
+        let cid_offset = reader
+            .symbols()
+            .field_offset("_ETHREAD", "Cid")
+            .ok_or_else(|| crate::Error::Walker("missing _ETHREAD.Cid offset".into()))?;
+        let pid_offset = reader
+            .symbols()
+            .field_offset("_CLIENT_ID", "UniqueProcess")
+            .ok_or_else(|| {
+                crate::Error::Walker("missing _CLIENT_ID.UniqueProcess offset".into())
+            })?;
+        let tid_offset = reader
+            .symbols()
+            .field_offset("_CLIENT_ID", "UniqueThread")
+            .ok_or_else(|| crate::Error::Walker("missing _CLIENT_ID.UniqueThread offset".into()))?;
+
+        let cid_addr = owner_thread.wrapping_add(cid_offset);
+
+        let pid_bytes = reader.read_bytes(cid_addr.wrapping_add(pid_offset), 8)?;
+        let pid = u64::from_le_bytes(pid_bytes.try_into().expect("8 bytes"));
+
+        let tid_bytes = reader.read_bytes(cid_addr.wrapping_add(tid_offset), 8)?;
+        let tid = u64::from_le_bytes(tid_bytes.try_into().expect("8 bytes"));
+
+        (pid, tid)
+    } else {
+        (0, 0)
+    };
+
+    Ok(MutantInfo {
+        name,
+        owner_pid,
+        owner_thread_id,
+        abandoned,
+    })
 }
 
 #[cfg(test)]
@@ -95,7 +234,7 @@ mod tests {
     const OBJ_TYPE_NAME: u64 = 0x10;
 
     fn utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     fn make_test_reader(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
@@ -134,7 +273,13 @@ mod tests {
         type_name: &str,
     ) -> PageTableBuilder {
         let ptb = ptb.map_4k(type_vaddr, type_paddr, flags::WRITABLE);
-        write_unicode_string(ptb, type_paddr + OBJ_TYPE_NAME, str_vaddr, str_paddr, type_name)
+        write_unicode_string(
+            ptb,
+            type_paddr + OBJ_TYPE_NAME,
+            str_vaddr,
+            str_paddr,
+            type_name,
+        )
     }
 
     /// Write a named object (name_info + header + body) contiguously starting
@@ -156,13 +301,7 @@ mod tests {
     ) -> (u64, PageTableBuilder) {
         // name_info at base + 0x00
         let ni_paddr = base_paddr;
-        let ptb = write_unicode_string(
-            ptb,
-            ni_paddr + NAME_INFO_NAME,
-            str_vaddr,
-            str_paddr,
-            name,
-        );
+        let ptb = write_unicode_string(ptb, ni_paddr + NAME_INFO_NAME, str_vaddr, str_paddr, name);
 
         // header at base + 0x20
         let hdr_paddr = base_paddr + NAME_INFO_SIZE;
@@ -197,123 +336,83 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Tests
+    // Helpers: build synthetic memory for mutant scanning
     // ─────────────────────────────────────────────────────────────────────
 
-    #[test]
-    fn walk_mutants_empty() {
-        // ObpRootDirectoryObject points to a root directory with no entries.
-        // No mutant objects → empty result.
-        let root_dir_ptr_vaddr = OBP_ROOT_DIR_OBJ_VADDR;
+    /// Build an empty root directory pointed to by `ObpRootDirectoryObject`.
+    fn build_empty_root() -> PageTableBuilder {
         let root_dir_ptr_paddr: u64 = 0x0010_0000;
         let root_dir_vaddr: u64 = 0xFFFF_8000_0010_0000;
         let root_dir_paddr: u64 = 0x0020_0000;
 
-        let ptb = PageTableBuilder::new()
-            // ObpRootDirectoryObject: a pointer to the root _OBJECT_DIRECTORY
-            .map_4k(root_dir_ptr_vaddr, root_dir_ptr_paddr, flags::WRITABLE)
+        PageTableBuilder::new()
+            .map_4k(OBP_ROOT_DIR_OBJ_VADDR, root_dir_ptr_paddr, flags::WRITABLE)
             .write_phys_u64(root_dir_ptr_paddr, root_dir_vaddr)
-            // Empty root directory (all 37 hash buckets = 0)
-            .map_4k(root_dir_vaddr, root_dir_paddr, flags::WRITABLE);
-
-        let reader = make_test_reader(ptb);
-        let mutants = walk_mutants(&reader).unwrap();
-        assert!(mutants.is_empty());
+            .map_4k(root_dir_vaddr, root_dir_paddr, flags::WRITABLE)
     }
 
-    #[test]
-    fn walk_mutants_single() {
-        // Set up: one named mutant "MyMalwareMutex" in \BaseNamedObjects
-        // with an owning thread that has PID=1234, TID=5678.
-
-        // ── Address layout ──
-        let root_dir_ptr_vaddr = OBP_ROOT_DIR_OBJ_VADDR;
+    /// Build a root directory with a `\BaseNamedObjects` subdirectory
+    /// containing one mutant named `mutant_name` owned by `(pid, tid)`.
+    fn build_single_mutant(
+        mutant_name: &str,
+        pid: u64,
+        tid: u64,
+        abandoned: bool,
+    ) -> PageTableBuilder {
         let root_dir_ptr_paddr: u64 = 0x0010_0000;
-
-        // Root _OBJECT_DIRECTORY
         let root_dir_vaddr: u64 = 0xFFFF_8000_0010_0000;
         let root_dir_paddr: u64 = 0x0020_0000;
 
-        // "BaseNamedObjects" subdirectory — named object (name_info + header + body)
         let bno_obj_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let bno_obj_paddr: u64 = 0x0030_0000;
-        let bno_name_str_vaddr: u64 = 0xFFFF_8000_0020_0800;
-        let bno_name_str_paddr: u64 = 0x0030_0800;
-        // The body of the BaseNamedObjects object IS the subdirectory
-        // (its body_vaddr will be computed by write_named_object)
-
-        // Root directory entry pointing to BaseNamedObjects
         let root_entry_vaddr: u64 = 0xFFFF_8000_0020_0C00;
         let root_entry_paddr: u64 = 0x0030_0C00;
 
-        // Mutant object (name_info + header + body)
         let mutant_obj_vaddr: u64 = 0xFFFF_8000_0030_0000;
         let mutant_obj_paddr: u64 = 0x0040_0000;
-        let mutant_name_str_vaddr: u64 = 0xFFFF_8000_0030_0800;
-        let mutant_name_str_paddr: u64 = 0x0040_0800;
-
-        // Subdirectory entry pointing to mutant
         let subdir_entry_vaddr: u64 = 0xFFFF_8000_0030_0C00;
         let subdir_entry_paddr: u64 = 0x0040_0C00;
 
-        // _OBJECT_TYPE for "Mutant" type
         let mutant_type_vaddr: u64 = 0xFFFF_8000_0050_0000;
         let mutant_type_paddr: u64 = 0x0060_0000;
-        let mutant_type_str_vaddr: u64 = 0xFFFF_8000_0050_0800;
-        let mutant_type_str_paddr: u64 = 0x0060_0800;
-        let mutant_type_index: u8 = 17;
-
-        // _OBJECT_TYPE for "Directory" type (for BaseNamedObjects)
         let dir_type_vaddr: u64 = 0xFFFF_8000_0050_1000;
         let dir_type_paddr: u64 = 0x0061_0000;
-        let dir_type_str_vaddr: u64 = 0xFFFF_8000_0050_1800;
-        let dir_type_str_paddr: u64 = 0x0061_0800;
-        let dir_type_index: u8 = 3;
-
-        // ObTypeIndexTable
         let ob_table_paddr: u64 = 0x0070_0000;
 
-        // _ETHREAD for the owning thread
         let ethread_vaddr: u64 = 0xFFFF_8000_0060_0000;
         let ethread_paddr: u64 = 0x0080_0000;
 
-        // ── Build ──
+        let mutant_type_index: u8 = 17;
+        let dir_type_index: u8 = 3;
+
         let mut ptb = PageTableBuilder::new()
-            // ObpRootDirectoryObject pointer
-            .map_4k(root_dir_ptr_vaddr, root_dir_ptr_paddr, flags::WRITABLE)
+            .map_4k(OBP_ROOT_DIR_OBJ_VADDR, root_dir_ptr_paddr, flags::WRITABLE)
             .write_phys_u64(root_dir_ptr_paddr, root_dir_vaddr)
-            // Root directory (empty initially — will set bucket)
             .map_4k(root_dir_vaddr, root_dir_paddr, flags::WRITABLE)
-            // BaseNamedObjects pages
             .map_4k(bno_obj_vaddr, bno_obj_paddr, flags::WRITABLE)
-            // Mutant pages
             .map_4k(mutant_obj_vaddr, mutant_obj_paddr, flags::WRITABLE)
-            // ObTypeIndexTable
             .map_4k(OB_TYPE_INDEX_TABLE_VADDR, ob_table_paddr, flags::WRITABLE)
-            // _ETHREAD
             .map_4k(ethread_vaddr, ethread_paddr, flags::WRITABLE);
 
-        // Write _OBJECT_TYPE for "Directory" (type_index = 3)
+        // Type objects
         ptb = write_object_type(
             ptb,
             dir_type_vaddr,
             dir_type_paddr,
-            dir_type_str_vaddr,
-            dir_type_str_paddr,
+            dir_type_vaddr + 0x800,
+            dir_type_paddr + 0x800,
             "Directory",
         );
         ptb = ptb.write_phys_u64(
             ob_table_paddr + u64::from(dir_type_index) * 8,
             dir_type_vaddr,
         );
-
-        // Write _OBJECT_TYPE for "Mutant" (type_index = 17)
         ptb = write_object_type(
             ptb,
             mutant_type_vaddr,
             mutant_type_paddr,
-            mutant_type_str_vaddr,
-            mutant_type_str_paddr,
+            mutant_type_vaddr + 0x800,
+            mutant_type_paddr + 0x800,
             "Mutant",
         );
         ptb = ptb.write_phys_u64(
@@ -321,59 +420,70 @@ mod tests {
             mutant_type_vaddr,
         );
 
-        // Write BaseNamedObjects as a named object of type "Directory"
-        let (bno_body_vaddr, ptb2) = write_named_object(
+        // BaseNamedObjects directory object
+        let (bno_body, ptb2) = write_named_object(
             ptb,
             bno_obj_vaddr,
             bno_obj_paddr,
-            bno_name_str_vaddr,
-            bno_name_str_paddr,
+            bno_obj_vaddr + 0x800,
+            bno_obj_paddr + 0x800,
             "BaseNamedObjects",
             dir_type_index,
         );
         ptb = ptb2;
-
-        // Root directory: entry in bucket 0 → BaseNamedObjects
         ptb = ptb.map_4k(root_entry_vaddr, root_entry_paddr, flags::WRITABLE);
-        ptb = write_dir_entry(ptb, root_entry_paddr, 0, bno_body_vaddr);
+        ptb = write_dir_entry(ptb, root_entry_paddr, 0, bno_body);
         ptb = set_bucket(ptb, root_dir_paddr, 0, root_entry_vaddr);
 
-        // Write mutant object "MyMalwareMutex" with type_index = 17
-        let (mutant_body_vaddr, ptb2) = write_named_object(
+        // Mutant object
+        let (mutant_body, ptb2) = write_named_object(
             ptb,
             mutant_obj_vaddr,
             mutant_obj_paddr,
-            mutant_name_str_vaddr,
-            mutant_name_str_paddr,
-            "MyMalwareMutex",
+            mutant_obj_vaddr + 0x800,
+            mutant_obj_paddr + 0x800,
+            mutant_name,
             mutant_type_index,
         );
         ptb = ptb2;
-
-        // Write _KMUTANT fields in the body
-        // OwnerThread at body + 0x28 → ethread_vaddr
+        let body_phys_off = mutant_body - mutant_obj_vaddr;
         ptb = ptb.write_phys_u64(
-            mutant_obj_paddr + (mutant_body_vaddr - mutant_obj_vaddr) + KMUTANT_OWNER_THREAD,
+            mutant_obj_paddr + body_phys_off + KMUTANT_OWNER_THREAD,
             ethread_vaddr,
         );
-        // Abandoned = 0 (not abandoned)
         ptb = ptb.write_phys(
-            mutant_obj_paddr + (mutant_body_vaddr - mutant_obj_vaddr) + KMUTANT_ABANDONED,
-            &[0u8],
+            mutant_obj_paddr + body_phys_off + KMUTANT_ABANDONED,
+            &[u8::from(abandoned)],
         );
 
-        // Subdirectory (BaseNamedObjects body): entry in bucket 0 → mutant
+        // Link mutant into subdirectory
         ptb = ptb.map_4k(subdir_entry_vaddr, subdir_entry_paddr, flags::WRITABLE);
-        ptb = write_dir_entry(ptb, subdir_entry_paddr, 0, mutant_body_vaddr);
-        // The BaseNamedObjects body is the subdirectory — set bucket 0
-        let bno_body_paddr = bno_obj_paddr + (bno_body_vaddr - bno_obj_vaddr);
+        ptb = write_dir_entry(ptb, subdir_entry_paddr, 0, mutant_body);
+        let bno_body_paddr = bno_obj_paddr + (bno_body - bno_obj_vaddr);
         ptb = set_bucket(ptb, bno_body_paddr, 0, subdir_entry_vaddr);
 
-        // Write _ETHREAD.Cid: UniqueProcess = 1234, UniqueThread = 5678
+        // _ETHREAD.Cid
         ptb = ptb
-            .write_phys_u64(ethread_paddr + ETHREAD_CID + CID_UNIQUE_PROCESS, 1234)
-            .write_phys_u64(ethread_paddr + ETHREAD_CID + CID_UNIQUE_THREAD, 5678);
+            .write_phys_u64(ethread_paddr + ETHREAD_CID + CID_UNIQUE_PROCESS, pid)
+            .write_phys_u64(ethread_paddr + ETHREAD_CID + CID_UNIQUE_THREAD, tid);
 
+        ptb
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn walk_mutants_empty() {
+        let reader = make_test_reader(build_empty_root());
+        let mutants = walk_mutants(&reader).unwrap();
+        assert!(mutants.is_empty());
+    }
+
+    #[test]
+    fn walk_mutants_single() {
+        let ptb = build_single_mutant("MyMalwareMutex", 1234, 5678, false);
         let reader = make_test_reader(ptb);
         let mutants = walk_mutants(&reader).unwrap();
 
