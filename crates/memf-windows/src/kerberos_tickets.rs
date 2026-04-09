@@ -69,8 +69,8 @@ pub fn classify_kerberos_ticket(
     let rc4_tgt = is_tgt && encryption_type == 23;
 
     // Suspicious: service name contains unusual characters or is krbtgt from unexpected realm
-    let name_suspicious = server_name.is_empty()
-        || (is_tgt && server_name.to_ascii_lowercase().contains("krbtgt/"));
+    let name_suspicious =
+        server_name.is_empty() || (is_tgt && server_name.to_ascii_lowercase().contains("krbtgt/"));
 
     lifetime_suspicious || rc4_tgt || name_suspicious
 }

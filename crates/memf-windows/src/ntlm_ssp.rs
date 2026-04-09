@@ -46,8 +46,8 @@ pub fn classify_ntlm_credential(username: &str, nt_hash: &[u8], lm_hash: &[u8]) 
     // Empty/null NT hash (aad3b435b51404eeaad3b435b51404ee = LM hash of empty password)
     // or NT hash of empty password (31d6cfe0d16ae931b73c59d7e0c089c0)
     let empty_nt: [u8; 16] = [
-        0x31, 0xd6, 0xcf, 0xe0, 0xd1, 0x6a, 0xe9, 0x31, 0xb7, 0x3c, 0x59, 0xd7, 0xe0, 0xc0,
-        0x89, 0xc0,
+        0x31, 0xd6, 0xcf, 0xe0, 0xd1, 0x6a, 0xe9, 0x31, 0xb7, 0x3c, 0x59, 0xd7, 0xe0, 0xc0, 0x89,
+        0xc0,
     ];
 
     // LM hash present (non-zero): indicates password < 15 chars stored in legacy format
@@ -94,7 +94,11 @@ mod tests {
     fn classify_administrator_credentials_suspicious() {
         let nt_hash = vec![0xAAu8; 16]; // arbitrary non-empty hash
         let lm_hash = vec![0u8; 16];
-        assert!(classify_ntlm_credential("Administrator", &nt_hash, &lm_hash));
+        assert!(classify_ntlm_credential(
+            "Administrator",
+            &nt_hash,
+            &lm_hash
+        ));
     }
 
     /// Without NlpMsv1_0LogonSessionList symbol, walker returns empty.
