@@ -22,6 +22,7 @@ pub mod envvars;
 pub mod etw;
 pub mod evtx;
 pub mod filescan;
+pub mod getsids;
 pub mod handles;
 pub mod hashdump;
 pub mod hollowing;
