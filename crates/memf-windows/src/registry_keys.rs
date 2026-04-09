@@ -37,10 +37,6 @@ const NK_SIGNATURE: u16 = 0x6B6E;
 const _NK_FLAGS_OFFSET: usize = 2;
 /// LastWriteTime: u64 at offset 4.
 const NK_LAST_WRITE_TIME_OFFSET: usize = 4;
-/// Number of stable subkeys: u32 at offset 16 (0x10).
-const NK_SUBKEY_COUNT_OFFSET: usize = 0x10;
-/// Stable subkeys list cell index: u32 at offset 20 (0x14).
-const NK_SUBKEYS_OFFSET: usize = 0x14;
 /// Number of values: u32 at offset 24 (0x18) — volatile subkey count at 0x18,
 /// we actually need values count at 0x28.
 /// Corrected: SubKeyCount(stable)@0x10, SubKeyCount(volatile)@0x14 — no.
@@ -139,11 +135,25 @@ pub struct RegistryValueInfo {
 /// Returns all key nodes reachable up to `max_depth` levels deep.
 /// Returns an empty `Vec` if the root cell index is zero.
 pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _hive_addr: u64,
-    _max_depth: usize,
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    max_depth: usize,
 ) -> crate::Result<Vec<RegistryKeyInfo>> {
-    todo!("walk_registry_keys not yet implemented")
+    // Read root cell index from _HBASE_BLOCK
+    let root_cell_bytes = reader.read_bytes(
+        hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET),
+        4,
+    )?;
+    let root_cell = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
+
+    if root_cell == 0 {
+        return Ok(Vec::new());
+    }
+
+    let depth = max_depth.min(MAX_DEPTH);
+    let mut keys = Vec::new();
+    walk_key_recursive(reader, hive_addr, root_cell, String::new(), depth, &mut keys)?;
+    Ok(keys)
 }
 
 /// Read registry values for a specific key identified by its cell offset.
@@ -151,11 +161,60 @@ pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
 /// `hive_addr` is the virtual address of the `_HBASE_BLOCK`.
 /// `key_cell_offset` is the cell index of the `_CM_KEY_NODE`.
 pub fn read_registry_values<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _hive_addr: u64,
-    _key_cell_offset: u32,
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    key_cell_offset: u32,
 ) -> crate::Result<Vec<RegistryValueInfo>> {
-    todo!("read_registry_values not yet implemented")
+    let cell_vaddr = cell_address(hive_addr, key_cell_offset);
+
+    // Read enough of the key node to get value count and value list pointer.
+    let nk_data = read_cell_data(reader, cell_vaddr)?;
+
+    // Validate nk signature
+    let sig = u16::from_le_bytes(nk_data[0..2].try_into().unwrap());
+    if sig != NK_SIGNATURE {
+        return Err(crate::Error::Walker(format!(
+            "expected nk signature 0x{NK_SIGNATURE:04X}, got 0x{sig:04X} at cell offset 0x{key_cell_offset:08X}"
+        )));
+    }
+
+    let value_count = u32::from_le_bytes(
+        nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+
+    if value_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let values_list_cell = u32::from_le_bytes(
+        nk_data[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+
+    // The value list cell contains an array of u32 cell indices (one per value).
+    let vl_vaddr = cell_address(hive_addr, values_list_cell);
+    let vl_data = read_cell_data(reader, vl_vaddr)?;
+
+    let key_name = read_key_name(&nk_data);
+    let count = (value_count as usize).min(MAX_VALUE_COUNT);
+
+    let mut values = Vec::with_capacity(count);
+    for i in 0..count {
+        let off = i * 4;
+        if off + 4 > vl_data.len() {
+            break;
+        }
+        let val_cell = u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
+        match read_single_value(reader, hive_addr, val_cell, &key_name) {
+            Ok(v) => values.push(v),
+            Err(_) => continue, // skip corrupt values
+        }
+    }
+
+    Ok(values)
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────
