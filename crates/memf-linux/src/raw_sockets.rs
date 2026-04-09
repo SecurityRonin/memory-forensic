@@ -12,6 +12,28 @@ use serde::Serialize;
 
 use crate::Result;
 
+/// Linux address family: raw Ethernet frames.
+const AF_PACKET: u16 = 17;
+/// Socket type: raw IP.
+const SOCK_RAW: u16 = 3;
+/// Interface flag: promiscuous mode.
+const IFF_PROMISC: u32 = 0x100;
+
+/// Known-benign process names that legitimately use `AF_PACKET` sockets.
+const BENIGN_AF_PACKET: &[&str] = &[
+    "tcpdump",
+    "wireshark",
+    "dumpcap",
+    "dhclient",
+    "dhcpcd",
+    "arping",
+    "ping",
+    "ping6",
+];
+
+/// Known-benign process names that legitimately use `SOCK_RAW` sockets.
+const BENIGN_SOCK_RAW: &[&str] = &["ping", "ping6", "traceroute", "traceroute6", "arping"];
+
 /// Information about a raw socket held by a process.
 #[derive(Debug, Clone, Serialize)]
 pub struct RawSocketInfo {
@@ -30,15 +52,224 @@ pub struct RawSocketInfo {
 }
 
 /// Classify whether a raw socket is suspicious.
-pub fn classify_raw_socket(_comm: &str, _socket_type: &str, _is_promiscuous: bool) -> bool {
-    todo!("RED: implement classify_raw_socket")
+///
+/// Suspicious if any of:
+/// - `is_promiscuous` — captures all traffic on the interface.
+/// - `socket_type == "AF_PACKET"` and `comm` is not a known diagnostic tool.
+/// - `socket_type == "SOCK_RAW"` and `comm` is not a known diagnostic tool.
+pub fn classify_raw_socket(comm: &str, socket_type: &str, is_promiscuous: bool) -> bool {
+    if is_promiscuous {
+        return true;
+    }
+
+    let comm_lower = comm.to_lowercase();
+
+    if socket_type == "AF_PACKET" {
+        return !BENIGN_AF_PACKET.iter().any(|&b| comm_lower == b);
+    }
+
+    if socket_type == "SOCK_RAW" {
+        return !BENIGN_SOCK_RAW.iter().any(|&b| comm_lower == b);
+    }
+
+    false
 }
 
 /// Walk the task list and enumerate all open raw sockets.
+///
+/// Walks `task_struct.files -> files_struct.fdt -> fdtable.fd[]`, then for
+/// each open file checks whether it is a raw socket by probing the kernel
+/// `socket` struct fields.
+///
+/// Gracefully returns `Ok(vec![])` if any required symbol is absent so that
+/// callers on unexpected kernel versions are not broken.
 pub fn walk_raw_sockets<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<RawSocketInfo>> {
-    todo!("RED: implement walk_raw_sockets")
+    // --- symbol resolution (graceful degradation) ---
+    let init_task_addr = match reader.symbols().symbol_address("init_task") {
+        Some(a) => a,
+        None => return Ok(vec![]),
+    };
+    let tasks_offset = match reader.symbols().field_offset("task_struct", "tasks") {
+        Some(o) => o,
+        None => return Ok(vec![]),
+    };
+    // Ensure the critical fd-table field exists before walking.
+    if reader
+        .symbols()
+        .field_offset("task_struct", "files")
+        .is_none()
+    {
+        return Ok(vec![]);
+    }
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results: Vec<RawSocketInfo> = Vec::new();
+
+    collect_raw_sockets_for_task(reader, init_task_addr, &mut results);
+    for &task_addr in &task_addrs {
+        collect_raw_sockets_for_task(reader, task_addr, &mut results);
+    }
+
+    results.sort_by_key(|r| r.pid);
+    Ok(results)
+}
+
+/// Collect raw sockets for a single task by walking its fd table.
+fn collect_raw_sockets_for_task<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    out: &mut Vec<RawSocketInfo>,
+) {
+    let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let comm = reader
+        .read_field_string(task_addr, "task_struct", "comm", 16)
+        .unwrap_or_default();
+
+    // files_struct pointer.
+    let files_ptr: u64 = match reader.read_field(task_addr, "task_struct", "files") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if files_ptr == 0 {
+        return;
+    }
+
+    // files_struct.fdt → fdtable pointer.
+    let fdt_ptr: u64 = match reader.read_field(files_ptr, "files_struct", "fdt") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if fdt_ptr == 0 {
+        return;
+    }
+
+    // fdtable.fd → pointer to array of file pointers.
+    let fd_array_ptr: u64 = match reader.read_field(fdt_ptr, "fdtable", "fd") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if fd_array_ptr == 0 {
+        return;
+    }
+
+    // Read up to 256 file descriptors.
+    for fd_index in 0u64..256 {
+        let file_slot_addr = fd_array_ptr + fd_index * 8;
+        let file_ptr_raw = match reader.read_bytes(file_slot_addr, 8) {
+            Ok(b) => b,
+            Err(_) => break,
+        };
+        let file_ptr = u64::from_le_bytes(match file_ptr_raw.try_into() {
+            Ok(b) => b,
+            Err(_) => break,
+        });
+        if file_ptr == 0 {
+            continue;
+        }
+
+        if let Some(info) = try_read_raw_socket(reader, pid, &comm, file_ptr) {
+            out.push(info);
+        }
+    }
+}
+
+/// Attempt to interpret an open file as a raw socket.
+///
+/// Reads `file.private_data` as a `struct socket*`, then inspects
+/// `socket.sk -> sock.sk_family` / `sock.sk_type`. Returns `None` if the
+/// file is not a (raw) socket or fields cannot be read.
+fn try_read_raw_socket<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    pid: u32,
+    comm: &str,
+    file_ptr: u64,
+) -> Option<RawSocketInfo> {
+    // file.private_data holds the socket* for socket files.
+    let sock_ptr: u64 = reader.read_field(file_ptr, "file", "private_data").ok()?;
+    if sock_ptr == 0 {
+        return None;
+    }
+
+    // socket.type: SOCK_RAW == 3.
+    let sock_type: u16 = reader.read_field(sock_ptr, "socket", "type").ok()?;
+
+    // socket.sk → struct sock*.
+    let sk_ptr: u64 = reader.read_field(sock_ptr, "socket", "sk").ok()?;
+    if sk_ptr == 0 {
+        return None;
+    }
+
+    // sock.sk_family: AF_PACKET == 17.
+    let sk_family: u16 = reader.read_field(sk_ptr, "sock", "sk_family").ok()?;
+    // sock.sk_protocol (u16 in network byte order, stored LE in memory).
+    let protocol: u16 = reader
+        .read_field::<u16>(sk_ptr, "sock", "sk_protocol")
+        .unwrap_or(0);
+
+    let socket_type_str = if sk_family == AF_PACKET {
+        "AF_PACKET"
+    } else if sock_type == SOCK_RAW {
+        "SOCK_RAW"
+    } else {
+        return None; // not a raw socket
+    };
+
+    // For AF_PACKET, try to read promiscuous flag via packet_sock.prot_hook.
+    // If the field is absent, default to false — graceful degradation.
+    let is_promiscuous = try_read_promisc(reader, sk_ptr);
+
+    let is_suspicious = classify_raw_socket(comm, socket_type_str, is_promiscuous);
+
+    Some(RawSocketInfo {
+        pid,
+        comm: comm.to_string(),
+        socket_type: socket_type_str.to_string(),
+        protocol,
+        is_promiscuous,
+        is_suspicious,
+    })
+}
+
+/// Attempt to read `IFF_PROMISC` from `packet_sock.prot_hook.dev->flags`.
+///
+/// Returns `false` on any read failure (graceful degradation).
+fn try_read_promisc<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, sk_ptr: u64) -> bool {
+    // packet_sock starts at the same address as the embedded sock.
+    let prot_hook_offset = match reader.symbols().field_offset("packet_sock", "prot_hook") {
+        Some(o) => o,
+        None => return false,
+    };
+    let dev_in_hook = match reader.symbols().field_offset("packet_type", "dev") {
+        Some(o) => o,
+        None => return false,
+    };
+
+    let dev_ptr_addr = sk_ptr + prot_hook_offset + dev_in_hook;
+    let dev_raw = match reader.read_bytes(dev_ptr_addr, 8) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let dev_ptr = u64::from_le_bytes(match dev_raw.try_into() {
+        Ok(b) => b,
+        Err(_) => return false,
+    });
+    if dev_ptr == 0 {
+        return false;
+    }
+
+    let flags: u32 = match reader.read_field(dev_ptr, "net_device", "flags") {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    (flags & IFF_PROMISC) != 0
 }
 
 #[cfg(test)]

@@ -13,6 +13,23 @@ use serde::Serialize;
 
 use crate::Result;
 
+/// VM flag bit: region is executable.
+const VM_EXEC: u64 = 0x4;
+
+/// Known-benign memfd name prefixes produced by legitimate system components.
+const BENIGN_MEMFD_PREFIXES: &[&str] = &[
+    "shm",
+    "pulseaudio",
+    "wayland",
+    "dbus",
+    "chrome",
+    "firefox",
+    "v8",
+];
+
+/// Suspicious memfd name substrings (case-insensitive).
+const SUSPICIOUS_NAMES: &[&str] = &["payload", "shellcode", "stage", "loader", "inject", "hack"];
+
 /// Information about an open `memfd_create` file descriptor.
 #[derive(Debug, Clone, Serialize)]
 pub struct MemfdInfo {
@@ -31,15 +48,203 @@ pub struct MemfdInfo {
 }
 
 /// Classify whether a memfd mapping is suspicious.
-pub fn classify_memfd(_name: &str, _is_executable: bool) -> bool {
-    todo!("RED: implement classify_memfd")
+///
+/// Returns `true` (suspicious) if any of:
+/// - `is_executable` — executable anonymous memory implies injected code.
+/// - `name` contains a known-malicious substring (`payload`, `shellcode`, …).
+/// - `name` is empty — anonymous memfd with no name is an evasion technique.
+///
+/// Returns `false` (benign) if `name` starts with a known-benign prefix.
+pub fn classify_memfd(name: &str, is_executable: bool) -> bool {
+    // Executable anonymous memory is always suspicious.
+    if is_executable {
+        return true;
+    }
+
+    let name_lower = name.to_lowercase();
+
+    // Known-benign prefixes override everything else.
+    for prefix in BENIGN_MEMFD_PREFIXES {
+        if name_lower.starts_with(prefix) {
+            return false;
+        }
+    }
+
+    // Empty name → evasion attempt.
+    if name.is_empty() {
+        return true;
+    }
+
+    // Suspicious substrings.
+    for s in SUSPICIOUS_NAMES {
+        if name_lower.contains(s) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Walk the task list and collect information about open `memfd_create` file descriptors.
+///
+/// For each process, walks `mm_struct.mmap` (the VMA chain). For every VMA
+/// that is file-backed, the dentry name is read; if it starts with `"memfd:"`
+/// the mapping is recorded.
+///
+/// Gracefully returns `Ok(vec![])` if any required kernel symbol is absent,
+/// so callers on unexpected kernel versions are not broken.
 pub fn walk_memfd_create<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<MemfdInfo>> {
-    todo!("RED: implement walk_memfd_create")
+    // --- symbol resolution (graceful degradation) ---
+    let init_task_addr = match reader.symbols().symbol_address("init_task") {
+        Some(a) => a,
+        None => return Ok(vec![]),
+    };
+    let tasks_offset = match reader.symbols().field_offset("task_struct", "tasks") {
+        Some(o) => o,
+        None => return Ok(vec![]),
+    };
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results: Vec<MemfdInfo> = Vec::new();
+
+    collect_memfd_for_task(reader, init_task_addr, &mut results);
+    for &task_addr in &task_addrs {
+        collect_memfd_for_task(reader, task_addr, &mut results);
+    }
+
+    results.sort_by_key(|r| r.pid);
+    Ok(results)
+}
+
+/// Collect all memfd VMAs for a single task.
+fn collect_memfd_for_task<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    out: &mut Vec<MemfdInfo>,
+) {
+    let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let comm = reader
+        .read_field_string(task_addr, "task_struct", "comm", 16)
+        .unwrap_or_default();
+
+    // Kernel threads have mm == NULL.
+    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if mm_ptr == 0 {
+        return;
+    }
+
+    // Walk the VMA list via mm_struct.mmap.
+    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let mut vma_addr = mmap_ptr;
+    while vma_addr != 0 {
+        if let Some(info) = try_read_memfd_vma(reader, pid, &comm, vma_addr) {
+            // Merge with existing entry for same (pid, memfd_name) if present.
+            let existing = out
+                .iter_mut()
+                .find(|e| e.pid == info.pid && e.memfd_name == info.memfd_name);
+            if let Some(e) = existing {
+                e.size_bytes += info.size_bytes;
+                e.is_executable |= info.is_executable;
+                e.is_suspicious = classify_memfd(&e.memfd_name, e.is_executable);
+            } else {
+                out.push(info);
+            }
+        }
+
+        // Advance via vm_area_struct.vm_next.
+        vma_addr = match reader.read_field(vma_addr, "vm_area_struct", "vm_next") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+    }
+}
+
+/// Attempt to read memfd information from a single VMA.
+///
+/// Returns `None` if the VMA is not a memfd mapping or fields cannot be read.
+fn try_read_memfd_vma<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    pid: u32,
+    comm: &str,
+    vma_addr: u64,
+) -> Option<MemfdInfo> {
+    // vm_file pointer — NULL means anonymous (not memfd-named).
+    let vm_file_ptr: u64 = reader
+        .read_field(vma_addr, "vm_area_struct", "vm_file")
+        .ok()?;
+    if vm_file_ptr == 0 {
+        return None;
+    }
+
+    // Read dentry name via file->f_path.dentry->d_name.name.
+    let dentry_name = read_file_dentry_name(reader, vm_file_ptr)?;
+
+    // memfd dentries are named "memfd:<user-name>".
+    let memfd_name = dentry_name.strip_prefix("memfd:")?;
+
+    let vm_start: u64 = reader
+        .read_field(vma_addr, "vm_area_struct", "vm_start")
+        .ok()?;
+    let vm_end: u64 = reader
+        .read_field(vma_addr, "vm_area_struct", "vm_end")
+        .ok()?;
+    let vm_flags: u64 = reader
+        .read_field(vma_addr, "vm_area_struct", "vm_flags")
+        .ok()?;
+
+    let size_bytes = vm_end.saturating_sub(vm_start);
+    let is_executable = (vm_flags & VM_EXEC) != 0;
+    let is_suspicious = classify_memfd(memfd_name, is_executable);
+
+    Some(MemfdInfo {
+        pid,
+        comm: comm.to_string(),
+        memfd_name: memfd_name.to_string(),
+        size_bytes,
+        is_executable,
+        is_suspicious,
+    })
+}
+
+/// Read the dentry name from a `struct file` pointer via `f_path.dentry->d_name`.
+fn read_file_dentry_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    file_ptr: u64,
+) -> Option<String> {
+    let f_path_offset = reader.symbols().field_offset("file", "f_path")?;
+    let dentry_in_path = reader.symbols().field_offset("path", "dentry")?;
+    let d_name_offset = reader.symbols().field_offset("dentry", "d_name")?;
+    let name_in_qstr = reader.symbols().field_offset("qstr", "name")?;
+
+    let dentry_addr = file_ptr + f_path_offset + dentry_in_path;
+    let dentry_raw = reader.read_bytes(dentry_addr, 8).ok()?;
+    let dentry_ptr = u64::from_le_bytes(dentry_raw.try_into().ok()?);
+    if dentry_ptr == 0 {
+        return None;
+    }
+
+    let name_addr = dentry_ptr + d_name_offset + name_in_qstr;
+    let name_raw = reader.read_bytes(name_addr, 8).ok()?;
+    let name_ptr = u64::from_le_bytes(name_raw.try_into().ok()?);
+    if name_ptr == 0 {
+        return None;
+    }
+
+    reader.read_string(name_ptr, 256).ok()
 }
 
 #[cfg(test)]
@@ -133,6 +338,7 @@ mod tests {
         data[16..24].copy_from_slice(&tasks_next.to_le_bytes());
         data[24..32].copy_from_slice(&tasks_next.to_le_bytes());
         data[32..37].copy_from_slice(b"init\0");
+        // mm = 0 (kernel thread / no user mm)
         data[48..56].copy_from_slice(&0u64.to_le_bytes());
 
         let isf = IsfBuilder::new()
