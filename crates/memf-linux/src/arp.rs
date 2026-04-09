@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{ArpEntryInfo, Result};
+use crate::{ArpEntryInfo, Error, NeighState, Result};
 
 /// Walk the kernel ARP neighbour table and extract all entries.
 ///
@@ -15,9 +15,98 @@ use crate::{ArpEntryInfo, Result};
 /// the `nht` pointer to get the `neigh_hash_table`, then iterates
 /// hash buckets reading `neighbour` structs linked via `next`.
 pub fn walk_arp_cache<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<ArpEntryInfo>> {
-    todo!()
+    let arp_tbl_addr = reader
+        .symbols()
+        .symbol_address("arp_tbl")
+        .ok_or_else(|| Error::Walker("symbol 'arp_tbl' not found".into()))?;
+
+    // neigh_table.nht → pointer to neigh_hash_table
+    let nht_ptr: u64 = reader.read_field(arp_tbl_addr, "neigh_table", "nht")?;
+    if nht_ptr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // neigh_hash_table.hash_buckets → pointer to array of neighbour*
+    let buckets_ptr: u64 = reader.read_field(nht_ptr, "neigh_hash_table", "hash_buckets")?;
+    // neigh_hash_table.hash_shift → log2(bucket_count)
+    let hash_shift: u32 = reader.read_field(nht_ptr, "neigh_hash_table", "hash_shift")?;
+    let bucket_count: u64 = 1u64 << hash_shift;
+
+    if buckets_ptr == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+
+    for i in 0..bucket_count {
+        // Each bucket is a pointer (8 bytes) to the first neighbour
+        let bucket_addr = buckets_ptr + i * 8;
+        let neigh_ptr: u64 = match reader.read_bytes(bucket_addr, 8) {
+            Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+            Err(_) => continue,
+        };
+
+        let mut current = neigh_ptr;
+        let mut chain_len = 0;
+        while current != 0 && chain_len < 1000 {
+            if let Ok(entry) = read_neighbour(reader, current) {
+                entries.push(entry);
+            }
+
+            // Follow neighbour.next pointer
+            current = match reader.read_field::<u64>(current, "neighbour", "next") {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            chain_len += 1;
+        }
+    }
+
+    Ok(entries)
+}
+
+fn read_neighbour<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    neigh_addr: u64,
+) -> Result<ArpEntryInfo> {
+    // Read the 4-byte IPv4 address from primary_key
+    let ip_raw: u32 = reader.read_field(neigh_addr, "neighbour", "primary_key")?;
+    let ip_bytes = ip_raw.to_le_bytes();
+    let ip_addr = format!(
+        "{}.{}.{}.{}",
+        ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]
+    );
+
+    // Read the 6-byte MAC address from ha field
+    let ha_offset = reader
+        .symbols()
+        .field_offset("neighbour", "ha")
+        .ok_or_else(|| Error::Walker("neighbour.ha field not found".into()))?;
+    let mac_bytes = reader.read_bytes(neigh_addr + ha_offset, 6)?;
+    let mac_addr = format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac_bytes[0], mac_bytes[1], mac_bytes[2], mac_bytes[3], mac_bytes[4], mac_bytes[5]
+    );
+
+    // Read NUD state
+    let nud_state: u8 = reader.read_field(neigh_addr, "neighbour", "nud_state")?;
+
+    // Read device name via dev pointer → net_device.name
+    let dev_ptr: u64 = reader.read_field(neigh_addr, "neighbour", "dev")?;
+    let dev_name = if dev_ptr != 0 {
+        reader.read_field_string(dev_ptr, "net_device", "name", 16)?
+    } else {
+        String::from("?")
+    };
+
+    Ok(ArpEntryInfo {
+        ip_addr,
+        mac_addr,
+        dev_name,
+        state: NeighState::from_raw(nud_state),
+    })
 }
 
 #[cfg(test)]
