@@ -28,7 +28,122 @@ const MAX_POOL_TAG_ENTRIES: u64 = 65536;
 pub fn walk_pool_tags<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<PoolTagEntry>> {
-    todo!()
+    // Locate the PoolTrackTable pointer symbol
+    let table_ptr_addr = match reader.symbols().symbol_address("PoolTrackTable") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()), // graceful degradation
+    };
+
+    // PoolTrackTable is a pointer — read 8 bytes at the symbol address
+    let table_addr: u64 = match reader.read_bytes(table_ptr_addr, 8) {
+        Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if table_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read the table size from PoolTrackTableSize symbol
+    let entry_count = match reader.symbols().symbol_address("PoolTrackTableSize") {
+        Some(size_addr) => match reader.read_bytes(size_addr, 8) {
+            Ok(bytes) => {
+                let count = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
+                count.min(MAX_POOL_TAG_ENTRIES)
+            }
+            Err(_) => return Ok(Vec::new()),
+        },
+        None => return Ok(Vec::new()),
+    };
+
+    let entry_size = reader
+        .symbols()
+        .struct_size("_POOL_TRACKER_TABLE")
+        .unwrap_or(40);
+
+    let mut entries = Vec::new();
+
+    for i in 0..entry_count {
+        let entry_addr = table_addr + i * entry_size;
+
+        // Read the 4-byte pool tag key
+        let key_bytes = match reader.read_bytes(entry_addr, 4) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // Skip empty entries (all-zero tag)
+        if key_bytes.iter().all(|&b| b == 0) {
+            continue;
+        }
+
+        // Convert tag bytes to ASCII string (replace non-printable with '.')
+        let tag: String = key_bytes
+            .iter()
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+
+        // Read pool type flags
+        let pool_type_raw: u32 = reader
+            .read_field(entry_addr, "_POOL_TRACKER_TABLE", "PoolType")
+            .unwrap_or(0);
+
+        // Bit 0 clear = NonPaged, Bit 0 set = Paged
+        // Bit 5 set (0x20) = NonPagedExecute (NX pool)
+        let pool_type = if pool_type_raw & 1 != 0 {
+            "Paged".to_string()
+        } else if pool_type_raw & 0x20 != 0 {
+            "NonPagedExecute".to_string()
+        } else {
+            "NonPaged".to_string()
+        };
+
+        // Read allocation statistics based on pool type
+        let (allocation_count, free_count, bytes_used) = if pool_type_raw & 1 != 0 {
+            // Paged pool
+            let allocs: u64 = reader
+                .read_field(entry_addr, "_POOL_TRACKER_TABLE", "PagedAllocs")
+                .unwrap_or(0);
+            let frees: u64 = reader
+                .read_field(entry_addr, "_POOL_TRACKER_TABLE", "PagedFrees")
+                .unwrap_or(0);
+            let bytes: u64 = reader
+                .read_field(entry_addr, "_POOL_TRACKER_TABLE", "PagedBytes")
+                .unwrap_or(0);
+            (allocs, frees, bytes)
+        } else {
+            // NonPaged pool
+            let allocs: u64 = reader
+                .read_field(entry_addr, "_POOL_TRACKER_TABLE", "NonPagedAllocs")
+                .unwrap_or(0);
+            let frees: u64 = reader
+                .read_field(entry_addr, "_POOL_TRACKER_TABLE", "NonPagedFrees")
+                .unwrap_or(0);
+            let bytes: u64 = reader
+                .read_field(entry_addr, "_POOL_TRACKER_TABLE", "NonPagedBytes")
+                .unwrap_or(0);
+            (allocs, frees, bytes)
+        };
+
+        let description = describe_tag(&tag).map(String::from);
+
+        entries.push(PoolTagEntry {
+            tag,
+            pool_type,
+            allocation_count,
+            free_count,
+            bytes_used,
+            description,
+        });
+    }
+
+    Ok(entries)
 }
 
 /// Look up a human-readable description for a well-known Windows pool tag.
@@ -36,7 +151,38 @@ pub fn walk_pool_tags<P: PhysicalMemoryProvider>(
 /// Returns `None` for unrecognised tags. The mapping covers the most
 /// forensically relevant kernel pool tags.
 fn describe_tag(tag: &str) -> Option<&'static str> {
-    todo!()
+    match tag {
+        "Proc" => Some("Process objects (_EPROCESS)"),
+        "Thre" => Some("Thread objects (_ETHREAD)"),
+        "File" => Some("File objects"),
+        "MmSt" => Some("Memory manager section"),
+        "MmCa" => Some("Memory manager control area"),
+        "MmCi" => Some("Memory manager subsection"),
+        "Driv" => Some("Driver objects (_DRIVER_OBJECT)"),
+        "Devi" => Some("Device objects (_DEVICE_OBJECT)"),
+        "ObNm" => Some("Object name buffer"),
+        "ObDi" => Some("Object directory"),
+        "CcBc" => Some("Cache manager BCB"),
+        "Pool" => Some("Pool tracking table"),
+        "Ntfx" => Some("NTFS general allocation"),
+        "NtfF" => Some("NTFS FCB"),
+        "FMfn" => Some("FltMgr file name"),
+        "Tokn" => Some("Token objects (_TOKEN)"),
+        "Sema" => Some("Semaphore objects"),
+        "Muta" => Some("Mutant objects"),
+        "Even" => Some("Event objects"),
+        "Key " => Some("Registry key objects"),
+        "Irp " => Some("I/O request packets"),
+        "Mdl " => Some("Memory descriptor lists"),
+        "Vad " => Some("Virtual address descriptors"),
+        "VadS" => Some("VAD short nodes"),
+        "CM  " => Some("Configuration manager"),
+        "Ica " => Some("ICA (terminal services) buffer"),
+        "Afd " => Some("AFD (ancillary function driver)"),
+        "TcpE" => Some("TCP endpoint"),
+        "UdpA" => Some("UDP endpoint"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -53,19 +199,10 @@ mod tests {
     /// Well-known tags return the expected description.
     #[test]
     fn describe_tag_known() {
-        assert_eq!(
-            describe_tag("Proc"),
-            Some("Process objects (_EPROCESS)")
-        );
-        assert_eq!(
-            describe_tag("Thre"),
-            Some("Thread objects (_ETHREAD)")
-        );
+        assert_eq!(describe_tag("Proc"), Some("Process objects (_EPROCESS)"));
+        assert_eq!(describe_tag("Thre"), Some("Thread objects (_ETHREAD)"));
         assert_eq!(describe_tag("File"), Some("File objects"));
-        assert_eq!(
-            describe_tag("MmSt"),
-            Some("Memory manager section")
-        );
+        assert_eq!(describe_tag("MmSt"), Some("Memory manager section"));
     }
 
     /// Unknown tags return None.
@@ -85,12 +222,42 @@ mod tests {
             .add_struct("_POOL_TRACKER_TABLE", 40)
             .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
             .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
-            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedBytes",
+                24,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedBytes",
+                24,
+                "unsigned long long",
+            )
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
@@ -131,12 +298,42 @@ mod tests {
             .add_struct("_POOL_TRACKER_TABLE", 40)
             .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
             .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
-            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedBytes",
+                24,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedBytes",
+                24,
+                "unsigned long long",
+            )
             .add_symbol("PoolTrackTable", TABLE_PTR_VADDR)
             .add_symbol("PoolTrackTableSize", SIZE_VADDR)
             .build_json();

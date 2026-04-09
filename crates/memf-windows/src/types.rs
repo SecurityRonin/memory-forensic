@@ -704,6 +704,34 @@ pub struct ServiceInfo {
     pub pid: u32,
 }
 
+// ── Event log (EVTX) chunk types ────────────────────────────────────
+
+/// Metadata for a single Windows Event Log (EVTX) chunk recovered from memory.
+///
+/// Windows Event Log files use the `.evtx` binary format, where the file
+/// body is split into 64 KiB chunks. Each chunk starts with the ASCII
+/// magic `ElfChnk\0` and contains a sequence of event records. Recovering
+/// these chunks from a memory dump lets investigators reconstruct event
+/// log entries that may no longer exist on disk (e.g., after log clearing
+/// or anti-forensic tampering).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EvtxChunkInfo {
+    /// Virtual address where the chunk was found in the memory dump.
+    pub offset: u64,
+    /// First event record number in this chunk.
+    pub first_event_id: u64,
+    /// Last event record number in this chunk.
+    pub last_event_id: u64,
+    /// Earliest timestamp in this chunk (Windows FILETIME, 100-ns ticks since 1601-01-01).
+    pub first_timestamp: u64,
+    /// Latest timestamp in this chunk (Windows FILETIME).
+    pub last_timestamp: u64,
+    /// Number of event records found in this chunk.
+    pub record_count: u32,
+    /// Log channel name if identifiable (e.g., `"Security"`, `"System"`), otherwise `"Unknown"`.
+    pub channel: String,
+}
+
 // ── Pool tag scanning types ─────────────────────────────────────────
 
 /// A pool tag tracking entry from the kernel's pool allocation tracker.

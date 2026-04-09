@@ -377,7 +377,46 @@ impl IsfBuilder {
             .add_field("_KMUTANT", "OwnerThread", 0x28, "pointer")
             .add_field("_KMUTANT", "Abandoned", 0x30, "unsigned char")
             .add_field("_KMUTANT", "ApcDisable", 0x31, "unsigned char")
+            // _FILE_OBJECT (kernel file object)
+            .add_struct("_FILE_OBJECT", 216)
+            .add_field("_FILE_OBJECT", "DeviceObject", 0x08, "pointer")
+            .add_field("_FILE_OBJECT", "Flags", 0x44, "unsigned int")
+            .add_field("_FILE_OBJECT", "FileName", 0x58, "_UNICODE_STRING")
+            .add_field("_FILE_OBJECT", "CurrentByteOffset", 0x70, "unsigned long")
+            .add_field("_FILE_OBJECT", "SharedRead", 0x78, "unsigned char")
+            .add_field("_FILE_OBJECT", "SharedWrite", 0x79, "unsigned char")
+            .add_field("_FILE_OBJECT", "SharedDelete", 0x7A, "unsigned char")
+            .add_field("_FILE_OBJECT", "DeletePending", 0x48, "unsigned char")
+            .add_field("_FILE_OBJECT", "ReadAccess", 0x49, "unsigned char")
+            .add_field("_FILE_OBJECT", "WriteAccess", 0x4A, "unsigned char")
+            // _DEVICE_OBJECT (kernel device object, for device name chain)
+            .add_struct("_DEVICE_OBJECT", 344)
+            .add_field("_DEVICE_OBJECT", "DriverObject", 0x08, "pointer")
+            .add_field("_DEVICE_OBJECT", "DeviceType", 0x34, "unsigned int")
+            // _CMHIVE (registry hive container)
+            // Layout based on Windows 10 22H2:
+            //   Hive (_HHIVE) at offset 0x0
+            //   FileFullPath (_UNICODE_STRING) at offset 0x70
+            //   FileUserName (_UNICODE_STRING) at offset 0x80
+            //   HiveList (_LIST_ENTRY) at offset 0x300
+            .add_struct("_CMHIVE", 0x600)
+            .add_field("_CMHIVE", "Hive", 0x0, "_HHIVE")
+            .add_field("_CMHIVE", "FileFullPath", 0x70, "_UNICODE_STRING")
+            .add_field("_CMHIVE", "FileUserName", 0x80, "_UNICODE_STRING")
+            .add_field("_CMHIVE", "HiveList", 0x300, "_LIST_ENTRY")
+            // _HHIVE (core hive data)
+            //   BaseBlock pointer at offset 0x28
+            //   Storage[0] (_DUAL, Stable) at offset 0x38
+            //   Storage[1] (_DUAL, Volatile) at offset 0x58
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x28, "pointer")
+            .add_field("_HHIVE", "Storage", 0x38, "_DUAL")
+            // _DUAL (hive storage descriptor)
+            //   Length at offset 0x0
+            .add_struct("_DUAL", 0x20)
+            .add_field("_DUAL", "Length", 0x0, "unsigned int")
             // Kernel symbols
+            .add_symbol("CmpHiveListHead", 0xFFFFF805_5A4B0000)
             .add_symbol("ObTypeIndexTable", 0xFFFFF805_5A490000)
             .add_symbol("PsActiveProcessHead", 0xFFFFF805_5A400000)
             .add_symbol("PsLoadedModuleList", 0xFFFFF805_5A410000)
