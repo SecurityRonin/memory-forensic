@@ -93,7 +93,106 @@ pub fn classify_deleted_exe(exe_path: &str, comm: &str) -> bool {
 pub fn walk_deleted_exe<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<DeletedExeInfo>> {
-    todo!("walk_deleted_exe: implement task list walking and exe_file extraction")
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results = Vec::new();
+
+    // Include init_task itself
+    if let Some(info) = read_deleted_exe_info(reader, init_task_addr) {
+        results.push(info);
+    }
+
+    for &task_addr in &task_addrs {
+        if let Some(info) = read_deleted_exe_info(reader, task_addr) {
+            results.push(info);
+        }
+    }
+
+    results.sort_by_key(|r| r.pid);
+    Ok(results)
+}
+
+/// Read the executable path for a single task and classify it.
+///
+/// Returns `None` for kernel threads (NULL mm) or if any field cannot be read.
+fn read_deleted_exe_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+) -> Option<DeletedExeInfo> {
+    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid").ok()?;
+    let comm = reader
+        .read_field_string(task_addr, "task_struct", "comm", 16)
+        .unwrap_or_default();
+
+    // Kernel threads have mm == NULL — skip them.
+    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm").ok()?;
+    if mm_ptr == 0 {
+        return None;
+    }
+
+    // Follow mm->exe_file (pointer to struct file).
+    let exe_file_ptr: u64 = reader.read_field(mm_ptr, "mm_struct", "exe_file").ok()?;
+    if exe_file_ptr == 0 {
+        return None;
+    }
+
+    // Navigate exe_file->f_path.dentry to read the path name.
+    let exe_path = read_file_dentry_name(reader, exe_file_ptr).unwrap_or_default();
+
+    let is_deleted = exe_path.contains("(deleted)");
+    let is_suspicious = classify_deleted_exe(&exe_path, &comm);
+
+    Some(DeletedExeInfo {
+        pid,
+        comm,
+        exe_path,
+        is_deleted,
+        is_suspicious,
+    })
+}
+
+/// Read the dentry name from a `struct file` pointer via `f_path.dentry->d_name`.
+///
+/// Follows the embedded struct chain: `file.f_path` (embedded `struct path`) ->
+/// `path.dentry` (pointer) -> `dentry.d_name` (embedded `struct qstr`) ->
+/// `qstr.name` (pointer to string).
+fn read_file_dentry_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    file_ptr: u64,
+) -> Option<String> {
+    let f_path_offset = reader.symbols().field_offset("file", "f_path")?;
+    let dentry_in_path = reader.symbols().field_offset("path", "dentry")?;
+    let d_name_offset = reader.symbols().field_offset("dentry", "d_name")?;
+    let name_in_qstr = reader.symbols().field_offset("qstr", "name")?;
+
+    // file.f_path is embedded; dentry is a pointer within the embedded path struct.
+    let dentry_addr = file_ptr + f_path_offset + dentry_in_path;
+    let dentry_raw = reader.read_bytes(dentry_addr, 8).ok()?;
+    let dentry_ptr = u64::from_le_bytes(dentry_raw.try_into().ok()?);
+    if dentry_ptr == 0 {
+        return None;
+    }
+
+    // dentry.d_name is an embedded qstr; name is a pointer within qstr.
+    let name_addr = dentry_ptr + d_name_offset + name_in_qstr;
+    let name_raw = reader.read_bytes(name_addr, 8).ok()?;
+    let name_ptr = u64::from_le_bytes(name_raw.try_into().ok()?);
+    if name_ptr == 0 {
+        return None;
+    }
+
+    reader.read_string(name_ptr, 256).ok()
 }
 
 #[cfg(test)]
