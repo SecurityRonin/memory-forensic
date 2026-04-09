@@ -460,6 +460,226 @@ pub struct WinHandleInfo {
     pub granted_access: u32,
 }
 
+/// A named mutex/mutant found in the object manager.
+///
+/// Malware frequently creates named mutexes to ensure single-instance
+/// execution. Enumerating these from memory is a key DFIR artifact.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MutantInfo {
+    /// Name of the mutant from `_OBJECT_HEADER_NAME_INFO`.
+    pub name: String,
+    /// PID of the owning process (from `_ETHREAD.Cid.UniqueProcess`).
+    pub owner_pid: u64,
+    /// Thread ID of the owning thread (from `_ETHREAD.Cid.UniqueThread`).
+    pub owner_thread_id: u64,
+    /// Whether the mutant has been abandoned (owner thread terminated).
+    pub abandoned: bool,
+}
+
+// ── DNS resolver cache types ──────────────────────────────────────────
+
+/// DNS record type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum DnsRecordType {
+    /// A record (IPv4 address).
+    A,
+    /// AAAA record (IPv6 address).
+    Aaaa,
+    /// CNAME (canonical name alias).
+    Cname,
+    /// PTR (pointer / reverse DNS).
+    Ptr,
+    /// MX (mail exchange).
+    Mx,
+    /// SRV (service locator).
+    Srv,
+    /// SOA (start of authority).
+    Soa,
+    /// NS (name server).
+    Ns,
+    /// TXT record.
+    Txt,
+    /// Unknown or unsupported record type.
+    Unknown(u16),
+}
+
+impl DnsRecordType {
+    /// Convert a raw DNS type value to a `DnsRecordType`.
+    pub fn from_raw(value: u16) -> Self {
+        match value {
+            1 => Self::A,
+            28 => Self::Aaaa,
+            5 => Self::Cname,
+            12 => Self::Ptr,
+            15 => Self::Mx,
+            33 => Self::Srv,
+            6 => Self::Soa,
+            2 => Self::Ns,
+            16 => Self::Txt,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for DnsRecordType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::A => write!(f, "A"),
+            Self::Aaaa => write!(f, "AAAA"),
+            Self::Cname => write!(f, "CNAME"),
+            Self::Ptr => write!(f, "PTR"),
+            Self::Mx => write!(f, "MX"),
+            Self::Srv => write!(f, "SRV"),
+            Self::Soa => write!(f, "SOA"),
+            Self::Ns => write!(f, "NS"),
+            Self::Txt => write!(f, "TXT"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// A cached DNS record found in the Windows DNS resolver cache.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DnsCacheEntry {
+    /// Domain name that was resolved.
+    pub name: String,
+    /// DNS record type.
+    pub record_type: DnsRecordType,
+    /// Resolved data (e.g., IP address string for A/AAAA, hostname for CNAME).
+    pub data: String,
+    /// TTL in seconds at time of caching.
+    pub ttl: u32,
+}
+
+// ── Service enumeration types ────────────────────────────────────────
+
+/// Service state (`dwCurrentState` from `SERVICE_STATUS`).
+///
+/// Maps to the `SERVICE_STATE` constants used by the Windows
+/// Service Control Manager (SCM).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ServiceState {
+    /// The service is not running (SERVICE_STOPPED = 1).
+    Stopped,
+    /// The service is starting (SERVICE_START_PENDING = 2).
+    StartPending,
+    /// The service is stopping (SERVICE_STOP_PENDING = 3).
+    StopPending,
+    /// The service is running (SERVICE_RUNNING = 4).
+    Running,
+    /// The service continue is pending (SERVICE_CONTINUE_PENDING = 5).
+    ContinuePending,
+    /// The service pause is pending (SERVICE_PAUSE_PENDING = 6).
+    PausePending,
+    /// The service is paused (SERVICE_PAUSED = 7).
+    Paused,
+    /// Unknown or unrecognized state value.
+    Unknown(u32),
+}
+
+impl ServiceState {
+    /// Convert a raw Windows `dwCurrentState` value to a `ServiceState`.
+    pub fn from_raw(value: u32) -> Self {
+        match value {
+            1 => Self::Stopped,
+            2 => Self::StartPending,
+            3 => Self::StopPending,
+            4 => Self::Running,
+            5 => Self::ContinuePending,
+            6 => Self::PausePending,
+            7 => Self::Paused,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for ServiceState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stopped => write!(f, "STOPPED"),
+            Self::StartPending => write!(f, "START_PENDING"),
+            Self::StopPending => write!(f, "STOP_PENDING"),
+            Self::Running => write!(f, "RUNNING"),
+            Self::ContinuePending => write!(f, "CONTINUE_PENDING"),
+            Self::PausePending => write!(f, "PAUSE_PENDING"),
+            Self::Paused => write!(f, "PAUSED"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// Service start type (`dwStartType`).
+///
+/// Maps to the `SERVICE_START_TYPE` constants used by the Windows
+/// Service Control Manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ServiceStartType {
+    /// Loaded by the boot loader (SERVICE_BOOT_START = 0).
+    BootStart,
+    /// Started during kernel initialization (SERVICE_SYSTEM_START = 1).
+    SystemStart,
+    /// Started automatically by the SCM (SERVICE_AUTO_START = 2).
+    AutoStart,
+    /// Started on demand (SERVICE_DEMAND_START = 3).
+    DemandStart,
+    /// Cannot be started (SERVICE_DISABLED = 4).
+    Disabled,
+    /// Unknown or unrecognized start type value.
+    Unknown(u32),
+}
+
+impl ServiceStartType {
+    /// Convert a raw Windows `dwStartType` value to a `ServiceStartType`.
+    pub fn from_raw(value: u32) -> Self {
+        match value {
+            0 => Self::BootStart,
+            1 => Self::SystemStart,
+            2 => Self::AutoStart,
+            3 => Self::DemandStart,
+            4 => Self::Disabled,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for ServiceStartType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BootStart => write!(f, "BOOT_START"),
+            Self::SystemStart => write!(f, "SYSTEM_START"),
+            Self::AutoStart => write!(f, "AUTO_START"),
+            Self::DemandStart => write!(f, "DEMAND_START"),
+            Self::Disabled => write!(f, "DISABLED"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// A Windows service record found in SCM memory.
+///
+/// Extracted from `_SERVICE_RECORD` structures maintained by the
+/// Service Control Manager (`services.exe`). These structures are
+/// linked via a doubly-linked list (`ServiceList` field).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServiceInfo {
+    /// Service name (short internal name, e.g., `"Dnscache"`).
+    pub name: String,
+    /// Display name shown in the Services MMC snap-in.
+    pub display_name: String,
+    /// Current service state (running, stopped, etc.).
+    pub state: ServiceState,
+    /// How the service is started (boot, auto, demand, disabled).
+    pub start_type: ServiceStartType,
+    /// Service type bitmask (`dwServiceType`).
+    pub service_type: u32,
+    /// Path to the service binary (`ImagePath`).
+    pub image_path: String,
+    /// Account under which the service runs (e.g., `"LocalSystem"`).
+    pub object_name: String,
+    /// Process ID of the running service (from `SERVICE_STATUS_PROCESS`).
+    pub pid: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +757,33 @@ mod tests {
         assert_eq!(WinTcpState::TimeWait.to_string(), "TIME_WAIT");
         assert_eq!(WinTcpState::DeleteTcb.to_string(), "DELETE_TCB");
         assert_eq!(WinTcpState::Unknown(99).to_string(), "Unknown(99)");
+    }
+
+    #[test]
+    fn dns_record_type_from_raw() {
+        assert_eq!(DnsRecordType::from_raw(1), DnsRecordType::A);
+        assert_eq!(DnsRecordType::from_raw(28), DnsRecordType::Aaaa);
+        assert_eq!(DnsRecordType::from_raw(5), DnsRecordType::Cname);
+        assert_eq!(DnsRecordType::from_raw(12), DnsRecordType::Ptr);
+        assert_eq!(DnsRecordType::from_raw(15), DnsRecordType::Mx);
+        assert_eq!(DnsRecordType::from_raw(33), DnsRecordType::Srv);
+        assert_eq!(DnsRecordType::from_raw(6), DnsRecordType::Soa);
+        assert_eq!(DnsRecordType::from_raw(2), DnsRecordType::Ns);
+        assert_eq!(DnsRecordType::from_raw(16), DnsRecordType::Txt);
+        assert_eq!(DnsRecordType::from_raw(999), DnsRecordType::Unknown(999));
+    }
+
+    #[test]
+    fn dns_record_type_display() {
+        assert_eq!(DnsRecordType::A.to_string(), "A");
+        assert_eq!(DnsRecordType::Aaaa.to_string(), "AAAA");
+        assert_eq!(DnsRecordType::Cname.to_string(), "CNAME");
+        assert_eq!(DnsRecordType::Ptr.to_string(), "PTR");
+        assert_eq!(DnsRecordType::Mx.to_string(), "MX");
+        assert_eq!(DnsRecordType::Srv.to_string(), "SRV");
+        assert_eq!(DnsRecordType::Soa.to_string(), "SOA");
+        assert_eq!(DnsRecordType::Ns.to_string(), "NS");
+        assert_eq!(DnsRecordType::Txt.to_string(), "TXT");
+        assert_eq!(DnsRecordType::Unknown(42).to_string(), "Unknown(42)");
     }
 }

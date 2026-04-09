@@ -372,6 +372,11 @@ impl IsfBuilder {
             .add_struct("_OBJECT_HEADER_NAME_INFO", 32)
             .add_field("_OBJECT_HEADER_NAME_INFO", "Directory", 0, "pointer")
             .add_field("_OBJECT_HEADER_NAME_INFO", "Name", 0x10, "_UNICODE_STRING")
+            // _KMUTANT (kernel mutex/mutant object body)
+            .add_struct("_KMUTANT", 56)
+            .add_field("_KMUTANT", "OwnerThread", 0x28, "pointer")
+            .add_field("_KMUTANT", "Abandoned", 0x30, "unsigned char")
+            .add_field("_KMUTANT", "ApcDisable", 0x31, "unsigned char")
             // Kernel symbols
             .add_symbol("ObTypeIndexTable", 0xFFFFF805_5A490000)
             .add_symbol("PsActiveProcessHead", 0xFFFFF805_5A400000)
