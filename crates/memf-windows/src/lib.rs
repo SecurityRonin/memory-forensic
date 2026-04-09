@@ -25,6 +25,7 @@ pub mod filescan;
 pub mod handles;
 pub mod hashdump;
 pub mod hollowing;
+pub mod iat_hooks;
 pub mod ldrmodules;
 pub mod lsadump;
 pub mod messagehooks;
