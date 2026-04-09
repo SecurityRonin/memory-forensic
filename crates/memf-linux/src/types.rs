@@ -700,7 +700,10 @@ impl BootTimeInfo {
     /// Returns `None` if no boot time estimate is available.
     pub fn absolute_secs(&self, boot_ns: u64) -> Option<i64> {
         self.best_estimate
-            .map(|epoch| epoch + (boot_ns / 1_000_000_000) as i64)
+            .map(|epoch| {
+                let boot_secs = i64::try_from(boot_ns / 1_000_000_000).unwrap_or(i64::MAX);
+                epoch + boot_secs
+            })
     }
 }
 

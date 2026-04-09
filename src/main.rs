@@ -789,7 +789,7 @@ fn cmd_ps(
                 PsSortField::Pid => procs.sort_by_key(|p| p.pid),
                 PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
                 PsSortField::Name => {
-                    procs.sort_by(|a, b| a.comm.to_lowercase().cmp(&b.comm.to_lowercase()))
+                    procs.sort_by(|a, b| a.comm.to_lowercase().cmp(&b.comm.to_lowercase()));
                 }
                 PsSortField::Time => procs.sort_by_key(|p| p.start_time),
             }
@@ -828,9 +828,10 @@ fn cmd_ps(
                             continue;
                         }
                     }
-                    match memf_linux::cmdline::walk_process_cmdline(&reader, proc.vaddr) {
-                        Ok(info) => cmdlines.push(info),
-                        Err(_) => {} // skip kernel threads / unreadable
+                    // skip kernel threads / unreadable
+                    if let Ok(info) = memf_linux::cmdline::walk_process_cmdline(&reader, proc.vaddr)
+                    {
+                        cmdlines.push(info);
                     }
                 }
                 println!();
@@ -1125,14 +1126,14 @@ const BOOT_TIME_DRIFT_WARN: i64 = 60;
 
 /// Format a Unix epoch timestamp into a UTC datetime string.
 fn format_epoch(epoch: i64) -> String {
-    let secs = epoch.unsigned_abs();
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
+    let abs_secs = epoch.unsigned_abs();
+    let sec = abs_secs % 60;
+    let min = (abs_secs / 60) % 60;
+    let hour = (abs_secs / 3600) % 24;
     // Simple days-since-epoch to Y-M-D conversion.
-    let days = (secs / 86400) as i64;
-    let (y, mo, d) = days_to_ymd(if epoch < 0 { -days } else { days });
-    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} UTC")
+    let days = i64::try_from(abs_secs / 86400).unwrap_or(i64::MAX);
+    let (year, month, day) = days_to_ymd(if epoch < 0 { -days } else { days });
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02} UTC")
 }
 
 /// Convert days since Unix epoch to (year, month, day).
@@ -1140,16 +1141,21 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u32;
+    // doe is guaranteed non-negative by the era calculation.
+    let doe = u32::try_from(z - era * 146_097).unwrap_or(0);
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
+    let yr = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let yr = if month <= 2 { yr + 1 } else { yr };
+    (yr, month, day)
 }
+
+/// FILETIME epoch is 1601-01-01. Unix epoch is 1970-01-01.
+/// Difference: 11644473600 seconds = 116444736000000000 in 100ns ticks.
+const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
 
 /// Convert a Windows FILETIME (100-nanosecond intervals since 1601-01-01)
 /// to "YYYY-MM-DD HH:MM:SS UTC". Returns "-" for zero (unset).
@@ -1157,15 +1163,12 @@ fn format_filetime(ft: u64) -> String {
     if ft == 0 {
         return "-".to_string();
     }
-    // FILETIME epoch is 1601-01-01. Unix epoch is 1970-01-01.
-    // Difference: 11644473600 seconds = 116444736000000000 in 100ns ticks.
-    const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
     if ft < FILETIME_UNIX_DIFF {
         // Pre-Unix-epoch date; rare in forensics but handle gracefully.
         return format!("pre-1970 ({ft:#x})");
     }
     let unix_secs = (ft - FILETIME_UNIX_DIFF) / 10_000_000;
-    format_epoch(unix_secs as i64)
+    format_epoch(i64::try_from(unix_secs).unwrap_or(i64::MAX))
 }
 
 /// Format nanoseconds-since-boot into a human-readable uptime string.
@@ -1193,114 +1196,128 @@ fn format_boot_ns(ns: u64) -> String {
     format!("{days}d{h:02}h{m:02}m")
 }
 
+fn print_linux_processes_table(
+    procs: &[memf_linux::ProcessInfo],
+    boot_info: &memf_linux::BootTimeInfo,
+) {
+    let has_boot = boot_info.best_estimate.is_some();
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL_CONDENSED);
+    if has_boot {
+        table.set_header(vec![
+            "PID",
+            "PPID",
+            "Name",
+            "State",
+            "Start",
+            "Start (UTC)",
+            "Vaddr",
+        ]);
+    } else {
+        table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Vaddr"]);
+    }
+    for p in procs {
+        if has_boot {
+            let abs = boot_info
+                .absolute_secs(p.start_time)
+                .map(format_epoch)
+                .unwrap_or_default();
+            table.add_row(vec![
+                format!("{}", p.pid),
+                format!("{}", p.ppid),
+                p.comm.clone(),
+                format!("{}", p.state),
+                format_boot_ns(p.start_time),
+                abs,
+                format!("{:#x}", p.vaddr),
+            ]);
+        } else {
+            table.add_row(vec![
+                format!("{}", p.pid),
+                format!("{}", p.ppid),
+                p.comm.clone(),
+                format!("{}", p.state),
+                format_boot_ns(p.start_time),
+                format!("{:#x}", p.vaddr),
+            ]);
+        }
+    }
+    println!("{table}");
+    println!("\nTotal: {} processes", procs.len());
+}
+
+fn print_linux_processes_json(
+    procs: &[memf_linux::ProcessInfo],
+    boot_info: &memf_linux::BootTimeInfo,
+) {
+    for p in procs {
+        let abs_epoch = boot_info.absolute_secs(p.start_time);
+        let mut json = serde_json::json!({
+            "pid": p.pid,
+            "ppid": p.ppid,
+            "name": p.comm,
+            "state": format!("{}", p.state),
+            "start_time_ns": p.start_time,
+            "start_time": format_boot_ns(p.start_time),
+            "vaddr": format!("{:#x}", p.vaddr),
+        });
+        if let Some(epoch) = abs_epoch {
+            json["start_epoch"] = serde_json::json!(epoch);
+            json["start_utc"] = serde_json::json!(format_epoch(epoch));
+        }
+        println!("{}", serde_json::to_string(&json).unwrap_or_default());
+    }
+}
+
+fn print_linux_processes_csv(
+    procs: &[memf_linux::ProcessInfo],
+    boot_info: &memf_linux::BootTimeInfo,
+) {
+    let has_boot = boot_info.best_estimate.is_some();
+    if has_boot {
+        println!("pid,ppid,name,state,start_time_ns,start_time,start_epoch,start_utc,vaddr");
+    } else {
+        println!("pid,ppid,name,state,start_time_ns,start_time,vaddr");
+    }
+    for p in procs {
+        if has_boot {
+            let abs = boot_info.absolute_secs(p.start_time).unwrap_or(0);
+            println!(
+                "{},{},{},{},{},{},{},{},{:#x}",
+                p.pid,
+                p.ppid,
+                p.comm,
+                p.state,
+                p.start_time,
+                format_boot_ns(p.start_time),
+                abs,
+                format_epoch(abs),
+                p.vaddr,
+            );
+        } else {
+            println!(
+                "{},{},{},{},{},{},{:#x}",
+                p.pid,
+                p.ppid,
+                p.comm,
+                p.state,
+                p.start_time,
+                format_boot_ns(p.start_time),
+                p.vaddr,
+            );
+        }
+    }
+}
+
 fn print_linux_processes(
     procs: &[memf_linux::ProcessInfo],
     output: OutputFormat,
     boot_info: &memf_linux::BootTimeInfo,
 ) {
-    let has_boot = boot_info.best_estimate.is_some();
     match output {
-        OutputFormat::Table => {
-            let mut table = Table::new();
-            table.load_preset(UTF8_FULL_CONDENSED);
-            if has_boot {
-                table.set_header(vec![
-                    "PID",
-                    "PPID",
-                    "Name",
-                    "State",
-                    "Start",
-                    "Start (UTC)",
-                    "Vaddr",
-                ]);
-            } else {
-                table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Vaddr"]);
-            }
-            for p in procs {
-                if has_boot {
-                    let abs = boot_info
-                        .absolute_secs(p.start_time)
-                        .map(format_epoch)
-                        .unwrap_or_default();
-                    table.add_row(vec![
-                        format!("{}", p.pid),
-                        format!("{}", p.ppid),
-                        p.comm.clone(),
-                        format!("{}", p.state),
-                        format_boot_ns(p.start_time),
-                        abs,
-                        format!("{:#x}", p.vaddr),
-                    ]);
-                } else {
-                    table.add_row(vec![
-                        format!("{}", p.pid),
-                        format!("{}", p.ppid),
-                        p.comm.clone(),
-                        format!("{}", p.state),
-                        format_boot_ns(p.start_time),
-                        format!("{:#x}", p.vaddr),
-                    ]);
-                }
-            }
-            println!("{table}");
-            println!("\nTotal: {} processes", procs.len());
-        }
-        OutputFormat::Json => {
-            for p in procs {
-                let abs_epoch = boot_info.absolute_secs(p.start_time);
-                let mut json = serde_json::json!({
-                    "pid": p.pid,
-                    "ppid": p.ppid,
-                    "name": p.comm,
-                    "state": format!("{}", p.state),
-                    "start_time_ns": p.start_time,
-                    "start_time": format_boot_ns(p.start_time),
-                    "vaddr": format!("{:#x}", p.vaddr),
-                });
-                if let Some(epoch) = abs_epoch {
-                    json["start_epoch"] = serde_json::json!(epoch);
-                    json["start_utc"] = serde_json::json!(format_epoch(epoch));
-                }
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
-            }
-        }
-        OutputFormat::Csv => {
-            if has_boot {
-                println!(
-                    "pid,ppid,name,state,start_time_ns,start_time,start_epoch,start_utc,vaddr"
-                );
-            } else {
-                println!("pid,ppid,name,state,start_time_ns,start_time,vaddr");
-            }
-            for p in procs {
-                if has_boot {
-                    let abs = boot_info.absolute_secs(p.start_time).unwrap_or(0);
-                    println!(
-                        "{},{},{},{},{},{},{},{},{:#x}",
-                        p.pid,
-                        p.ppid,
-                        p.comm,
-                        p.state,
-                        p.start_time,
-                        format_boot_ns(p.start_time),
-                        abs,
-                        format_epoch(abs),
-                        p.vaddr,
-                    );
-                } else {
-                    println!(
-                        "{},{},{},{},{},{},{:#x}",
-                        p.pid,
-                        p.ppid,
-                        p.comm,
-                        p.state,
-                        p.start_time,
-                        format_boot_ns(p.start_time),
-                        p.vaddr,
-                    );
-                }
-            }
-        }
+        OutputFormat::Table => print_linux_processes_table(procs, boot_info),
+        OutputFormat::Json => print_linux_processes_json(procs, boot_info),
+        OutputFormat::Csv => print_linux_processes_csv(procs, boot_info),
     }
 }
 
@@ -3828,18 +3845,17 @@ struct TimelineEvent {
     pid: u64,
     /// Description of the event source.
     description: String,
-    /// Suspicious/notable tags (e.g., "singleton-duplicate", "parent-child-violation").
+    /// Suspicious/notable tags (e.g., "singleton-duplicate:T1036.005", "parent-child-violation:T1036.005").
     tags: Vec<String>,
 }
 
 /// Convert a Windows FILETIME to Unix epoch seconds.
 /// Returns `None` for zero or pre-1970 values.
 fn filetime_to_unix(ft: u64) -> Option<i64> {
-    const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
     if ft == 0 || ft < FILETIME_UNIX_DIFF {
         return None;
     }
-    Some(((ft - FILETIME_UNIX_DIFF) / 10_000_000) as i64)
+    Some(i64::try_from((ft - FILETIME_UNIX_DIFF) / 10_000_000).unwrap_or(i64::MAX))
 }
 
 /// Build timeline events from Windows process and connection data.
@@ -3899,15 +3915,14 @@ fn build_linux_timeline(
     procs: &[memf_linux::ProcessInfo],
     boot_epoch: Option<i64>,
 ) -> Vec<TimelineEvent> {
-    let epoch = match boot_epoch {
-        Some(e) => e,
-        None => return Vec::new(),
+    let Some(epoch) = boot_epoch else {
+        return Vec::new();
     };
 
     let mut events: Vec<TimelineEvent> = procs
         .iter()
         .map(|p| {
-            let ts = epoch + (p.start_time / 1_000_000_000) as i64;
+            let ts = epoch + i64::try_from(p.start_time / 1_000_000_000).unwrap_or(i64::MAX);
             TimelineEvent {
                 timestamp_secs: ts,
                 timestamp: format_epoch(ts),
@@ -3980,10 +3995,7 @@ fn build_windows_dll_events(
         let proc_ts = proc_map
             .get(pid)
             .and_then(|p| filetime_to_unix(p.create_time));
-        let ts = match proc_ts {
-            Some(t) => t,
-            None => continue,
-        };
+        let Some(ts) = proc_ts else { continue };
 
         for dll in dlls {
             events.push(TimelineEvent {
@@ -4003,28 +4015,54 @@ fn build_windows_dll_events(
     events
 }
 
-/// Tag suspicious patterns in Windows timeline events.
+/// Windows processes that must have exactly one instance (singleton check).
+const WIN_SINGLETONS: &[&str] = &[
+    "lsass.exe",
+    "services.exe",
+    "wininit.exe",
+    "csrss.exe",
+    "smss.exe",
+    "lsm.exe",
+];
+
+/// Parent-child invariant rules: (child_name, required parent_name).
+const WIN_PARENT_RULES: &[(&str, &str)] = &[
+    ("svchost.exe", "services.exe"),
+    ("lsass.exe", "wininit.exe"),
+    ("services.exe", "wininit.exe"),
+    ("wininit.exe", "smss.exe"),
+];
+
+/// Processes that should never have network connections.
+const WIN_NON_NETWORKING: &[&str] = &[
+    "notepad.exe",
+    "calc.exe",
+    "mspaint.exe",
+    "write.exe",
+    "wordpad.exe",
+    "snippingtool.exe",
+    "osk.exe",
+    "magnify.exe",
+    "narrator.exe",
+];
+
+/// Collect PID sets for suspicious Windows patterns.
 ///
-/// Mutates `events` in-place, appending tags like "singleton-duplicate",
-/// "parent-child-violation", "non-networking-process", or
-/// "thread-outside-module".
-fn tag_suspicious_windows(
-    events: &mut [TimelineEvent],
+/// Returns (singleton_dup_pids, parent_violation_pids, networking_pids,
+///          thread_outside_pids, pivot_pids).
+fn collect_suspicious_pid_sets(
     procs: &[memf_windows::WinProcessInfo],
     conns: &[memf_windows::WinConnectionInfo],
     threads: &[memf_windows::WinThreadInfo],
     proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
+) -> (
+    std::collections::HashSet<u64>,
+    std::collections::HashSet<u64>,
+    std::collections::HashSet<u64>,
+    std::collections::HashSet<(u64, u64)>,
+    std::collections::HashSet<u64>,
 ) {
     // --- 1. Singleton duplication ---
-    // These Windows processes must have exactly one instance.
-    const SINGLETONS: &[&str] = &[
-        "lsass.exe",
-        "services.exe",
-        "wininit.exe",
-        "csrss.exe",
-        "smss.exe",
-        "lsm.exe",
-    ];
     let mut name_counts: std::collections::HashMap<String, Vec<u64>> =
         std::collections::HashMap::new();
     for p in procs {
@@ -4032,7 +4070,7 @@ fn tag_suspicious_windows(
         name_counts.entry(lower).or_default().push(p.pid);
     }
     let mut singleton_dup_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    for &name in SINGLETONS {
+    for &name in WIN_SINGLETONS {
         if let Some(pids) = name_counts.get(name) {
             if pids.len() > 1 {
                 singleton_dup_pids.extend(pids);
@@ -4041,13 +4079,6 @@ fn tag_suspicious_windows(
     }
 
     // --- 2. Parent-child invariant violations ---
-    // Map of child_name -> required parent_name
-    const PARENT_RULES: &[(&str, &str)] = &[
-        ("svchost.exe", "services.exe"),
-        ("lsass.exe", "wininit.exe"),
-        ("services.exe", "wininit.exe"),
-        ("wininit.exe", "smss.exe"),
-    ];
     let pid_to_name: std::collections::HashMap<u64, String> = procs
         .iter()
         .map(|p| (p.pid, p.image_name.to_lowercase()))
@@ -4056,9 +4087,9 @@ fn tag_suspicious_windows(
         std::collections::HashSet::new();
     for p in procs {
         let child_lower = p.image_name.to_lowercase();
-        for &(child_name, parent_name) in PARENT_RULES {
+        for &(child_name, parent_name) in WIN_PARENT_RULES {
             if child_lower == child_name {
-                let parent_lower = pid_to_name.get(&(p.ppid)).map(String::as_str).unwrap_or("");
+                let parent_lower = pid_to_name.get(&(p.ppid)).map_or("", String::as_str);
                 if parent_lower != parent_name {
                     parent_violation_pids.insert(p.pid);
                 }
@@ -4067,21 +4098,10 @@ fn tag_suspicious_windows(
     }
 
     // --- 3. Non-networking process with connections ---
-    const NON_NETWORKING: &[&str] = &[
-        "notepad.exe",
-        "calc.exe",
-        "mspaint.exe",
-        "write.exe",
-        "wordpad.exe",
-        "snippingtool.exe",
-        "osk.exe",
-        "magnify.exe",
-        "narrator.exe",
-    ];
     let mut networking_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     for c in conns {
         let proc_lower = c.process_name.to_lowercase();
-        if NON_NETWORKING.contains(&proc_lower.as_str()) {
+        if WIN_NON_NETWORKING.contains(&proc_lower.as_str()) {
             networking_pids.insert(c.pid);
         }
     }
@@ -4125,19 +4145,48 @@ fn tag_suspicious_windows(
         .copied()
         .collect();
 
+    (
+        singleton_dup_pids,
+        parent_violation_pids,
+        networking_pids,
+        thread_outside_pids,
+        pivot_pids,
+    )
+}
+
+/// Tag suspicious patterns in Windows timeline events.
+///
+/// Mutates `events` in-place, appending tags like "singleton-duplicate:T1036.005",
+/// "parent-child-violation:T1036.005", "non-networking-process:T1071",
+/// "thread-outside-module:T1055", or "pivot-point:T1090".
+fn tag_suspicious_windows(
+    events: &mut [TimelineEvent],
+    procs: &[memf_windows::WinProcessInfo],
+    conns: &[memf_windows::WinConnectionInfo],
+    threads: &[memf_windows::WinThreadInfo],
+    proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
+) {
+    let (
+        singleton_dup_pids,
+        parent_violation_pids,
+        networking_pids,
+        thread_outside_pids,
+        pivot_pids,
+    ) = collect_suspicious_pid_sets(procs, conns, threads, proc_dlls);
+
     // --- Apply tags to events ---
     for event in events.iter_mut() {
         if singleton_dup_pids.contains(&event.pid) {
-            event.tags.push("singleton-duplicate".into());
+            event.tags.push("singleton-duplicate:T1036.005".into());
         }
         if parent_violation_pids.contains(&event.pid) {
-            event.tags.push("parent-child-violation".into());
+            event.tags.push("parent-child-violation:T1036.005".into());
         }
         if networking_pids.contains(&event.pid) {
-            event.tags.push("non-networking-process".into());
+            event.tags.push("non-networking-process:T1071".into());
         }
         if pivot_pids.contains(&event.pid) {
-            event.tags.push("pivot-point".into());
+            event.tags.push("pivot-point:T1090".into());
         }
         // Thread-outside-module: tag thread_create events specifically
         if event.event_type == "thread_create" {
@@ -4149,7 +4198,7 @@ fn tag_suspicious_windows(
                     .and_then(|s| s.parse::<u64>().ok())
                 {
                     if thread_outside_pids.contains(&(event.pid, tid)) {
-                        event.tags.push("thread-outside-module".into());
+                        event.tags.push("thread-outside-module:T1055".into());
                     }
                 }
             }
@@ -4191,8 +4240,8 @@ fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
     match output {
         OutputFormat::Table => {
             println!(
-                "{:<26} {:<20} {:>8}  {}  {}",
-                "TIMESTAMP", "EVENT", "PID", "DESCRIPTION", "TAGS"
+                "{:<26} {:<20} {:>8}  DESCRIPTION  TAGS",
+                "TIMESTAMP", "EVENT", "PID"
             );
             for e in events {
                 let tags_str = if e.tags.is_empty() {
@@ -4283,9 +4332,8 @@ fn cmd_timeline(
             // Walk threads for all processes (non-fatal per process).
             let mut all_threads = Vec::new();
             for p in &procs {
-                match memf_windows::thread::walk_threads(&reader, p.vaddr, p.pid) {
-                    Ok(threads) => all_threads.extend(threads),
-                    Err(_) => {}
+                if let Ok(threads) = memf_windows::thread::walk_threads(&reader, p.vaddr, p.pid) {
+                    all_threads.extend(threads);
                 }
             }
 
@@ -4293,9 +4341,8 @@ fn cmd_timeline(
             let mut proc_dlls: Vec<(u64, Vec<memf_windows::WinDllInfo>)> = Vec::new();
             for p in &procs {
                 if p.peb_addr != 0 {
-                    match memf_windows::dll::walk_dlls(&reader, p.peb_addr) {
-                        Ok(dlls) => proc_dlls.push((p.pid, dlls)),
-                        Err(_) => {}
+                    if let Ok(dlls) = memf_windows::dll::walk_dlls(&reader, p.peb_addr) {
+                        proc_dlls.push((p.pid, dlls));
                     }
                 }
             }
@@ -5627,9 +5674,9 @@ mod tests {
         tag_suspicious_windows(&mut events, &procs, &[], &[], &[]);
         let tagged: Vec<_> = events.iter().filter(|e| !e.tags.is_empty()).collect();
         assert!(!tagged.is_empty());
-        assert!(tagged
-            .iter()
-            .any(|e| e.tags.contains(&"singleton-duplicate".to_string())));
+        assert!(tagged.iter().any(|e| e
+            .tags
+            .contains(&"singleton-duplicate:T1036.005".to_string())));
     }
 
     #[test]
@@ -5666,7 +5713,10 @@ mod tests {
         tag_suspicious_windows(&mut events, &procs, &[], &[], &[]);
         let tagged: Vec<_> = events
             .iter()
-            .filter(|e| e.tags.contains(&"parent-child-violation".to_string()))
+            .filter(|e| {
+                e.tags
+                    .contains(&"parent-child-violation:T1036.005".to_string())
+            })
             .collect();
         assert!(!tagged.is_empty());
     }
@@ -5702,7 +5752,7 @@ mod tests {
         tag_suspicious_windows(&mut events, &procs, &conns, &[], &[]);
         let tagged: Vec<_> = events
             .iter()
-            .filter(|e| e.tags.contains(&"non-networking-process".to_string()))
+            .filter(|e| e.tags.contains(&"non-networking-process:T1071".to_string()))
             .collect();
         assert!(!tagged.is_empty());
     }
@@ -5747,7 +5797,7 @@ mod tests {
         tag_suspicious_windows(&mut events, &procs, &[], &threads, &proc_dlls);
         let tagged: Vec<_> = events
             .iter()
-            .filter(|e| e.tags.contains(&"thread-outside-module".to_string()))
+            .filter(|e| e.tags.contains(&"thread-outside-module:T1055".to_string()))
             .collect();
         assert!(!tagged.is_empty());
     }
@@ -5838,7 +5888,7 @@ mod tests {
             event_type: "process_create".into(),
             pid: 1234,
             description: "cmd.exe (PID 1234)".into(),
-            tags: vec!["singleton-duplicate".into()],
+            tags: vec!["singleton-duplicate:T1036.005".into()],
         }];
         // Capture stdout - we just verify it doesn't panic and produces output.
         // The bodyfile format correctness will be verified in GREEN phase.
@@ -5857,7 +5907,7 @@ mod tests {
             event_type: "process_create".into(),
             pid: 600,
             description: "lsass.exe (PID 600)".into(),
-            tags: vec!["singleton-duplicate".into()],
+            tags: vec!["singleton-duplicate:T1036.005".into()],
         }];
         // Should not panic; visual verification of tag display
         print_timeline(&events, OutputFormat::Table);
@@ -5872,8 +5922,8 @@ mod tests {
             pid: 600,
             description: "lsass.exe (PID 600)".into(),
             tags: vec![
-                "singleton-duplicate".into(),
-                "parent-child-violation".into(),
+                "singleton-duplicate:T1036.005".into(),
+                "parent-child-violation:T1036.005".into(),
             ],
         }];
         print_timeline(&events, OutputFormat::Json);
@@ -5927,7 +5977,7 @@ mod tests {
         tag_suspicious_windows(&mut events, &procs, &conns, &[], &[]);
         let tagged: Vec<_> = events
             .iter()
-            .filter(|e| e.tags.contains(&"pivot-point".to_string()))
+            .filter(|e| e.tags.contains(&"pivot-point:T1090".to_string()))
             .collect();
         assert!(!tagged.is_empty());
     }
