@@ -38,8 +38,158 @@ const MAX_VMA_SCAN: u64 = 16 * 1024 * 1024;
 pub fn extract_ssh_keys<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<SshKeyInfo>> {
-    let _ = reader;
-    todo!("extract_ssh_keys not yet implemented")
+    let init_task_addr = reader
+        .symbols()
+        .symbol_address("init_task")
+        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+
+    let tasks_offset = reader
+        .symbols()
+        .field_offset("task_struct", "tasks")
+        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Scan init_task itself
+    scan_sshd_keys(reader, init_task_addr, &mut results, &mut seen);
+
+    for &task_addr in &task_addrs {
+        scan_sshd_keys(reader, task_addr, &mut results, &mut seen);
+    }
+
+    Ok(results)
+}
+
+/// Check if a task is sshd and, if so, scan its VMAs for SSH keys.
+fn scan_sshd_keys<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    task_addr: u64,
+    results: &mut Vec<SshKeyInfo>,
+    seen: &mut std::collections::HashSet<(u64, String)>,
+) {
+    let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let Ok(comm) = reader.read_field_string(task_addr, "task_struct", "comm", 16) else {
+        return;
+    };
+
+    if comm != "sshd" {
+        return;
+    }
+
+    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if mm_ptr == 0 {
+        return; // kernel thread
+    }
+
+    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    // Walk VMAs
+    let mut vma_addr = mmap_ptr;
+    let mut vma_count = 0u32;
+    while vma_addr != 0 && vma_count < 4096 {
+        vma_count += 1;
+
+        let vm_start: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_start") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let vm_end: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_end") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let vm_flags: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_flags") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+
+        let flags = VmaFlags::from_raw(vm_flags);
+        let size = vm_end.saturating_sub(vm_start);
+
+        // Only scan readable regions within size limit
+        if flags.read && size > 0 && size <= MAX_VMA_SCAN {
+            scan_region_for_keys(reader, u64::from(pid), vm_start, size, results, seen);
+        }
+
+        // Follow vm_next
+        vma_addr = match reader.read_field(vma_addr, "vm_area_struct", "vm_next") {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+    }
+}
+
+/// Scan a memory region for SSH key prefixes.
+fn scan_region_for_keys<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    pid: u64,
+    start: u64,
+    size: u64,
+    results: &mut Vec<SshKeyInfo>,
+    seen: &mut std::collections::HashSet<(u64, String)>,
+) {
+    let Ok(buf) = reader.read_bytes(start, size as usize) else {
+        return;
+    };
+
+    for &(prefix, _key_type) in SSH_KEY_PREFIXES {
+        let prefix_bytes = prefix.as_bytes();
+        // Scan for all occurrences of this prefix in the buffer
+        let mut search_from = 0;
+        while search_from + prefix_bytes.len() <= buf.len() {
+            let haystack = &buf[search_from..];
+            let Some(pos) = find_bytes(haystack, prefix_bytes) else {
+                break;
+            };
+
+            let abs_pos = search_from + pos;
+
+            // Extract key line: from prefix position to newline/null/end, max MAX_KEY_LINE
+            let line_start = abs_pos;
+            let max_end = buf.len().min(line_start + MAX_KEY_LINE);
+            let line_end = buf[line_start..max_end]
+                .iter()
+                .position(|&b| b == b'\n' || b == b'\0' || b == b'\r')
+                .map_or(max_end, |p| line_start + p);
+
+            let line_bytes = &buf[line_start..line_end];
+            if let Ok(line_str) = std::str::from_utf8(line_bytes) {
+                if let Some((key_type, key_data, comment)) = parse_key_line(line_str) {
+                    let dedup_key = (pid, key_data.clone());
+                    if seen.insert(dedup_key) {
+                        results.push(SshKeyInfo {
+                            pid,
+                            key_type,
+                            key_data,
+                            comment,
+                        });
+                    }
+                }
+            }
+
+            // Advance past this match
+            search_from = abs_pos + prefix_bytes.len();
+        }
+    }
+}
+
+/// Find the first occurrence of `needle` in `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
 }
 
 /// Parse a key line into `(key_type, full_key_data, comment)`.
