@@ -28,6 +28,7 @@ pub mod files;
 pub mod fs;
 pub mod ftrace;
 pub mod futex_forensics;
+pub mod io_uring;
 pub mod iomem;
 pub mod ipc;
 pub mod kaslr;
