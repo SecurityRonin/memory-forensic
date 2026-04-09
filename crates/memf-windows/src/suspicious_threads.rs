@@ -12,6 +12,8 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::{dll, process, thread, vad};
+
 /// Information about a suspicious thread detected during injection analysis.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SuspiciousThreadInfo {
@@ -125,6 +127,45 @@ pub fn classify_suspicious_thread(
     (false, String::new())
 }
 
+/// Maximum number of suspicious threads to collect (safety limit).
+const MAX_SUSPICIOUS_THREADS: usize = 4096;
+
+/// VAD protection index 6 = PAGE_EXECUTE_READWRITE.
+const VAD_PROT_EXECUTE_READWRITE: u32 = 6;
+/// VAD protection index 7 = PAGE_EXECUTE_WRITECOPY.
+const VAD_PROT_EXECUTE_WRITECOPY: u32 = 7;
+
+/// Whether a VAD protection value indicates RWX.
+fn is_rwx_protection(prot: u32) -> bool {
+    matches!(prot, VAD_PROT_EXECUTE_READWRITE | VAD_PROT_EXECUTE_WRITECOPY)
+}
+
+/// Find which module (DLL) contains the given address.
+///
+/// Returns the DLL base name if found, or "unknown" if the address
+/// doesn't fall within any loaded module's range.
+fn find_containing_module(
+    dlls: &[crate::WinDllInfo],
+    address: u64,
+) -> (String, bool) {
+    for dll in dlls {
+        let end = dll.base_addr.saturating_add(dll.size);
+        if address >= dll.base_addr && address < end {
+            return (dll.name.clone(), false);
+        }
+    }
+    ("unknown".to_string(), true)
+}
+
+/// Check whether the given address falls within an RWX VAD region.
+fn is_address_in_rwx_vad(vads: &[crate::WinVadInfo], address: u64) -> bool {
+    vads.iter().any(|v| {
+        address >= v.start_vaddr
+            && address <= v.end_vaddr
+            && is_rwx_protection(v.protection)
+    })
+}
+
 /// Walk all processes and detect threads with suspicious characteristics.
 ///
 /// For each process, walks the thread list and compares each thread's
@@ -133,15 +174,91 @@ pub fn classify_suspicious_thread(
 ///
 /// Returns only threads that are flagged as suspicious.
 /// Returns `Ok(Vec::new())` if required symbols are missing (graceful degradation).
-pub fn walk_suspicious_threads<P: PhysicalMemoryProvider>(
+pub fn walk_suspicious_threads<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<SuspiciousThreadInfo>> {
     // Graceful degradation: check for required symbol
-    let Some(_ps_head) = reader.symbols().symbol_address("PsActiveProcessHead") else {
+    let Some(ps_head) = reader.symbols().symbol_address("PsActiveProcessHead") else {
         return Ok(Vec::new());
     };
 
-    todo!("walk_suspicious_threads: implement process/thread iteration with DLL and VAD checks")
+    let procs = process::walk_processes(reader, ps_head)?;
+
+    // Resolve VadRoot offset (optional — degrade gracefully)
+    let vad_root_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "VadRoot");
+
+    let mut suspicious = Vec::new();
+
+    for proc in &procs {
+        // Skip processes with no PEB (System, Idle, etc.) — no user-mode threads to check
+        if proc.peb_addr == 0 {
+            continue;
+        }
+
+        // Switch to process address space for user-mode reads
+        let proc_reader = reader.with_cr3(proc.cr3);
+
+        // Walk DLLs from PEB LDR (graceful: empty vec on failure)
+        let dlls = dll::walk_dlls(&proc_reader, proc.peb_addr).unwrap_or_default();
+
+        // Walk VAD tree (graceful: empty vec on failure)
+        let vads = if let Some(vad_off) = vad_root_offset {
+            let vad_root_vaddr = proc.vaddr.wrapping_add(vad_off);
+            vad::walk_vad_tree(reader, vad_root_vaddr, proc.pid, &proc.image_name)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Walk threads for this process
+        let threads = match thread::walk_threads(reader, proc.vaddr, proc.pid) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        let proc_lower = proc.image_name.to_lowercase();
+        let is_system_proc = SYSTEM_PROCESSES.iter().any(|&s| proc_lower == s);
+
+        for thr in &threads {
+            // Skip threads with null start address (kernel threads, idle threads)
+            if thr.start_address == 0 {
+                continue;
+            }
+
+            let (start_module, is_orphan) = find_containing_module(&dlls, thr.start_address);
+            let in_rwx = is_address_in_rwx_vad(&vads, thr.start_address);
+
+            let (is_suspicious, reason) = classify_suspicious_thread(
+                &start_module,
+                is_orphan,
+                in_rwx,
+                &proc.image_name,
+            );
+
+            if is_suspicious {
+                suspicious.push(SuspiciousThreadInfo {
+                    pid: proc.pid as u32,
+                    process_name: proc.image_name.clone(),
+                    tid: thr.tid as u32,
+                    start_address: thr.start_address,
+                    start_module,
+                    is_orphan,
+                    in_rwx_memory: in_rwx,
+                    is_system_thread: is_system_proc,
+                    reason,
+                    is_suspicious,
+                });
+
+                if suspicious.len() >= MAX_SUSPICIOUS_THREADS {
+                    return Ok(suspicious);
+                }
+            }
+        }
+    }
+
+    Ok(suspicious)
 }
 
 #[cfg(test)]
