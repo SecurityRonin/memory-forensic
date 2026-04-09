@@ -9,6 +9,7 @@ pub mod alpc;
 pub mod amcache;
 pub mod atom_table;
 pub mod callbacks;
+pub mod clipboard;
 pub mod cmdline;
 pub mod desktops;
 pub mod dll;
