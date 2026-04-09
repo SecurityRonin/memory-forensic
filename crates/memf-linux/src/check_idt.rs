@@ -79,7 +79,68 @@ pub fn gate_type_name(type_attr: u8) -> String {
 pub fn walk_check_idt<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<IdtEntryInfo>> {
-    todo!("walk_check_idt implementation pending")
+    let symbols = reader.symbols();
+
+    // Resolve kernel text boundaries; if missing, we cannot classify.
+    let Some(kernel_start) = symbols.symbol_address("_stext") else {
+        return Ok(Vec::new());
+    };
+    let Some(kernel_end) = symbols.symbol_address("_etext") else {
+        return Ok(Vec::new());
+    };
+
+    // Resolve the IDT base address.
+    let Some(idt_base) = symbols.symbol_address("idt_table") else {
+        return Ok(Vec::new());
+    };
+
+    let mut results = Vec::new();
+
+    for vector in 0..MAX_IDT_ENTRIES {
+        let entry_addr = idt_base + (vector as u64) * (GATE_DESC_SIZE as u64);
+
+        // Read the full 16-byte gate descriptor.
+        let raw = match reader.read_bytes(entry_addr, GATE_DESC_SIZE) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+
+        // Parse fields from the gate descriptor:
+        //   offset_low:  u16 at +0
+        //   segment:     u16 at +2
+        //   _ist:        u8  at +4
+        //   type_attr:   u8  at +5
+        //   offset_mid:  u16 at +6
+        //   offset_high: u32 at +8
+        //   _reserved:   u32 at +12
+        let offset_low = u16::from_le_bytes([raw[0], raw[1]]);
+        let segment = u16::from_le_bytes([raw[2], raw[3]]);
+        let type_attr = raw[5];
+        let offset_mid = u16::from_le_bytes([raw[6], raw[7]]);
+        let offset_high = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+
+        let handler_addr = (offset_high as u64) << 32
+            | (offset_mid as u64) << 16
+            | offset_low as u64;
+
+        // Skip unused entries (handler == 0).
+        if handler_addr == 0 {
+            continue;
+        }
+
+        let is_hooked = classify_idt_entry(handler_addr, kernel_start, kernel_end);
+        let gate_type = gate_type_name(type_attr);
+
+        results.push(IdtEntryInfo {
+            vector: vector as u8,
+            handler_addr,
+            segment,
+            gate_type,
+            is_hooked,
+        });
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
