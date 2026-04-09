@@ -54,6 +54,17 @@ pub fn product_type_name(product_type: u32) -> String {
 ///
 /// Optional fields degrade gracefully: if a symbol is missing, a default
 /// value is used (0 for integers, empty string for strings).
+///
+/// # Symbols read
+///
+/// | Symbol               | Type | Description                          |
+/// |----------------------|------|--------------------------------------|
+/// | `NtBuildNumber`      | u32  | Build number (high bit = checked)    |
+/// | `NtMajorVersion`     | u32  | NT major version                     |
+/// | `NtMinorVersion`     | u32  | NT minor version                     |
+/// | `NtBuildLab`         | str  | Build lab string (128 bytes max)     |
+/// | `CmNtCSDVersion`     | u32  | Service pack encoded value           |
+/// | `KeNumberProcessors` | u32  | Logical processor count              |
 pub fn walk_sysinfo<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Option<SystemInfo>> {
