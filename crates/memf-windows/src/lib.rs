@@ -40,6 +40,7 @@ pub mod service;
 pub mod shellbags;
 pub mod shimcache;
 pub mod ssdt;
+pub mod suspicious_threads;
 pub mod thread;
 pub mod timers;
 pub mod token;
