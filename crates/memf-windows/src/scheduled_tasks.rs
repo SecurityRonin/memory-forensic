@@ -90,9 +90,126 @@ pub fn classify_scheduled_task(name: &str, action: &str) -> bool {
 /// in-memory task definitions. Returns an empty `Vec` if the required
 /// symbols are not present.
 pub fn walk_scheduled_tasks<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<ScheduledTaskInfo>> {
-    todo!()
+    // Try UbpmTaskEnumerator first, then TaskSchedulerTaskList.
+    let list_head = match reader.symbols().symbol_address("UbpmTaskEnumerator") {
+        Some(addr) => addr,
+        None => match reader.symbols().symbol_address("TaskSchedulerTaskList") {
+            Some(addr) => addr,
+            None => return Ok(Vec::new()),
+        },
+    };
+
+    // Resolve _TASK_ENTRY field offsets.
+    let task_list_entry_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "TaskListEntry")
+        .unwrap_or(0x00);
+
+    let name_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "Name")
+        .unwrap_or(0x10);
+
+    let path_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "Path")
+        .unwrap_or(0x20);
+
+    let action_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "Action")
+        .unwrap_or(0x30);
+
+    let author_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "Author")
+        .unwrap_or(0x40);
+
+    let enabled_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "Enabled")
+        .unwrap_or(0x50);
+
+    let last_run_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "LastRunTime")
+        .unwrap_or(0x58);
+
+    let next_run_off = reader
+        .symbols()
+        .field_offset("_TASK_ENTRY", "NextRunTime")
+        .unwrap_or(0x60);
+
+    // Read head Flink.
+    let first = match reader.read_bytes(list_head, 8) {
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if first == 0 || first == list_head {
+        return Ok(Vec::new());
+    }
+
+    let mut tasks = Vec::new();
+    let mut current = first;
+    let mut seen = std::collections::HashSet::new();
+
+    while current != list_head && current != 0 && tasks.len() < MAX_TASKS {
+        if !seen.insert(current) {
+            break; // Cycle detection.
+        }
+
+        // current points to TaskListEntry within _TASK_ENTRY.
+        let task_addr = current.wrapping_sub(task_list_entry_off);
+
+        // Read UNICODE_STRING fields.
+        let name = read_unicode_string(reader, task_addr + name_off).unwrap_or_default();
+        let path = read_unicode_string(reader, task_addr + path_off).unwrap_or_default();
+        let action = read_unicode_string(reader, task_addr + action_off).unwrap_or_default();
+        let author = read_unicode_string(reader, task_addr + author_off).unwrap_or_default();
+
+        // Read enabled flag (u32, nonzero = enabled).
+        let enabled = match reader.read_bytes(task_addr + enabled_off, 4) {
+            Ok(bytes) if bytes.len() == 4 => {
+                u32::from_le_bytes(bytes[..4].try_into().unwrap()) != 0
+            }
+            _ => false,
+        };
+
+        // Read timestamps (FILETIME u64).
+        let last_run_time = match reader.read_bytes(task_addr + last_run_off, 8) {
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            _ => 0,
+        };
+
+        let next_run_time = match reader.read_bytes(task_addr + next_run_off, 8) {
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            _ => 0,
+        };
+
+        let is_suspicious = classify_scheduled_task(&name, &action);
+
+        tasks.push(ScheduledTaskInfo {
+            name,
+            path,
+            action,
+            author,
+            enabled,
+            last_run_time,
+            next_run_time,
+            is_suspicious,
+        });
+
+        // Follow Flink to next entry.
+        current = match reader.read_bytes(current, 8) {
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            _ => break,
+        };
+    }
+
+    Ok(tasks)
 }
 
 #[cfg(test)]
