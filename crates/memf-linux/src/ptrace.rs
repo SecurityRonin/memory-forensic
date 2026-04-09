@@ -11,7 +11,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, ProcessInfo, Result};
+use crate::{ProcessInfo, Result};
 
 // ---------------------------------------------------------------------------
 // Known debugger process names (benign tracers)
@@ -62,7 +62,28 @@ pub struct PtraceRelationship {
 /// - An empty tracer name is **suspicious** (hidden/corrupt process).
 /// - All other cases are **benign** (normal process tracing normal process).
 pub fn classify_ptrace(tracer_name: &str, tracee_name: &str) -> bool {
-    todo!()
+    // Empty tracer name is always suspicious (hidden/corrupt process).
+    if tracer_name.is_empty() {
+        return true;
+    }
+
+    // Known debuggers tracing anything are benign.
+    if KNOWN_DEBUGGERS.iter().any(|&d| d == tracer_name) {
+        return false;
+    }
+
+    // Non-debugger tracing a high-value target is suspicious.
+    if HIGH_VALUE_TARGETS.iter().any(|&t| t == tracee_name) {
+        return true;
+    }
+
+    // Self-tracing by a non-debugger is suspicious (anti-debug technique).
+    if tracer_name == tracee_name {
+        return true;
+    }
+
+    // Normal process tracing a normal process -- benign.
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +103,64 @@ pub fn scan_ptrace_relationships<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     processes: &[ProcessInfo],
 ) -> Result<Vec<PtraceRelationship>> {
-    todo!()
+    if processes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+
+    for proc in processes {
+        match read_ptrace_info(reader, proc) {
+            Ok(Some(rel)) => results.push(rel),
+            Ok(None) => continue,     // not being traced
+            Err(_) => continue,       // unreadable task_struct, skip
+        }
+    }
+
+    Ok(results)
+}
+
+/// Read ptrace information from a single process's `task_struct`.
+///
+/// Returns `Ok(None)` if the process is not being traced (`ptrace` flags == 0).
+fn read_ptrace_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    proc: &ProcessInfo,
+) -> Result<Option<PtraceRelationship>> {
+    // Read task_struct.ptrace (u32 flags) -- nonzero means being traced.
+    let ptrace_flags: u32 = reader.read_field(proc.vaddr, "task_struct", "ptrace")?;
+    if ptrace_flags == 0 {
+        return Ok(None);
+    }
+
+    // Compare parent vs real_parent to identify the tracer.
+    // ptrace reparents the tracee: parent becomes the tracer while
+    // real_parent remains the biological parent.
+    let parent_ptr: u64 = reader.read_pointer(proc.vaddr, "task_struct", "parent")?;
+    let real_parent_ptr: u64 =
+        reader.read_pointer(proc.vaddr, "task_struct", "real_parent")?;
+
+    if parent_ptr == real_parent_ptr || parent_ptr == 0 {
+        // No reparenting detected or parent is NULL -- can't identify tracer.
+        return Ok(None);
+    }
+
+    // The parent (tracer) task_struct: read its PID and comm.
+    let tracer_pid: u32 =
+        reader.read_field::<u64>(parent_ptr, "task_struct", "pid")? as u32;
+    let tracer_name =
+        reader.read_field_string(parent_ptr, "task_struct", "comm", 16)?;
+
+    let tracee_name = proc.comm.clone();
+    let is_suspicious = classify_ptrace(&tracer_name, &tracee_name);
+
+    Ok(Some(PtraceRelationship {
+        tracer_pid,
+        tracer_name,
+        tracee_pid: proc.pid as u32,
+        tracee_name,
+        is_suspicious,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +171,7 @@ pub fn scan_ptrace_relationships<P: PhysicalMemoryProvider>(
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::{flags, PageTableBuilder};
+    use memf_core::test_builders::PageTableBuilder;
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
@@ -111,6 +189,7 @@ mod tests {
     }
 
     /// Helper: build a minimal ProcessInfo for testing.
+    #[allow(dead_code)]
     fn fake_process(pid: u64, comm: &str, vaddr: u64) -> ProcessInfo {
         ProcessInfo {
             pid,
