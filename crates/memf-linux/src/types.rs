@@ -775,6 +775,42 @@ pub struct ArpEntryInfo {
     pub state: NeighState,
 }
 
+// ---------------------------------------------------------------------------
+// Netfilter / iptables types
+// ---------------------------------------------------------------------------
+
+/// An iptables/nftables rule recovered from kernel memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetfilterRuleInfo {
+    /// Table name (e.g. "filter", "nat", "mangle").
+    pub table: String,
+    /// Chain name (e.g. "INPUT", "OUTPUT", "FORWARD").
+    pub chain: String,
+    /// Rule target (e.g. "ACCEPT", "DROP", "REJECT").
+    pub target: String,
+    /// Protocol (e.g. "tcp", "udp", "all").
+    pub protocol: String,
+    /// Source address/mask, if specified.
+    pub source: Option<String>,
+    /// Destination address/mask, if specified.
+    pub destination: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Crontab / scheduled task types
+// ---------------------------------------------------------------------------
+
+/// A crontab entry recovered from process memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrontabEntry {
+    /// PID of the process where the entry was found.
+    pub pid: u64,
+    /// Process name.
+    pub comm: String,
+    /// The raw crontab line (e.g. "0 * * * * /usr/bin/backup.sh").
+    pub line: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
