@@ -28,14 +28,48 @@ pub fn extract_boot_time<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<BootTimeEstimate> {
     // Find tk_core symbol (or fall back to timekeeper symbol)
-    let _tk_addr = reader
+    let tk_addr = reader
         .symbols()
         .symbol_address("tk_core")
         .or_else(|| reader.symbols().symbol_address("timekeeper"))
         .ok_or_else(|| Error::Walker("symbol 'tk_core'/'timekeeper' not found".into()))?;
 
-    // TODO: implement timekeeper field extraction
-    Err(Error::Walker("boot time extraction not yet implemented".into()))
+    // tk_core wraps timekeeper at offset 0 (or is timekeeper itself).
+    // Try reading timekeeper offset within tk_core; if the field doesn't
+    // exist, assume tk_addr IS the timekeeper.
+    let tk_offset = reader
+        .symbols()
+        .field_offset("tk_core", "timekeeper")
+        .unwrap_or(0);
+    let timekeeper_addr = tk_addr + tk_offset;
+
+    // Read xtime_sec (wall-clock at dump time) — validates the timekeeper is readable.
+    let _xtime_sec: i64 =
+        reader.read_field(timekeeper_addr, "timekeeper", "xtime_sec")?;
+
+    // Read wall_to_monotonic (struct timespec64 embedded in timekeeper)
+    let w2m_offset = reader
+        .symbols()
+        .field_offset("timekeeper", "wall_to_monotonic")
+        .ok_or_else(|| {
+            Error::Walker("timekeeper.wall_to_monotonic field not found".into())
+        })?;
+    let w2m_addr = timekeeper_addr + w2m_offset;
+    let w2m_tv_sec: i64 = reader.read_field(w2m_addr, "timespec64", "tv_sec")?;
+
+    // Read offs_boot (ktime_t = s64, nanoseconds in suspend).
+    // May not exist on older kernels — default to 0 (no suspend adjustment).
+    let offs_boot_ns: i64 = reader
+        .read_field(timekeeper_addr, "timekeeper", "offs_boot")
+        .unwrap_or(0);
+
+    // boot_epoch = -wall_to_monotonic.tv_sec - offs_boot_ns / 1_000_000_000
+    let boot_epoch = -w2m_tv_sec - offs_boot_ns / 1_000_000_000;
+
+    Ok(BootTimeEstimate {
+        source: BootTimeSource::Timekeeper,
+        boot_epoch_secs: boot_epoch,
+    })
 }
 
 #[cfg(test)]
