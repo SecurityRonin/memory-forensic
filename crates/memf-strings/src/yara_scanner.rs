@@ -44,12 +44,40 @@ pub struct YaraMemoryScanner {
 impl YaraMemoryScanner {
     /// Compile YARA rules from source text.
     pub fn from_source(source: &str) -> crate::Result<Self> {
-        todo!()
+        let rules = yara_x::compile(source).map_err(|e| crate::Error::Yara(e.to_string()))?;
+        Ok(Self { rules })
     }
 
     /// Load and compile all `.yar` / `.yara` files from a directory.
     pub fn from_rules_dir(dir: &Path) -> crate::Result<Self> {
-        todo!()
+        let mut compiler = yara_x::Compiler::new();
+        let mut found = false;
+
+        if dir.is_dir() {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if let Some(ext) = path.extension() {
+                    if ext == "yar" || ext == "yara" {
+                        let source = std::fs::read_to_string(&path)?;
+                        compiler
+                            .add_source(source.as_str())
+                            .map_err(|e| crate::Error::Yara(e.to_string()))?;
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        if !found {
+            return Err(crate::Error::Yara(format!(
+                "no .yar/.yara files found in {}",
+                dir.display()
+            )));
+        }
+
+        let rules = compiler.build();
+        Ok(Self { rules })
     }
 
     /// Scan a raw byte buffer against the compiled rules.
@@ -61,7 +89,55 @@ impl YaraMemoryScanner {
         data: &[u8],
         region_base: u64,
     ) -> crate::Result<Vec<YaraScanMatch>> {
-        todo!()
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut scanner = yara_x::Scanner::new(&self.rules);
+        let scan_results = scanner
+            .scan(data)
+            .map_err(|e| crate::Error::Yara(e.to_string()))?;
+
+        let mut matches = Vec::new();
+
+        for rule in scan_results.matching_rules() {
+            let tags: Vec<String> = rule.tags().map(|t| t.identifier().to_string()).collect();
+
+            let mut matched_strings = Vec::new();
+            let mut first_offset = u64::MAX;
+
+            for pattern in rule.patterns() {
+                for m in pattern.matches() {
+                    let offset = m.range().start as u64;
+                    if offset < first_offset {
+                        first_offset = offset;
+                    }
+                    let matched_data: Vec<u8> = data
+                        [m.range().start..m.range().end.min(m.range().start + 64)]
+                        .to_vec();
+                    matched_strings.push(MatchedPattern {
+                        identifier: pattern.identifier().to_string(),
+                        offset,
+                        data: matched_data,
+                    });
+                }
+            }
+
+            if first_offset == u64::MAX {
+                first_offset = 0;
+            }
+
+            matches.push(YaraScanMatch {
+                rule_name: rule.identifier().to_string(),
+                tags,
+                match_offset: first_offset,
+                region_base,
+                region_size: data.len(),
+                matched_strings,
+            });
+        }
+
+        Ok(matches)
     }
 
     /// Scan multiple memory regions and aggregate results.
@@ -71,7 +147,12 @@ impl YaraMemoryScanner {
         &self,
         regions: &[(u64, &[u8])],
     ) -> crate::Result<Vec<YaraScanMatch>> {
-        todo!()
+        let mut all_matches = Vec::new();
+        for &(base, data) in regions {
+            let mut region_matches = self.scan_region(data, base)?;
+            all_matches.append(&mut region_matches);
+        }
+        Ok(all_matches)
     }
 }
 
