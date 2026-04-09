@@ -186,6 +186,10 @@ enum Commands {
         /// Optional kernel page table root (CR3) physical address (hex).
         #[arg(long, value_parser = parse_cr3)]
         cr3: Option<u64>,
+
+        /// Filter by process ID.
+        #[arg(long)]
+        pid: Option<u64>,
     },
     /// Run integrity and tampering detection checks.
     Check {
@@ -375,6 +379,7 @@ fn main() -> Result<()> {
             symbols,
             output,
             cr3,
+            pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_net(
@@ -382,6 +387,7 @@ fn main() -> Result<()> {
                 symbols.as_deref(),
                 output,
                 cr3,
+                pid,
                 resolved.is_extracted(),
             )
         }
@@ -878,6 +884,7 @@ fn cmd_net(
     symbols_path: Option<&Path>,
     output: OutputFormat,
     cr3_override: Option<u64>,
+    pid_filter: Option<u64>,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -3586,6 +3593,7 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
+            None, // pid
             false,
         );
         if let Err(e) = &result {
