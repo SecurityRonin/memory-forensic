@@ -255,6 +255,10 @@ enum Commands {
         /// Run all platform-appropriate checks.
         #[arg(long)]
         all: bool,
+
+        /// Filter process-specific checks (malfind, ldrmodules, hollowing) by PID.
+        #[arg(long)]
+        pid: Option<u64>,
     },
     /// List open handles (Windows) or file descriptors (Linux).
     Handles {
@@ -408,6 +412,7 @@ fn main() -> Result<()> {
             ldrmodules,
             hollowing,
             all,
+            pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_check(
@@ -427,6 +432,7 @@ fn main() -> Result<()> {
                 ldrmodules,
                 hollowing,
                 all,
+                pid,
                 resolved.is_extracted(),
             )
         }
@@ -2539,6 +2545,7 @@ fn cmd_check(
     ldrmodules: bool,
     hollowing: bool,
     all: bool,
+    pid_filter: Option<u64>,
     raw_fallback: bool,
 ) -> Result<()> {
     if !(all
@@ -3982,6 +3989,7 @@ mod tests {
             false, // ldrmodules
             false, // hollowing
             false, // all
+            None,  // pid
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -4055,6 +4063,7 @@ mod tests {
             false, // ldrmodules
             false, // hollowing
             false, // all
+            None,  // pid
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -4086,6 +4095,7 @@ mod tests {
             false, // ldrmodules
             false, // hollowing
             false, // all
+            None,  // pid
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -4121,6 +4131,7 @@ mod tests {
             false, // ldrmodules
             false, // hollowing
             true,  // all
+            None,  // pid
             false, // raw_fallback
         );
         // --all on a Linux dump must attempt checks. Our stub has no real
