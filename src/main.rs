@@ -147,9 +147,14 @@ enum Commands {
         #[arg(long)]
         all: bool,
 
-        /// Sort processes by field (pid, ppid, name). Default: pid.
+        /// Sort processes by field (pid, ppid, name, time). Default: pid.
         #[arg(long, default_value = "pid")]
         sort: PsSortField,
+
+        /// User-provided boot time (Unix epoch seconds, e.g. from UAC /proc/stat btime).
+        /// Cross-referenced with kernel timekeeper for inconsistency detection.
+        #[arg(long)]
+        btime: Option<i64>,
     },
     /// List kernel modules/drivers and system-level artifacts.
     #[command(name = "sys", alias = "system")]
@@ -357,6 +362,7 @@ fn main() -> Result<()> {
             bash_history,
             all,
             sort,
+            btime,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_ps(
@@ -378,6 +384,7 @@ fn main() -> Result<()> {
                 bash_history,
                 all,
                 sort,
+                btime,
                 resolved.is_extracted(),
             )
         }
@@ -677,6 +684,7 @@ fn cmd_ps(
     bash_history: bool,
     all: bool,
     sort_field: PsSortField,
+    btime: Option<i64>,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -705,6 +713,34 @@ fn cmd_ps(
             let mut procs = memf_linux::process::walk_processes(&reader)
                 .context("failed to walk Linux processes")?;
 
+            // Collect boot time estimates from all available sources.
+            let mut estimates = Vec::new();
+            match memf_linux::boot_time::extract_boot_time(&reader) {
+                Ok(est) => estimates.push(est),
+                Err(e) => {
+                    eprintln!("warning: could not extract boot time from kernel timekeeper: {e}");
+                }
+            }
+            if let Some(epoch) = btime {
+                estimates.push(memf_linux::BootTimeEstimate {
+                    source: memf_linux::BootTimeSource::UserProvided,
+                    boot_epoch_secs: epoch,
+                });
+            }
+            let boot_info = memf_linux::BootTimeInfo::from_estimates(estimates);
+            if boot_info.inconsistent {
+                eprintln!(
+                    "WARNING: boot time sources disagree by {}s (>{BOOT_TIME_DRIFT_WARN}s) — possible clock manipulation",
+                    boot_info.max_drift_secs,
+                );
+                for est in &boot_info.estimates {
+                    eprintln!("  {} => {}", est.source, est.boot_epoch_secs);
+                }
+            }
+            if let Some(epoch) = boot_info.best_estimate {
+                eprintln!("Boot time: {}", format_epoch(epoch));
+            }
+
             match sort_field {
                 PsSortField::Pid => procs.sort_by_key(|p| p.pid),
                 PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
@@ -716,7 +752,7 @@ fn cmd_ps(
                 let tree_entries = memf_linux::process::build_pstree(&procs);
                 print_linux_pstree(&tree_entries, output);
             } else {
-                print_linux_processes(&procs, output);
+                print_linux_processes(&procs, output, &boot_info);
             }
 
             if threads {
@@ -1034,6 +1070,37 @@ fn cmd_strings(
 // Output formatters — Linux processes
 // ---------------------------------------------------------------------------
 
+/// Drift threshold (seconds) for boot time inconsistency warning.
+const BOOT_TIME_DRIFT_WARN: i64 = 60;
+
+/// Format a Unix epoch timestamp into a UTC datetime string.
+fn format_epoch(epoch: i64) -> String {
+    let secs = epoch.unsigned_abs();
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    // Simple days-since-epoch to Y-M-D conversion.
+    let days = (secs / 86400) as i64;
+    let (y, mo, d) = days_to_ymd(if epoch < 0 { -days } else { days });
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} UTC")
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 /// Format nanoseconds-since-boot into a human-readable uptime string.
 fn format_boot_ns(ns: u64) -> String {
     if ns == 0 {
@@ -1059,28 +1126,54 @@ fn format_boot_ns(ns: u64) -> String {
     format!("{days}d{h:02}h{m:02}m")
 }
 
-fn print_linux_processes(procs: &[memf_linux::ProcessInfo], output: OutputFormat) {
+fn print_linux_processes(
+    procs: &[memf_linux::ProcessInfo],
+    output: OutputFormat,
+    boot_info: &memf_linux::BootTimeInfo,
+) {
+    let has_boot = boot_info.best_estimate.is_some();
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Vaddr"]);
+            if has_boot {
+                table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Start (UTC)", "Vaddr"]);
+            } else {
+                table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Vaddr"]);
+            }
             for p in procs {
-                table.add_row(vec![
-                    format!("{}", p.pid),
-                    format!("{}", p.ppid),
-                    p.comm.clone(),
-                    format!("{}", p.state),
-                    format_boot_ns(p.start_time),
-                    format!("{:#x}", p.vaddr),
-                ]);
+                if has_boot {
+                    let abs = boot_info
+                        .absolute_secs(p.start_time)
+                        .map(format_epoch)
+                        .unwrap_or_default();
+                    table.add_row(vec![
+                        format!("{}", p.pid),
+                        format!("{}", p.ppid),
+                        p.comm.clone(),
+                        format!("{}", p.state),
+                        format_boot_ns(p.start_time),
+                        abs,
+                        format!("{:#x}", p.vaddr),
+                    ]);
+                } else {
+                    table.add_row(vec![
+                        format!("{}", p.pid),
+                        format!("{}", p.ppid),
+                        p.comm.clone(),
+                        format!("{}", p.state),
+                        format_boot_ns(p.start_time),
+                        format!("{:#x}", p.vaddr),
+                    ]);
+                }
             }
             println!("{table}");
             println!("\nTotal: {} processes", procs.len());
         }
         OutputFormat::Json => {
             for p in procs {
-                let json = serde_json::json!({
+                let abs_epoch = boot_info.absolute_secs(p.start_time);
+                let mut json = serde_json::json!({
                     "pid": p.pid,
                     "ppid": p.ppid,
                     "name": p.comm,
@@ -1089,17 +1182,34 @@ fn print_linux_processes(procs: &[memf_linux::ProcessInfo], output: OutputFormat
                     "start_time": format_boot_ns(p.start_time),
                     "vaddr": format!("{:#x}", p.vaddr),
                 });
+                if let Some(epoch) = abs_epoch {
+                    json["start_epoch"] = serde_json::json!(epoch);
+                    json["start_utc"] = serde_json::json!(format_epoch(epoch));
+                }
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("pid,ppid,name,state,start_time_ns,start_time,vaddr");
+            if has_boot {
+                println!("pid,ppid,name,state,start_time_ns,start_time,start_epoch,start_utc,vaddr");
+            } else {
+                println!("pid,ppid,name,state,start_time_ns,start_time,vaddr");
+            }
             for p in procs {
-                println!(
-                    "{},{},{},{},{},{},{:#x}",
-                    p.pid, p.ppid, p.comm, p.state, p.start_time,
-                    format_boot_ns(p.start_time), p.vaddr,
-                );
+                if has_boot {
+                    let abs = boot_info.absolute_secs(p.start_time).unwrap_or(0);
+                    println!(
+                        "{},{},{},{},{},{},{},{},{:#x}",
+                        p.pid, p.ppid, p.comm, p.state, p.start_time,
+                        format_boot_ns(p.start_time), abs, format_epoch(abs), p.vaddr,
+                    );
+                } else {
+                    println!(
+                        "{},{},{},{},{},{},{:#x}",
+                        p.pid, p.ppid, p.comm, p.state, p.start_time,
+                        format_boot_ns(p.start_time), p.vaddr,
+                    );
+                }
             }
         }
     }
@@ -3636,6 +3746,7 @@ mod tests {
             false, // bash_history
             false, // all
             PsSortField::Pid, // sort
+            None,  // btime
             false, // raw_fallback
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
@@ -3674,6 +3785,7 @@ mod tests {
             false, // bash_history
             true,  // all
             PsSortField::Pid, // sort
+            None,  // btime
             false, // raw_fallback
         );
         if let Err(e) = &result {
@@ -4280,5 +4392,40 @@ mod tests {
         }
         std::fs::remove_file(&dump_path).ok();
         std::fs::remove_file(&isf_path).ok();
+    }
+
+    // --- Boot time formatting tests ---
+
+    #[test]
+    fn format_epoch_known_dates() {
+        // Unix epoch
+        assert_eq!(format_epoch(0), "1970-01-01 00:00:00 UTC");
+        // 2024-04-02 03:26:40 UTC (1712028400)
+        assert_eq!(format_epoch(1_712_028_400), "2024-04-02 03:26:40 UTC");
+        // 2000-01-01 00:00:00 UTC (946684800)
+        assert_eq!(format_epoch(946_684_800), "2000-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn days_to_ymd_epoch() {
+        assert_eq!(days_to_ymd(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn days_to_ymd_leap_year() {
+        // 2000-02-29 is day 11016 since epoch
+        // (30 years * 365 + 7 leap days + 31 jan + 28 feb = 10987 + 29 = 11016)
+        // Actually let's just check a known date.
+        // 2024-01-01 = 19723 days since epoch
+        assert_eq!(days_to_ymd(19723), (2024, 1, 1));
+    }
+
+    #[test]
+    fn format_boot_ns_values() {
+        assert_eq!(format_boot_ns(0), "0.000s");
+        assert_eq!(format_boot_ns(1_500_000_000), "1.500s");
+        assert_eq!(format_boot_ns(90_000_000_000), "1m30s");
+        assert_eq!(format_boot_ns(3_661_000_000_000), "1h01m01s");
+        assert_eq!(format_boot_ns(90_061_000_000_000), "1d01h01m");
     }
 }
