@@ -8,12 +8,10 @@
 pub mod callbacks;
 pub mod cmdline;
 pub mod dll;
-pub mod dns_cache;
 pub mod driver;
 pub mod envvars;
 pub mod handles;
 pub mod hollowing;
-pub mod mutant;
 pub mod network;
 pub mod object_directory;
 pub mod process;
