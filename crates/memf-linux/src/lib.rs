@@ -7,6 +7,7 @@
 
 pub mod arp;
 pub mod bash;
+pub mod bpf;
 pub mod boot_time;
 pub mod check_hooks;
 pub mod check_modules;
