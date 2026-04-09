@@ -2762,16 +2762,22 @@ fn cmd_handles(
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
     match ctx.os {
         OsProfile::Linux => {
-            let fds = memf_linux::files::walk_files(&reader)
+            let mut fds = memf_linux::files::walk_files(&reader)
                 .context("failed to walk Linux file descriptors")?;
+            if let Some(pid) = pid_filter {
+                fds.retain(|f| f.pid == pid);
+            }
             print_file_descriptors(&fds, output);
         }
         OsProfile::Windows => {
             let ps_head = ctx
                 .ps_active_process_head
                 .context("missing PsActiveProcessHead for handle walking")?;
-            let handles = memf_windows::handles::walk_handles(&reader, ps_head)
+            let mut handles = memf_windows::handles::walk_handles(&reader, ps_head)
                 .context("failed to walk Windows handle tables")?;
+            if let Some(pid) = pid_filter {
+                handles.retain(|h| h.pid == pid);
+            }
             print_handles(&handles, output);
         }
         OsProfile::MacOs => anyhow::bail!("macOS handle walking not yet supported"),
