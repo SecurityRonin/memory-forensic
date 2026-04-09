@@ -789,6 +789,35 @@ pub struct FileObjectInfo {
     pub shared_delete: bool,
 }
 
+// ── Direct syscall detection types ──────────────────────────────────
+
+/// Information about a detected direct or indirect system call invocation.
+///
+/// When malware calls Nt* functions directly via the `syscall`/`sysenter`
+/// instruction instead of through `ntdll.dll`, it bypasses usermode EDR
+/// hooks. This struct captures per-thread syscall metadata that reveals
+/// such bypass techniques (SysWhispers, HellsGate, Halo's Gate, Heaven's Gate).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DirectSyscallInfo {
+    /// Process ID of the owning process.
+    pub pid: u32,
+    /// Image name of the owning process.
+    pub process_name: String,
+    /// Thread ID that performed the syscall.
+    pub thread_id: u32,
+    /// Virtual address of the syscall/sysenter instruction.
+    pub syscall_address: u64,
+    /// NT syscall number (SSN).
+    pub syscall_number: u32,
+    /// Technique identifier (e.g., `"direct_syscall"`, `"indirect_syscall"`,
+    /// `"heavens_gate"`).
+    pub technique: String,
+    /// Whether the syscall instruction resides within ntdll.dll's address range.
+    pub in_ntdll: bool,
+    /// Whether this syscall invocation is considered suspicious.
+    pub is_suspicious: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
