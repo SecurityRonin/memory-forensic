@@ -336,6 +336,23 @@ enum Commands {
         #[arg(long)]
         bodyfile: bool,
     },
+    /// Dump a process's virtual memory to a file.
+    Procdump {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+        /// Process ID to dump.
+        #[arg(long)]
+        pid: u64,
+        /// Output directory for dump files (default: current directory).
+        #[arg(long, default_value = ".")]
+        output_dir: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -543,6 +560,16 @@ fn main() -> Result<()> {
                 bodyfile,
                 resolved.is_extracted(),
             )
+        }
+        Commands::Procdump {
+            dump,
+            symbols,
+            cr3,
+            pid,
+            output_dir,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_procdump(resolved.path(), symbols.as_deref(), cr3, pid, &output_dir)
         }
     }
 }
@@ -4407,6 +4434,33 @@ fn cmd_timeline(
 }
 
 // ---------------------------------------------------------------------------
+// Procdump
+// ---------------------------------------------------------------------------
+
+/// Dump process virtual memory regions to a writer.
+///
+/// Iterates over the given address ranges, reads each 4KB page from the
+/// VAS, and writes it to the output. Unmapped pages are written as zeros.
+/// Returns the total number of bytes written.
+fn dump_process_memory<W: std::io::Write>(
+    _vas: &VirtualAddressSpace<impl PhysicalMemoryProvider>,
+    _ranges: &[(u64, u64)],
+    _writer: &mut W,
+) -> Result<u64> {
+    todo!()
+}
+
+fn cmd_procdump(
+    _dump: &Path,
+    _symbols_path: Option<&Path>,
+    _cr3_override: Option<u64>,
+    _pid: u64,
+    _output_dir: &Path,
+) -> Result<()> {
+    todo!()
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
@@ -6089,5 +6143,92 @@ mod tests {
         for w in events.windows(2) {
             assert!(w[0].timestamp_secs <= w[1].timestamp_secs);
         }
+    }
+
+    // --- Procdump / dump_process_memory tests ---
+
+    #[test]
+    fn dump_process_memory_writes_correct_bytes() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        // Two virtual pages at known addresses with distinct fill bytes
+        let vaddr_a: u64 = 0x0000_0000_0040_0000; // page 1
+        let vaddr_b: u64 = 0x0000_0000_0040_1000; // page 2
+        let paddr_a: u64 = 0x0050_0000;
+        let paddr_b: u64 = 0x0050_1000;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr_a, paddr_a, flags::WRITABLE | flags::USER)
+            .write_phys(paddr_a, &[0xAA; 4096])
+            .map_4k(vaddr_b, paddr_b, flags::WRITABLE | flags::USER)
+            .write_phys(paddr_b, &[0xBB; 4096])
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+
+        let ranges = vec![(vaddr_a, vaddr_a + 0x1000), (vaddr_b, vaddr_b + 0x1000)];
+        let mut output = Vec::new();
+        let written = dump_process_memory(&vas, &ranges, &mut output).unwrap();
+
+        assert_eq!(written, 8192, "should write 2 pages = 8192 bytes");
+        assert_eq!(output.len(), 8192);
+        assert!(
+            output[..4096].iter().all(|&b| b == 0xAA),
+            "first page should be 0xAA"
+        );
+        assert!(
+            output[4096..].iter().all(|&b| b == 0xBB),
+            "second page should be 0xBB"
+        );
+    }
+
+    #[test]
+    fn dump_process_memory_zeros_unmapped_pages() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        // Map only the first page; the second page is unmapped
+        let vaddr_mapped: u64 = 0x0000_0000_0060_0000;
+        let vaddr_unmapped: u64 = 0x0000_0000_0060_1000;
+        let paddr: u64 = 0x0070_0000;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr_mapped, paddr, flags::WRITABLE | flags::USER)
+            .write_phys(paddr, &[0xCC; 4096])
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+
+        // Range covers both the mapped and unmapped pages
+        let ranges = vec![(vaddr_mapped, vaddr_unmapped + 0x1000)];
+        let mut output = Vec::new();
+        let written = dump_process_memory(&vas, &ranges, &mut output).unwrap();
+
+        assert_eq!(written, 8192, "should write 2 pages = 8192 bytes");
+        assert!(
+            output[..4096].iter().all(|&b| b == 0xCC),
+            "mapped page should be 0xCC"
+        );
+        assert!(
+            output[4096..].iter().all(|&b| b == 0x00),
+            "unmapped page should be zeroes"
+        );
+    }
+
+    #[test]
+    fn dump_process_memory_empty_ranges() {
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+
+        let ranges: Vec<(u64, u64)> = vec![];
+        let mut output = Vec::new();
+        let written = dump_process_memory(&vas, &ranges, &mut output).unwrap();
+
+        assert_eq!(written, 0, "empty ranges should produce 0 bytes");
+        assert!(output.is_empty());
     }
 }
