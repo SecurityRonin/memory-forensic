@@ -41,7 +41,38 @@ pub fn walk_kernel_threads<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     processes: &[ProcessInfo],
 ) -> Result<Vec<KernelThreadInfo>> {
-    todo!("implement walk_kernel_threads")
+    let mut kthreads = Vec::new();
+
+    for proc in processes {
+        // Kernel threads have mm == NULL, which means cr3 is None.
+        if proc.cr3.is_some() {
+            continue;
+        }
+
+        let pid = proc.pid as u32;
+        let name = proc.comm.clone();
+
+        // Try to read the thread function pointer from the kthread struct.
+        // In Linux, kernel threads store their function pointer in
+        // `task_struct -> set_child_tid` (overloaded for kthreads) or via
+        // the kthread struct. We attempt to read it; if the symbol/field
+        // is missing we fall back to 0.
+        let start_fn_addr: u64 = reader
+            .read_field(proc.vaddr, "task_struct", "set_child_tid")
+            .unwrap_or(0);
+
+        let (is_suspicious, reason) = classify_kthread(&name, start_fn_addr);
+
+        kthreads.push(KernelThreadInfo {
+            pid,
+            name,
+            start_fn_addr,
+            is_suspicious,
+            reason,
+        });
+    }
+
+    Ok(kthreads)
 }
 
 /// Classify a kernel thread as benign or suspicious.
@@ -51,7 +82,30 @@ pub fn walk_kernel_threads<P: PhysicalMemoryProvider>(
 /// - Its name contains sequences of hex characters (random-looking names)
 /// - Its start function address is in userspace range (below `KERNEL_SPACE_MIN`)
 pub fn classify_kthread(name: &str, start_fn_addr: u64) -> (bool, Option<String>) {
-    todo!("implement classify_kthread")
+    // Check 1: unnamed kernel thread
+    if name.is_empty() {
+        return (true, Some("unnamed kernel thread".into()));
+    }
+
+    // Check 2: start function in userspace range
+    if start_fn_addr != 0 && start_fn_addr < KERNEL_SPACE_MIN {
+        return (
+            true,
+            Some(format!(
+                "thread function at userspace address {start_fn_addr:#x}"
+            )),
+        );
+    }
+
+    // Check 3: name looks like random hex (rootkit-generated)
+    if looks_like_hex_name(name) {
+        return (
+            true,
+            Some(format!("name '{name}' contains suspicious hex pattern")),
+        );
+    }
+
+    (false, None)
 }
 
 /// Check whether a name looks like random hex characters.
@@ -59,7 +113,21 @@ pub fn classify_kthread(name: &str, start_fn_addr: u64) -> (bool, Option<String>
 /// Returns `true` if the name contains a run of 8+ hex digits, which is
 /// unusual for legitimate kernel thread names.
 fn looks_like_hex_name(name: &str) -> bool {
-    todo!("implement looks_like_hex_name")
+    // Count the longest consecutive run of hex digits in the name.
+    // A run of 8+ is suspicious -- legitimate kernel thread names like
+    // "kworker/0:0", "ksoftirqd/0", "migration/0" don't have such runs.
+    let mut run = 0u32;
+    for ch in name.chars() {
+        if ch.is_ascii_hexdigit() {
+            run += 1;
+            if run >= 8 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -130,7 +198,7 @@ mod tests {
     fn walk_kthreads_empty() {
         // Empty process list should produce empty result.
         use memf_core::object_reader::ObjectReader;
-        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::test_builders::PageTableBuilder;
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
