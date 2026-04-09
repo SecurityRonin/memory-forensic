@@ -21,6 +21,7 @@ pub mod etw;
 pub mod evtx;
 pub mod filescan;
 pub mod handles;
+pub mod hashdump;
 pub mod hollowing;
 pub mod lsadump;
 pub mod messagehooks;
