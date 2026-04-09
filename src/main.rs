@@ -702,8 +702,18 @@ fn cmd_ps(
             if privileges {
                 anyhow::bail!("--privileges is only supported for Windows dumps");
             }
-            let procs = memf_linux::process::walk_processes(&reader)
+            let mut procs = memf_linux::process::walk_processes(&reader)
                 .context("failed to walk Linux processes")?;
+
+            match sort_field {
+                PsSortField::Pid => procs.sort_by_key(|p| p.pid),
+                PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
+                PsSortField::Name => procs.sort_by(|a, b| a.comm.to_lowercase().cmp(&b.comm.to_lowercase())),
+                PsSortField::Time => {
+                    eprintln!("warning: --sort=time not yet supported for Linux (start_time not extracted); sorting by PID");
+                    procs.sort_by_key(|p| p.pid);
+                }
+            }
 
             if tree {
                 let tree_entries = memf_linux::process::build_pstree(&procs);
@@ -795,8 +805,15 @@ fn cmd_ps(
             let ps_head = ctx
                 .ps_active_process_head
                 .context("missing PsActiveProcessHead; provide via symbols or dump metadata")?;
-            let procs = memf_windows::process::walk_processes(&reader, ps_head)
+            let mut procs = memf_windows::process::walk_processes(&reader, ps_head)
                 .context("failed to walk Windows processes")?;
+
+            match sort_field {
+                PsSortField::Pid => procs.sort_by_key(|p| p.pid),
+                PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
+                PsSortField::Name => procs.sort_by(|a, b| a.image_name.to_lowercase().cmp(&b.image_name.to_lowercase())),
+                PsSortField::Time => procs.sort_by_key(|p| p.create_time),
+            }
 
             if tree {
                 let tree_entries = memf_windows::process::build_pstree(&procs);
