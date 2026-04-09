@@ -11,7 +11,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{ProcessInfo, Result};
+use crate::{Error, ProcessInfo, Result};
 
 // ---------------------------------------------------------------------------
 // Capability bit constants (from include/uapi/linux/capability.h)
@@ -57,11 +57,27 @@ pub struct ProcessCapabilities {
     pub suspicious_caps: Vec<String>,
 }
 
+/// All known capabilities for name lookup.
+/// `(bit_value, name)` pairs used by [`cap_name`].
+const ALL_CAPS: &[(u64, &str)] = &[
+    (CAP_DAC_OVERRIDE, "CAP_DAC_OVERRIDE"),
+    (CAP_NET_ADMIN, "CAP_NET_ADMIN"),
+    (CAP_NET_RAW, "CAP_NET_RAW"),
+    (CAP_SYS_MODULE, "CAP_SYS_MODULE"),
+    (CAP_SYS_PTRACE, "CAP_SYS_PTRACE"),
+    (CAP_SYS_ADMIN, "CAP_SYS_ADMIN"),
+];
+
 /// Map a single capability bit to its human-readable name.
 ///
 /// Returns `"UNKNOWN"` for unrecognized bits.
 pub fn cap_name(bit: u64) -> &'static str {
-    todo!()
+    for &(cap_bit, name) in ALL_CAPS {
+        if bit == cap_bit {
+            return name;
+        }
+    }
+    "UNKNOWN"
 }
 
 /// Classify whether a process's effective capabilities are suspicious.
@@ -71,7 +87,20 @@ pub fn cap_name(bit: u64) -> &'static str {
 ///
 /// Returns `(is_suspicious, list_of_suspicious_cap_names)`.
 pub fn classify_capabilities(effective: u64, uid: u32) -> (bool, Vec<String>) {
-    todo!()
+    // Root is never suspicious -- it's expected to have all caps.
+    if uid == 0 {
+        return (false, Vec::new());
+    }
+
+    let mut suspicious_names = Vec::new();
+    for &(cap_bit, cap_label) in SUSPICIOUS_CAPS {
+        if effective & cap_bit != 0 {
+            suspicious_names.push(cap_label.to_string());
+        }
+    }
+
+    let is_suspicious = !suspicious_names.is_empty();
+    (is_suspicious, suspicious_names)
 }
 
 /// Walk capability information for each process in the provided list.
@@ -86,7 +115,57 @@ pub fn walk_capabilities<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     processes: &[ProcessInfo],
 ) -> Result<Vec<ProcessCapabilities>> {
-    todo!()
+    if processes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::with_capacity(processes.len());
+
+    for proc in processes {
+        match read_process_caps(reader, proc) {
+            Ok(caps) => results.push(caps),
+            // Skip processes whose cred is unreadable (e.g., zombie/dead).
+            Err(_) => continue,
+        }
+    }
+
+    Ok(results)
+}
+
+/// Read capability information from a single process's `task_struct.cred`.
+fn read_process_caps<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    proc: &ProcessInfo,
+) -> Result<ProcessCapabilities> {
+    // task_struct.cred -> pointer to cred struct
+    let cred_ptr: u64 = reader.read_field(proc.vaddr, "task_struct", "cred")?;
+    if cred_ptr == 0 {
+        return Err(Error::Walker("cred pointer is NULL".into()));
+    }
+
+    // cred.uid (kuid_t, effectively u32)
+    let uid: u32 = reader.read_field(cred_ptr, "cred", "uid")?;
+
+    // Read capability bitmasks from cred struct.
+    // kernel_cap_t is typically { u32 cap[_KERNEL_CAPABILITY_U32S] }.
+    // On 64-bit kernels with VFS caps v3 this is a single u64;
+    // on older kernels it may be two u32s. We read as u64 which covers
+    // both layouts when the field is declared as unsigned long.
+    let effective: u64 = reader.read_field(cred_ptr, "cred", "cap_effective")?;
+    let permitted: u64 = reader.read_field(cred_ptr, "cred", "cap_permitted")?;
+    let inheritable: u64 = reader.read_field(cred_ptr, "cred", "cap_inheritable")?;
+
+    let (is_suspicious, suspicious_caps) = classify_capabilities(effective, uid);
+
+    Ok(ProcessCapabilities {
+        pid: proc.pid as u32,
+        name: proc.comm.clone(),
+        effective,
+        permitted,
+        inheritable,
+        is_suspicious,
+        suspicious_caps,
+    })
 }
 
 #[cfg(test)]
