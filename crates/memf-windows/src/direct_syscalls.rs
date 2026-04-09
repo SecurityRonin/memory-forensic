@@ -16,7 +16,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{DirectSyscallInfo, Result};
+use crate::{process, thread, DirectSyscallInfo, Result};
 
 /// Classify whether a syscall invocation is suspicious.
 ///
@@ -54,10 +54,201 @@ pub fn classify_syscall_technique(in_ntdll: bool, technique: &str) -> bool {
 /// `syscall`/`sysenter` instruction is outside ntdll are flagged.
 ///
 /// Returns an empty `Vec` if the `PsActiveProcessHead` symbol is missing.
-pub fn walk_direct_syscalls<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+pub fn walk_direct_syscalls<P: PhysicalMemoryProvider + Clone>(
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<DirectSyscallInfo>> {
-    todo!()
+    // Graceful degradation: return empty if the required symbol is missing.
+    let Some(ps_head) = reader.symbols().symbol_address("PsActiveProcessHead") else {
+        return Ok(Vec::new());
+    };
+
+    let procs = process::walk_processes(reader, ps_head)?;
+    let mut results = Vec::new();
+
+    for proc in &procs {
+        // Skip kernel processes (no PEB, no usermode ntdll).
+        if proc.peb_addr == 0 {
+            continue;
+        }
+
+        let pid = proc.pid as u32;
+        let process_name = proc.image_name.clone();
+
+        // Determine ntdll.dll range for this process by walking its LDR module
+        // list. We look for the module named "ntdll.dll" and record its
+        // base address and size to define the legitimate syscall range.
+        let ntdll_range = find_ntdll_range(reader, proc);
+
+        // Walk threads for this process.
+        let threads = match thread::walk_threads(reader, proc.vaddr, proc.pid) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        for thr in &threads {
+            // Read the thread's last syscall address from _KTHREAD fields.
+            let (syscall_addr, syscall_number, technique) =
+                match read_thread_syscall_info(reader, thr.vaddr) {
+                    Some(info) => info,
+                    None => continue,
+                };
+
+            // Skip threads with no recorded syscall (address == 0).
+            if syscall_addr == 0 {
+                continue;
+            }
+
+            let in_ntdll = match ntdll_range {
+                Some((base, size)) => {
+                    syscall_addr >= base && syscall_addr < base.saturating_add(size)
+                }
+                // If we cannot determine ntdll range, we cannot confirm
+                // the instruction is in ntdll.
+                None => false,
+            };
+
+            let is_suspicious = classify_syscall_technique(in_ntdll, &technique);
+
+            results.push(DirectSyscallInfo {
+                pid,
+                process_name: process_name.clone(),
+                thread_id: thr.tid as u32,
+                syscall_address: syscall_addr,
+                syscall_number,
+                technique,
+                in_ntdll,
+                is_suspicious,
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+/// Attempt to find ntdll.dll's base address and size from the process's
+/// PEB LDR module list. Returns `None` if the range cannot be determined.
+fn find_ntdll_range<P: PhysicalMemoryProvider + Clone>(
+    reader: &ObjectReader<P>,
+    proc: &crate::WinProcessInfo,
+) -> Option<(u64, u64)> {
+    // Switch to the process's address space.
+    let proc_reader = reader.with_cr3(proc.cr3);
+
+    // PEB -> Ldr -> InLoadOrderModuleList
+    let ldr_addr: u64 = proc_reader
+        .read_field(proc.peb_addr, "_PEB", "Ldr")
+        .ok()?;
+    if ldr_addr == 0 {
+        return None;
+    }
+
+    // Walk InLoadOrderModuleList to find ntdll.dll.
+    let in_load_order_off = proc_reader
+        .symbols()
+        .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
+        .unwrap_or(0x10);
+
+    let module_addrs = proc_reader
+        .walk_list_with(
+            ldr_addr.wrapping_add(in_load_order_off),
+            "_LIST_ENTRY",
+            "Flink",
+            "_LDR_DATA_TABLE_ENTRY",
+            "InLoadOrderLinks",
+        )
+        .ok()?;
+
+    let base_dll_name_off = proc_reader
+        .symbols()
+        .field_offset("_LDR_DATA_TABLE_ENTRY", "BaseDllName")
+        .unwrap_or(0x58);
+
+    let dll_base_off = proc_reader
+        .symbols()
+        .field_offset("_LDR_DATA_TABLE_ENTRY", "DllBase")
+        .unwrap_or(0x30);
+
+    let size_of_image_off = proc_reader
+        .symbols()
+        .field_offset("_LDR_DATA_TABLE_ENTRY", "SizeOfImage")
+        .unwrap_or(0x40);
+
+    for mod_addr in module_addrs {
+        // Read the BaseDllName UNICODE_STRING.
+        let name = crate::unicode::read_unicode_string(
+            &proc_reader,
+            mod_addr.wrapping_add(base_dll_name_off),
+        )
+        .unwrap_or_default();
+
+        if name.eq_ignore_ascii_case("ntdll.dll") {
+            let base: u64 = proc_reader
+                .read_bytes(mod_addr.wrapping_add(dll_base_off), 8)
+                .ok()
+                .and_then(|b| Some(u64::from_le_bytes(b[..8].try_into().ok()?)))
+                .unwrap_or(0);
+
+            let size: u64 = proc_reader
+                .read_bytes(mod_addr.wrapping_add(size_of_image_off), 4)
+                .ok()
+                .and_then(|b| Some(u32::from_le_bytes(b[..4].try_into().ok()?) as u64))
+                .unwrap_or(0);
+
+            if base != 0 && size != 0 {
+                return Some((base, size));
+            }
+        }
+    }
+
+    None
+}
+
+/// Read syscall-related fields from a `_KTHREAD`/`_ETHREAD`.
+///
+/// Returns `(syscall_address, syscall_number, technique)` or `None` if the
+/// fields cannot be read.
+fn read_thread_syscall_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    ethread_addr: u64,
+) -> Option<(u64, u32, String)> {
+    // _KTHREAD.SystemCallNumber -- the SSN of the last syscall.
+    let syscall_number_off = reader
+        .symbols()
+        .field_offset("_KTHREAD", "SystemCallNumber")
+        .unwrap_or(0x80);
+
+    let syscall_number: u32 = reader
+        .read_bytes(ethread_addr.wrapping_add(syscall_number_off), 4)
+        .ok()
+        .and_then(|b| Some(u32::from_le_bytes(b[..4].try_into().ok()?)))
+        .unwrap_or(0);
+
+    // _KTHREAD.Win32StartAddress can indicate the instruction pointer that
+    // performed the syscall. We use it as a proxy for the syscall address.
+    let win32_start_off = reader
+        .symbols()
+        .field_offset("_KTHREAD", "Win32StartAddress")
+        .unwrap_or(0x560);
+
+    let syscall_addr: u64 = reader
+        .read_bytes(ethread_addr.wrapping_add(win32_start_off), 8)
+        .ok()
+        .and_then(|b| Some(u64::from_le_bytes(b[..8].try_into().ok()?)))
+        .unwrap_or(0);
+
+    // Heuristic technique classification based on address characteristics.
+    // In a real dump we would disassemble the instruction at syscall_addr
+    // to distinguish `syscall` vs `int 2e` vs far-jump (Heaven's Gate).
+    // For now we classify based on whether the address looks like a WoW64
+    // transition (low 32-bit address space in a 64-bit process).
+    let technique = if syscall_addr != 0 && syscall_addr <= 0xFFFF_FFFF {
+        // Address in 32-bit range inside a 64-bit process -> Heaven's Gate.
+        "heavens_gate".to_string()
+    } else {
+        "direct_syscall".to_string()
+    };
+
+    Some((syscall_addr, syscall_number, technique))
 }
 
 #[cfg(test)]
@@ -116,8 +307,8 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        // Build an ISF with standard structs but NO PsActiveProcessHead symbol.
-        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        // Build a bare ISF with NO PsActiveProcessHead symbol.
+        let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         // Minimal page table -- just needs to be valid.
