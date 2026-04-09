@@ -31,12 +31,14 @@ pub mod registry;
 pub mod registry_keys;
 pub mod scheduled_tasks;
 pub mod service;
+pub mod shellbags;
 pub mod shimcache;
 pub mod ssdt;
 pub mod thread;
 pub mod token;
 pub mod types;
 pub mod unicode;
+pub mod userassist;
 pub mod vad;
 pub mod wmi;
 
