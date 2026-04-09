@@ -166,11 +166,7 @@ fn is_crontab_line(line: &str) -> bool {
 
     // 6th field (command) must start with / or a letter
     let cmd = parts[5];
-    cmd.starts_with('/')
-        || cmd
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic())
+    cmd.starts_with('/') || cmd.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
 }
 
 /// Check if a string is a valid cron time field.
