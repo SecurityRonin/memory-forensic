@@ -7,6 +7,7 @@ pub mod extract;
 pub mod from_file;
 pub mod regex_classifier;
 pub mod yara_classifier;
+pub mod yara_scanner;
 
 /// A string extracted from memory, classified into zero or more categories.
 #[derive(Debug, Clone)]
