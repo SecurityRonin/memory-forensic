@@ -49,9 +49,113 @@ pub struct ShimcacheEntry {
 /// Returns an error if memory reads fail after the symbol has been
 /// located and validated.
 pub fn walk_shimcache<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<ShimcacheEntry>> {
-    todo!("shimcache extraction not yet implemented")
+    // Locate the g_ShimCache pointer symbol.
+    let Some(cache_ptr_addr) = reader.symbols().symbol_address("g_ShimCache") else {
+        return Ok(Vec::new()); // graceful degradation
+    };
+
+    // g_ShimCache is a pointer — read 8 bytes at the symbol address to
+    // get the address of the cache header.
+    let header_addr: u64 = match reader.read_bytes(cache_ptr_addr, 8) {
+        Ok(bytes) if bytes.len() == 8 => {
+            u64::from_le_bytes(bytes[..8].try_into().unwrap())
+        }
+        _ => return Ok(Vec::new()),
+    };
+
+    if header_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read the entry count from the cache header.
+    // The header contains: NumEntries (u32 at offset 0), then a linked
+    // list of entries starting at offset 0x8 (ListHead Flink pointer).
+    let num_entries: u32 = reader
+        .read_field(header_addr, "_SHIM_CACHE_HEADER", "NumEntries")
+        .unwrap_or(0);
+
+    let safe_count = (num_entries as usize).min(MAX_SHIMCACHE_ENTRIES);
+    if safe_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read the ListHead.Flink pointer (first entry in the doubly-linked list).
+    let list_head_offset = reader
+        .symbols()
+        .field_offset("_SHIM_CACHE_HEADER", "ListHead")
+        .unwrap_or(0x8);
+
+    let list_head_addr = header_addr + list_head_offset;
+
+    // Read Flink of ListHead to get first entry.
+    let mut current: u64 = match reader.read_bytes(list_head_addr, 8) {
+        Ok(bytes) if bytes.len() == 8 => {
+            u64::from_le_bytes(bytes[..8].try_into().unwrap())
+        }
+        _ => return Ok(Vec::new()),
+    };
+
+    let path_offset = reader
+        .symbols()
+        .field_offset("_SHIM_CACHE_ENTRY", "Path")
+        .unwrap_or(0x10);
+
+    let mut entries = Vec::new();
+
+    for position in 0..safe_count {
+        // Stop if we loop back to the list head.
+        if current == list_head_addr || current == 0 {
+            break;
+        }
+
+        // The _LIST_ENTRY is at offset 0 of _SHIM_CACHE_ENTRY, so
+        // current points directly to the entry base address.
+        let entry_addr = current;
+
+        // Read the path _UNICODE_STRING.
+        let path = read_unicode_string(reader, entry_addr + path_offset)
+            .unwrap_or_default();
+
+        // Read LastModified (FILETIME, u64).
+        let last_modified: u64 = reader
+            .read_field(entry_addr, "_SHIM_CACHE_ENTRY", "LastModified")
+            .unwrap_or(0);
+
+        // Read InsertFlag (u32) — non-zero means executed.
+        let insert_flag: u32 = reader
+            .read_field(entry_addr, "_SHIM_CACHE_ENTRY", "InsertFlag")
+            .unwrap_or(0);
+
+        // Read DataSize (u32).
+        let data_size: u32 = reader
+            .read_field(entry_addr, "_SHIM_CACHE_ENTRY", "DataSize")
+            .unwrap_or(0);
+
+        entries.push(ShimcacheEntry {
+            path,
+            last_modified,
+            exec_flag: insert_flag != 0,
+            data_size,
+            position: position as u32,
+        });
+
+        // Advance to next entry (Flink at offset 0 of _LIST_ENTRY).
+        current = match reader.read_bytes(entry_addr, 8) {
+            Ok(bytes) if bytes.len() == 8 => {
+                u64::from_le_bytes(bytes[..8].try_into().unwrap())
+            }
+            _ => break,
+        };
+
+        // Safety: stop if we exceed the entry limit.
+        if entries.len() >= MAX_SHIMCACHE_ENTRIES {
+            break;
+        }
+    }
+
+    Ok(entries)
 }
 
 #[cfg(test)]
