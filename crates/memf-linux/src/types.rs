@@ -69,6 +69,9 @@ pub struct ProcessInfo {
     pub vaddr: u64,
     /// Page table root (CR3) from `mm->pgd`, if available.
     pub cr3: Option<u64>,
+    /// Process start time in nanoseconds since boot (`task_struct.start_time`).
+    /// Zero if the field is not available in the profile.
+    pub start_time: u64,
 }
 
 /// Network protocol.

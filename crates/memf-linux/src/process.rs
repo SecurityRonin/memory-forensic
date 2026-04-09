@@ -105,6 +105,7 @@ fn read_process_info<P: PhysicalMemoryProvider>(
         state: ProcessState::from_raw(state),
         vaddr: task_addr,
         cr3,
+        start_time: 0, // TODO: extract from task_struct
     })
 }
 
@@ -137,6 +138,19 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
+    // task_struct layout:
+    //   pid          @ 0   (int, 4 bytes)
+    //   state        @ 4   (long, 8 bytes)
+    //   tasks        @ 16  (list_head, 16 bytes)
+    //   comm         @ 32  (char, 16 bytes)
+    //   mm           @ 48  (pointer, 8 bytes)
+    //   real_parent  @ 56  (pointer, 8 bytes)
+    //   tgid         @ 64  (int, 4 bytes)
+    //   thread_group @ 72  (list_head, 16 bytes)
+    //   start_time   @ 88  (unsigned long, 8 bytes)
+    //   total: 128
+    const START_TIME_OFF: usize = 88;
+
     fn make_test_reader(data: &[u8], vaddr: u64, paddr: u64) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::new()
             .add_struct("task_struct", 128)
@@ -146,6 +160,7 @@ mod tests {
             .add_field("task_struct", "comm", 32, "char")
             .add_field("task_struct", "mm", 48, "pointer")
             .add_field("task_struct", "real_parent", 56, "pointer")
+            .add_field("task_struct", "start_time", 88, "unsigned long")
             .add_struct("list_head", 16)
             .add_field("list_head", "next", 0, "pointer")
             .add_field("list_head", "prev", 8, "pointer")
@@ -176,6 +191,8 @@ mod tests {
         data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
         data[32..41].copy_from_slice(b"swapper/0");
         data[56..64].copy_from_slice(&vaddr.to_le_bytes());
+        // start_time = 0 (boot)
+        data[START_TIME_OFF..START_TIME_OFF + 8].copy_from_slice(&0u64.to_le_bytes());
 
         let reader = make_test_reader(&data, vaddr, paddr);
         let procs = walk_processes(&reader).unwrap();
@@ -185,6 +202,7 @@ mod tests {
         assert_eq!(procs[0].comm, "swapper/0");
         assert_eq!(procs[0].state, ProcessState::Running);
         assert_eq!(procs[0].cr3, None);
+        assert_eq!(procs[0].start_time, 0);
     }
 
     #[test]
@@ -207,22 +225,27 @@ mod tests {
         data[24..32].copy_from_slice(&b_tasks.to_le_bytes());
         data[32..41].copy_from_slice(b"swapper/0");
         data[56..64].copy_from_slice(&init_addr.to_le_bytes());
+        data[START_TIME_OFF..START_TIME_OFF + 8].copy_from_slice(&0u64.to_le_bytes());
 
-        // Task A (PID 1)
+        // Task A (PID 1) — started at 1_000_000_000 ns (1s after boot)
         data[0x200..0x204].copy_from_slice(&1u32.to_le_bytes());
         data[0x204..0x20C].copy_from_slice(&1i64.to_le_bytes());
         data[0x210..0x218].copy_from_slice(&b_tasks.to_le_bytes());
         data[0x218..0x220].copy_from_slice(&init_tasks.to_le_bytes());
         data[0x220..0x227].copy_from_slice(b"systemd");
         data[0x238..0x240].copy_from_slice(&init_addr.to_le_bytes());
+        data[0x200 + START_TIME_OFF..0x200 + START_TIME_OFF + 8]
+            .copy_from_slice(&1_000_000_000u64.to_le_bytes());
 
-        // Task B (PID 42)
+        // Task B (PID 42) — started at 5_000_000_000 ns (5s after boot)
         data[0x400..0x404].copy_from_slice(&42u32.to_le_bytes());
         data[0x404..0x40C].copy_from_slice(&0i64.to_le_bytes());
         data[0x410..0x418].copy_from_slice(&init_tasks.to_le_bytes());
         data[0x418..0x420].copy_from_slice(&a_tasks.to_le_bytes());
         data[0x420..0x424].copy_from_slice(b"bash");
         data[0x438..0x440].copy_from_slice(&a_addr.to_le_bytes());
+        data[0x400 + START_TIME_OFF..0x400 + START_TIME_OFF + 8]
+            .copy_from_slice(&5_000_000_000u64.to_le_bytes());
 
         let reader = make_test_reader(&data, vaddr, paddr);
         let procs = walk_processes(&reader).unwrap();
@@ -238,6 +261,10 @@ mod tests {
         assert_eq!(procs[2].comm, "bash");
         assert_eq!(procs[2].state, ProcessState::Running);
         assert_eq!(procs[2].ppid, 1);
+        // Verify start_time extraction
+        assert_eq!(procs[0].start_time, 0); // swapper: boot
+        assert_eq!(procs[1].start_time, 1_000_000_000); // systemd: 1s
+        assert_eq!(procs[2].start_time, 5_000_000_000); // bash: 5s
     }
 
     #[test]
@@ -272,6 +299,7 @@ mod tests {
             state: ProcessState::Running,
             vaddr: 0xFFFF_0000_0000_0000 + pid * 0x1000,
             cr3: None,
+            start_time: pid * 1_000_000_000, // synthetic: PID * 1s
         }
     }
 

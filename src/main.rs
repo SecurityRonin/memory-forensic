@@ -709,10 +709,7 @@ fn cmd_ps(
                 PsSortField::Pid => procs.sort_by_key(|p| p.pid),
                 PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
                 PsSortField::Name => procs.sort_by(|a, b| a.comm.to_lowercase().cmp(&b.comm.to_lowercase())),
-                PsSortField::Time => {
-                    eprintln!("warning: --sort=time not yet supported for Linux (start_time not extracted); sorting by PID");
-                    procs.sort_by_key(|p| p.pid);
-                }
+                PsSortField::Time => procs.sort_by_key(|p| p.start_time),
             }
 
             if tree {
@@ -1037,18 +1034,44 @@ fn cmd_strings(
 // Output formatters — Linux processes
 // ---------------------------------------------------------------------------
 
+/// Format nanoseconds-since-boot into a human-readable uptime string.
+fn format_boot_ns(ns: u64) -> String {
+    if ns == 0 {
+        return "0.000s".to_string();
+    }
+    let secs = ns / 1_000_000_000;
+    let ms = (ns % 1_000_000_000) / 1_000_000;
+    if secs < 60 {
+        return format!("{secs}.{ms:03}s");
+    }
+    let mins = secs / 60;
+    let s = secs % 60;
+    if mins < 60 {
+        return format!("{mins}m{s:02}s");
+    }
+    let hours = mins / 60;
+    let m = mins % 60;
+    if hours < 24 {
+        return format!("{hours}h{m:02}m{s:02}s");
+    }
+    let days = hours / 24;
+    let h = hours % 24;
+    format!("{days}d{h:02}h{m:02}m")
+}
+
 fn print_linux_processes(procs: &[memf_linux::ProcessInfo], output: OutputFormat) {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "PPID", "Name", "State", "Vaddr"]);
+            table.set_header(vec!["PID", "PPID", "Name", "State", "Start", "Vaddr"]);
             for p in procs {
                 table.add_row(vec![
                     format!("{}", p.pid),
                     format!("{}", p.ppid),
                     p.comm.clone(),
                     format!("{}", p.state),
+                    format_boot_ns(p.start_time),
                     format!("{:#x}", p.vaddr),
                 ]);
             }
@@ -1062,15 +1085,21 @@ fn print_linux_processes(procs: &[memf_linux::ProcessInfo], output: OutputFormat
                     "ppid": p.ppid,
                     "name": p.comm,
                     "state": format!("{}", p.state),
+                    "start_time_ns": p.start_time,
+                    "start_time": format_boot_ns(p.start_time),
                     "vaddr": format!("{:#x}", p.vaddr),
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("pid,ppid,name,state,vaddr");
+            println!("pid,ppid,name,state,start_time_ns,start_time,vaddr");
             for p in procs {
-                println!("{},{},{},{},{:#x}", p.pid, p.ppid, p.comm, p.state, p.vaddr);
+                println!(
+                    "{},{},{},{},{},{},{:#x}",
+                    p.pid, p.ppid, p.comm, p.state, p.start_time,
+                    format_boot_ns(p.start_time), p.vaddr,
+                );
             }
         }
     }
