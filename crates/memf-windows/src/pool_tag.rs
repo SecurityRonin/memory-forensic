@@ -25,18 +25,28 @@ const MAX_POOL_TAG_ENTRIES: u64 = 65536;
 /// `_POOL_TRACKER_TABLE` entries, then iterates up to `PoolTrackTableSize`
 /// entries (capped at [`MAX_POOL_TAG_ENTRIES`]). Returns an empty `Vec` if
 /// the required symbols are not present (graceful degradation).
+///
+/// # Errors
+///
+/// Returns an error if memory reads fail for the pool tracking table
+/// after the symbol has been located and validated.
 pub fn walk_pool_tags<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<PoolTagEntry>> {
     // Locate the PoolTrackTable pointer symbol
-    let table_ptr_addr = match reader.symbols().symbol_address("PoolTrackTable") {
-        Some(addr) => addr,
-        None => return Ok(Vec::new()), // graceful degradation
+    let Some(table_ptr_addr) = reader.symbols().symbol_address("PoolTrackTable") else {
+        return Ok(Vec::new()); // graceful degradation
     };
 
     // PoolTrackTable is a pointer — read 8 bytes at the symbol address
     let table_addr: u64 = match reader.read_bytes(table_ptr_addr, 8) {
-        Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        Ok(bytes) => {
+            let arr: [u8; 8] = match bytes[..8].try_into() {
+                Ok(a) => a,
+                Err(_) => return Ok(Vec::new()),
+            };
+            u64::from_le_bytes(arr)
+        }
         Err(_) => return Ok(Vec::new()),
     };
 
@@ -48,8 +58,11 @@ pub fn walk_pool_tags<P: PhysicalMemoryProvider>(
     let entry_count = match reader.symbols().symbol_address("PoolTrackTableSize") {
         Some(size_addr) => match reader.read_bytes(size_addr, 8) {
             Ok(bytes) => {
-                let count = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
-                count.min(MAX_POOL_TAG_ENTRIES)
+                let arr: [u8; 8] = match bytes[..8].try_into() {
+                    Ok(a) => a,
+                    Err(_) => return Ok(Vec::new()),
+                };
+                u64::from_le_bytes(arr).min(MAX_POOL_TAG_ENTRIES)
             }
             Err(_) => return Ok(Vec::new()),
         },
@@ -67,9 +80,8 @@ pub fn walk_pool_tags<P: PhysicalMemoryProvider>(
         let entry_addr = table_addr + i * entry_size;
 
         // Read the 4-byte pool tag key
-        let key_bytes = match reader.read_bytes(entry_addr, 4) {
-            Ok(b) => b,
-            Err(_) => continue,
+        let Ok(key_bytes) = reader.read_bytes(entry_addr, 4) else {
+            continue;
         };
 
         // Skip empty entries (all-zero tag)
