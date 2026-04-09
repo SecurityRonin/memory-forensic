@@ -25,8 +25,13 @@ pub struct FutexInfo {
 }
 
 /// Classify whether a futex entry is suspicious.
-pub fn classify_futex(_key_address: u64, _owner_pid: u32, _waiter_count: u32) -> bool {
-    todo!("classify_futex not yet implemented")
+///
+/// Suspicious when:
+/// - `waiter_count > 1000` (potential DoS via futex starvation), or
+/// - `key_address > 0x7FFF_FFFF_FFFF && owner_pid > 0` (kernel-space key
+///   from userspace owner — futex confusion / privilege escalation indicator).
+pub fn classify_futex(key_address: u64, owner_pid: u32, waiter_count: u32) -> bool {
+    waiter_count > 1000 || (key_address > 0x7FFF_FFFF_FFFF && owner_pid > 0)
 }
 
 /// Walk the kernel futex hash table and return all pending futex entries.
@@ -34,9 +39,123 @@ pub fn classify_futex(_key_address: u64, _owner_pid: u32, _waiter_count: u32) ->
 /// Returns `Ok(Vec::new())` when the `futex_queues` symbol or required ISF
 /// offsets are absent (graceful degradation).
 pub fn walk_futex_table<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<FutexInfo>> {
-    todo!("walk_futex_table not yet implemented")
+    // Graceful degradation: require futex_queues symbol.
+    let fq_addr = match reader.symbols().symbol_address("futex_queues") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    // Require futex_hash_bucket struct offsets.
+    let chain_offset = match reader.symbols().field_offset("futex_hash_bucket", "chain") {
+        Some(off) => off,
+        None => return Ok(Vec::new()),
+    };
+
+    // futex_hash_bucket size from ISF struct_size; default to 64 bytes.
+    let bucket_size: u64 = reader
+        .symbols()
+        .struct_size("futex_hash_bucket")
+        .unwrap_or(64);
+
+    // Default to 256 buckets (a common runtime value).
+    let bucket_count: u64 = 256;
+
+    let mut results = Vec::new();
+
+    for i in 0..bucket_count.min(4096) {
+        let bucket_addr = fq_addr + i * bucket_size;
+        let chain_head = bucket_addr + chain_offset as u64;
+
+        // Read hlist_head.first pointer.
+        let first_q: u64 = match reader.read_bytes(chain_head, 8) {
+            Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+            Err(_) => continue,
+        };
+
+        let mut q_ptr = first_q;
+        let mut waiter_count: u32 = 0;
+        let mut guard = 0usize;
+
+        let mut first_key: u64 = 0;
+        let mut first_pid: u32 = 0;
+        let mut first_type = "private".to_string();
+
+        while q_ptr != 0 && guard < 65536 {
+            let key_offset: u64 = reader
+                .symbols()
+                .field_offset("futex_q", "key")
+                .map(|o| o as u64)
+                .unwrap_or(16);
+
+            let task_offset: u64 = reader
+                .symbols()
+                .field_offset("futex_q", "task")
+                .map(|o| o as u64)
+                .unwrap_or(8);
+
+            if waiter_count == 0 {
+                // Read the futex key (first 8 bytes of union futex_key).
+                first_key = reader
+                    .read_bytes(q_ptr + key_offset, 8)
+                    .ok()
+                    .and_then(|b| b.try_into().ok())
+                    .map(u64::from_le_bytes)
+                    .unwrap_or(0);
+
+                // Determine shared vs private from key.both.offset bit 1.
+                let key_offset_field: u64 = reader
+                    .read_bytes(q_ptr + key_offset + 8, 8)
+                    .ok()
+                    .and_then(|b| b.try_into().ok())
+                    .map(u64::from_le_bytes)
+                    .unwrap_or(0);
+                first_type = if key_offset_field & 1 == 0 {
+                    "private".to_string()
+                } else {
+                    "shared".to_string()
+                };
+
+                // task → task_struct → pid
+                let task_ptr: u64 = reader
+                    .read_bytes(q_ptr + task_offset, 8)
+                    .ok()
+                    .and_then(|b| b.try_into().ok())
+                    .map(u64::from_le_bytes)
+                    .unwrap_or(0);
+                if task_ptr != 0 {
+                    first_pid = reader
+                        .read_field::<u32>(task_ptr, "task_struct", "pid")
+                        .unwrap_or(0);
+                }
+            }
+
+            waiter_count += 1;
+
+            // hlist_node.next is at offset 0.
+            q_ptr = reader
+                .read_bytes(q_ptr, 8)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_le_bytes)
+                .unwrap_or(0);
+            guard += 1;
+        }
+
+        if waiter_count > 0 {
+            let is_suspicious = classify_futex(first_key, first_pid, waiter_count);
+            results.push(FutexInfo {
+                key_address: first_key,
+                owner_pid: first_pid,
+                waiter_count,
+                futex_type: first_type,
+                is_suspicious,
+            });
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -65,6 +184,30 @@ mod tests {
     }
 
     #[test]
+    fn classify_exactly_1000_waiters_not_suspicious() {
+        assert!(
+            !classify_futex(0x7FFF_0000_0000, 500, 1000),
+            "exactly 1000 waiters must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_kernel_space_key_from_userspace_owner_suspicious() {
+        assert!(
+            classify_futex(0x8000_0000_0000, 1234, 1),
+            "kernel-space futex key with userspace owner must be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_kernel_space_key_no_owner_not_suspicious() {
+        assert!(
+            !classify_futex(0x8000_0000_0000, 0, 1),
+            "kernel-space key with pid=0 must not be suspicious"
+        );
+    }
+
+    #[test]
     fn classify_normal_futex_benign() {
         assert!(
             !classify_futex(0x7F00_0000_1000, 1234, 3),
@@ -76,6 +219,9 @@ mod tests {
     fn walk_futex_no_symbol_returns_empty() {
         let reader = make_no_symbol_reader();
         let result = walk_futex_table(&reader).unwrap();
-        assert!(result.is_empty(), "no futex_queues symbol → empty vec expected");
+        assert!(
+            result.is_empty(),
+            "no futex_queues symbol → empty vec expected"
+        );
     }
 }

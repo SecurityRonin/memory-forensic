@@ -35,8 +35,19 @@ pub struct TmpfsFileInfo {
 }
 
 /// Classify whether a tmpfs file is suspicious.
-pub fn classify_tmpfs_file(_filename: &str, _mode: u32) -> bool {
-    todo!("classify_tmpfs_file not yet implemented")
+///
+/// A file is suspicious when:
+/// - It is a regular file (`S_ISREG`: mode type bits == 0o100000) with any
+///   executable bit set (`mode & 0o111 != 0`), or
+/// - Its name starts with `.` and has more than one character (hidden file).
+///
+/// Directories (type bits 0o040000) with execute bits are normal and not flagged.
+pub fn classify_tmpfs_file(filename: &str, mode: u32) -> bool {
+    // S_IFREG = 0o100000; S_IFMT = 0o170000
+    let is_regular_file = (mode & 0o170_000) == 0o100_000;
+    let is_exec = is_regular_file && (mode & 0o111) != 0;
+    let is_hidden = filename.starts_with('.') && filename.len() > 1;
+    is_exec || is_hidden
 }
 
 /// Walk all tmpfs/ramfs inodes across all superblocks in memory.
@@ -44,9 +55,167 @@ pub fn classify_tmpfs_file(_filename: &str, _mode: u32) -> bool {
 /// Returns `Ok(Vec::new())` when the `super_blocks` symbol or required ISF
 /// offsets are absent (graceful degradation).
 pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<TmpfsFileInfo>> {
-    todo!("walk_tmpfs_files not yet implemented")
+    // Graceful degradation: require super_blocks symbol.
+    let sb_list_addr = match reader.symbols().symbol_address("super_blocks") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    // Require super_block.s_list offset to walk the superblock list.
+    let sb_list_offset = match reader.symbols().field_offset("super_block", "s_list") {
+        Some(off) => off,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut results = Vec::new();
+
+    // Walk super_blocks list (list_head embedded in super_block at s_list).
+    let first_sb_list: u64 = match reader.read_bytes(sb_list_addr, 8) {
+        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut sb_cursor = first_sb_list;
+    let mut sb_guard = 0usize;
+    loop {
+        if sb_cursor == 0 || sb_cursor == sb_list_addr || sb_guard > 1024 {
+            break;
+        }
+        // Recover super_block base from s_list offset.
+        let sb_addr = sb_cursor.saturating_sub(sb_list_offset as u64);
+
+        // Read s_type pointer → file_system_type → name string.
+        let s_type_ptr: u64 = match reader.read_field(sb_addr, "super_block", "s_type") {
+            Ok(v) => v,
+            Err(_) => {
+                sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                    Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                    Err(_) => break,
+                };
+                sb_guard += 1;
+                continue;
+            }
+        };
+
+        let is_tmpfs = if s_type_ptr != 0 {
+            // file_system_type.name is a `const char *` pointer at offset 0.
+            let name_ptr: u64 = reader
+                .read_bytes(s_type_ptr, 8)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_le_bytes)
+                .unwrap_or(0);
+            if name_ptr != 0 {
+                let name_bytes: Vec<u8> = reader.read_bytes(name_ptr, 8).unwrap_or_default();
+                let fs_name = std::str::from_utf8(&name_bytes)
+                    .unwrap_or("")
+                    .split('\0')
+                    .next()
+                    .unwrap_or("");
+                fs_name == "tmpfs" || fs_name == "ramfs"
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if is_tmpfs {
+            // Walk s_inodes list: inode.i_sb_list list_head.
+            let s_inodes_offset = match reader.symbols().field_offset("super_block", "s_inodes") {
+                Some(off) => off,
+                None => {
+                    sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                        Err(_) => break,
+                    };
+                    sb_guard += 1;
+                    continue;
+                }
+            };
+
+            let inode_sb_list_offset = match reader.symbols().field_offset("inode", "i_sb_list") {
+                Some(off) => off,
+                None => {
+                    sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                        Err(_) => break,
+                    };
+                    sb_guard += 1;
+                    continue;
+                }
+            };
+
+            let inode_list_head = sb_addr + s_inodes_offset as u64;
+            let first_inode_list: u64 = reader
+                .read_bytes(inode_list_head, 8)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_le_bytes)
+                .unwrap_or(0);
+
+            let mut inode_cursor = first_inode_list;
+            let mut inode_guard = 0usize;
+            loop {
+                if inode_cursor == 0 || inode_cursor == inode_list_head || inode_guard > 65536 {
+                    break;
+                }
+                let inode_addr = inode_cursor.saturating_sub(inode_sb_list_offset as u64);
+
+                let i_ino: u64 = reader.read_field(inode_addr, "inode", "i_ino").unwrap_or(0);
+                let i_size: u64 = reader
+                    .read_field(inode_addr, "inode", "i_size")
+                    .unwrap_or(0);
+                let i_uid: u32 = reader.read_field(inode_addr, "inode", "i_uid").unwrap_or(0);
+                let i_gid: u32 = reader.read_field(inode_addr, "inode", "i_gid").unwrap_or(0);
+                let i_mode: u32 = reader
+                    .read_field(inode_addr, "inode", "i_mode")
+                    .unwrap_or(0);
+                let atime_sec: u64 = reader
+                    .read_field(inode_addr, "inode", "i_atime")
+                    .unwrap_or(0);
+                let mtime_sec: u64 = reader
+                    .read_field(inode_addr, "inode", "i_mtime")
+                    .unwrap_or(0);
+                let ctime_sec: u64 = reader
+                    .read_field(inode_addr, "inode", "i_ctime")
+                    .unwrap_or(0);
+
+                // Filename is not stored in inode directly; left empty (recovered from dentry).
+                let filename = String::new();
+                let is_suspicious = classify_tmpfs_file(&filename, i_mode);
+
+                results.push(TmpfsFileInfo {
+                    inode_number: i_ino,
+                    filename,
+                    file_size: i_size,
+                    uid: i_uid,
+                    gid: i_gid,
+                    mode: i_mode,
+                    atime_sec,
+                    mtime_sec,
+                    ctime_sec,
+                    is_suspicious,
+                });
+
+                inode_cursor = match reader.read_bytes(inode_cursor, 8) {
+                    Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                    Err(_) => break,
+                };
+                inode_guard += 1;
+            }
+        }
+
+        sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+            Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+            Err(_) => break,
+        };
+        sb_guard += 1;
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -83,6 +252,14 @@ mod tests {
     }
 
     #[test]
+    fn classify_dot_alone_not_suspicious() {
+        assert!(
+            !classify_tmpfs_file(".", 0o040_755),
+            "bare '.' directory must not be suspicious"
+        );
+    }
+
+    #[test]
     fn classify_normal_tmpfs_file_benign() {
         assert!(
             !classify_tmpfs_file("data.bin", 0o100_644),
@@ -91,9 +268,20 @@ mod tests {
     }
 
     #[test]
+    fn classify_executable_and_hidden_suspicious() {
+        assert!(
+            classify_tmpfs_file(".runme", 0o100_755),
+            "executable hidden file must be suspicious"
+        );
+    }
+
+    #[test]
     fn walk_tmpfs_no_symbol_returns_empty() {
         let reader = make_no_symbol_reader();
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "no super_blocks symbol → empty vec expected");
+        assert!(
+            result.is_empty(),
+            "no super_blocks symbol → empty vec expected"
+        );
     }
 }
