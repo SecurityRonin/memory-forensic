@@ -10,6 +10,7 @@ pub mod bash;
 pub mod bpf;
 pub mod boot_time;
 pub mod capabilities;
+pub mod check_afinfo;
 pub mod check_fops;
 pub mod check_hooks;
 pub mod check_modules;
