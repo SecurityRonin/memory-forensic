@@ -81,16 +81,30 @@ fn read_xt_table<P: PhysicalMemoryProvider>(
 
 #[allow(clippy::unnecessary_wraps)] // will do fallible parsing once ipt_entry is implemented
 fn parse_table_rules<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _table_addr: u64,
+    reader: &ObjectReader<P>,
+    table_addr: u64,
     table_name: &str,
 ) -> Result<Vec<NetfilterRuleInfo>> {
-    // The actual rule parsing from ipt_entry structures is extremely complex.
-    // For now, return a placeholder indicating the table was found.
-    // Full ipt_entry parsing would need: ipt_entry → ipt_entry_target → target name,
-    // plus ipt_ip for source/dest/protocol matching.
-    // This is a detection-only stub — we confirmed the table exists.
-    let _ = table_name;
+    // Resolve the private table data pointer: xt_table.private → xt_table_info.
+    // xt_table_info.entries holds the actual ipt_entry data region.
+    // For now delegate to parse_ipt_entries if we can read the entries pointer.
+    // This is a stub that returns empty until ipt_entry parsing is implemented.
+    let _ = (reader, table_addr, table_name);
+    Ok(Vec::new())
+}
+
+/// Parse a flat region of `ipt_entry` structures from raw memory.
+///
+/// `data_vaddr` is the virtual address of the first entry; `data_len` is the
+/// byte length of the region.  Entries are walked via `next_offset` until it
+/// is 0 or the end of the region is reached.
+pub fn parse_ipt_entries<P: PhysicalMemoryProvider>(
+    _reader: &ObjectReader<P>,
+    _data_vaddr: u64,
+    _data_len: u64,
+    _table_name: &str,
+) -> Result<Vec<NetfilterRuleInfo>> {
+    // RED stub — returns empty; GREEN will implement real ipt_entry walking.
     Ok(Vec::new())
 }
 
@@ -108,6 +122,10 @@ pub fn protocol_name(proto: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
 
     #[test]
     fn protocol_name_known() {
@@ -121,5 +139,95 @@ mod tests {
     fn protocol_name_unknown() {
         assert_eq!(protocol_name(132), "proto:132");
         assert_eq!(protocol_name(255), "proto:255");
+    }
+
+    // ---------------------------------------------------------------------------
+    // ipt_entry parsing tests
+    // ---------------------------------------------------------------------------
+
+    /// Build a minimal reader that maps a fake table data region and exposes
+    /// `parse_ipt_entries` directly.
+    fn make_ipt_entry_data(src_ip: u32, dst_ip: u32, proto: u16, target_name: &str) -> Vec<u8> {
+        // ipt_entry layout (offsets per kernel ABI):
+        //   0x00: src_ip (u32)
+        //   0x04: dst_ip (u32)
+        //   0x10: protocol (u16)
+        //   0x58: target_offset (u16) — relative offset to ipt_entry_target within entry
+        //   0x5A: next_offset (u16) — stride to next entry (0 = end)
+        //
+        // ipt_entry_target (at base + target_offset):
+        //   +0: name (29 bytes, null-terminated)
+        //
+        // We place one entry at the start.  target_offset = 0x60 (96 bytes into entry).
+        // next_offset = 0 means no more entries.
+        let mut data = vec![0u8; 256];
+
+        // src_ip at 0x00
+        data[0x00..0x04].copy_from_slice(&src_ip.to_le_bytes());
+        // dst_ip at 0x04
+        data[0x04..0x08].copy_from_slice(&dst_ip.to_le_bytes());
+        // protocol at 0x10
+        data[0x10..0x12].copy_from_slice(&proto.to_le_bytes());
+        // target_offset at 0x58: 0x60 (96 bytes in)
+        let target_off: u16 = 0x60;
+        data[0x58..0x5A].copy_from_slice(&target_off.to_le_bytes());
+        // next_offset at 0x5A: 0 = end
+        data[0x5A..0x5C].copy_from_slice(&0u16.to_le_bytes());
+        // target name at base + target_offset
+        let name_bytes = target_name.as_bytes();
+        let len = name_bytes.len().min(28);
+        data[0x60..0x60 + len].copy_from_slice(&name_bytes[..len]);
+
+        data
+    }
+
+    fn make_ipt_reader(
+        entry_data: &[u8],
+        entry_vaddr: u64,
+        entry_paddr: u64,
+    ) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mut mem) = PageTableBuilder::new()
+            .map_4k(entry_vaddr, entry_paddr, flags::PRESENT | flags::WRITABLE)
+            .build();
+        mem.write_bytes(entry_paddr, entry_data);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    #[test]
+    fn parse_ipt_entries_src_ip_and_target() {
+        // src = 192.168.1.1 = 0xC0A80101 (LE), dst = 0, proto = tcp (6), target = "ACCEPT"
+        let src_ip: u32 = 0xC0A8_0101_u32.to_le();
+        let dst_ip: u32 = 0;
+        let data = make_ipt_entry_data(src_ip, dst_ip, 6, "ACCEPT");
+
+        let entry_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let entry_paddr: u64 = 0x0080_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
+        assert_eq!(rules.len(), 1, "should parse exactly one ipt_entry");
+        let rule = &rules[0];
+        assert_eq!(rule.target, "ACCEPT");
+        assert_eq!(rule.protocol, "tcp");
+        assert!(rule.source.is_some());
+    }
+
+    #[test]
+    fn parse_ipt_entries_drop_rule() {
+        // src = 0 (any), dst = 10.0.0.1, proto = all (0), target = "DROP"
+        let data = make_ipt_entry_data(0, 0x0A00_0001_u32.to_le(), 0, "DROP");
+
+        let entry_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let entry_paddr: u64 = 0x0090_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "nat").unwrap();
+        assert_eq!(rules.len(), 1);
+        let rule = &rules[0];
+        assert_eq!(rule.target, "DROP");
+        assert_eq!(rule.protocol, "all");
     }
 }

@@ -8,6 +8,11 @@
 pub mod arp;
 pub mod bash;
 pub mod bpf;
+pub mod ebpf_progs;
+pub mod ftrace;
+pub mod keyboard_notifiers;
+pub mod kmsg;
+pub mod mountinfo;
 pub mod boot_time;
 pub mod capabilities;
 pub mod cgroups;
