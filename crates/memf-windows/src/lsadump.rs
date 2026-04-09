@@ -84,7 +84,310 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     security_hive_addr: u64,
 ) -> crate::Result<Vec<LsaSecretInfo>> {
-    todo!()
+    if security_hive_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read _HHIVE.BaseBlock pointer to get _HBASE_BLOCK address.
+    let base_block_off = reader
+        .symbols()
+        .field_offset("_HHIVE", "BaseBlock")
+        .unwrap_or(0x10);
+
+    let base_block_addr = match reader.read_bytes(security_hive_addr + base_block_off, 8) {
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if base_block_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read root cell offset from _HBASE_BLOCK (at offset 0x24, u32).
+    let root_cell_off = match reader.read_bytes(base_block_addr + 0x24, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if root_cell_off == 0 || root_cell_off == u32::MAX {
+        return Ok(Vec::new());
+    }
+
+    // Compute flat storage base for cell address resolution.
+    let storage_off = reader
+        .symbols()
+        .field_offset("_HHIVE", "Storage")
+        .unwrap_or(0x30);
+
+    let flat_base = match reader.read_bytes(security_hive_addr + storage_off, 8) {
+        Ok(bytes) if bytes.len() == 8 => {
+            let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            if addr != 0 { addr } else { base_block_addr + 0x1000 }
+        }
+        _ => base_block_addr + 0x1000,
+    };
+
+    // Navigate: root → Policy → Secrets
+    let root_addr = read_cell_addr(reader, flat_base, root_cell_off);
+    if root_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    let policy_key = find_subkey_by_name(reader, flat_base, root_addr, "Policy");
+    if policy_key == 0 {
+        return Ok(Vec::new());
+    }
+
+    let secrets_key = find_subkey_by_name(reader, flat_base, policy_key, "Secrets");
+    if secrets_key == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Enumerate subkeys under Secrets — each is a secret name.
+    let subkey_count: u32 = match reader.read_bytes(secrets_key + 0x18, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => 0,
+    };
+
+    if subkey_count == 0 || subkey_count > MAX_SECRETS as u32 {
+        return Ok(Vec::new());
+    }
+
+    let subkey_list_off: u32 = match reader.read_bytes(secrets_key + 0x20, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    let list_addr = read_cell_addr(reader, flat_base, subkey_list_off);
+    if list_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read list signature (lf/lh/li).
+    let list_sig = match reader.read_bytes(list_addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
+        _ => return Ok(Vec::new()),
+    };
+
+    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
+        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    let mut secrets = Vec::new();
+
+    for i in 0..count.min(MAX_SECRETS as u16) {
+        let entry_off = match list_sig {
+            [b'l', b'f'] | [b'l', b'h'] => {
+                // lf/lh: 8-byte entries (offset + hash) starting at +4
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            [b'l', b'i'] => {
+                // li: 4-byte entries (offset only) starting at +4
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+
+        let key_addr = read_cell_addr(reader, flat_base, entry_off);
+        if key_addr == 0 {
+            continue;
+        }
+
+        // Read key name (at offset 0x4C in _CM_KEY_NODE, length at 0x4A).
+        let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if name_len == 0 || name_len > 256 {
+            continue;
+        }
+
+        let secret_name = match reader.read_bytes(key_addr + 0x4C, name_len as usize) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            _ => continue,
+        };
+
+        // Read the CurrVal subkey's default value length.
+        let length = read_currval_length(reader, flat_base, key_addr);
+
+        let (secret_type, is_suspicious) = classify_lsa_secret(&secret_name);
+
+        secrets.push(LsaSecretInfo {
+            name: secret_name,
+            secret_type,
+            length,
+            is_suspicious,
+        });
+    }
+
+    Ok(secrets)
+}
+
+/// Read a cell address from the flat storage base + cell offset.
+fn read_cell_addr<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    cell_off: u32,
+) -> u64 {
+    // Cell data starts 4 bytes after the cell offset (cell size header).
+    let addr = flat_base + (cell_off as u64) + 4;
+    // Verify we can read from this address.
+    match reader.read_bytes(addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => addr,
+        _ => 0,
+    }
+}
+
+/// Find a subkey by name under a parent `_CM_KEY_NODE`.
+fn find_subkey_by_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    parent_addr: u64,
+    target_name: &str,
+) -> u64 {
+    let subkey_count: u32 = match reader.read_bytes(parent_addr + 0x18, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    if subkey_count == 0 || subkey_count > 4096 {
+        return 0;
+    }
+
+    let list_off: u32 = match reader.read_bytes(parent_addr + 0x20, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    let list_addr = read_cell_addr(reader, flat_base, list_off);
+    if list_addr == 0 {
+        return 0;
+    }
+
+    let list_sig = match reader.read_bytes(list_addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
+        _ => return 0,
+    };
+
+    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
+        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    for i in 0..count.min(4096) {
+        let entry_off = match list_sig {
+            [b'l', b'f'] | [b'l', b'h'] => {
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            [b'l', b'i'] => {
+                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                    Ok(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+            _ => return 0,
+        };
+
+        let key_addr = read_cell_addr(reader, flat_base, entry_off);
+        if key_addr == 0 {
+            continue;
+        }
+
+        let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            _ => continue,
+        };
+
+        if name_len == 0 || name_len > 256 {
+            continue;
+        }
+
+        let name = match reader.read_bytes(key_addr + 0x4C, name_len as usize) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            _ => continue,
+        };
+
+        if name.eq_ignore_ascii_case(target_name) {
+            return key_addr;
+        }
+    }
+
+    0
+}
+
+/// Read the data length from a secret's `CurrVal` subkey's default value.
+///
+/// Navigates `<secret_key>\CurrVal` and reads the `(Default)` value's
+/// `DataLength` field to determine the secret size.
+fn read_currval_length<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    secret_key_addr: u64,
+) -> u32 {
+    // Find the CurrVal subkey.
+    let currval_addr = find_subkey_by_name(reader, flat_base, secret_key_addr, "CurrVal");
+    if currval_addr == 0 {
+        return 0;
+    }
+
+    // Read value count from CurrVal key node (offset 0x28).
+    let val_count: u32 = match reader.read_bytes(currval_addr + 0x28, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    if val_count == 0 {
+        return 0;
+    }
+
+    // Read value list cell offset (0x2C in _CM_KEY_NODE).
+    let val_list_off: u32 = match reader.read_bytes(currval_addr + 0x2C, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
+    if val_list_addr == 0 {
+        return 0;
+    }
+
+    // Read the first value offset (the default value).
+    let val_off: u32 = match reader.read_bytes(val_list_addr, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return 0,
+    };
+
+    let val_addr = read_cell_addr(reader, flat_base, val_off);
+    if val_addr == 0 {
+        return 0;
+    }
+
+    // _CM_KEY_VALUE: DataLength at offset 0x08 (u32). MSB indicates inline data.
+    match reader.read_bytes(val_addr + 0x08, 4) {
+        Ok(bytes) if bytes.len() == 4 => {
+            u32::from_le_bytes(bytes[..4].try_into().unwrap()) & 0x7FFF_FFFF
+        }
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
