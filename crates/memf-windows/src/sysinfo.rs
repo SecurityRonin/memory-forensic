@@ -68,7 +68,88 @@ pub fn product_type_name(product_type: u32) -> String {
 pub fn walk_sysinfo<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Option<SystemInfo>> {
-    todo!()
+    let symbols = reader.symbols();
+
+    // NtBuildNumber is the essential symbol — if missing, this is not a
+    // Windows image (or symbols are incomplete).
+    let build_num_vaddr = match symbols.symbol_address("NtBuildNumber") {
+        Some(addr) => addr,
+        None => return Ok(None),
+    };
+
+    // Read NtBuildNumber (u32). The high bit indicates a checked (debug) build;
+    // mask it off to get the actual build number.
+    let build_number = {
+        let bytes = reader.read_bytes(build_num_vaddr, 4)?;
+        let raw = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        raw & 0x0000_FFFF
+    };
+
+    // NtMajorVersion — optional, default 0
+    let major_version = read_u32_symbol(reader, symbols, "NtMajorVersion").unwrap_or(0);
+
+    // NtMinorVersion — optional, default 0
+    let minor_version = read_u32_symbol(reader, symbols, "NtMinorVersion").unwrap_or(0);
+
+    // NtBuildLab — optional, null-terminated ASCII string (up to 128 bytes)
+    let build_lab = match symbols.symbol_address("NtBuildLab") {
+        Some(addr) => reader.read_string(addr, 128).unwrap_or_default(),
+        None => String::new(),
+    };
+
+    // CmNtCSDVersion — optional, service pack encoded as (major << 8) | minor
+    let service_pack = match symbols.symbol_address("CmNtCSDVersion") {
+        Some(addr) => {
+            let bytes = reader.read_bytes(addr, 4).unwrap_or_else(|_| vec![0; 4]);
+            let csd = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let sp_major = (csd >> 8) & 0xFF;
+            format!("Service Pack {sp_major}")
+        }
+        None => String::new(),
+    };
+
+    // KeNumberProcessors — optional, default 0
+    let num_processors = read_u32_symbol(reader, symbols, "KeNumberProcessors").unwrap_or(0);
+
+    // KdDebuggerDataBlock — optional, contains SystemTime and NtProductType
+    // at known offsets. These offsets are architecture-specific but common
+    // values for x64: SystemTime at +0x14, NtProductType at +0x264.
+    let (system_time, product_type) = match symbols.symbol_address("KdDebuggerDataBlock") {
+        Some(addr) => {
+            let sys_time = reader
+                .read_bytes(addr.wrapping_add(0x14), 8)
+                .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+                .unwrap_or(0);
+            let prod_type = reader
+                .read_bytes(addr.wrapping_add(0x264), 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .unwrap_or(0);
+            (sys_time, product_type_name(prod_type))
+        }
+        None => (0, "Unknown".into()),
+    };
+
+    Ok(Some(SystemInfo {
+        major_version,
+        minor_version,
+        build_number,
+        build_lab,
+        service_pack,
+        num_processors,
+        system_time,
+        product_type,
+    }))
+}
+
+/// Helper: read a u32 from a global symbol address.
+fn read_u32_symbol<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    symbols: &dyn memf_symbols::SymbolResolver,
+    name: &str,
+) -> Option<u32> {
+    let addr = symbols.symbol_address(name)?;
+    let bytes = reader.read_bytes(addr, 4).ok()?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 #[cfg(test)]

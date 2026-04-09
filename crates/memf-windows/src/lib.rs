@@ -8,6 +8,7 @@
 pub mod alpc;
 pub mod amcache;
 pub mod atom_table;
+pub mod bigpools;
 pub mod callbacks;
 pub mod cachedump;
 pub mod clipboard;
@@ -45,6 +46,7 @@ pub mod registry_keys;
 pub mod sam;
 pub mod scheduled_tasks;
 pub mod service;
+pub mod sessions;
 pub mod shellbags;
 pub mod skeleton_key;
 pub mod shimcache;

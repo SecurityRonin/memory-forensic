@@ -391,6 +391,28 @@ pub struct WinConnectionInfo {
     pub create_time: u64,
 }
 
+/// Process SID (Security Identifier) information for privilege escalation detection.
+///
+/// Maps each process to its token's user SID, resolves well-known SIDs to
+/// human-readable names, and flags suspicious security contexts (e.g. a
+/// user-spawned process running as SYSTEM). Equivalent to Volatility's
+/// `getsids` plugin. MITRE ATT&CK T1078/T1134.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProcessSidInfo {
+    /// Process ID.
+    pub pid: u32,
+    /// Image file name from `_EPROCESS.ImageFileName`.
+    pub process_name: String,
+    /// User SID string (e.g. `S-1-5-18`).
+    pub user_sid: String,
+    /// Human-readable name for the SID (e.g. `SYSTEM`), or the raw SID if unknown.
+    pub sid_name: String,
+    /// Integrity level label (e.g. `System`, `High`, `Medium`, `Low`).
+    pub integrity_level: String,
+    /// Whether this process-SID combination is suspicious (potential privilege escalation).
+    pub is_suspicious: bool,
+}
+
 /// Process token and privilege information.
 #[derive(Debug, Clone)]
 pub struct WinTokenInfo {

@@ -41,10 +41,12 @@ pub mod psaux;
 pub mod ptrace;
 pub mod psxview;
 pub mod seccomp;
+pub mod signal_handlers;
 pub mod ssh_keys;
 pub mod syscalls;
 pub mod thread;
 pub mod tty_check;
+pub mod zombie_orphan;
 pub mod types;
 
 use memf_core::object_reader::ObjectReader;
