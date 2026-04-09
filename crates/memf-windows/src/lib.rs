@@ -10,6 +10,7 @@ pub mod amcache;
 pub mod atom_table;
 pub mod callbacks;
 pub mod cmdline;
+pub mod desktops;
 pub mod dll;
 pub mod dns_cache;
 pub mod driver;
