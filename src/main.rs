@@ -3827,7 +3827,11 @@ struct TimelineEvent {
 /// Convert a Windows FILETIME to Unix epoch seconds.
 /// Returns `None` for zero or pre-1970 values.
 fn filetime_to_unix(ft: u64) -> Option<i64> {
-    todo!()
+    const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
+    if ft == 0 || ft < FILETIME_UNIX_DIFF {
+        return None;
+    }
+    Some(((ft - FILETIME_UNIX_DIFF) / 10_000_000) as i64)
 }
 
 /// Build timeline events from Windows process and connection data.
@@ -3835,7 +3839,46 @@ fn build_windows_timeline(
     procs: &[memf_windows::WinProcessInfo],
     conns: &[memf_windows::WinConnectionInfo],
 ) -> Vec<TimelineEvent> {
-    todo!()
+    let mut events = Vec::new();
+
+    for p in procs {
+        if let Some(ts) = filetime_to_unix(p.create_time) {
+            events.push(TimelineEvent {
+                timestamp_secs: ts,
+                timestamp: format_epoch(ts),
+                event_type: "process_create".into(),
+                pid: p.pid,
+                description: format!("{} (PID {})", p.image_name, p.pid),
+            });
+        }
+        if let Some(ts) = filetime_to_unix(p.exit_time) {
+            events.push(TimelineEvent {
+                timestamp_secs: ts,
+                timestamp: format_epoch(ts),
+                event_type: "process_exit".into(),
+                pid: p.pid,
+                description: format!("{} (PID {})", p.image_name, p.pid),
+            });
+        }
+    }
+
+    for c in conns {
+        if let Some(ts) = filetime_to_unix(c.create_time) {
+            events.push(TimelineEvent {
+                timestamp_secs: ts,
+                timestamp: format_epoch(ts),
+                event_type: "connection_create".into(),
+                pid: c.pid,
+                description: format!(
+                    "TCP {}:{} -> {}:{} ({})",
+                    c.local_addr, c.local_port, c.remote_addr, c.remote_port, c.process_name
+                ),
+            });
+        }
+    }
+
+    events.sort_by_key(|e| e.timestamp_secs);
+    events
 }
 
 /// Build timeline events from Linux process data.
@@ -3845,12 +3888,66 @@ fn build_linux_timeline(
     procs: &[memf_linux::ProcessInfo],
     boot_epoch: Option<i64>,
 ) -> Vec<TimelineEvent> {
-    todo!()
+    let epoch = match boot_epoch {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+
+    let mut events: Vec<TimelineEvent> = procs
+        .iter()
+        .map(|p| {
+            let ts = epoch + (p.start_time / 1_000_000_000) as i64;
+            TimelineEvent {
+                timestamp_secs: ts,
+                timestamp: format_epoch(ts),
+                event_type: "process_start".into(),
+                pid: p.pid,
+                description: format!("{} (PID {})", p.comm, p.pid),
+            }
+        })
+        .collect();
+
+    events.sort_by_key(|e| e.timestamp_secs);
+    events
 }
 
 /// Print a sorted timeline to stdout.
 fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
-    todo!()
+    match output {
+        OutputFormat::Table => {
+            println!(
+                "{:<26} {:<20} {:>8}  {}",
+                "TIMESTAMP", "EVENT", "PID", "DESCRIPTION"
+            );
+            for e in events {
+                println!(
+                    "{:<26} {:<20} {:>8}  {}",
+                    e.timestamp, e.event_type, e.pid, e.description
+                );
+            }
+        }
+        OutputFormat::Json => {
+            for e in events {
+                let json = serde_json::json!({
+                    "timestamp": e.timestamp,
+                    "timestamp_secs": e.timestamp_secs,
+                    "event_type": e.event_type,
+                    "pid": e.pid,
+                    "description": e.description,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("timestamp,timestamp_secs,event_type,pid,description");
+            for e in events {
+                println!(
+                    "{},{},{},{},\"{}\"",
+                    e.timestamp, e.timestamp_secs, e.event_type, e.pid, e.description
+                );
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3862,7 +3959,83 @@ fn cmd_timeline(
     btime: Option<i64>,
     raw_fallback: bool,
 ) -> Result<()> {
-    todo!()
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3, raw_fallback)?;
+
+    let events = match ctx.os {
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead; provide via symbols or dump metadata")?;
+            let procs = memf_windows::process::walk_processes(&reader, ps_head)
+                .context("failed to walk Windows processes")?;
+
+            // Try to get network connections; non-fatal if symbols are missing.
+            let conns = (|| -> Result<Vec<memf_windows::WinConnectionInfo>> {
+                let tcp_ptr_sym = reader
+                    .symbols()
+                    .symbol_address("TcpBTable")
+                    .context("missing 'TcpBTable' symbol")?;
+                let ptr_bytes = reader
+                    .read_bytes(tcp_ptr_sym, 8)
+                    .context("failed to read TcpBTable pointer")?;
+                let table_vaddr = u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
+
+                let tcp_size_sym = reader
+                    .symbols()
+                    .symbol_address("TcpBTableSize")
+                    .context("missing 'TcpBTableSize' symbol")?;
+                let size_bytes = reader
+                    .read_bytes(tcp_size_sym, 4)
+                    .context("failed to read TcpBTableSize")?;
+                let bucket_count = u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
+
+                memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
+                    .context("failed to walk Windows TCP endpoints")
+            })()
+            .unwrap_or_else(|e| {
+                eprintln!("warning: could not walk network connections: {e}");
+                Vec::new()
+            });
+
+            build_windows_timeline(&procs, &conns)
+        }
+        OsProfile::Linux => {
+            let procs = memf_linux::process::walk_processes(&reader)
+                .context("failed to walk Linux processes")?;
+
+            // Collect boot time estimates.
+            let mut estimates = Vec::new();
+            match memf_linux::boot_time::extract_boot_time(&reader) {
+                Ok(est) => estimates.push(est),
+                Err(e) => {
+                    eprintln!("warning: could not extract boot time from kernel timekeeper: {e}");
+                }
+            }
+            if let Some(epoch) = btime {
+                estimates.push(memf_linux::BootTimeEstimate {
+                    source: memf_linux::BootTimeSource::UserProvided,
+                    boot_epoch_secs: epoch,
+                });
+            }
+            let boot_info = memf_linux::BootTimeInfo::from_estimates(estimates);
+            if boot_info.inconsistent {
+                eprintln!(
+                    "warning: boot time sources differ by {}s",
+                    boot_info.max_drift_secs
+                );
+            }
+
+            build_linux_timeline(&procs, boot_info.best_estimate)
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS timeline not yet supported"),
+    };
+
+    if events.is_empty() {
+        eprintln!("warning: no timeline events found");
+    }
+
+    print_timeline(&events, output);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
