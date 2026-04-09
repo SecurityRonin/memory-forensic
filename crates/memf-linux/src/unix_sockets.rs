@@ -58,15 +58,168 @@ pub fn classify_unix_socket(path: &str, owner_pid: u32) -> bool {
     false
 }
 
+/// Safety limit: maximum number of Unix sockets to enumerate.
+const MAX_UNIX_SOCKETS: usize = 65536;
+/// Number of hash table buckets in `unix_socket_table`.
+const UNIX_HASH_SIZE: u64 = 256;
+
 /// Walk Unix domain sockets from kernel memory.
 ///
 /// Looks up `unix_socket_table` (or `init_net.unx.table`) and walks the
 /// hash table of `unix_sock` structures, reading path, type, state, and
 /// owning PID from each entry.
+///
+/// Returns `Ok(Vec::new())` when required kernel symbols are absent.
 pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<UnixSocketInfo>> {
-    todo!()
+    // Locate the unix_socket_table hash array.
+    let table_addr = match reader.symbols().symbol_address("unix_socket_table") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    // Resolve key offsets within unix_sock / sock.
+    // unix_sock embeds `struct sock sk` at offset 0 (sk.sk_node is the hlist).
+    // The path (sun_path) is in `struct sockaddr_un` embedded in unix_sock.
+    let sk_type_off = reader
+        .symbols()
+        .field_offset("sock", "sk_type")
+        .unwrap_or(0x12);
+    let sk_state_off = reader
+        .symbols()
+        .field_offset("sock", "sk_state")
+        .unwrap_or(0x14);
+    let sk_socket_off = reader
+        .symbols()
+        .field_offset("sock", "sk_socket")
+        .unwrap_or(0x30);
+    let unix_addr_off = reader
+        .symbols()
+        .field_offset("unix_sock", "addr")
+        .unwrap_or(0x288);
+    let sun_path_off: u64 = 2; // offsetof(sockaddr_un, sun_path) after sa_family u16
+
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Walk each hash bucket (hlist_head: first pointer at offset 0).
+    for bucket in 0..UNIX_HASH_SIZE {
+        let bucket_addr = table_addr + bucket * 8;
+        let first = match reader.read_bytes(bucket_addr, 8) {
+            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            _ => continue,
+        };
+        if first == 0 {
+            continue;
+        }
+
+        // Walk hlist: each node's `next` is the first field.
+        let mut node = first;
+        while node != 0 && results.len() < MAX_UNIX_SOCKETS {
+            if !seen.insert(node) {
+                break; // cycle detected
+            }
+
+            // `unix_sock` starts with embedded `struct sock` (sk) at offset 0,
+            // and `sk.sk_node` (hlist_node: next, pprev) is at offset 0 of sk.
+            // The node pointer IS the address of sk_node inside unix_sock,
+            // so unix_sock starts at node (no adjustment needed for the first field).
+            let sock_addr = node;
+
+            // Follow hlist next pointer (offset 0 within hlist_node).
+            let next = match reader.read_bytes(node, 8) {
+                Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+                _ => break,
+            };
+
+            // Read sk_type (u16) and sk_state (u8).
+            let sk_type: u32 = reader
+                .read_bytes(sock_addr + sk_type_off, 2)
+                .ok()
+                .and_then(|b| Some(u16::from_le_bytes(b[..2].try_into().ok()?) as u32))
+                .unwrap_or(0);
+            let sk_state: u8 = reader
+                .read_bytes(sock_addr + sk_state_off, 1)
+                .ok()
+                .and_then(|b| b.first().copied())
+                .unwrap_or(0);
+
+            let state_str = match sk_state {
+                1 => "UNCONNECTED",
+                2 => "CONNECTING",
+                3 => "CONNECTED",
+                4 => "DISCONNECTING",
+                _ => "UNKNOWN",
+            }
+            .to_string();
+
+            // Read unix path from unix_sock.addr -> unix_address.name.sun_path.
+            let path = 'path: {
+                let addr_ptr = reader
+                    .read_bytes(sock_addr + unix_addr_off, 8)
+                    .ok()
+                    .and_then(|b| Some(u64::from_le_bytes(b[..8].try_into().ok()?)))
+                    .unwrap_or(0);
+                if addr_ptr == 0 {
+                    break 'path String::new();
+                }
+                // sun_path starts at addr_ptr + sun_path_off (skip sa_family u16).
+                let path_bytes = reader.read_bytes(addr_ptr + sun_path_off, 108).unwrap_or_default();
+                // Abstract socket: first byte is '\0', display as '@' prefix.
+                if path_bytes.first().copied() == Some(0) {
+                    let inner: String = path_bytes[1..]
+                        .iter()
+                        .take_while(|&&b| b != 0)
+                        .map(|&b| b as char)
+                        .collect();
+                    if inner.is_empty() {
+                        String::new()
+                    } else {
+                        format!("@{}", inner)
+                    }
+                } else {
+                    path_bytes
+                        .iter()
+                        .take_while(|&&b| b != 0)
+                        .map(|&b| b as char)
+                        .collect()
+                }
+            };
+
+            // Read socket inode via sk_socket -> socket -> inode.
+            let inode: u64 = reader
+                .read_bytes(sock_addr + sk_socket_off, 8)
+                .ok()
+                .and_then(|b| {
+                    let socket_ptr = u64::from_le_bytes(b[..8].try_into().ok()?);
+                    if socket_ptr == 0 {
+                        return None;
+                    }
+                    // socket.file offset varies; inode is typically at +0x18.
+                    reader.read_bytes(socket_ptr + 0x18, 8).ok().and_then(|ib| {
+                        Some(u64::from_le_bytes(ib[..8].try_into().ok()?))
+                    })
+                })
+                .unwrap_or(0);
+
+            let is_suspicious = classify_unix_socket(&path, 0);
+
+            results.push(UnixSocketInfo {
+                inode,
+                path,
+                socket_type: socket_type_name(sk_type).to_string(),
+                state: state_str,
+                owner_pid: 0,
+                peer_pid: 0,
+                is_suspicious,
+            });
+
+            node = next;
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
