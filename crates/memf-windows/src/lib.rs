@@ -16,6 +16,7 @@ pub mod hollowing;
 pub mod mutant;
 pub mod network;
 pub mod object_directory;
+pub mod pool_tag;
 pub mod process;
 pub mod service;
 pub mod ssdt;

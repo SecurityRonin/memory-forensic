@@ -551,6 +551,30 @@ pub struct DnsCacheEntry {
     pub ttl: u32,
 }
 
+// ── Registry hive types ──────────────────────────────────────────────
+
+/// A loaded Windows registry hive extracted from `_CMHIVE`.
+///
+/// The Windows Configuration Manager maintains a linked list of all
+/// loaded registry hives via `CmpHiveListHead`. Each entry is a
+/// `_CMHIVE` structure containing the hive file paths, base address,
+/// and storage sizes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RegistryHive {
+    /// Virtual address of the `_CMHIVE` structure.
+    pub base_addr: u64,
+    /// Full registry path (e.g., `\REGISTRY\MACHINE\SYSTEM`).
+    pub file_full_path: String,
+    /// User-mode file path (e.g., `\??\C:\Windows\System32\config\SYSTEM`).
+    pub file_user_name: String,
+    /// Pointer to the actual hive data (`_HHIVE` base block).
+    pub hive_addr: u64,
+    /// Size of stable (non-volatile) storage in bytes.
+    pub stable_length: u32,
+    /// Size of volatile storage in bytes.
+    pub volatile_length: u32,
+}
+
 // ── Service enumeration types ────────────────────────────────────────
 
 /// Service state (`dwCurrentState` from `SERVICE_STATUS`).
@@ -678,6 +702,62 @@ pub struct ServiceInfo {
     pub object_name: String,
     /// Process ID of the running service (from `SERVICE_STATUS_PROCESS`).
     pub pid: u32,
+}
+
+// ── Pool tag scanning types ─────────────────────────────────────────
+
+/// A pool tag tracking entry from the kernel's pool allocation tracker.
+///
+/// The Windows kernel maintains per-tag allocation statistics in the
+/// `PoolTrackTable` (or `PoolBigPageTable`). Each entry records how many
+/// allocations and frees have occurred for a given 4-character ASCII tag,
+/// along with the total bytes currently consumed. Pool tags are a key
+/// forensic artifact — they reveal what kernel objects are allocated and
+/// can surface rootkit allocations using non-standard tags.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PoolTagEntry {
+    /// 4-character ASCII pool tag (e.g., "Proc", "Thre", "File").
+    pub tag: String,
+    /// Pool type string: "Paged", "NonPaged", or "NonPagedExecute".
+    pub pool_type: String,
+    /// Number of active allocations with this tag.
+    pub allocation_count: u64,
+    /// Number of frees with this tag.
+    pub free_count: u64,
+    /// Total bytes currently used by allocations with this tag.
+    pub bytes_used: u64,
+    /// Human-readable description if this is a well-known tag.
+    pub description: Option<String>,
+}
+
+/// Information about a Windows file object extracted from `_FILE_OBJECT`.
+///
+/// File objects represent open file handles in the kernel.  Each
+/// `_FILE_OBJECT` tracks the filename, device chain, access rights,
+/// and sharing disposition.  Enumerating these is a key DFIR artifact
+/// for understanding what files were open at the time of capture.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FileObjectInfo {
+    /// Virtual address of the `_FILE_OBJECT` in kernel memory.
+    pub object_addr: u64,
+    /// File name from `_FILE_OBJECT.FileName` (`_UNICODE_STRING`).
+    pub file_name: String,
+    /// Device name resolved from the `DeviceObject` chain.
+    pub device_name: String,
+    /// Access mask (granted access from the handle table entry).
+    pub access_mask: u32,
+    /// `_FILE_OBJECT.Flags` field.
+    pub flags: u32,
+    /// File size (`CurrentByteOffset` if available, else 0).
+    pub size: u64,
+    /// Whether a delete operation is pending.
+    pub delete_pending: bool,
+    /// Shared read access disposition.
+    pub shared_read: bool,
+    /// Shared write access disposition.
+    pub shared_write: bool,
+    /// Shared delete access disposition.
+    pub shared_delete: bool,
 }
 
 #[cfg(test)]
