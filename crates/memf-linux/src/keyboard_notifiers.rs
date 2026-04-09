@@ -26,11 +26,70 @@ pub struct KeyboardNotifierInfo {
 /// Walk `keyboard_notifier_list` and return all registered notifier blocks.
 ///
 /// Returns `Ok(Vec::new())` when the `keyboard_notifier_list` symbol is absent.
+///
+/// `raw_notifier_head` layout:
+///   +0: head (pointer to first `notifier_block`, or NULL)
+///
+/// `notifier_block` layout:
+///   +0:  notifier_call (pointer)
+///   +8:  next (pointer to next notifier_block, or NULL)
+///   +16: priority (i32)
 pub fn walk_keyboard_notifiers<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<KeyboardNotifierInfo>> {
-    let _ = reader;
-    Ok(Vec::new())
+    let Some(head_addr) = reader.symbols().symbol_address("keyboard_notifier_list") else {
+        return Ok(Vec::new());
+    };
+
+    let stext = reader.symbols().symbol_address("_stext").unwrap_or(0);
+    let etext = reader.symbols().symbol_address("_etext").unwrap_or(u64::MAX);
+
+    // Read raw_notifier_head.head pointer (offset 0).
+    let first_nb = match reader.read_bytes(head_addr, 8) {
+        Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    const MAX_NOTIFIERS: usize = 1_000;
+    let mut notifiers = Vec::new();
+    let mut current = first_nb;
+
+    for _ in 0..MAX_NOTIFIERS {
+        if current == 0 {
+            break;
+        }
+
+        // notifier_call at offset 0
+        let notifier_call = match reader.read_bytes(current, 8) {
+            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            _ => break,
+        };
+
+        // next at offset 8
+        let next = match reader.read_bytes(current + 8, 8) {
+            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            _ => 0,
+        };
+
+        // priority at offset 16 (i32)
+        let priority = match reader.read_bytes(current + 16, 4) {
+            Ok(b) if b.len() == 4 => i32::from_le_bytes(b.try_into().unwrap()),
+            _ => 0,
+        };
+
+        let is_suspicious = classify_notifier(notifier_call, stext, etext);
+
+        notifiers.push(KeyboardNotifierInfo {
+            address: current,
+            notifier_call,
+            priority,
+            is_suspicious,
+        });
+
+        current = next;
+    }
+
+    Ok(notifiers)
 }
 
 /// Classify a notifier_call pointer as suspicious if outside kernel text.

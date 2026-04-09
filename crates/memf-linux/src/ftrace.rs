@@ -29,11 +29,91 @@ pub struct FtraceHookInfo {
 /// Walk `ftrace_ops_list` and return all registered ftrace hooks.
 ///
 /// Returns `Ok(Vec::new())` when the `ftrace_ops_list` symbol is absent.
+///
+/// `ftrace_ops` layout (simplified, x86-64):
+///   +0x00: func (pointer) — the hook callback
+///   +0x08: list (list_head) — embedded linked list
+///   +0x18: flags (u32)
 pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<FtraceHookInfo>> {
-    let _ = reader;
-    Ok(Vec::new())
+    let Some(list_head_addr) = reader.symbols().symbol_address("ftrace_ops_list") else {
+        return Ok(Vec::new());
+    };
+
+    let stext = reader.symbols().symbol_address("_stext").unwrap_or(0);
+    let etext = reader.symbols().symbol_address("_etext").unwrap_or(u64::MAX);
+
+    // ftrace_ops.list is a list_head at offset 8.
+    // Walk the list: list_head.next points to ftrace_ops.list (i.e. ops+8).
+    // container_of: ops = (ops.list ptr) - 8.
+    let list_offset: u64 = reader
+        .symbols()
+        .field_offset("ftrace_ops", "list")
+        .unwrap_or(8);
+    let func_offset: u64 = reader
+        .symbols()
+        .field_offset("ftrace_ops", "func")
+        .unwrap_or(0);
+    let flags_offset: u64 = reader
+        .symbols()
+        .field_offset("ftrace_ops", "flags")
+        .unwrap_or(0x18);
+
+    // Read the next pointer from the list head sentinel.
+    let next_field_offset: u64 = reader
+        .symbols()
+        .field_offset("list_head", "next")
+        .unwrap_or(0);
+
+    const MAX_HOOKS: usize = 1_000;
+    let mut hooks = Vec::new();
+
+    let first_ptr = match reader.read_bytes(list_head_addr + next_field_offset, 8) {
+        Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    let mut current_list_ptr = first_ptr;
+
+    for _ in 0..MAX_HOOKS {
+        // current_list_ptr points to ops.list; sentinel = list_head_addr
+        if current_list_ptr == list_head_addr || current_list_ptr == 0 {
+            break;
+        }
+
+        // container_of: ops base = current_list_ptr - list_offset
+        let ops_addr = current_list_ptr.wrapping_sub(list_offset);
+
+        let func = match reader.read_bytes(ops_addr + func_offset, 8) {
+            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            _ => 0,
+        };
+
+        let flags = match reader.read_bytes(ops_addr + flags_offset, 4) {
+            Ok(b) if b.len() == 4 => u32::from_le_bytes(b.try_into().unwrap()),
+            _ => 0,
+        };
+
+        let is_suspicious = classify_ftrace_hook(func, stext, etext);
+        let func_name = format!("{func:#018x}");
+
+        hooks.push(FtraceHookInfo {
+            address: ops_addr,
+            func,
+            func_name,
+            flags,
+            is_suspicious,
+        });
+
+        // Advance: read ops.list.next
+        current_list_ptr = match reader.read_bytes(current_list_ptr + next_field_offset, 8) {
+            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            _ => break,
+        };
+    }
+
+    Ok(hooks)
 }
 
 /// Classify whether a `func` pointer is suspicious given the kernel text range.

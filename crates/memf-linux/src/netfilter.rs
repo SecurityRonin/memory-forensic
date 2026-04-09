@@ -98,14 +98,106 @@ fn parse_table_rules<P: PhysicalMemoryProvider>(
 /// `data_vaddr` is the virtual address of the first entry; `data_len` is the
 /// byte length of the region.  Entries are walked via `next_offset` until it
 /// is 0 or the end of the region is reached.
+///
+/// `ipt_entry` field offsets (kernel ABI, x86-64):
+///   0x00: src_ip (u32)
+///   0x04: dst_ip (u32)
+///   0x10: protocol (u16)
+///   0x58: target_offset (u16) — offset within entry to `ipt_entry_target`
+///   0x5A: next_offset (u16) — stride to next entry; 0 = end of table
+///
+/// `ipt_entry_target` at `entry_base + target_offset`:
+///   +0: name (29 bytes, null-terminated ASCII)
 pub fn parse_ipt_entries<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _data_vaddr: u64,
-    _data_len: u64,
-    _table_name: &str,
+    reader: &ObjectReader<P>,
+    data_vaddr: u64,
+    data_len: u64,
+    table_name: &str,
 ) -> Result<Vec<NetfilterRuleInfo>> {
-    // RED stub — returns empty; GREEN will implement real ipt_entry walking.
-    Ok(Vec::new())
+    const MAX_RULES: usize = 10_000;
+    let data_len = data_len as usize;
+    // Read the entire data region at once.
+    let data = reader.read_bytes(data_vaddr, data_len).unwrap_or_default();
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut rules = Vec::new();
+    let mut offset = 0usize;
+
+    for _ in 0..MAX_RULES {
+        // Need at least 0x5C bytes to read target_offset + next_offset.
+        if offset + 0x5C > data.len() {
+            break;
+        }
+
+        let src_ip = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap_or([0; 4]));
+        let dst_ip = u32::from_le_bytes(
+            data[offset + 4..offset + 8]
+                .try_into()
+                .unwrap_or([0; 4]),
+        );
+        let proto = u16::from_le_bytes(
+            data[offset + 0x10..offset + 0x12]
+                .try_into()
+                .unwrap_or([0; 2]),
+        );
+        let target_off = u16::from_le_bytes(
+            data[offset + 0x58..offset + 0x5A]
+                .try_into()
+                .unwrap_or([0; 2]),
+        ) as usize;
+        let next_off = u16::from_le_bytes(
+            data[offset + 0x5A..offset + 0x5C]
+                .try_into()
+                .unwrap_or([0; 2]),
+        ) as usize;
+
+        // Parse ipt_entry_target.name (29 bytes at entry_base + target_offset).
+        let target_name = if target_off > 0 && offset + target_off + 29 <= data.len() {
+            let name_bytes = &data[offset + target_off..offset + target_off + 29];
+            let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(29);
+            String::from_utf8_lossy(&name_bytes[..end]).into_owned()
+        } else {
+            String::new()
+        };
+
+        let source = if src_ip != 0 {
+            Some(format_ipv4(src_ip))
+        } else {
+            None
+        };
+        let destination = if dst_ip != 0 {
+            Some(format_ipv4(dst_ip))
+        } else {
+            None
+        };
+
+        rules.push(NetfilterRuleInfo {
+            table: table_name.to_string(),
+            chain: String::new(), // chain resolution requires hook_entry offsets
+            target: target_name,
+            protocol: protocol_name(proto),
+            source,
+            destination,
+        });
+
+        if next_off == 0 {
+            break;
+        }
+        offset += next_off;
+        if offset >= data.len() {
+            break;
+        }
+    }
+
+    Ok(rules)
+}
+
+/// Format a raw u32 IPv4 address (little-endian stored) as a dotted string.
+fn format_ipv4(ip: u32) -> String {
+    let b = ip.to_le_bytes();
+    format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
 }
 
 /// Parse a protocol number to name.
