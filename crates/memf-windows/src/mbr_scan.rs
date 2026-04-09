@@ -47,11 +47,13 @@ pub fn classify_mbr(bootstrap_bytes: &[u8]) -> bool {
 ///
 /// Returns an empty `Vec` when the `MmSystemRangeStart` symbol is absent
 /// (graceful degradation).
-pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-) -> Result<Vec<MbrInfo>> {
+pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<MbrInfo>> {
     // Graceful degradation: require MmSystemRangeStart symbol.
-    if reader.symbols().symbol_address("MmSystemRangeStart").is_none() {
+    if reader
+        .symbols()
+        .symbol_address("MmSystemRangeStart")
+        .is_none()
+    {
         return Ok(Vec::new());
     }
 
@@ -75,12 +77,8 @@ pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(
         }
 
         // MBR disk signature lives at offset 0x1B8.
-        let signature = u32::from_le_bytes([
-            sector[0x1B8],
-            sector[0x1B9],
-            sector[0x1BA],
-            sector[0x1BB],
-        ]);
+        let signature =
+            u32::from_le_bytes([sector[0x1B8], sector[0x1B9], sector[0x1BA], sector[0x1BB]]);
 
         // Partition table entry 0 boot indicator is at offset 0x1BE.
         let boot_indicator = sector[0x1BE];
@@ -137,8 +135,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 
     // Initial hash values.
     let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
 
     // Pre-processing: pad the message.
@@ -157,12 +155,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
             w[i] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         }
         for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7)
-                ^ w[i - 15].rotate_right(18)
-                ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17)
-                ^ w[i - 2].rotate_right(19)
-                ^ (w[i - 2] >> 10);
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
             w[i] = w[i - 16]
                 .wrapping_add(s0)
                 .wrapping_add(w[i - 7])

@@ -41,11 +41,7 @@ pub fn walk_psp_cid_table<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<CidTableEntry>> {
     // Graceful degradation: require PspCidTable symbol.
-    if reader
-        .symbols()
-        .symbol_address("PspCidTable")
-        .is_none()
-    {
+    if reader.symbols().symbol_address("PspCidTable").is_none() {
         return Ok(Vec::new());
     }
 

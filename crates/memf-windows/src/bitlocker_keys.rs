@@ -46,11 +46,7 @@ pub fn walk_bitlocker_keys<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<BitlockerKeyInfo>> {
     // Graceful degradation: require FveBlockDevice symbol.
-    if reader
-        .symbols()
-        .symbol_address("FveBlockDevice")
-        .is_none()
-    {
+    if reader.symbols().symbol_address("FveBlockDevice").is_none() {
         return Ok(Vec::new());
     }
 
