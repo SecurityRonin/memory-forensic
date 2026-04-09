@@ -4443,21 +4443,96 @@ fn cmd_timeline(
 /// VAS, and writes it to the output. Unmapped pages are written as zeros.
 /// Returns the total number of bytes written.
 fn dump_process_memory<W: std::io::Write>(
-    _vas: &VirtualAddressSpace<impl PhysicalMemoryProvider>,
-    _ranges: &[(u64, u64)],
-    _writer: &mut W,
+    vas: &VirtualAddressSpace<impl PhysicalMemoryProvider>,
+    ranges: &[(u64, u64)],
+    writer: &mut W,
 ) -> Result<u64> {
-    todo!()
+    const PAGE_SIZE: u64 = 4096;
+    let zero_page = [0u8; 4096];
+    let mut total: u64 = 0;
+
+    for &(start, end) in ranges {
+        let mut vaddr = start;
+        while vaddr < end {
+            let chunk = std::cmp::min(PAGE_SIZE, end - vaddr);
+            let mut buf = vec![0u8; chunk as usize];
+            if vas.read_virt(vaddr, &mut buf).is_ok() {
+                writer.write_all(&buf)?;
+            } else {
+                writer.write_all(&zero_page[..chunk as usize])?;
+            }
+            total += chunk;
+            vaddr += chunk;
+        }
+    }
+    Ok(total)
 }
 
 fn cmd_procdump(
-    _dump: &Path,
-    _symbols_path: Option<&Path>,
-    _cr3_override: Option<u64>,
-    _pid: u64,
-    _output_dir: &Path,
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    cr3_override: Option<u64>,
+    pid: u64,
+    output_dir: &Path,
 ) -> Result<()> {
-    todo!()
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, false)?;
+
+    let (process_name, process_cr3, ranges) = match ctx.os {
+        OsProfile::Linux => {
+            let procs = memf_linux::process::walk_processes(&reader)
+                .context("failed to walk Linux processes")?;
+            let proc = procs
+                .iter()
+                .find(|p| p.pid == pid)
+                .ok_or_else(|| anyhow::anyhow!("PID {pid} not found"))?;
+            let proc_cr3 = proc
+                .cr3
+                .ok_or_else(|| anyhow::anyhow!("PID {pid} has no CR3 (kernel thread?)"))?;
+            let vmas = memf_linux::maps::walk_process_maps(&reader, proc.vaddr)
+                .context("failed to walk VMAs")?;
+            let ranges: Vec<(u64, u64)> = vmas.iter().map(|v| (v.start, v.end)).collect();
+            (proc.comm.clone(), proc_cr3, ranges)
+        }
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead")?;
+            let procs = memf_windows::process::walk_processes(&reader, ps_head)
+                .context("failed to walk Windows processes")?;
+            let proc = procs
+                .iter()
+                .find(|p| p.pid == pid)
+                .ok_or_else(|| anyhow::anyhow!("PID {pid} not found"))?;
+            let vads = memf_windows::vad::walk_vad_tree(&reader, proc.vaddr, pid, &proc.image_name)
+                .context("failed to walk VADs")?;
+            let ranges: Vec<(u64, u64)> =
+                vads.iter().map(|v| (v.start_vaddr, v.end_vaddr)).collect();
+            (proc.image_name.clone(), proc.cr3, ranges)
+        }
+        OsProfile::MacOs => anyhow::bail!("macOS procdump not yet supported"),
+    };
+
+    if ranges.is_empty() {
+        eprintln!("warning: no memory regions found for PID {pid}");
+        return Ok(());
+    }
+
+    // Create a process-specific VAS using the process's own CR3.
+    let proc_reader = reader.with_cr3(process_cr3);
+    let proc_vas = proc_reader.vas();
+
+    let out_path = output_dir.join(format!("{pid}.{process_name}.dmp"));
+    let mut file = std::fs::File::create(&out_path)
+        .with_context(|| format!("failed to create {}", out_path.display()))?;
+
+    let written = dump_process_memory(proc_vas, &ranges, &mut file)?;
+    eprintln!(
+        "dumped PID {pid} ({process_name}): {} bytes ({} regions) -> {}",
+        written,
+        ranges.len(),
+        out_path.display()
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

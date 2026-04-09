@@ -30,6 +30,11 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         self.symbols.as_ref()
     }
 
+    /// Access the underlying virtual address space.
+    pub fn vas(&self) -> &VirtualAddressSpace<P> {
+        &self.vas
+    }
+
     /// Create a new reader sharing the same physical memory and symbols but
     /// using a different page table root (CR3). Useful for switching to a
     /// process's user-mode address space.
