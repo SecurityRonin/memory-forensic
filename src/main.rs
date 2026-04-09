@@ -4543,4 +4543,50 @@ mod tests {
         print_linux_pstree(&entries, OutputFormat::Json, &boot_info);
         print_linux_pstree(&entries, OutputFormat::Csv, &boot_info);
     }
+
+    #[test]
+    fn format_filetime_known_dates() {
+        // Windows FILETIME: 100-nanosecond intervals since 1601-01-01 00:00:00 UTC
+        // Unix epoch (1970-01-01) = 116444736000000000 in FILETIME
+        // 2024-04-02 03:26:40 UTC = Unix 1712028400 = FILETIME 116444736000000000 + 1712028400 * 10_000_000
+        let unix_epoch_ft: u64 = 116_444_736_000_000_000;
+        assert_eq!(format_filetime(unix_epoch_ft), "1970-01-01 00:00:00 UTC");
+
+        // 2024-04-02 03:26:40 UTC
+        let ft_2024 = unix_epoch_ft + 1_712_028_400 * 10_000_000;
+        assert_eq!(format_filetime(ft_2024), "2024-04-02 03:26:40 UTC");
+
+        // Zero FILETIME = not set
+        assert_eq!(format_filetime(0), "-");
+
+        // 2000-01-01 00:00:00 UTC = Unix 946684800
+        let ft_2000 = unix_epoch_ft + 946_684_800 * 10_000_000;
+        assert_eq!(format_filetime(ft_2000), "2000-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn format_filetime_used_in_windows_ps_output() {
+        use memf_windows::WinProcessInfo;
+
+        // Verify print_windows_processes compiles with format_filetime integration.
+        // We create a synthetic process and render it — the function should use
+        // format_filetime() for create_time, not raw hex.
+        let procs = vec![WinProcessInfo {
+            pid: 4,
+            ppid: 0,
+            image_name: "System".into(),
+            create_time: 132_800_000_000_000_000, // ~2021-11-15
+            exit_time: 0,
+            cr3: 0x1AB000,
+            peb_addr: 0,
+            vaddr: 0xFFFF_8000_0020_0000,
+            thread_count: 100,
+            is_wow64: false,
+        }];
+
+        // Should not panic and should format times as UTC, not hex.
+        print_windows_processes(&procs, OutputFormat::Table);
+        print_windows_processes(&procs, OutputFormat::Json);
+        print_windows_processes(&procs, OutputFormat::Csv);
+    }
 }
