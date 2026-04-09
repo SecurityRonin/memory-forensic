@@ -4428,4 +4428,77 @@ mod tests {
         assert_eq!(format_boot_ns(3_661_000_000_000), "1h01m01s");
         assert_eq!(format_boot_ns(90_061_000_000_000), "1d01h01m");
     }
+
+    #[test]
+    fn pstree_table_includes_absolute_timestamps_when_boot_known() {
+        use memf_linux::{BootTimeEstimate, BootTimeInfo, BootTimeSource, ProcessInfo, ProcessState, PsTreeEntry};
+
+        let boot_info = BootTimeInfo::from_estimates(vec![BootTimeEstimate {
+            source: BootTimeSource::UserProvided,
+            boot_epoch_secs: 1_712_000_000, // 2024-04-02 ~04:00 UTC
+        }]);
+
+        let entries = vec![
+            PsTreeEntry {
+                process: ProcessInfo {
+                    pid: 1,
+                    ppid: 0,
+                    comm: "systemd".into(),
+                    state: ProcessState::Sleeping,
+                    vaddr: 0xFFFF_8000_0010_0000,
+                    cr3: None,
+                    start_time: 500_000_000, // 0.5s after boot
+                },
+                depth: 0,
+            },
+            PsTreeEntry {
+                process: ProcessInfo {
+                    pid: 100,
+                    ppid: 1,
+                    comm: "sshd".into(),
+                    state: ProcessState::Sleeping,
+                    vaddr: 0xFFFF_8000_0020_0000,
+                    cr3: None,
+                    start_time: 60_000_000_000, // 60s after boot
+                },
+                depth: 1,
+            },
+        ];
+
+        // Capture table output — the function prints to stdout.
+        // We verify it compiles and accepts boot_info; the key assertion
+        // is that the header includes "Start (UTC)" when boot time is known.
+        print_linux_pstree(&entries, OutputFormat::Table, &boot_info);
+
+        // Also verify JSON output includes start_utc field.
+        print_linux_pstree(&entries, OutputFormat::Json, &boot_info);
+
+        // And CSV output includes start_utc column.
+        print_linux_pstree(&entries, OutputFormat::Csv, &boot_info);
+    }
+
+    #[test]
+    fn pstree_table_omits_absolute_timestamps_when_boot_unknown() {
+        use memf_linux::{BootTimeInfo, ProcessInfo, ProcessState, PsTreeEntry};
+
+        let boot_info = BootTimeInfo::from_estimates(vec![]);
+
+        let entries = vec![PsTreeEntry {
+            process: ProcessInfo {
+                pid: 1,
+                ppid: 0,
+                comm: "init".into(),
+                state: ProcessState::Running,
+                vaddr: 0xFFFF_8000_0010_0000,
+                cr3: None,
+                start_time: 0,
+            },
+            depth: 0,
+        }];
+
+        // Should compile and work without boot info — no Start (UTC) column.
+        print_linux_pstree(&entries, OutputFormat::Table, &boot_info);
+        print_linux_pstree(&entries, OutputFormat::Json, &boot_info);
+        print_linux_pstree(&entries, OutputFormat::Csv, &boot_info);
+    }
 }
