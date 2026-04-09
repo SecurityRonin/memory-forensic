@@ -3924,21 +3924,83 @@ fn build_linux_timeline(
 }
 
 /// Build timeline events from Windows thread creation times.
-fn build_windows_thread_events(_threads: &[memf_windows::WinThreadInfo]) -> Vec<TimelineEvent> {
-    todo!()
+fn build_windows_thread_events(threads: &[memf_windows::WinThreadInfo]) -> Vec<TimelineEvent> {
+    let mut events = Vec::new();
+    for t in threads {
+        if let Some(ts) = filetime_to_unix(t.create_time) {
+            events.push(TimelineEvent {
+                timestamp_secs: ts,
+                timestamp: format_epoch(ts),
+                event_type: "thread_create".into(),
+                pid: t.pid,
+                description: format!(
+                    "TID {} in PID {} (start_addr: {:#x})",
+                    t.tid, t.pid, t.start_address
+                ),
+                tags: vec![],
+            });
+        }
+    }
+    events.sort_by_key(|e| e.timestamp_secs);
+    events
 }
 
 /// Build timeline events from Linux bash history timestamps.
-fn build_linux_bash_events(_entries: &[memf_linux::BashHistoryInfo]) -> Vec<TimelineEvent> {
-    todo!()
+fn build_linux_bash_events(entries: &[memf_linux::BashHistoryInfo]) -> Vec<TimelineEvent> {
+    let mut events = Vec::new();
+    for e in entries {
+        if let Some(ts) = e.timestamp {
+            events.push(TimelineEvent {
+                timestamp_secs: ts,
+                timestamp: format_epoch(ts),
+                event_type: "bash_command".into(),
+                pid: e.pid,
+                description: format!("[{}] {}", e.comm, e.command),
+                tags: vec![],
+            });
+        }
+    }
+    events.sort_by_key(|e| e.timestamp_secs);
+    events
 }
 
 /// Build timeline events for Windows DLL loads (ordered, no timestamp).
+///
+/// DLLs have no per-DLL timestamp, so each DLL event inherits the owning
+/// process's `create_time`. The `load_order` is included in the description.
 fn build_windows_dll_events(
-    _procs: &[memf_windows::WinProcessInfo],
-    _proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
+    procs: &[memf_windows::WinProcessInfo],
+    proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
 ) -> Vec<TimelineEvent> {
-    todo!()
+    let proc_map: std::collections::HashMap<u64, &memf_windows::WinProcessInfo> =
+        procs.iter().map(|p| (p.pid, p)).collect();
+
+    let mut events = Vec::new();
+    for (pid, dlls) in proc_dlls {
+        let proc_ts = proc_map
+            .get(pid)
+            .and_then(|p| filetime_to_unix(p.create_time));
+        let ts = match proc_ts {
+            Some(t) => t,
+            None => continue,
+        };
+
+        for dll in dlls {
+            events.push(TimelineEvent {
+                timestamp_secs: ts,
+                timestamp: format_epoch(ts),
+                event_type: "dll_load".into(),
+                pid: *pid,
+                description: format!(
+                    "{} (order={}, base={:#x})",
+                    dll.name, dll.load_order, dll.base_addr
+                ),
+                tags: vec![],
+            });
+        }
+    }
+    events.sort_by_key(|e| e.timestamp_secs);
+    events
 }
 
 /// Tag suspicious patterns in Windows timeline events.
@@ -3947,18 +4009,181 @@ fn build_windows_dll_events(
 /// "parent-child-violation", "non-networking-process", or
 /// "thread-outside-module".
 fn tag_suspicious_windows(
-    _events: &mut [TimelineEvent],
-    _procs: &[memf_windows::WinProcessInfo],
-    _conns: &[memf_windows::WinConnectionInfo],
-    _threads: &[memf_windows::WinThreadInfo],
-    _proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
+    events: &mut [TimelineEvent],
+    procs: &[memf_windows::WinProcessInfo],
+    conns: &[memf_windows::WinConnectionInfo],
+    threads: &[memf_windows::WinThreadInfo],
+    proc_dlls: &[(u64, Vec<memf_windows::WinDllInfo>)],
 ) {
-    todo!()
+    // --- 1. Singleton duplication ---
+    // These Windows processes must have exactly one instance.
+    const SINGLETONS: &[&str] = &[
+        "lsass.exe",
+        "services.exe",
+        "wininit.exe",
+        "csrss.exe",
+        "smss.exe",
+        "lsm.exe",
+    ];
+    let mut name_counts: std::collections::HashMap<String, Vec<u64>> =
+        std::collections::HashMap::new();
+    for p in procs {
+        let lower = p.image_name.to_lowercase();
+        name_counts.entry(lower).or_default().push(p.pid);
+    }
+    let mut singleton_dup_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for &name in SINGLETONS {
+        if let Some(pids) = name_counts.get(name) {
+            if pids.len() > 1 {
+                singleton_dup_pids.extend(pids);
+            }
+        }
+    }
+
+    // --- 2. Parent-child invariant violations ---
+    // Map of child_name -> required parent_name
+    const PARENT_RULES: &[(&str, &str)] = &[
+        ("svchost.exe", "services.exe"),
+        ("lsass.exe", "wininit.exe"),
+        ("services.exe", "wininit.exe"),
+        ("wininit.exe", "smss.exe"),
+    ];
+    let pid_to_name: std::collections::HashMap<u64, String> = procs
+        .iter()
+        .map(|p| (p.pid, p.image_name.to_lowercase()))
+        .collect();
+    let mut parent_violation_pids: std::collections::HashSet<u64> =
+        std::collections::HashSet::new();
+    for p in procs {
+        let child_lower = p.image_name.to_lowercase();
+        for &(child_name, parent_name) in PARENT_RULES {
+            if child_lower == child_name {
+                let parent_lower = pid_to_name.get(&(p.ppid)).map(String::as_str).unwrap_or("");
+                if parent_lower != parent_name {
+                    parent_violation_pids.insert(p.pid);
+                }
+            }
+        }
+    }
+
+    // --- 3. Non-networking process with connections ---
+    const NON_NETWORKING: &[&str] = &[
+        "notepad.exe",
+        "calc.exe",
+        "mspaint.exe",
+        "write.exe",
+        "wordpad.exe",
+        "snippingtool.exe",
+        "osk.exe",
+        "magnify.exe",
+        "narrator.exe",
+    ];
+    let mut networking_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for c in conns {
+        let proc_lower = c.process_name.to_lowercase();
+        if NON_NETWORKING.contains(&proc_lower.as_str()) {
+            networking_pids.insert(c.pid);
+        }
+    }
+
+    // --- 4. Thread start address outside any loaded module ---
+    let mut thread_outside_pids: std::collections::HashSet<(u64, u64)> =
+        std::collections::HashSet::new();
+    let dll_map: std::collections::HashMap<u64, &Vec<memf_windows::WinDllInfo>> =
+        proc_dlls.iter().map(|(pid, dlls)| (*pid, dlls)).collect();
+    for t in threads {
+        if let Some(dlls) = dll_map.get(&t.pid) {
+            let in_module = dlls
+                .iter()
+                .any(|d| t.start_address >= d.base_addr && t.start_address < d.base_addr + d.size);
+            if !in_module && t.start_address != 0 {
+                thread_outside_pids.insert((t.pid, t.tid));
+            }
+        }
+    }
+
+    // --- 5. Pivot point: process with both listener and outbound ---
+    let mut listening_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut outbound_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for c in conns {
+        match &c.state {
+            memf_windows::WinTcpState::Listen => {
+                listening_pids.insert(c.pid);
+            }
+            memf_windows::WinTcpState::Established
+            | memf_windows::WinTcpState::SynSent
+            | memf_windows::WinTcpState::FinWait1
+            | memf_windows::WinTcpState::FinWait2
+            | memf_windows::WinTcpState::CloseWait => {
+                outbound_pids.insert(c.pid);
+            }
+            _ => {}
+        }
+    }
+    let pivot_pids: std::collections::HashSet<u64> = listening_pids
+        .intersection(&outbound_pids)
+        .copied()
+        .collect();
+
+    // --- Apply tags to events ---
+    for event in events.iter_mut() {
+        if singleton_dup_pids.contains(&event.pid) {
+            event.tags.push("singleton-duplicate".into());
+        }
+        if parent_violation_pids.contains(&event.pid) {
+            event.tags.push("parent-child-violation".into());
+        }
+        if networking_pids.contains(&event.pid) {
+            event.tags.push("non-networking-process".into());
+        }
+        if pivot_pids.contains(&event.pid) {
+            event.tags.push("pivot-point".into());
+        }
+        // Thread-outside-module: tag thread_create events specifically
+        if event.event_type == "thread_create" {
+            // Extract TID from description "TID <tid> in PID <pid> ..."
+            if let Some(tid_str) = event.description.strip_prefix("TID ") {
+                if let Some(tid) = tid_str
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    if thread_outside_pids.contains(&(event.pid, tid)) {
+                        event.tags.push("thread-outside-module".into());
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Print timeline events in Sleuthkit bodyfile format.
-fn print_timeline_bodyfile(_events: &[TimelineEvent]) {
-    todo!()
+///
+/// Bodyfile format: `MD5|name|inode|mode|UID|GID|size|atime|mtime|ctime|crtime`
+/// We map timeline events into this format with:
+/// - MD5: "0" (no hash)
+/// - name: `[event_type] description {tags}`
+/// - inode/mode/UID/GID/size: 0
+/// - atime/mtime: 0
+/// - ctime: `timestamp_secs` (change time)
+/// - crtime: `timestamp_secs` (creation time, for process_create/thread_create)
+fn print_timeline_bodyfile(events: &[TimelineEvent]) {
+    for e in events {
+        let tags_suffix = if e.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" {{{}}}", e.tags.join(","))
+        };
+        let name = format!(
+            "[{}] PID:{} {}{}",
+            e.event_type, e.pid, e.description, tags_suffix
+        );
+        // atime=0, mtime=0, ctime=timestamp, crtime=timestamp
+        println!(
+            "0|{}|0|0|0|0|0|0|0|{}|{}",
+            name, e.timestamp_secs, e.timestamp_secs
+        );
+    }
 }
 
 /// Print a sorted timeline to stdout.
@@ -5492,7 +5717,7 @@ mod tests {
     #[test]
     fn tag_suspicious_windows_no_false_positives_on_clean_system() {
         use memf_windows::WinProcessInfo;
-        // Normal Windows singleton processes — no duplicates, correct parents
+        // Normal Windows boot hierarchy — correct parent-child relationships
         let procs = vec![
             WinProcessInfo {
                 pid: 4,
@@ -5504,6 +5729,30 @@ mod tests {
                 peb_addr: 0,
                 vaddr: 0,
                 thread_count: 100,
+                is_wow64: false,
+            },
+            WinProcessInfo {
+                pid: 400,
+                ppid: 4,
+                image_name: "smss.exe".into(),
+                create_time: 133_574_400_200_000_000,
+                exit_time: 0,
+                cr3: 0x1200,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 2,
+                is_wow64: false,
+            },
+            WinProcessInfo {
+                pid: 500,
+                ppid: 400,
+                image_name: "wininit.exe".into(),
+                create_time: 133_574_400_500_000_000,
+                exit_time: 0,
+                cr3: 0x1500,
+                peb_addr: 0,
+                vaddr: 0,
+                thread_count: 3,
                 is_wow64: false,
             },
             WinProcessInfo {
