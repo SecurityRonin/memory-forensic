@@ -750,7 +750,7 @@ fn cmd_ps(
 
             if tree {
                 let tree_entries = memf_linux::process::build_pstree(&procs);
-                print_linux_pstree(&tree_entries, output);
+                print_linux_pstree(&tree_entries, output, &boot_info);
             } else {
                 print_linux_processes(&procs, output, &boot_info);
             }
@@ -1260,44 +1260,86 @@ fn print_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat)
 // Output formatters — Linux process tree
 // ---------------------------------------------------------------------------
 
-fn print_linux_pstree(entries: &[memf_linux::PsTreeEntry], output: OutputFormat) {
+fn print_linux_pstree(
+    entries: &[memf_linux::PsTreeEntry],
+    output: OutputFormat,
+    boot_info: &memf_linux::BootTimeInfo,
+) {
+    let has_boot = boot_info.best_estimate.is_some();
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "PPID", "State", "Comm"]);
+            if has_boot {
+                table.set_header(vec!["PID", "PPID", "State", "Start (UTC)", "Comm"]);
+            } else {
+                table.set_header(vec!["PID", "PPID", "State", "Comm"]);
+            }
             for e in entries {
                 let indent = "  ".repeat(e.depth as usize);
                 let name = format!("{}{}", indent, e.process.comm);
-                table.add_row(vec![
-                    format!("{}", e.process.pid),
-                    format!("{}", e.process.ppid),
-                    format!("{}", e.process.state),
-                    name,
-                ]);
+                if has_boot {
+                    let abs = boot_info
+                        .absolute_secs(e.process.start_time)
+                        .map(format_epoch)
+                        .unwrap_or_default();
+                    table.add_row(vec![
+                        format!("{}", e.process.pid),
+                        format!("{}", e.process.ppid),
+                        format!("{}", e.process.state),
+                        abs,
+                        name,
+                    ]);
+                } else {
+                    table.add_row(vec![
+                        format!("{}", e.process.pid),
+                        format!("{}", e.process.ppid),
+                        format!("{}", e.process.state),
+                        name,
+                    ]);
+                }
             }
             println!("{table}");
             println!("\nTotal: {} processes", entries.len());
         }
         OutputFormat::Json => {
             for e in entries {
-                let json = serde_json::json!({
+                let abs_epoch = boot_info.absolute_secs(e.process.start_time);
+                let mut json = serde_json::json!({
                     "pid": e.process.pid,
                     "ppid": e.process.ppid,
                     "state": format!("{}", e.process.state),
                     "comm": e.process.comm,
                     "depth": e.depth,
+                    "start_time_ns": e.process.start_time,
                 });
+                if let Some(epoch) = abs_epoch {
+                    json["start_epoch"] = serde_json::json!(epoch);
+                    json["start_utc"] = serde_json::json!(format_epoch(epoch));
+                }
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("pid,ppid,state,comm,depth");
+            if has_boot {
+                println!("pid,ppid,state,comm,depth,start_time_ns,start_epoch,start_utc");
+            } else {
+                println!("pid,ppid,state,comm,depth");
+            }
             for e in entries {
-                println!(
-                    "{},{},{},{},{}",
-                    e.process.pid, e.process.ppid, e.process.state, e.process.comm, e.depth
-                );
+                if has_boot {
+                    let abs = boot_info.absolute_secs(e.process.start_time).unwrap_or(0);
+                    println!(
+                        "{},{},{},{},{},{},{},{}",
+                        e.process.pid, e.process.ppid, e.process.state, e.process.comm,
+                        e.depth, e.process.start_time, abs, format_epoch(abs),
+                    );
+                } else {
+                    println!(
+                        "{},{},{},{},{}",
+                        e.process.pid, e.process.ppid, e.process.state, e.process.comm, e.depth
+                    );
+                }
             }
         }
     }
