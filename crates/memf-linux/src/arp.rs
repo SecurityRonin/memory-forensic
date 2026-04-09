@@ -1,0 +1,251 @@
+//! Linux ARP cache extraction from the kernel neighbour table.
+//!
+//! Walks the `arp_tbl` (neigh_table) hash buckets to enumerate all
+//! ARP cache entries. Each `neighbour` struct holds the IP address,
+//! MAC address, NUD state, and associated network device.
+
+use memf_core::object_reader::ObjectReader;
+use memf_format::PhysicalMemoryProvider;
+
+use crate::{ArpEntryInfo, Result};
+
+/// Walk the kernel ARP neighbour table and extract all entries.
+///
+/// Reads the `arp_tbl` symbol (type `neigh_table`), dereferences
+/// the `nht` pointer to get the `neigh_hash_table`, then iterates
+/// hash buckets reading `neighbour` structs linked via `next`.
+pub fn walk_arp_cache<P: PhysicalMemoryProvider>(
+    _reader: &ObjectReader<P>,
+) -> Result<Vec<ArpEntryInfo>> {
+    todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NeighState;
+    use memf_core::object_reader::ObjectReader;
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    // Synthetic layout:
+    //   arp_tbl (neigh_table):
+    //     nht @ 0 (pointer to neigh_hash_table)
+    //
+    //   neigh_hash_table:
+    //     hash_buckets @ 0 (pointer to array of neighbour*)
+    //     hash_shift   @ 8 (u32) — log2(bucket_count)
+    //
+    //   neighbour:
+    //     next          @ 0  (pointer — next in hash chain)
+    //     primary_key   @ 8  (4 bytes — IPv4 address)
+    //     ha            @ 12 (6 bytes — MAC address)
+    //     nud_state     @ 18 (u8)
+    //     dev           @ 24 (pointer to net_device)
+    //     total: 64 bytes
+    //
+    //   net_device:
+    //     name @ 0 (char[16])
+
+    const NHT_PTR_OFF: usize = 0;
+    // neigh_hash_table offsets
+    const HASH_BUCKETS_OFF: usize = 0;
+    const HASH_SHIFT_OFF: usize = 8;
+    // neighbour offsets
+    const NEIGH_NEXT_OFF: usize = 0;
+    const NEIGH_KEY_OFF: usize = 8;
+    const NEIGH_HA_OFF: usize = 12;
+    const NEIGH_NUD_OFF: usize = 18;
+    const NEIGH_DEV_OFF: usize = 24;
+
+    fn build_arp_isf() -> serde_json::Value {
+        IsfBuilder::new()
+            .add_struct("neigh_table", 64)
+            .add_field("neigh_table", "nht", 0, "pointer")
+            .add_struct("neigh_hash_table", 16)
+            .add_field("neigh_hash_table", "hash_buckets", 0, "pointer")
+            .add_field("neigh_hash_table", "hash_shift", 8, "unsigned int")
+            .add_struct("neighbour", 64)
+            .add_field("neighbour", "next", 0, "pointer")
+            .add_field("neighbour", "primary_key", 8, "unsigned int")
+            .add_field("neighbour", "ha", 12, "char")
+            .add_field("neighbour", "nud_state", 18, "unsigned char")
+            .add_field("neighbour", "dev", 24, "pointer")
+            .add_struct("net_device", 256)
+            .add_field("net_device", "name", 0, "char")
+            .add_symbol("arp_tbl", 0xFFFF_8000_0010_0000)
+            .build_json()
+    }
+
+    fn make_reader(pages: &[(u64, u64, &[u8])]) -> ObjectReader<SyntheticPhysMem> {
+        let isf = build_arp_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut builder = PageTableBuilder::new();
+        for &(vaddr, paddr, data) in pages {
+            builder = builder
+                .map_4k(vaddr, paddr, flags::WRITABLE)
+                .write_phys(paddr, data);
+        }
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// Single ARP entry: 192.168.1.1 -> aa:bb:cc:dd:ee:ff on eth0
+    #[test]
+    fn walk_single_arp_entry() {
+        let arp_tbl_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let arp_tbl_paddr: u64 = 0x0080_0000;
+
+        let nht_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let nht_paddr: u64 = 0x0090_0000;
+
+        let neigh_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let neigh_paddr: u64 = 0x00A0_0000;
+
+        let dev_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let dev_paddr: u64 = 0x00B0_0000;
+
+        // bucket array lives at nht_vaddr + 0x100
+        let bucket_array_vaddr: u64 = nht_vaddr + 0x100;
+
+        // -- arp_tbl page: nht pointer
+        let mut arp_data = vec![0u8; 4096];
+        arp_data[NHT_PTR_OFF..NHT_PTR_OFF + 8].copy_from_slice(&nht_vaddr.to_le_bytes());
+
+        // -- nht page: bucket array pointer + hash_shift
+        let mut nht_data = vec![0u8; 4096];
+        nht_data[HASH_BUCKETS_OFF..HASH_BUCKETS_OFF + 8]
+            .copy_from_slice(&bucket_array_vaddr.to_le_bytes());
+        // hash_shift = 0 means 1 bucket (2^0 = 1)
+        nht_data[HASH_SHIFT_OFF..HASH_SHIFT_OFF + 4].copy_from_slice(&0u32.to_le_bytes());
+        // bucket[0] = pointer to neighbour
+        nht_data[0x100..0x108].copy_from_slice(&neigh_vaddr.to_le_bytes());
+
+        // -- neighbour page
+        let mut neigh_data = vec![0u8; 4096];
+        neigh_data[NEIGH_NEXT_OFF..NEIGH_NEXT_OFF + 8].copy_from_slice(&0u64.to_le_bytes()); // null = end of chain
+        let ip: u32 = u32::from_le_bytes([192, 168, 1, 1]);
+        neigh_data[NEIGH_KEY_OFF..NEIGH_KEY_OFF + 4].copy_from_slice(&ip.to_le_bytes());
+        neigh_data[NEIGH_HA_OFF..NEIGH_HA_OFF + 6]
+            .copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        neigh_data[NEIGH_NUD_OFF] = 0x02; // REACHABLE
+        neigh_data[NEIGH_DEV_OFF..NEIGH_DEV_OFF + 8].copy_from_slice(&dev_vaddr.to_le_bytes());
+
+        // -- net_device page
+        let mut dev_data = vec![0u8; 4096];
+        dev_data[..4].copy_from_slice(b"eth0");
+
+        let reader = make_reader(&[
+            (arp_tbl_vaddr, arp_tbl_paddr, &arp_data),
+            (nht_vaddr, nht_paddr, &nht_data),
+            (neigh_vaddr, neigh_paddr, &neigh_data),
+            (dev_vaddr, dev_paddr, &dev_data),
+        ]);
+
+        let entries = walk_arp_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].ip_addr, "192.168.1.1");
+        assert_eq!(entries[0].mac_addr, "aa:bb:cc:dd:ee:ff");
+        assert_eq!(entries[0].dev_name, "eth0");
+        assert_eq!(entries[0].state, NeighState::Reachable);
+    }
+
+    /// Empty ARP table (hash_shift=0, bucket[0] is null).
+    #[test]
+    fn walk_empty_arp_table() {
+        let arp_tbl_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let arp_tbl_paddr: u64 = 0x0080_0000;
+        let nht_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let nht_paddr: u64 = 0x0090_0000;
+        let bucket_array_vaddr: u64 = nht_vaddr + 0x100;
+
+        let mut arp_data = vec![0u8; 4096];
+        arp_data[NHT_PTR_OFF..NHT_PTR_OFF + 8].copy_from_slice(&nht_vaddr.to_le_bytes());
+
+        let mut nht_data = vec![0u8; 4096];
+        nht_data[HASH_BUCKETS_OFF..HASH_BUCKETS_OFF + 8]
+            .copy_from_slice(&bucket_array_vaddr.to_le_bytes());
+        nht_data[HASH_SHIFT_OFF..HASH_SHIFT_OFF + 4].copy_from_slice(&0u32.to_le_bytes());
+        // bucket[0] = 0 (null)
+        nht_data[0x100..0x108].copy_from_slice(&0u64.to_le_bytes());
+
+        let reader = make_reader(&[
+            (arp_tbl_vaddr, arp_tbl_paddr, &arp_data),
+            (nht_vaddr, nht_paddr, &nht_data),
+        ]);
+
+        let entries = walk_arp_cache(&reader).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    /// Two ARP entries chained in same bucket.
+    #[test]
+    fn walk_two_entries_in_chain() {
+        let arp_tbl_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let arp_tbl_paddr: u64 = 0x0080_0000;
+        let nht_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let nht_paddr: u64 = 0x0090_0000;
+        let neigh1_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let neigh1_paddr: u64 = 0x00A0_0000;
+        let neigh2_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let neigh2_paddr: u64 = 0x00C0_0000;
+        let dev_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let dev_paddr: u64 = 0x00B0_0000;
+        let bucket_array_vaddr: u64 = nht_vaddr + 0x100;
+
+        let mut arp_data = vec![0u8; 4096];
+        arp_data[NHT_PTR_OFF..NHT_PTR_OFF + 8].copy_from_slice(&nht_vaddr.to_le_bytes());
+
+        let mut nht_data = vec![0u8; 4096];
+        nht_data[HASH_BUCKETS_OFF..HASH_BUCKETS_OFF + 8]
+            .copy_from_slice(&bucket_array_vaddr.to_le_bytes());
+        nht_data[HASH_SHIFT_OFF..HASH_SHIFT_OFF + 4].copy_from_slice(&0u32.to_le_bytes());
+        nht_data[0x100..0x108].copy_from_slice(&neigh1_vaddr.to_le_bytes());
+
+        // neigh1 -> neigh2
+        let mut neigh1_data = vec![0u8; 4096];
+        neigh1_data[NEIGH_NEXT_OFF..NEIGH_NEXT_OFF + 8]
+            .copy_from_slice(&neigh2_vaddr.to_le_bytes());
+        let ip1: u32 = u32::from_le_bytes([10, 0, 0, 1]);
+        neigh1_data[NEIGH_KEY_OFF..NEIGH_KEY_OFF + 4].copy_from_slice(&ip1.to_le_bytes());
+        neigh1_data[NEIGH_HA_OFF..NEIGH_HA_OFF + 6]
+            .copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        neigh1_data[NEIGH_NUD_OFF] = 0x04; // STALE
+        neigh1_data[NEIGH_DEV_OFF..NEIGH_DEV_OFF + 8].copy_from_slice(&dev_vaddr.to_le_bytes());
+
+        // neigh2 -> null
+        let mut neigh2_data = vec![0u8; 4096];
+        neigh2_data[NEIGH_NEXT_OFF..NEIGH_NEXT_OFF + 8].copy_from_slice(&0u64.to_le_bytes());
+        let ip2: u32 = u32::from_le_bytes([10, 0, 0, 2]);
+        neigh2_data[NEIGH_KEY_OFF..NEIGH_KEY_OFF + 4].copy_from_slice(&ip2.to_le_bytes());
+        neigh2_data[NEIGH_HA_OFF..NEIGH_HA_OFF + 6]
+            .copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x00]);
+        neigh2_data[NEIGH_NUD_OFF] = 0x80; // PERMANENT
+        neigh2_data[NEIGH_DEV_OFF..NEIGH_DEV_OFF + 8].copy_from_slice(&dev_vaddr.to_le_bytes());
+
+        let mut dev_data = vec![0u8; 4096];
+        dev_data[..5].copy_from_slice(b"ens33");
+
+        let reader = make_reader(&[
+            (arp_tbl_vaddr, arp_tbl_paddr, &arp_data),
+            (nht_vaddr, nht_paddr, &nht_data),
+            (neigh1_vaddr, neigh1_paddr, &neigh1_data),
+            (neigh2_vaddr, neigh2_paddr, &neigh2_data),
+            (dev_vaddr, dev_paddr, &dev_data),
+        ]);
+
+        let entries = walk_arp_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].ip_addr, "10.0.0.1");
+        assert_eq!(entries[0].mac_addr, "11:22:33:44:55:66");
+        assert_eq!(entries[0].state, NeighState::Stale);
+        assert_eq!(entries[1].ip_addr, "10.0.0.2");
+        assert_eq!(entries[1].mac_addr, "aa:bb:cc:dd:ee:00");
+        assert_eq!(entries[1].state, NeighState::Permanent);
+        assert!(entries.iter().all(|e| e.dev_name == "ens33"));
+    }
+}

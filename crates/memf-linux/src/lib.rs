@@ -5,6 +5,7 @@
 //! Provides process, network connection, and kernel module enumeration
 //! by walking kernel data structures in physical memory dumps.
 
+pub mod arp;
 pub mod bash;
 pub mod boot_time;
 pub mod check_hooks;

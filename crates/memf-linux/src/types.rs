@@ -699,17 +699,108 @@ impl BootTimeInfo {
     ///
     /// Returns `None` if no boot time estimate is available.
     pub fn absolute_secs(&self, boot_ns: u64) -> Option<i64> {
-        self.best_estimate
-            .map(|epoch| {
-                let boot_secs = i64::try_from(boot_ns / 1_000_000_000).unwrap_or(i64::MAX);
-                epoch + boot_secs
-            })
+        self.best_estimate.map(|epoch| {
+            let boot_secs = i64::try_from(boot_ns / 1_000_000_000).unwrap_or(i64::MAX);
+            epoch + boot_secs
+        })
     }
+}
+
+// ---------------------------------------------------------------------------
+// ARP / neighbour table types
+// ---------------------------------------------------------------------------
+
+/// NUD (Neighbour Unreachability Detection) state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeighState {
+    /// NUD_INCOMPLETE (0x01).
+    Incomplete,
+    /// NUD_REACHABLE (0x02).
+    Reachable,
+    /// NUD_STALE (0x04).
+    Stale,
+    /// NUD_DELAY (0x08).
+    Delay,
+    /// NUD_PROBE (0x10).
+    Probe,
+    /// NUD_FAILED (0x20).
+    Failed,
+    /// NUD_PERMANENT (0x80).
+    Permanent,
+    /// Unknown/combined flags.
+    Unknown(u8),
+}
+
+impl NeighState {
+    /// Parse a raw NUD state value.
+    pub fn from_raw(value: u8) -> Self {
+        match value {
+            0x01 => Self::Incomplete,
+            0x02 => Self::Reachable,
+            0x04 => Self::Stale,
+            0x08 => Self::Delay,
+            0x10 => Self::Probe,
+            0x20 => Self::Failed,
+            0x80 => Self::Permanent,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+impl std::fmt::Display for NeighState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Incomplete => write!(f, "INCOMPLETE"),
+            Self::Reachable => write!(f, "REACHABLE"),
+            Self::Stale => write!(f, "STALE"),
+            Self::Delay => write!(f, "DELAY"),
+            Self::Probe => write!(f, "PROBE"),
+            Self::Failed => write!(f, "FAILED"),
+            Self::Permanent => write!(f, "PERMANENT"),
+            Self::Unknown(v) => write!(f, "UNKNOWN(0x{v:02x})"),
+        }
+    }
+}
+
+/// An ARP cache entry from the kernel neighbour table.
+#[derive(Debug, Clone)]
+pub struct ArpEntryInfo {
+    /// IPv4 address of the neighbour.
+    pub ip_addr: String,
+    /// MAC address (6 bytes as colon-separated hex).
+    pub mac_addr: String,
+    /// Network device name (e.g. "eth0").
+    pub dev_name: String,
+    /// NUD state.
+    pub state: NeighState,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neigh_state_from_raw() {
+        assert_eq!(NeighState::from_raw(0x01), NeighState::Incomplete);
+        assert_eq!(NeighState::from_raw(0x02), NeighState::Reachable);
+        assert_eq!(NeighState::from_raw(0x04), NeighState::Stale);
+        assert_eq!(NeighState::from_raw(0x08), NeighState::Delay);
+        assert_eq!(NeighState::from_raw(0x10), NeighState::Probe);
+        assert_eq!(NeighState::from_raw(0x20), NeighState::Failed);
+        assert_eq!(NeighState::from_raw(0x80), NeighState::Permanent);
+        assert!(matches!(
+            NeighState::from_raw(0xFF),
+            NeighState::Unknown(0xFF)
+        ));
+    }
+
+    #[test]
+    fn neigh_state_display() {
+        assert_eq!(NeighState::Reachable.to_string(), "REACHABLE");
+        assert_eq!(NeighState::Stale.to_string(), "STALE");
+        assert_eq!(NeighState::Permanent.to_string(), "PERMANENT");
+        assert_eq!(NeighState::Unknown(0x42).to_string(), "UNKNOWN(0x42)");
+    }
 
     #[test]
     fn vma_flags_from_raw() {
