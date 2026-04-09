@@ -94,7 +94,115 @@ fn is_guid_like(s: &str) -> bool {
 pub fn walk_atom_table<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<AtomInfo>> {
-    todo!()
+    // Try RtlpAtomTable first, then ExGlobalAtomTableCallout.
+    let table_ptr_addr = match reader.symbols().symbol_address("RtlpAtomTable") {
+        Some(addr) => addr,
+        None => match reader.symbols().symbol_address("ExGlobalAtomTableCallout") {
+            Some(addr) => addr,
+            None => return Ok(Vec::new()),
+        },
+    };
+
+    // Dereference the pointer to get the _RTL_ATOM_TABLE address.
+    let table_addr = match reader.read_bytes(table_ptr_addr, 8) {
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if table_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read NumberOfBuckets.
+    let num_buckets: u32 = reader
+        .read_field(table_addr, "_RTL_ATOM_TABLE", "NumberOfBuckets")
+        .unwrap_or(0);
+
+    if num_buckets == 0 || num_buckets as usize > MAX_BUCKETS {
+        return Ok(Vec::new());
+    }
+
+    // Buckets field offset — array of pointers to _RTL_ATOM_TABLE_ENTRY.
+    let buckets_offset = reader
+        .symbols()
+        .field_offset("_RTL_ATOM_TABLE", "Buckets")
+        .unwrap_or(0x10);
+
+    let mut atoms = Vec::new();
+
+    for bucket_idx in 0..num_buckets {
+        // Read the head pointer for this bucket.
+        let bucket_ptr_addr = table_addr + buckets_offset + (bucket_idx as u64) * 8;
+        let mut entry_addr = match reader.read_bytes(bucket_ptr_addr, 8) {
+            Ok(bytes) if bytes.len() == 8 => {
+                u64::from_le_bytes(bytes[..8].try_into().unwrap())
+            }
+            _ => continue,
+        };
+
+        // Walk the chain for this bucket.
+        let mut chain_len = 0;
+        while entry_addr != 0 && chain_len < MAX_ATOMS {
+            chain_len += 1;
+
+            // Read atom entry fields.
+            let atom: u16 = reader
+                .read_field(entry_addr, "_RTL_ATOM_TABLE_ENTRY", "Atom")
+                .unwrap_or(0);
+
+            let reference_count: u32 = reader
+                .read_field(entry_addr, "_RTL_ATOM_TABLE_ENTRY", "ReferenceCount")
+                .unwrap_or(0);
+
+            let name_length: u16 = reader
+                .read_field(entry_addr, "_RTL_ATOM_TABLE_ENTRY", "NameLength")
+                .unwrap_or(0);
+
+            // Read inline name (UTF-16LE) at the Name field offset.
+            let name_offset = reader
+                .symbols()
+                .field_offset("_RTL_ATOM_TABLE_ENTRY", "Name")
+                .unwrap_or(0x10);
+
+            let name = if name_length > 0 && name_length < 256 {
+                let byte_len = (name_length as usize) * 2;
+                match reader.read_bytes(entry_addr + name_offset, byte_len) {
+                    Ok(bytes) => {
+                        let u16_vec: Vec<u16> = bytes
+                            .chunks_exact(2)
+                            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                            .collect();
+                        String::from_utf16_lossy(&u16_vec)
+                            .trim_end_matches('\0')
+                            .to_string()
+                    }
+                    Err(_) => String::new(),
+                }
+            } else {
+                String::new()
+            };
+
+            let is_suspicious = classify_atom(&name);
+
+            atoms.push(AtomInfo {
+                atom,
+                name,
+                reference_count,
+                is_suspicious,
+            });
+
+            if atoms.len() >= MAX_ATOMS {
+                return Ok(atoms);
+            }
+
+            // Follow HashLink to next entry in chain.
+            entry_addr = reader
+                .read_field::<u64>(entry_addr, "_RTL_ATOM_TABLE_ENTRY", "HashLink")
+                .unwrap_or(0);
+        }
+    }
+
+    Ok(atoms)
 }
 
 #[cfg(test)]
