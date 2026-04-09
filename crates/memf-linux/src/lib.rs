@@ -24,6 +24,7 @@ pub mod netfilter;
 pub mod network;
 pub mod process;
 pub mod psxview;
+pub mod ssh_keys;
 pub mod syscalls;
 pub mod thread;
 pub mod tty_check;

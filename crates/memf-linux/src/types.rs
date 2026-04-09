@@ -811,6 +811,73 @@ pub struct CrontabEntry {
     pub line: String,
 }
 
+// ---------------------------------------------------------------------------
+// SSH key types
+// ---------------------------------------------------------------------------
+
+/// Type of SSH key found in memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum SshKeyType {
+    /// RSA key (`ssh-rsa`).
+    Rsa,
+    /// Ed25519 key (`ssh-ed25519`).
+    Ed25519,
+    /// DSA key (`ssh-dss`).
+    Dsa,
+    /// ECDSA NIST P-256 key (`ecdsa-sha2-nistp256`).
+    Ecdsa256,
+    /// ECDSA NIST P-384 key (`ecdsa-sha2-nistp384`).
+    Ecdsa384,
+    /// ECDSA NIST P-521 key (`ecdsa-sha2-nistp521`).
+    Ecdsa521,
+    /// Unrecognized key type.
+    Unknown,
+}
+
+impl SshKeyType {
+    /// Parse an SSH key type from its prefix string.
+    ///
+    /// Returns `Unknown` if the prefix is not recognized.
+    pub fn from_prefix(prefix: &str) -> Self {
+        match prefix {
+            "ssh-rsa" => Self::Rsa,
+            "ssh-ed25519" => Self::Ed25519,
+            "ssh-dss" => Self::Dsa,
+            "ecdsa-sha2-nistp256" => Self::Ecdsa256,
+            "ecdsa-sha2-nistp384" => Self::Ecdsa384,
+            "ecdsa-sha2-nistp521" => Self::Ecdsa521,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl fmt::Display for SshKeyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rsa => write!(f, "ssh-rsa"),
+            Self::Ed25519 => write!(f, "ssh-ed25519"),
+            Self::Dsa => write!(f, "ssh-dss"),
+            Self::Ecdsa256 => write!(f, "ecdsa-sha2-nistp256"),
+            Self::Ecdsa384 => write!(f, "ecdsa-sha2-nistp384"),
+            Self::Ecdsa521 => write!(f, "ecdsa-sha2-nistp521"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+/// An SSH key artifact found in sshd process memory.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SshKeyInfo {
+    /// PID of the sshd process where the key was found.
+    pub pid: u64,
+    /// Type of SSH key.
+    pub key_type: SshKeyType,
+    /// The raw key string (e.g., "ssh-rsa AAAA...").
+    pub key_data: String,
+    /// Comment field if present (e.g., "user@host").
+    pub comment: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,5 +1112,39 @@ mod tests {
     fn absolute_secs_without_boot_epoch() {
         let info = BootTimeInfo::from_estimates(vec![]);
         assert_eq!(info.absolute_secs(500_000_000), None);
+    }
+
+    // --- SSH key types ---
+
+    #[test]
+    fn ssh_key_type_from_prefix() {
+        assert_eq!(SshKeyType::from_prefix("ssh-rsa"), SshKeyType::Rsa);
+        assert_eq!(SshKeyType::from_prefix("ssh-ed25519"), SshKeyType::Ed25519);
+        assert_eq!(SshKeyType::from_prefix("ssh-dss"), SshKeyType::Dsa);
+        assert_eq!(
+            SshKeyType::from_prefix("ecdsa-sha2-nistp256"),
+            SshKeyType::Ecdsa256
+        );
+        assert_eq!(
+            SshKeyType::from_prefix("ecdsa-sha2-nistp384"),
+            SshKeyType::Ecdsa384
+        );
+        assert_eq!(
+            SshKeyType::from_prefix("ecdsa-sha2-nistp521"),
+            SshKeyType::Ecdsa521
+        );
+        assert_eq!(SshKeyType::from_prefix("bogus"), SshKeyType::Unknown);
+        assert_eq!(SshKeyType::from_prefix(""), SshKeyType::Unknown);
+    }
+
+    #[test]
+    fn ssh_key_type_display() {
+        assert_eq!(SshKeyType::Rsa.to_string(), "ssh-rsa");
+        assert_eq!(SshKeyType::Ed25519.to_string(), "ssh-ed25519");
+        assert_eq!(SshKeyType::Dsa.to_string(), "ssh-dss");
+        assert_eq!(SshKeyType::Ecdsa256.to_string(), "ecdsa-sha2-nistp256");
+        assert_eq!(SshKeyType::Ecdsa384.to_string(), "ecdsa-sha2-nistp384");
+        assert_eq!(SshKeyType::Ecdsa521.to_string(), "ecdsa-sha2-nistp521");
+        assert_eq!(SshKeyType::Unknown.to_string(), "unknown");
     }
 }
