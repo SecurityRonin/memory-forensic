@@ -65,9 +65,66 @@ pub fn classify_afinfo_hook(hook_addr: u64, kernel_start: u64, kernel_end: u64) 
 /// Returns `Ok(Vec::new())` if no afinfo symbols are found (graceful
 /// degradation).
 pub fn walk_check_afinfo<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<AfInfoHookInfo>> {
-    todo!()
+    let symbols = reader.symbols();
+
+    // Resolve kernel text boundaries; if missing, we cannot classify anything.
+    let Some(kernel_start) = symbols.symbol_address("_stext") else {
+        return Ok(Vec::new());
+    };
+    let Some(kernel_end) = symbols.symbol_address("_etext") else {
+        return Ok(Vec::new());
+    };
+
+    let mut results = Vec::new();
+
+    for &(sym_name, protocol) in AFINFO_SYMBOLS {
+        // Graceful degradation: skip symbols that aren't in this profile.
+        let Some(afinfo_addr) = symbols.symbol_address(sym_name) else {
+            continue;
+        };
+
+        // Read the seq_ops pointer from the seq_afinfo struct.
+        let seq_ops_addr: u64 = match reader.read_pointer(afinfo_addr, "seq_afinfo", "seq_ops") {
+            Ok(addr) => addr,
+            Err(_) => continue, // struct layout unavailable, skip
+        };
+
+        if seq_ops_addr == 0 {
+            continue; // No seq_ops set for this protocol
+        }
+
+        // Read each function pointer from the seq_operations struct.
+        for &field_name in SEQ_OPS_FIELDS {
+            let ptr: u64 = match reader.read_pointer(seq_ops_addr, "seq_operations", field_name) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            let is_hooked = classify_afinfo_hook(ptr, kernel_start, kernel_end);
+
+            let actual_module = if ptr == 0 {
+                "null".to_string()
+            } else if is_hooked {
+                format!("unknown (0x{ptr:016x})")
+            } else {
+                "kernel".to_string()
+            };
+
+            results.push(AfInfoHookInfo {
+                protocol: protocol.to_string(),
+                struct_name: sym_name.to_string(),
+                field: format!("seq_ops.{field_name}"),
+                hook_address: ptr,
+                expected_module: "kernel".to_string(),
+                actual_module,
+                is_hooked,
+            });
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
