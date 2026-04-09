@@ -80,9 +80,113 @@ fn is_likely_kernel_thread(pid: u32) -> bool {
 ///
 /// Returns an empty `Vec` when symbols are missing (graceful degradation).
 pub fn walk_check_creds<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<SharedCredInfo>> {
-    todo!("implement walk_check_creds")
+    // --- Graceful degradation: bail with empty vec if symbols are absent ---
+    let init_task_addr = match reader.symbols().symbol_address("init_task") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    let tasks_offset = match reader.symbols().field_offset("task_struct", "tasks") {
+        Some(off) => off,
+        None => return Ok(Vec::new()),
+    };
+
+    // --- Step 1: Walk the task list -----------------------------------------
+    let head_vaddr = init_task_addr + tasks_offset;
+    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
+
+    // Collect (pid, tgid, name, cred_addr) for every task, including init_task.
+    let mut tasks: Vec<(u32, u32, String, u64)> = Vec::new();
+
+    // Helper closure to extract per-task info.
+    let collect_task = |addr: u64| -> Option<(u32, u32, String, u64)> {
+        let pid: u32 = reader.read_field(addr, "task_struct", "pid").ok()?;
+        let tgid: u32 = reader
+            .read_field(addr, "task_struct", "tgid")
+            .unwrap_or(pid);
+        let name = reader
+            .read_field_string(addr, "task_struct", "comm", 16)
+            .unwrap_or_else(|_| "<unknown>".to_string());
+        let cred_ptr: u64 = reader.read_field(addr, "task_struct", "cred").ok()?;
+        Some((pid, tgid, name, cred_ptr))
+    };
+
+    // Include init_task itself.
+    if let Some(info) = collect_task(init_task_addr) {
+        tasks.push(info);
+    }
+    for &task_addr in &task_addrs {
+        if let Some(info) = collect_task(task_addr) {
+            tasks.push(info);
+        }
+    }
+
+    // --- Step 2: Build cred_address → [(pid, tgid, name)] map ---------------
+    let mut cred_map: HashMap<u64, Vec<(u32, u32, String)>> = HashMap::new();
+    for (pid, tgid, name, cred_addr) in &tasks {
+        // Skip null cred pointers.
+        if *cred_addr == 0 {
+            continue;
+        }
+        cred_map
+            .entry(*cred_addr)
+            .or_default()
+            .push((*pid, *tgid, name.clone()));
+    }
+
+    // --- Step 3: For groups with >1 process, classify and emit results ------
+    let mut results = Vec::new();
+
+    for (cred_addr, group) in &cred_map {
+        if group.len() < 2 {
+            continue;
+        }
+
+        // Filter out thread-group siblings: tasks with the same tgid are
+        // threads of the same process and legitimately share creds.
+        // Group by tgid; only flag cross-tgid sharing.
+        let mut by_tgid: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (pid, tgid, _) in group {
+            by_tgid.entry(*tgid).or_default().push(*pid);
+        }
+
+        // If every task in the group has the same tgid, it is pure
+        // thread sharing → benign, skip.
+        if by_tgid.len() < 2 {
+            continue;
+        }
+
+        // Read uid from the cred struct (best effort).
+        let uid: u32 = reader
+            .read_field(*cred_addr, "cred", "uid")
+            .unwrap_or(u32::MAX);
+
+        // Build per-process entries for cross-tgid participants.
+        for (pid, _tgid, name) in group {
+            let shared_with: Vec<u32> = group
+                .iter()
+                .filter(|(other_pid, _, _)| other_pid != pid)
+                .map(|(other_pid, _, _)| *other_pid)
+                .collect();
+
+            let is_suspicious = classify_shared_creds(*pid, &shared_with, uid);
+
+            if is_suspicious {
+                results.push(SharedCredInfo {
+                    pid: *pid,
+                    process_name: name.clone(),
+                    uid,
+                    cred_address: *cred_addr,
+                    shared_with_pids: shared_with,
+                    is_suspicious,
+                });
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
