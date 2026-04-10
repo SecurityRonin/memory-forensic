@@ -635,4 +635,96 @@ mod tests {
             result.len()
         );
     }
+
+    /// walk_suspicious_threads: process has one thread with a non-zero start address
+    /// that is NOT in any DLL → orphan thread → detected as suspicious.
+    ///
+    /// Layout:
+    ///   ps_head (0xFFFF_8004_0000_0000) → eproc+0x448
+    ///   eproc   (0xFFFF_8004_0100_0000): image "notepad.exe", peb=0xFFFF_8004_0200_0000, cr3=X
+    ///     _KPROCESS.ThreadListHead (eproc+0x30) → kthread+0x2F8
+    ///   kthread (0xFFFF_8004_0300_0000):
+    ///     ThreadListEntry.Flink (kthread+0x2F8) → eproc+0x30 (sentinel; terminates list)
+    ///     Win32StartAddress (kthread+0x680) = 0xDEAD_0000 (orphan, not in any DLL)
+    ///     Teb (kthread+0xF0) = 0
+    ///     CreateTime (kthread+0x688) = 0
+    ///     _ETHREAD.Cid.UniqueThread (kthread+0x628) = 100 (TID)
+    #[test]
+    fn walk_suspicious_threads_orphan_thread_detected() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Virtual addresses (kernel space) → physical addresses (< 16 MB)
+        let ps_head_vaddr: u64 = 0xFFFF_8004_0000_0000;
+        let ps_head_paddr: u64 = 0x0030_0000;
+        let eproc_vaddr: u64   = 0xFFFF_8004_0100_0000;
+        let eproc_paddr: u64   = 0x0031_0000;
+        let kthread_vaddr: u64 = 0xFFFF_8004_0300_0000;
+        let kthread_paddr: u64 = 0x0033_0000;
+
+        // ps_head page: Flink at [0..8] → eproc+0x448 (EPROCESS ActiveProcessLinks)
+        let mut ps_head_page = vec![0u8; 4096];
+        ps_head_page[0..8].copy_from_slice(&(eproc_vaddr + 0x448).to_le_bytes());
+
+        // eproc page
+        let mut eproc_page = vec![0u8; 4096];
+        // ActiveProcessLinks.Flink at eproc+0x448 → ps_head (terminates list)
+        eproc_page[0x448..0x450].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        // UniqueProcessId at eproc+0x440 = 4
+        eproc_page[0x440..0x448].copy_from_slice(&4u64.to_le_bytes());
+        // PPID at eproc+0x540 = 0
+        eproc_page[0x540..0x548].copy_from_slice(&0u64.to_le_bytes());
+        // ImageFileName at eproc+0x5A8: "notepad.exe\0"
+        let name = b"notepad.exe\0";
+        eproc_page[0x5A8..0x5A8 + name.len()].copy_from_slice(name);
+        // Peb at eproc+0x550 = some non-zero but unmapped address (DLL walk fails gracefully)
+        eproc_page[0x550..0x558].copy_from_slice(&0x0000_7FFF_0000_0000u64.to_le_bytes());
+        // CR3 = eproc_paddr (reuse as cr3 value, just needs to be a valid paddr)
+        eproc_page[0x28..0x30].copy_from_slice(&eproc_paddr.to_le_bytes());
+        // _KPROCESS.ThreadListHead at eproc+0x30: Flink → kthread+0x2F8
+        eproc_page[0x30..0x38].copy_from_slice(&(kthread_vaddr + 0x2F8).to_le_bytes());
+
+        // kthread page
+        let mut kthread_page = vec![0u8; 4096];
+        // _KTHREAD.ThreadListEntry.Flink at kthread+0x2F8 → eproc+0x30 (sentinel)
+        kthread_page[0x2F8..0x300].copy_from_slice(&(eproc_vaddr + 0x30).to_le_bytes());
+        // _KTHREAD.Teb at kthread+0xF0 = 0
+        kthread_page[0xF0..0xF8].copy_from_slice(&0u64.to_le_bytes());
+        // _KTHREAD.Win32StartAddress at kthread+0x680 = 0xDEAD_0000 (orphan)
+        kthread_page[0x680..0x688].copy_from_slice(&0xDEAD_0000u64.to_le_bytes());
+        // _KTHREAD.CreateTime at kthread+0x688 = 0
+        kthread_page[0x688..0x690].copy_from_slice(&0u64.to_le_bytes());
+        // _ETHREAD.Cid.UniqueThread at kthread+0x628 (Cid at 0x620, UniqueThread at +8)
+        kthread_page[0x628..0x630].copy_from_slice(&100u64.to_le_bytes()); // TID=100
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &ps_head_page)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_page)
+            .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
+            .write_phys(kthread_paddr, &kthread_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_suspicious_threads(&reader).unwrap();
+        assert!(
+            !result.is_empty(),
+            "orphan thread should be detected as suspicious"
+        );
+        let t = &result[0];
+        assert_eq!(t.process_name, "notepad.exe");
+        assert!(t.is_orphan, "thread should be flagged as orphan");
+        assert!(t.is_suspicious, "thread should be suspicious");
+        assert_eq!(t.start_address, 0xDEAD_0000);
+    }
 }

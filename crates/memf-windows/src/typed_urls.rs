@@ -1518,6 +1518,370 @@ mod tests {
         assert!(result.is_empty(), "list data too short → empty");
     }
 
+    // ── find_subkey direct call: lf match branch ─────────────────────────
+
+    /// find_subkey: lf list (0x666C) where the child nk matches the target name.
+    /// This covers lines 268-270 (the `return Ok(Some(child_cell))` in the lf branch).
+    #[test]
+    fn find_subkey_lf_match_returns_cell() {
+        use memf_core::test_builders::flags;
+
+        // Cell layout on a single page (vaddr = paddr = 0x00E0_0000).
+        // We call find_subkey with a crafted nk_data slice and an
+        // in-memory hive to resolve sub-cells.
+        //
+        // hive_vaddr = 0x00E0_0000
+        // cell_page_vaddr = hive_vaddr + HBIN_START_OFFSET = 0x00E1_0000
+        //
+        // nk_data starts at cell_page offset 0 (data after size header at -4):
+        //   nk_data[0x14..0x18] = subkey_count = 1
+        //   nk_data[0x1C..0x20] = list_cell = 0x80
+        //
+        // list cell at 0x80 (cell_page offset 0x80):
+        //   [0..4]  = size -0x80 (allocated)
+        //   [4..6]  = 0x666C "lf"
+        //   [6..8]  = count = 1
+        //   [8..12] = child_cell = 0xC0
+        //
+        // child nk at 0xC0 (cell_page offset 0xC0):
+        //   [0..4]  = size -0x80
+        //   [4..6]  = NK_SIGNATURE
+        //   [4+0x48..4+0x4A] = name_length = 8
+        //   [4+0x4C..4+0x54] = name "Software"
+
+        let hive_vaddr: u64 = 0x00E0_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x00E1_0000;
+
+        let mut cell_page = vec![0u8; 0x1000];
+
+        // Build nk_data at offset 0 (we'll pass it directly — size header is 4 bytes before)
+        // For find_subkey we pass nk_data slice directly, so it starts with the nk fields.
+        // subkey_count at nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET=0x14]
+        let nk_data_start = 0usize;
+        cell_page[nk_data_start + NK_STABLE_SUBKEY_COUNT_OFFSET
+            ..nk_data_start + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        // list_cell at nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET=0x1C]
+        let list_cell: u32 = 0x80;
+        cell_page[nk_data_start + NK_STABLE_SUBKEYS_LIST_OFFSET
+            ..nk_data_start + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        // lf list cell at offset 0x80:
+        let lc = 0x80usize;
+        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes()); // size header
+        // data starts at lc+4: [0..2] = lf sig, [2..4] = count, [4..8] = child_cell
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0x666Cu16.to_le_bytes()); // "lf"
+        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes()); // count=1
+        let child_cell: u32 = 0xC0;
+        cell_page[lc + 8..lc + 12].copy_from_slice(&child_cell.to_le_bytes());
+
+        // child nk at offset 0xC0:
+        let cc = 0xC0usize;
+        cell_page[cc..cc + 4].copy_from_slice(&(-0x80i32).to_le_bytes()); // size header
+        // nk data starts at cc+4
+        let cn = cc + 4;
+        cell_page[cn..cn + 2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // name_length at nk_data[NK_NAME_LENGTH_OFFSET=0x48]
+        let name = b"Software";
+        cell_page[cn + NK_NAME_LENGTH_OFFSET..cn + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(name.len() as u16).to_le_bytes());
+        // name at nk_data[NK_NAME_OFFSET=0x4C]
+        cell_page[cn + NK_NAME_OFFSET..cn + NK_NAME_OFFSET + name.len()]
+            .copy_from_slice(name);
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, 0x00E0_0000, flags::WRITABLE)
+            .write_phys(0x00E0_0000, &vec![0u8; 0x1000])
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // nk_data is the slice we built at nk_data_start in cell_page.
+        // We need to pass it as a slice with at least NK_STABLE_SUBKEYS_LIST_OFFSET+4 bytes.
+        let nk_data = &cell_page[nk_data_start..nk_data_start + 0x60];
+        let result = find_subkey(&reader, hive_vaddr, nk_data, "Software").unwrap();
+        assert_eq!(result, Some(child_cell), "lf match should return the child cell index");
+    }
+
+    /// find_subkey: li list (0x696C) where the child nk matches the target name.
+    /// Covers lines 290-292 (the `return Ok(Some(child_cell))` in the li branch).
+    #[test]
+    fn find_subkey_li_match_returns_cell() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64 = 0x00F0_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x00F1_0000;
+
+        let mut cell_page = vec![0u8; 0x1000];
+
+        // nk_data at offset 0 with subkey_count=1 and list_cell=0x80
+        cell_page[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        let list_cell: u32 = 0x80;
+        cell_page[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        // li list at 0x80:
+        let lc = 0x80usize;
+        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0x696Cu16.to_le_bytes()); // "li"
+        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
+        let child_cell: u32 = 0xC0;
+        cell_page[lc + 8..lc + 12].copy_from_slice(&child_cell.to_le_bytes());
+
+        // child nk at 0xC0 named "Microsoft":
+        let cc = 0xC0usize;
+        let cn = cc + 4;
+        cell_page[cc..cc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[cn..cn + 2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        let name = b"Microsoft";
+        cell_page[cn + NK_NAME_LENGTH_OFFSET..cn + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(name.len() as u16).to_le_bytes());
+        cell_page[cn + NK_NAME_OFFSET..cn + NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, 0x00F0_0000, flags::WRITABLE)
+            .write_phys(0x00F0_0000, &vec![0u8; 0x1000])
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let nk_data = &cell_page[0..0x60];
+        let result = find_subkey(&reader, hive_vaddr, nk_data, "Microsoft").unwrap();
+        assert_eq!(result, Some(child_cell), "li match should return the child cell index");
+    }
+
+    /// Full hive traversal: Software → Microsoft → Internet Explorer → TypedURLs,
+    /// TypedURLs key has one value ("url1") with data "https://pastebin.com/abc" (UTF-16LE).
+    /// This covers lines 396-611 of walk_typed_urls (the full navigation + values loop).
+    ///
+    /// Cell layout (virtual = physical for simplicity):
+    ///   hive_vaddr = 0x0090_0000
+    ///   cell_page = hive_vaddr + HBIN_START_OFFSET = 0x0091_0000
+    ///
+    /// All cells are packed into a 4-page (0x4000) memory block.
+    /// We use lf-format subkey lists throughout.
+    ///
+    /// Offsets within cell_page (each cell = 4-byte size header + data):
+    ///   0x000: root nk (subkey_count=1, list_cell=0x200)
+    ///   0x200: lf list → Software nk at 0x300
+    ///   0x300: Software nk (subkey_count=1, list_cell=0x500)
+    ///   0x500: lf list → Microsoft nk at 0x600
+    ///   0x600: Microsoft nk (subkey_count=1, list_cell=0x800)
+    ///   0x800: lf list → Internet Explorer nk at 0x900
+    ///   0x900: IE nk (subkey_count=1, list_cell=0xB00)
+    ///   0xB00: lf list → TypedURLs nk at 0xC00
+    ///   0xC00: TypedURLs nk (value_count=1, values_list=0xE00)
+    ///   0xE00: values list → vk cell at 0xF00
+    ///   0xF00: vk "url1": data_len=50, data_cell=0x1000
+    ///   0x1000: data cell: UTF-16LE "https://pastebin.com/abc\0"
+    ///
+    /// Physical addresses: cell_page_paddr = 0x0091_0000 (within 16 MB limit).
+    #[test]
+    fn walk_typed_urls_full_traversal_finds_url() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64   = 0x0090_0000;
+        let hive_paddr: u64   = 0x0090_0000;
+        let cell_base_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET; // 0x0091_0000
+        let cell_base_paddr: u64 = 0x0091_0000;
+
+        // We need 4 pages (0x4000 bytes). Physical addresses 0x0091_0000 through 0x0094_FFFF.
+        let cell_len = 0x2000usize; // 8 KB, fits in 2 pages
+
+        let mut cp = vec![0u8; cell_len];
+
+        // Helper: write cell at `off` with nk data `data`.
+        // Cell layout: [off..off+4] = size (negative, allocated), [off+4..] = data
+        fn write_cell(cp: &mut Vec<u8>, off: usize, data: &[u8]) {
+            let total = data.len() + 4;
+            let raw = -(total as i32);
+            cp[off..off + 4].copy_from_slice(&raw.to_le_bytes());
+            cp[off + 4..off + 4 + data.len()].copy_from_slice(data);
+        }
+
+        // Helper: build an nk cell data with subkeys
+        fn nk_with_subkeys(subkey_count: u32, list_cell: u32) -> Vec<u8> {
+            let mut d = vec![0u8; 0x60]; // enough room
+            d[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+            d[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+                .copy_from_slice(&subkey_count.to_le_bytes());
+            d[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+                .copy_from_slice(&list_cell.to_le_bytes());
+            d
+        }
+
+        // Helper: build nk with values
+        fn nk_with_values(value_count: u32, values_list_cell: u32) -> Vec<u8> {
+            let mut d = vec![0u8; 0x60];
+            d[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+            // value_count at 0x24, values_list at 0x28
+            d[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+                .copy_from_slice(&value_count.to_le_bytes());
+            d[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+                .copy_from_slice(&values_list_cell.to_le_bytes());
+            d
+        }
+
+        // Helper: build an nk cell data with a name
+        fn nk_named(name: &[u8]) -> Vec<u8> {
+            let mut d = vec![0u8; 0x70];
+            d[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+            d[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&(name.len() as u16).to_le_bytes());
+            d[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+            d
+        }
+
+        // Helper: build nk named with subkeys
+        fn nk_named_with_subkeys(name: &[u8], subkey_count: u32, list_cell: u32) -> Vec<u8> {
+            let mut d = nk_named(name);
+            // Extend if needed
+            if d.len() < NK_STABLE_SUBKEYS_LIST_OFFSET + 4 {
+                d.resize(NK_STABLE_SUBKEYS_LIST_OFFSET + 8, 0);
+            }
+            d[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+                .copy_from_slice(&subkey_count.to_le_bytes());
+            d[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+                .copy_from_slice(&list_cell.to_le_bytes());
+            d
+        }
+
+        // Helper: build nk named with values (for terminal key like TypedURLs)
+        fn nk_named_with_values(name: &[u8], value_count: u32, values_list_cell: u32) -> Vec<u8> {
+            let mut d = nk_named(name);
+            // NK_VALUE_COUNT_OFFSET = 0x24, NK_VALUES_LIST_OFFSET = 0x28
+            if d.len() < NK_VALUES_LIST_OFFSET + 4 {
+                d.resize(NK_VALUES_LIST_OFFSET + 8, 0);
+            }
+            d[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+                .copy_from_slice(&value_count.to_le_bytes());
+            d[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+                .copy_from_slice(&values_list_cell.to_le_bytes());
+            d
+        }
+
+        // Helper: build lf list cell with one entry (child_cell, hash)
+        fn lf_list(child_cell: u32) -> Vec<u8> {
+            let mut d = vec![0u8; 12];
+            d[0..2].copy_from_slice(&0x666Cu16.to_le_bytes()); // "lf"
+            d[2..4].copy_from_slice(&1u16.to_le_bytes()); // count=1
+            d[4..8].copy_from_slice(&child_cell.to_le_bytes()); // cell index
+            // [8..12] = hash (zero ok)
+            d
+        }
+
+        // Layout:
+        // Cell indices (from HBIN start within cell_page):
+        let root_cell: u32   = 0x000;
+        let lf1_cell: u32    = 0x200; // → Software nk
+        let sw_cell: u32     = 0x300; // Software nk
+        let lf2_cell: u32    = 0x500; // → Microsoft nk
+        let ms_cell: u32     = 0x600; // Microsoft nk
+        let lf3_cell: u32    = 0x800; // → IE nk
+        let ie_cell: u32     = 0x900; // Internet Explorer nk
+        let lf4_cell: u32    = 0xB00; // → TypedURLs nk
+        let tu_cell: u32     = 0xC00; // TypedURLs nk
+        let vlist_cell: u32  = 0xE00; // values list
+        let vk1_cell: u32    = 0xF00; // url1 vk
+        let dc1_cell: u32    = 0x1000; // url1 data cell
+
+        // Root nk (subkey_count=1 → lf1)
+        write_cell(&mut cp, root_cell as usize, &nk_with_subkeys(1, lf1_cell));
+        // lf1 → Software nk
+        write_cell(&mut cp, lf1_cell as usize, &lf_list(sw_cell));
+        // Software nk named "Software" (subkey_count=1 → lf2)
+        write_cell(&mut cp, sw_cell as usize, &nk_named_with_subkeys(b"Software", 1, lf2_cell));
+        // lf2 → Microsoft nk
+        write_cell(&mut cp, lf2_cell as usize, &lf_list(ms_cell));
+        // Microsoft nk named "Microsoft" (subkey_count=1 → lf3)
+        write_cell(&mut cp, ms_cell as usize, &nk_named_with_subkeys(b"Microsoft", 1, lf3_cell));
+        // lf3 → IE nk
+        write_cell(&mut cp, lf3_cell as usize, &lf_list(ie_cell));
+        // IE nk named "Internet Explorer" (subkey_count=1 → lf4)
+        write_cell(&mut cp, ie_cell as usize, &nk_named_with_subkeys(b"Internet Explorer", 1, lf4_cell));
+        // lf4 → TypedURLs nk
+        write_cell(&mut cp, lf4_cell as usize, &lf_list(tu_cell));
+        // TypedURLs nk named "TypedURLs" with value_count=1 and values_list=vlist_cell
+        // Must have name so find_subkey can match "TypedURLs" when navigating from IE nk.
+        write_cell(&mut cp, tu_cell as usize, &nk_named_with_values(b"TypedURLs", 1, vlist_cell));
+        // values list: 4-byte pointer to vk1_cell
+        {
+            let mut vlist = vec![0u8; 4];
+            vlist[0..4].copy_from_slice(&vk1_cell.to_le_bytes());
+            write_cell(&mut cp, vlist_cell as usize, &vlist);
+        }
+        // vk cell for "url1": name="url1", data_len=50, data_cell=dc1_cell
+        {
+            // VK data layout (see VK_* constants):
+            //   [0..2]  = VK_SIGNATURE (0x6B76)
+            //   [2..4]  = name_length (4 = len("url1"))
+            //   [4..8]  = data_length (50, no inline-data flag)
+            //   [8..12] = data_cell
+            //   [0x14..0x18] = name "url1"
+            let mut vk = vec![0u8; 0x20];
+            vk[0..2].copy_from_slice(&VK_SIGNATURE.to_le_bytes());
+            vk[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&4u16.to_le_bytes()); // "url1"
+            vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+                .copy_from_slice(&50u32.to_le_bytes()); // 50 bytes = 25 UTF-16 chars
+            vk[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+                .copy_from_slice(&dc1_cell.to_le_bytes());
+            vk[VK_NAME_OFFSET..VK_NAME_OFFSET + 4].copy_from_slice(b"url1");
+            write_cell(&mut cp, vk1_cell as usize, &vk);
+        }
+        // data cell: UTF-16LE "https://mega.nz/x" (suspicious domain)
+        {
+            let url = "https://mega.nz/x";
+            let utf16: Vec<u8> = url.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let mut dc = vec![0u8; utf16.len() + 2]; // + null terminator
+            dc[..utf16.len()].copy_from_slice(&utf16);
+            write_cell(&mut cp, dc1_cell as usize, &dc);
+        }
+
+        // Hive base block: root_cell_index at offset 0x24
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&root_cell.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        // Note: cell_address(hive_addr, cell_index) = hive_addr + HBIN_START_OFFSET + cell_index.
+        // cell_base_vaddr = hive_vaddr + HBIN_START_OFFSET = 0x0091_0000.
+        // cell_index 0x1000 maps to vaddr = hive_vaddr + HBIN_START_OFFSET + 0x1000 = 0x0092_0000.
+        // So the second page (for dc1_cell=0x1000) must be at vaddr 0x0092_0000.
+        let cell_page2_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET + 0x1000; // 0x0092_0000
+        let cell_page2_paddr: u64 = 0x0092_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            // First 4K page: cell indices 0x000..0xFFF
+            .map_4k(cell_base_vaddr, cell_base_paddr, flags::WRITABLE)
+            .write_phys(cell_base_paddr, &cp[..0x1000].to_vec())
+            // Second 4K page: cell indices 0x1000..0x1FFF (dc1_cell data)
+            .map_4k(cell_page2_vaddr, cell_page2_paddr, flags::WRITABLE)
+            .write_phys(cell_page2_paddr, &cp[0x1000..].to_vec())
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "alice").unwrap();
+        assert!(!result.is_empty(), "should find at least one typed URL");
+        assert_eq!(result[0].username, "alice");
+        assert!(result[0].url.contains("mega.nz"), "URL should contain mega.nz: {}", result[0].url);
+        assert!(result[0].is_suspicious, "mega.nz URL should be flagged suspicious");
+    }
+
     /// hive root cell has wrong signature → empty.
     #[test]
     fn walk_typed_urls_wrong_root_sig_empty() {

@@ -1018,6 +1018,125 @@ mod tests {
         assert!(result.is_empty(), "val_list_addr=0 → empty Vec");
     }
 
+    /// Full walk_cached_credentials traversal: hive → Cache → NL$1 → DCC2 data.
+    ///
+    /// Memory layout (explicit Storage pointer → flat_base):
+    ///   hive at 0x0090_0000: [+0x10]=bb_vaddr, [+0x30]=flat_vaddr
+    ///   bb at 0x0091_0000: [+0x24]=root_cell_off=0x100
+    ///   flat at 0x0092_0000:
+    ///     root nk at 0x104 (subkey_count=1, list_off=0x200)
+    ///     lf list at 0x204 → Cache nk at 0x300
+    ///     Cache nk at 0x304 (name="Cache", val_count=1, val_list_off=0x400)
+    ///     val list at 0x404 → NL$1 value at 0x500
+    ///     NL$1 value at 0x504: vname="NL$1", data_len=200, data_off=0x600
+    ///     data cell at 0x604: DCC2 header + "alice" + "CORP"
+    #[test]
+    fn walk_cached_credentials_full_traversal_finds_nl1_entry() {
+        let hive_vaddr: u64 = 0x0090_0000;
+        let hive_paddr: u64 = 0x0090_0000;
+        let bb_vaddr: u64   = 0x0091_0000;
+        let bb_paddr: u64   = 0x0091_0000;
+        let flat_vaddr: u64 = 0x0092_0000; // explicit Storage pointer
+        let flat_paddr: u64 = 0x0092_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&bb_vaddr.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&flat_vaddr.to_le_bytes()); // explicit flat_base
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&0x100u32.to_le_bytes()); // root_cell_off=0x100
+
+        let mut flat_page = vec![0u8; 0x2000]; // 2 pages (val list + data can span)
+
+        fn w32(page: &mut Vec<u8>, off: usize, val: u32) {
+            page[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        fn w16(page: &mut Vec<u8>, off: usize, val: u16) {
+            page[off..off + 2].copy_from_slice(&val.to_le_bytes());
+        }
+
+        // root nk at flat_page[0x104]: subkey_count=1, list_off=0x200
+        let ro = 0x104usize;
+        w32(&mut flat_page, ro + 0x18, 1);
+        w32(&mut flat_page, ro + 0x20, 0x200);
+
+        // lf list at flat_page[0x204]: count=1, entry=0x300
+        let l1 = 0x204usize;
+        flat_page[l1] = b'l'; flat_page[l1 + 1] = b'f';
+        w16(&mut flat_page, l1 + 2, 1);
+        w32(&mut flat_page, l1 + 4, 0x300);
+        w32(&mut flat_page, l1 + 8, 0);
+
+        // Cache nk at flat_page[0x304]: name="Cache", val_count=1, val_list_off=0x400
+        let ca = 0x304usize;
+        // name_len at +0x4A, name at +0x4C (but subkey_count=0 since no subkeys here)
+        w32(&mut flat_page, ca + 0x18, 0);     // subkey_count=0 for Cache (only values)
+        w32(&mut flat_page, ca + 0x28, 1);     // val_count=1
+        w32(&mut flat_page, ca + 0x2C, 0x400); // val_list_off
+        w16(&mut flat_page, ca + 0x4A, 5);     // name_len=5
+        flat_page[ca + 0x4C..ca + 0x51].copy_from_slice(b"Cache");
+
+        // Value list cell at flat_page[0x404]: one entry (4 bytes) → val_off=0x500
+        let vl = 0x404usize;
+        w32(&mut flat_page, vl, 0x500); // val_off
+
+        // NL$1 value cell at flat_page[0x504]:
+        //   [+0x02]: vname_len=4 ("NL$1")
+        //   [+0x08]: data_len=200 (no inline flag)
+        //   [+0x0C]: data_off=0x600
+        //   [+0x18]: vname="NL$1"
+        let vk = 0x504usize;
+        w16(&mut flat_page, vk + 0x02, 4);    // vname_len=4
+        w32(&mut flat_page, vk + 0x08, 200);  // data_len=200
+        w32(&mut flat_page, vk + 0x0C, 0x600); // data_off=0x600
+        flat_page[vk + 0x18..vk + 0x1C].copy_from_slice(b"NL$1");
+
+        // DCC2 data cell at flat_page[0x604]:
+        //   [0x00..0x02]: username_len (bytes of UTF-16LE "alice" = 10)
+        //   [0x04..0x06]: domain_len (bytes of UTF-16LE "CORP" = 8)
+        //   [0x28..0x2C]: iteration_count = 10240
+        //   [0x60..0x6A]: username "alice" UTF-16LE (10 bytes)
+        //   [0x6A..0x72]: domain "CORP" UTF-16LE (8 bytes)
+        let dc = 0x604usize;
+        let username_utf16: Vec<u8> = "alice".encode_utf16().flat_map(u16::to_le_bytes).collect(); // 10 bytes
+        let domain_utf16: Vec<u8> = "CORP".encode_utf16().flat_map(u16::to_le_bytes).collect();   // 8 bytes
+        w16(&mut flat_page, dc + 0x00, username_utf16.len() as u16); // username_len
+        w16(&mut flat_page, dc + 0x04, domain_utf16.len() as u16);   // domain_len
+        w32(&mut flat_page, dc + 0x28, 10240); // iteration_count=10240
+        // Username at data_addr + 96 = dc + 96 = dc + 0x60
+        flat_page[dc + 96..dc + 96 + username_utf16.len()].copy_from_slice(&username_utf16);
+        // Domain at data_addr + 96 + username_len
+        let dom_off = dc + 96 + username_utf16.len();
+        flat_page[dom_off..dom_off + domain_utf16.len()].copy_from_slice(&domain_utf16);
+
+        let isf = make_cachedump_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map flat_vaddr covering both 4K pages of flat_page
+        let flat_page2_vaddr: u64 = flat_vaddr + 0x1000;
+        let flat_page2_paddr: u64 = flat_paddr + 0x1000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(bb_vaddr, bb_paddr, flags::WRITABLE)
+            .write_phys(bb_paddr, &bb_page)
+            .map_4k(flat_vaddr, flat_paddr, flags::WRITABLE)
+            .write_phys(flat_paddr, &flat_page[..0x1000].to_vec())
+            .map_4k(flat_page2_vaddr, flat_page2_paddr, flags::WRITABLE)
+            .write_phys(flat_page2_paddr, &flat_page[0x1000..].to_vec())
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
+        assert!(!result.is_empty(), "should find one cached credential");
+        let cred = &result[0];
+        assert_eq!(cred.username, "alice");
+        assert_eq!(cred.domain, "CORP");
+        assert_eq!(cred.iteration_count, 10240);
+        assert!(!cred.is_suspicious, "alice/CORP with 10240 iterations should not be suspicious");
+    }
+
     /// walk_cached_credentials with root_cell_off = u32::MAX → early return.
     #[test]
     fn walk_cached_creds_root_cell_max_sentinel() {

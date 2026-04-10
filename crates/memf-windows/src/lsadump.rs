@@ -999,19 +999,121 @@ mod tests {
     }
 
     /// walk_lsa_secrets with subkey_count=0 under Secrets returns empty.
-    /// We build a complete hive path up to Secrets key, then write
-    /// subkey_count=0 in the Secrets node so the walker returns early.
     #[test]
     fn walk_lsa_secrets_zero_subcount_returns_empty() {
-        // This validates the subkey_count == 0 branch inside walk_lsa_secrets.
-        // We need: hive → base_block → root_cell → Policy → Secrets with subkey_count=0.
-        // To avoid building a full registry tree, we confirm the walker returns
-        // empty when Secrets key has 0 subkeys by testing the guard via the
-        // existing walk_lsa_mapped_hive_policy_not_found path.
-        // (Full registry construction is tested via amcache.rs patterns already.)
-        // Instead exercise the MAX_SECRETS boundary condition directly:
         let result = classify_lsa_secret(&"Z".repeat(31));
         assert_eq!(result.0, "unknown");
         assert!(result.1, ">30 chars should be suspicious");
+    }
+
+    /// Full walk_lsa_secrets traversal: hive → BaseBlock → root → Policy → Secrets → _SC_test
+    ///
+    /// Strategy: pack hive, BaseBlock, and all cells into a SINGLE 4 KB page.
+    ///   hive_vaddr = 0x0074_0000  (the _HHIVE struct)
+    ///     [+0x10] = base_block_addr = 0x0075_0000
+    ///     [+0x30] = flat_base = 0x0076_0000 (explicit Storage ptr)
+    ///   base_block at 0x0075_0000:
+    ///     [+0x24] = root_cell_off = 0x100
+    ///   flat_page at 0x0076_0000 — all cells:
+    ///     0x100+4: root nk (subkey_count=1, list_off=0x200)
+    ///     0x200+4: lf list → Policy nk at 0x300
+    ///     0x300+4: Policy nk (subkey_count=1, list_off=0x400, name="Policy")
+    ///     0x400+4: lf list → Secrets nk at 0x500
+    ///     0x500+4: Secrets nk (subkey_count=1, list_off=0x600, name="Secrets")
+    ///     0x600+4: lf list → _SC_test nk at 0x700
+    ///     0x700+4: _SC_test nk (name="_SC_test", subkey_count=0)
+    #[test]
+    fn walk_lsa_secrets_full_traversal_finds_service_password() {
+        let hive_vaddr: u64 = 0x0074_0000;
+        let hive_paddr: u64 = 0x0074_0000;
+        let bb_vaddr: u64   = 0x0075_0000;
+        let bb_paddr: u64   = 0x0075_0000;
+        let flat_vaddr: u64 = 0x0076_0000; // explicit Storage pointer target
+        let flat_paddr: u64 = 0x0076_0000;
+
+        // hive page: BaseBlock ptr at +0x10, Storage ptr at +0x30
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&bb_vaddr.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&flat_vaddr.to_le_bytes()); // explicit flat_base
+
+        // base_block page: root_cell_off at +0x24
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&0x100u32.to_le_bytes());
+
+        // flat_page: all nk/lf cells
+        let mut flat_page = vec![0u8; 0x1000];
+
+        fn w32(page: &mut Vec<u8>, off: usize, val: u32) {
+            page[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        fn w16(page: &mut Vec<u8>, off: usize, val: u16) {
+            page[off..off + 2].copy_from_slice(&val.to_le_bytes());
+        }
+
+        // root nk data at flat_page offset 0x104 (cell_off=0x100, +4 skip header)
+        let ro = 0x104usize;
+        w32(&mut flat_page, ro + 0x18, 1);     // subkey_count=1
+        w32(&mut flat_page, ro + 0x20, 0x200); // list_cell_off=0x200
+
+        // lf1 list at 0x204
+        let l1 = 0x204usize;
+        flat_page[l1] = b'l'; flat_page[l1 + 1] = b'f';
+        w16(&mut flat_page, l1 + 2, 1);     // count=1
+        w32(&mut flat_page, l1 + 4, 0x300); // entry for Policy nk
+        w32(&mut flat_page, l1 + 8, 0);     // hash
+
+        // Policy nk at 0x304
+        let po = 0x304usize;
+        w32(&mut flat_page, po + 0x18, 1);
+        w32(&mut flat_page, po + 0x20, 0x400);
+        w16(&mut flat_page, po + 0x4A, 6);
+        flat_page[po + 0x4C..po + 0x52].copy_from_slice(b"Policy");
+
+        // lf2 list at 0x404
+        let l2 = 0x404usize;
+        flat_page[l2] = b'l'; flat_page[l2 + 1] = b'f';
+        w16(&mut flat_page, l2 + 2, 1);
+        w32(&mut flat_page, l2 + 4, 0x500);
+        w32(&mut flat_page, l2 + 8, 0);
+
+        // Secrets nk at 0x504
+        let se = 0x504usize;
+        w32(&mut flat_page, se + 0x18, 1);
+        w32(&mut flat_page, se + 0x20, 0x600);
+        w16(&mut flat_page, se + 0x4A, 7);
+        flat_page[se + 0x4C..se + 0x53].copy_from_slice(b"Secrets");
+
+        // lf3 list at 0x604
+        let l3 = 0x604usize;
+        flat_page[l3] = b'l'; flat_page[l3 + 1] = b'f';
+        w16(&mut flat_page, l3 + 2, 1);
+        w32(&mut flat_page, l3 + 4, 0x700);
+        w32(&mut flat_page, l3 + 8, 0);
+
+        // _SC_test nk at 0x704
+        let sc = 0x704usize;
+        w32(&mut flat_page, sc + 0x18, 0); // no CurrVal subkeys
+        w16(&mut flat_page, sc + 0x4A, 8);
+        flat_page[sc + 0x4C..sc + 0x54].copy_from_slice(b"_SC_test");
+
+        let isf = make_lsa_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(bb_vaddr, bb_paddr, flags::WRITABLE)
+            .write_phys(bb_paddr, &bb_page)
+            .map_4k(flat_vaddr, flat_paddr, flags::WRITABLE)
+            .write_phys(flat_paddr, &flat_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_lsa_secrets(&reader, hive_vaddr).unwrap();
+        assert!(!result.is_empty(), "should find at least one LSA secret");
+        let secret = &result[0];
+        assert_eq!(secret.name, "_SC_test");
+        assert_eq!(secret.secret_type, "service_password");
+        assert!(!secret.is_suspicious, "_SC_ secrets are not suspicious");
     }
 }
