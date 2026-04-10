@@ -182,9 +182,7 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
 
         // Read connection count.
         let connection_count: u32 = match reader.read_bytes(port_addr + connection_count_off, 4) {
-            Ok(bytes) if bytes.len() == 4 => {
-                u32::from_le_bytes(bytes[..4].try_into().unwrap())
-            }
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
             _ => 0,
         };
 
@@ -253,5 +251,138 @@ mod tests {
     #[test]
     fn classify_alpc_empty_benign() {
         assert!(!classify_alpc_port(""));
+    }
+
+    /// Short port names in unusual namespaces are benign (< 40 chars).
+    #[test]
+    fn classify_alpc_short_unusual_name_benign() {
+        // Only > 40 chars in unusual paths are suspicious.
+        assert!(!classify_alpc_port("\\Custom\\short"));
+    }
+
+    /// Known benign prefixes are all correctly classified.
+    #[test]
+    fn classify_alpc_all_benign_prefixes() {
+        assert!(!classify_alpc_port("\\Windows\\ApiPort"));
+        assert!(!classify_alpc_port("\\BaseNamedObjects\\something"));
+        assert!(!classify_alpc_port("\\Sessions\\1\\something"));
+        assert!(!classify_alpc_port("\\KernelConnect\\port1"));
+        assert!(!classify_alpc_port("\\ThemeApiPort"));
+        assert!(!classify_alpc_port("\\LsaPolicyLookup"));
+        assert!(!classify_alpc_port("\\NcaPort"));
+    }
+
+    /// AlpcPortInfo serializes to JSON.
+    #[test]
+    fn alpc_port_info_serializes() {
+        let info = AlpcPortInfo {
+            address: 0xFFFF_8000_1234_5678,
+            name: "\\RPC Control\\test".to_string(),
+            owner_pid: 4,
+            is_server_port: true,
+            connection_count: 2,
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\\\\RPC Control\\\\test"));
+        assert!(json.contains("owner_pid"));
+        assert!(json.contains("connection_count"));
+    }
+
+    /// Walker with AlpcpPortList symbol but unreadable head returns empty.
+    #[test]
+    fn walk_alpc_ports_unreadable_list_head() {
+        let isf = IsfBuilder::new()
+            .add_struct("_ALPC_PORT", 0x100)
+            .add_symbol("AlpcpPortList", 0xFFFF_8000_DEAD_0000u64)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        // No memory mapped at the symbol address → read_bytes fails → empty.
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_alpc_ports(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Walker with AlpcpPortList symbol whose head Flink is zero returns empty.
+    #[test]
+    fn walk_alpc_ports_zero_flink() {
+        use memf_core::test_builders::flags;
+
+        let list_vaddr: u64 = 0xFFFF_8000_1000_0000;
+        let list_paddr: u64 = 0x0050_0000;
+
+        // Write 8 bytes of 0 at the list head address (Flink = 0).
+        let mut page = vec![0u8; 4096];
+        // Flink at offset 0 in the page = 0 (list is empty).
+        page[0..8].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_ALPC_PORT", 0x100)
+            .add_symbol("AlpcpPortList", list_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // Flink == 0 → first == 0 → empty.
+        let result = walk_alpc_ports(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Walker with AlpcpPortList pointing to itself (empty circular list) returns empty.
+    #[test]
+    fn walk_alpc_ports_self_referential_head() {
+        use memf_core::test_builders::flags;
+
+        let list_vaddr: u64 = 0xFFFF_8000_2000_0000;
+        let list_paddr: u64 = 0x0060_0000;
+
+        // Write Flink = list_vaddr (points to itself — empty LIST_ENTRY).
+        let mut page = vec![0u8; 4096];
+        page[0..8].copy_from_slice(&list_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_ALPC_PORT", 0x100)
+            .add_symbol("AlpcpPortList", list_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // first == list_head → loop condition fails immediately → empty.
+        let result = walk_alpc_ports(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Walker falls back to ObpRootDirectoryObject when AlpcpPortList absent.
+    #[test]
+    fn walk_alpc_ports_fallback_to_obp_root() {
+        let isf = IsfBuilder::new()
+            .add_struct("_ALPC_PORT", 0x100)
+            .add_symbol("ObpRootDirectoryObject", 0xFFFF_8000_ABCD_0000u64)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // Falls back to ObpRootDirectoryObject path → returns empty (not implemented).
+        let result = walk_alpc_ports(&reader).unwrap();
+        assert!(result.is_empty());
     }
 }

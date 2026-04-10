@@ -122,7 +122,11 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
     let flat_base = match reader.read_bytes(security_hive_addr + storage_off, 8) {
         Ok(bytes) if bytes.len() == 8 => {
             let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            if addr != 0 { addr } else { base_block_addr + 0x1000 }
+            if addr != 0 {
+                addr
+            } else {
+                base_block_addr + 0x1000
+            }
         }
         _ => base_block_addr + 0x1000,
     };
@@ -296,14 +300,10 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                    }
-                    _ => continue,
-                }
-            }
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                _ => continue,
+            },
             _ => return 0,
         };
 
@@ -480,7 +480,10 @@ mod tests {
         assert!(long_name.len() > 30);
         let (secret_type, suspicious) = classify_lsa_secret(long_name);
         assert_eq!(secret_type, "unknown");
-        assert!(suspicious, "Long unknown names (>30 chars) should be suspicious");
+        assert!(
+            suspicious,
+            "Long unknown names (>30 chars) should be suspicious"
+        );
     }
 
     // ── Walker tests ─────────────────────────────────────────────────
@@ -499,6 +502,72 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_lsa_secrets(&reader, 0).unwrap();
-        assert!(result.is_empty(), "Zero hive address should return empty Vec");
+        assert!(
+            result.is_empty(),
+            "Zero hive address should return empty Vec"
+        );
+    }
+
+    /// Non-zero hive address but unreadable base block returns empty Vec.
+    #[test]
+    fn walk_lsa_secrets_unreadable_base_block() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        // No memory mapped at hive address, so read will fail.
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_lsa_secrets(&reader, 0xFFFF_8000_1234_0000).unwrap();
+        assert!(result.is_empty(), "Unreadable hive should return empty Vec");
+    }
+
+    /// L$_RasConn prefix is detected correctly for various suffixes.
+    #[test]
+    fn classify_lsa_ras_conn_variants() {
+        let (t, s) = classify_lsa_secret("L$_RasConn_Office");
+        assert_eq!(t, "vpn_credential");
+        assert!(s);
+
+        let (t2, s2) = classify_lsa_secret("L$_RasDial");
+        assert_eq!(t2, "vpn_credential");
+        assert!(s2);
+    }
+
+    /// L$ prefix with non-RAS name is lsa_data, not suspicious.
+    #[test]
+    fn classify_lsa_generic_l_dollar() {
+        let (t, s) = classify_lsa_secret("L$GenericData");
+        assert_eq!(t, "lsa_data");
+        assert!(!s);
+    }
+
+    /// Unknown name exactly 30 chars is NOT suspicious (boundary).
+    #[test]
+    fn classify_unknown_exactly_30_chars_not_suspicious() {
+        let name = "a".repeat(30);
+        assert_eq!(name.len(), 30);
+        let (t, s) = classify_lsa_secret(&name);
+        assert_eq!(t, "unknown");
+        assert!(!s, "Exactly 30 chars should not be suspicious (> 30 required)");
+    }
+
+    /// LsaSecretInfo serializes correctly.
+    #[test]
+    fn lsa_secret_info_serializes() {
+        let info = LsaSecretInfo {
+            name: "NL$KM".to_string(),
+            secret_type: "cached_domain_key".to_string(),
+            length: 32,
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("NL$KM"));
+        assert!(json.contains("cached_domain_key"));
+        assert!(json.contains("32"));
     }
 }

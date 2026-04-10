@@ -78,11 +78,7 @@ pub fn classify_message_hook(hook_type: &str, module: &str) -> bool {
 
     // Any hook from temp, appdata, or downloads directories is suspicious
     // regardless of hook type.
-    const SUSPICIOUS_PATHS: &[&str] = &[
-        "\\temp\\",
-        "\\appdata\\",
-        "\\downloads\\",
-    ];
+    const SUSPICIOUS_PATHS: &[&str] = &["\\temp\\", "\\appdata\\", "\\downloads\\"];
 
     for path in SUSPICIOUS_PATHS {
         if lower_module.contains(path) {
@@ -91,11 +87,7 @@ pub fn classify_message_hook(hook_type: &str, module: &str) -> bool {
     }
 
     // Known benign Windows system modules that commonly install hooks.
-    const BENIGN_MODULES: &[&str] = &[
-        "user32.dll",
-        "imm32.dll",
-        "msctf.dll",
-    ];
+    const BENIGN_MODULES: &[&str] = &["user32.dll", "imm32.dll", "msctf.dll"];
 
     let is_system_module = BENIGN_MODULES
         .iter()
@@ -230,9 +222,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
 
             // Read pDeskInfo pointer.
             let deskinfo_addr = match reader.read_bytes(desktop_addr + desktop_hooks_off, 8) {
-                Ok(bytes) if bytes.len() == 8 => {
-                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
                 _ => 0,
             };
 
@@ -262,32 +252,30 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
                         }
 
                         // Read iHook (hook type as u32).
-                        let raw_type: u32 =
-                            match reader.read_bytes(hook_addr + hook_ihook_off, 4) {
-                                Ok(bytes) if bytes.len() == 4 => {
-                                    u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                                }
-                                _ => idx as u32,
-                            };
+                        let raw_type: u32 = match reader.read_bytes(hook_addr + hook_ihook_off, 4) {
+                            Ok(bytes) if bytes.len() == 4 => {
+                                u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                            }
+                            _ => idx as u32,
+                        };
 
                         let hook_type = hook_type_name(raw_type);
 
                         // Read offPfn (hook procedure address).
-                        let hook_proc_addr =
-                            match reader.read_bytes(hook_addr + hook_offpfn_off, 8) {
-                                Ok(bytes) if bytes.len() == 8 => {
-                                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
-                                }
-                                _ => 0,
-                            };
+                        let hook_proc_addr = match reader.read_bytes(hook_addr + hook_offpfn_off, 8)
+                        {
+                            Ok(bytes) if bytes.len() == 8 => {
+                                u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                            }
+                            _ => 0,
+                        };
 
                         // Read ihmod (module index) — used as a proxy; the actual
                         // module name comes from the module table. We read the
                         // _UNICODE_STRING at this offset if it looks like a pointer.
                         let module_name = match reader.read_bytes(hook_addr + hook_ihmod_off, 8) {
                             Ok(bytes) if bytes.len() == 8 => {
-                                let mod_ptr =
-                                    u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                                let mod_ptr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
                                 if mod_ptr > 0xFFFF {
                                     // Attempt to read as a UNICODE_STRING.
                                     read_unicode_string(reader, mod_ptr).unwrap_or_default()
@@ -299,25 +287,23 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
                         };
 
                         // Extract owner PID via ptiHooked → pEThread → EPROCESS → PID.
-                        let owner_pid =
-                            match reader.read_bytes(hook_addr + hook_ptihooked_off, 8) {
-                                Ok(bytes) if bytes.len() == 8 => {
-                                    let ti_ptr =
-                                        u64::from_le_bytes(bytes[..8].try_into().unwrap());
-                                    if ti_ptr != 0 {
-                                        extract_pid_from_threadinfo(
-                                            reader,
-                                            ti_ptr,
-                                            threadinfo_eprocess_off,
-                                            ethread_process_off,
-                                            pid_off,
-                                        )
-                                    } else {
-                                        0
-                                    }
+                        let owner_pid = match reader.read_bytes(hook_addr + hook_ptihooked_off, 8) {
+                            Ok(bytes) if bytes.len() == 8 => {
+                                let ti_ptr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                                if ti_ptr != 0 {
+                                    extract_pid_from_threadinfo(
+                                        reader,
+                                        ti_ptr,
+                                        threadinfo_eprocess_off,
+                                        ethread_process_off,
+                                        pid_off,
+                                    )
+                                } else {
+                                    0
                                 }
-                                _ => 0,
-                            };
+                            }
+                            _ => 0,
+                        };
 
                         let is_suspicious = classify_message_hook(&hook_type, &module_name);
 
@@ -343,9 +329,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
 
             // Follow rpdeskNext to the next desktop.
             desktop_addr = match reader.read_bytes(desktop_addr + desktop_next_off, 8) {
-                Ok(bytes) if bytes.len() == 8 => {
-                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
                 _ => break,
             };
         }
@@ -391,9 +375,7 @@ fn extract_pid_from_threadinfo<P: PhysicalMemoryProvider>(
 
     // Read UniqueProcessId.
     match reader.read_bytes(eprocess + pid_off, 8) {
-        Ok(bytes) if bytes.len() == 8 => {
-            u64::from_le_bytes(bytes[..8].try_into().unwrap()) as u32
-        }
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()) as u32,
         _ => 0,
     }
 }
@@ -474,14 +456,66 @@ mod tests {
         assert_eq!(hook_type_name(99), "WH_UNKNOWN(99)");
     }
 
+    // ── hook_type_name edge cases ────────────────────────────────────────
+
+    /// hook_type 8 has no entry and returns WH_UNKNOWN(8).
+    #[test]
+    fn hook_type_name_missing_8() {
+        // Value 8 is not in the table.
+        assert_eq!(hook_type_name(8), "WH_UNKNOWN(8)");
+    }
+
+    /// Very large raw type value returns WH_UNKNOWN.
+    #[test]
+    fn hook_type_name_large_value() {
+        assert_eq!(hook_type_name(0xDEAD_BEEF), "WH_UNKNOWN(3735928559)");
+    }
+
+    // ── classify_message_hook additional coverage ────────────────────────
+
+    /// WH_MOUSE_LL from a known system module is benign.
+    #[test]
+    fn classify_mouse_ll_user32_benign() {
+        assert!(!classify_message_hook("WH_MOUSE_LL", "user32.dll"));
+        assert!(!classify_message_hook("WH_MOUSE_LL", "imm32.dll"));
+    }
+
+    /// WH_GETMESSAGE from an unrelated custom DLL is not suspicious
+    /// (only LL hooks are flagged from non-system modules).
+    #[test]
+    fn classify_getmessage_custom_dll_benign() {
+        assert!(!classify_message_hook("WH_GETMESSAGE", "accessibility.dll"));
+    }
+
+    /// Module path with \\downloads\\ is suspicious regardless of hook type.
+    #[test]
+    fn classify_downloads_path_suspicious() {
+        assert!(classify_message_hook(
+            "WH_CBT",
+            "C:\\Users\\user\\Downloads\\evil.dll"
+        ));
+    }
+
+    /// Module name that ends with a system module name (path-qualified) is benign.
+    #[test]
+    fn classify_path_qualified_system_module_benign() {
+        // Ends with \user32.dll — should match BENIGN_MODULES.
+        assert!(!classify_message_hook(
+            "WH_KEYBOARD_LL",
+            "C:\\Windows\\System32\\user32.dll"
+        ));
+        assert!(!classify_message_hook(
+            "WH_KEYBOARD_LL",
+            "C:\\Windows\\SysWOW64\\imm32.dll"
+        ));
+    }
+
     // ── walk_message_hooks tests ─────────────────────────────────────────
 
     /// No grpWinStaList symbol present → returns empty Vec.
     #[test]
     fn walk_message_hooks_no_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HOOK", 0x80)
-            .build_json();
+        let isf = IsfBuilder::new().add_struct("_HOOK", 0x80).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -489,5 +523,70 @@ mod tests {
 
         let result = walk_message_hooks(&reader).unwrap();
         assert!(result.is_empty());
+    }
+
+    /// Walker with grpWinStaList symbol but unreadable memory returns empty.
+    #[test]
+    fn walk_message_hooks_unreadable_winsta_list() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HOOK", 0x80)
+            .add_symbol("grpWinStaList", 0xFFFF_8000_DEAD_0000u64)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        // No memory mapped → read fails → empty.
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_message_hooks(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Walker with grpWinStaList pointing to zero first_winsta returns empty.
+    #[test]
+    fn walk_message_hooks_zero_first_winsta() {
+        use memf_core::test_builders::flags;
+
+        let sym_vaddr: u64 = 0xFFFF_8000_3000_0000;
+        let sym_paddr: u64 = 0x0070_0000;
+
+        // 8 bytes at sym_vaddr = 0 (null pointer to first window station).
+        let mut page = vec![0u8; 4096];
+        page[0..8].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HOOK", 0x80)
+            .add_symbol("grpWinStaList", sym_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // first_winsta == 0 → empty.
+        let result = walk_message_hooks(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// MessageHookInfo serializes to JSON.
+    #[test]
+    fn message_hook_info_serializes() {
+        let hook = MessageHookInfo {
+            address: 0xFFFF_8000_1234_0000,
+            hook_type: "WH_KEYBOARD_LL".to_string(),
+            owner_pid: 1234,
+            hook_proc_addr: 0xDEAD_BEEF_0000,
+            module_name: "keylogger.dll".to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&hook).unwrap();
+        assert!(json.contains("WH_KEYBOARD_LL"));
+        assert!(json.contains("keylogger.dll"));
+        assert!(json.contains("is_suspicious"));
     }
 }

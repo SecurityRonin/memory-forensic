@@ -135,9 +135,7 @@ fn find_ntdll_range<P: PhysicalMemoryProvider + Clone>(
     let proc_reader = reader.with_cr3(proc.cr3);
 
     // PEB -> Ldr -> InLoadOrderModuleList
-    let ldr_addr: u64 = proc_reader
-        .read_field(proc.peb_addr, "_PEB", "Ldr")
-        .ok()?;
+    let ldr_addr: u64 = proc_reader.read_field(proc.peb_addr, "_PEB", "Ldr").ok()?;
     if ldr_addr == 0 {
         return None;
     }
@@ -324,5 +322,77 @@ mod tests {
 
         let results = walk_direct_syscalls(&reader).unwrap();
         assert!(results.is_empty());
+    }
+
+    /// Walker with PsActiveProcessHead symbol present but unreadable process list
+    /// returns empty (graceful degradation on unreadable memory).
+    #[test]
+    fn walk_direct_syscalls_with_symbol_unreadable_head() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Symbol present but pointing to unmapped memory.
+        let isf = IsfBuilder::new()
+            .add_symbol("PsActiveProcessHead", 0xFFFF_8000_DEAD_0000u64)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        // walk_processes will fail on unreadable memory → empty results.
+        let results = walk_direct_syscalls(&reader).unwrap();
+        assert!(results.is_empty());
+    }
+
+    /// Heavens gate is suspicious regardless of ntdll location.
+    #[test]
+    fn classify_heavens_gate_always_suspicious() {
+        assert!(classify_syscall_technique(true, "heavens_gate"));
+        assert!(classify_syscall_technique(false, "heavens_gate"));
+    }
+
+    /// Direct syscall in ntdll is benign; outside is suspicious.
+    #[test]
+    fn classify_direct_syscall_ntdll_boundary() {
+        assert!(!classify_syscall_technique(true, "direct_syscall"));
+        assert!(classify_syscall_technique(false, "direct_syscall"));
+    }
+
+    /// Indirect syscall is always suspicious regardless of ntdll context.
+    #[test]
+    fn classify_indirect_syscall_always_suspicious() {
+        assert!(classify_syscall_technique(true, "indirect_syscall"));
+        assert!(classify_syscall_technique(false, "indirect_syscall"));
+    }
+
+    /// Unknown technique inside ntdll is benign; outside is suspicious.
+    #[test]
+    fn classify_unknown_technique_boundary() {
+        assert!(!classify_syscall_technique(true, "some_technique"));
+        assert!(classify_syscall_technique(false, "some_technique"));
+    }
+
+    /// DirectSyscallInfo can be constructed and its fields are accessible.
+    #[test]
+    fn direct_syscall_info_fields() {
+        let info = DirectSyscallInfo {
+            pid: 1234,
+            process_name: "test.exe".to_string(),
+            thread_id: 5678,
+            syscall_address: 0x7FF8_0000_1000,
+            syscall_number: 0x0A,
+            technique: "direct_syscall".to_string(),
+            in_ntdll: false,
+            is_suspicious: true,
+        };
+        assert_eq!(info.pid, 1234);
+        assert_eq!(info.technique, "direct_syscall");
+        assert!(info.is_suspicious);
     }
 }

@@ -167,10 +167,7 @@ fn find_module_range(name: &str, module_ranges: &[(u64, u64, String)]) -> Option
     None
 }
 
-fn read_ascii_string<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    vaddr: u64,
-) -> String {
+fn read_ascii_string<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> String {
     match reader.read_bytes(vaddr, 256) {
         Ok(bytes) => {
             let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
@@ -462,9 +459,7 @@ fn read_import_name<P: PhysicalMemoryProvider>(
         return String::new();
     }
 
-    let name_vaddr = image_base
-        .wrapping_add(u64::from(name_rva))
-        .wrapping_add(2);
+    let name_vaddr = image_base.wrapping_add(u64::from(name_rva)).wrapping_add(2);
     read_ascii_string(reader, name_vaddr)
 }
 
@@ -539,11 +534,7 @@ mod tests {
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
-            .map_4k(
-                eproc_vaddr + 0x1000,
-                eproc_paddr + 0x1000,
-                flags::WRITABLE,
-            )
+            .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
             .write_phys(eproc_paddr, &eproc_data[..4096])
             .write_phys(eproc_paddr + 0x1000, &eproc_data[4096..])
             .build();
@@ -581,9 +572,89 @@ mod tests {
             json.contains("NtCreateFile"),
             "JSON should contain function name"
         );
-        assert!(
-            json.contains("evil.dll"),
-            "JSON should contain hook module"
-        );
+        assert!(json.contains("evil.dll"), "JSON should contain hook module");
+    }
+
+    // ── Helper function coverage ──────────────────────────────────────
+
+    /// le_u16 returns 0 when the offset is out of bounds.
+    #[test]
+    fn le_u16_oob_returns_zero() {
+        assert_eq!(le_u16(&[0x01, 0x02], 1), 0); // needs 2 bytes from offset 1 but only 1 available
+        assert_eq!(le_u16(&[], 0), 0);
+    }
+
+    /// le_u16 reads correctly within bounds.
+    #[test]
+    fn le_u16_reads_correctly() {
+        assert_eq!(le_u16(&[0x34, 0x12, 0xFF], 0), 0x1234);
+        assert_eq!(le_u16(&[0x00, 0x78, 0x56], 1), 0x5678);
+    }
+
+    /// le_u32 returns 0 when out of bounds.
+    #[test]
+    fn le_u32_oob_returns_zero() {
+        assert_eq!(le_u32(&[0x01, 0x02, 0x03], 0), 0); // needs 4 bytes
+        assert_eq!(le_u32(&[], 0), 0);
+    }
+
+    /// le_u32 reads correctly within bounds.
+    #[test]
+    fn le_u32_reads_correctly() {
+        let buf = [0x78u8, 0x56, 0x34, 0x12];
+        assert_eq!(le_u32(&buf, 0), 0x1234_5678);
+    }
+
+    /// le_u64 returns 0 when out of bounds.
+    #[test]
+    fn le_u64_oob_returns_zero() {
+        assert_eq!(le_u64(&[0u8; 7], 0), 0);
+        assert_eq!(le_u64(&[], 0), 0);
+    }
+
+    /// le_u64 reads correctly within bounds.
+    #[test]
+    fn le_u64_reads_correctly() {
+        let buf: [u8; 8] = [0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
+        assert_eq!(le_u64(&buf, 0), 0x0102_0304_0506_0708);
+    }
+
+    /// classify_iat_hook with hook_target exactly at module base is benign.
+    #[test]
+    fn classify_iat_hook_at_exact_base_benign() {
+        let base: u64 = 0x7FF8_0000_0000;
+        let size: u32 = 0x10_0000;
+        // target == base is inside range [base, base+size)
+        assert!(!classify_iat_hook(base, base, size, "kernel32.dll"));
+    }
+
+    /// classify_iat_hook with hook_target at exactly end is suspicious (end is exclusive).
+    #[test]
+    fn classify_iat_hook_at_end_exclusive_suspicious() {
+        let base: u64 = 0x7FF8_0000_0000;
+        let size: u32 = 0x10_0000;
+        let end = base + u64::from(size);
+        assert!(classify_iat_hook(end, base, size, "kernel32.dll"));
+    }
+
+    /// classify_iat_hook with "unknown" trimmed/cased variants.
+    #[test]
+    fn classify_iat_hook_unknown_with_whitespace() {
+        let base: u64 = 0x7FF8_0000_0000;
+        let size: u32 = 0x10_0000;
+        let target = base + 0x100;
+        // Whitespace-trimmed "unknown" is still suspicious.
+        assert!(classify_iat_hook(target, base, size, "  UNKNOWN  "));
+    }
+
+    /// Zero expected_module_base + zero size: target inside [0,0) is never inside —
+    /// but classify_iat_hook with non-zero hook target still checks range (0..0 is
+    /// always outside, so result is suspicious).
+    #[test]
+    fn classify_iat_hook_zero_base_and_size_suspicious() {
+        // Any non-zero hook_target is >= base (0) but the range is [0..0) which is
+        // empty. The hook_target (e.g. 0x1000) >= end (0), so it IS >= end → suspicious.
+        // Actually 0x1000 >= 0 (base) but 0x1000 >= 0 (end) → outside → suspicious.
+        assert!(classify_iat_hook(0x1000, 0, 0, "ntdll.dll"));
     }
 }

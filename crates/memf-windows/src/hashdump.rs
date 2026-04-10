@@ -30,8 +30,7 @@ const EMPTY_LM_HASH: &str = "aad3b435b51404eeaad3b435b51404ee";
 
 /// Boot key scramble order used by Windows to permute the class-name bytes.
 const BOOT_KEY_SCRAMBLE: [usize; 16] = [
-    0x08, 0x05, 0x04, 0x02, 0x0B, 0x09, 0x0D, 0x03,
-    0x00, 0x06, 0x01, 0x0C, 0x0E, 0x0A, 0x0F, 0x07,
+    0x08, 0x05, 0x04, 0x02, 0x0B, 0x09, 0x0D, 0x03, 0x00, 0x06, 0x01, 0x0C, 0x0E, 0x0A, 0x0F, 0x07,
 ];
 
 /// SYSTEM hive LSA subkey names whose class names form the boot key.
@@ -220,14 +219,10 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                    }
-                    _ => continue,
-                }
-            }
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                _ => continue,
+            },
             _ => continue,
         };
 
@@ -452,20 +447,14 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
 
     // NT hash offset and length are at V[0xA8..0xAC] and V[0xAC..0xB0]
     // relative to an internal offset base (0xCC).
-    let nt_offset = u32::from_le_bytes(
-        v_data[0xA8..0xAC].try_into().unwrap_or([0; 4]),
-    ) as usize + 0xCC;
-    let nt_length = u32::from_le_bytes(
-        v_data[0xAC..0xB0].try_into().unwrap_or([0; 4]),
-    ) as usize;
+    let nt_offset =
+        u32::from_le_bytes(v_data[0xA8..0xAC].try_into().unwrap_or([0; 4])) as usize + 0xCC;
+    let nt_length = u32::from_le_bytes(v_data[0xAC..0xB0].try_into().unwrap_or([0; 4])) as usize;
 
     // LM hash offset and length are at V[0x9C..0xA0] and V[0xA0..0xA4].
-    let lm_offset = u32::from_le_bytes(
-        v_data[0x9C..0xA0].try_into().unwrap_or([0; 4]),
-    ) as usize + 0xCC;
-    let lm_length = u32::from_le_bytes(
-        v_data[0xA0..0xA4].try_into().unwrap_or([0; 4]),
-    ) as usize;
+    let lm_offset =
+        u32::from_le_bytes(v_data[0x9C..0xA0].try_into().unwrap_or([0; 4])) as usize + 0xCC;
+    let lm_length = u32::from_le_bytes(v_data[0xA0..0xA4].try_into().unwrap_or([0; 4])) as usize;
 
     // Decrypt NT hash.
     let nt_hash = if nt_length >= 20 && nt_offset + nt_length <= v_data.len() {
@@ -567,14 +556,10 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                    }
-                    _ => continue,
-                }
-            }
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                _ => continue,
+            },
             _ => break,
         };
 
@@ -621,9 +606,7 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
 
         if val_type == target_rid {
             let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-                Ok(bytes) if bytes.len() == 2 => {
-                    u16::from_le_bytes(bytes[..2].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
                 _ => continue,
             };
 
@@ -664,29 +647,22 @@ fn simple_md5_derive(boot_key: &[u8], salt: &[u8]) -> Vec<u8> {
 fn md5_hash(message: &[u8]) -> Vec<u8> {
     // MD5 constants
     const S: [u32; 64] = [
-        7,12,17,22, 7,12,17,22, 7,12,17,22, 7,12,17,22,
-        5, 9,14,20, 5, 9,14,20, 5, 9,14,20, 5, 9,14,20,
-        4,11,16,23, 4,11,16,23, 4,11,16,23, 4,11,16,23,
-        6,10,15,21, 6,10,15,21, 6,10,15,21, 6,10,15,21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
     ];
 
     const K: [u32; 64] = [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
-        0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
-        0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
-        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
-        0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
-        0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
     ];
 
     // Pre-processing: pad message
@@ -724,7 +700,10 @@ fn md5_hash(message: &[u8]) -> Vec<u8> {
                 _ => (c ^ (b | (!d)), ((7 * i) % 16) as usize),
             };
 
-            let f = f.wrapping_add(a).wrapping_add(K[i as usize]).wrapping_add(m[g]);
+            let f = f
+                .wrapping_add(a)
+                .wrapping_add(K[i as usize])
+                .wrapping_add(m[g]);
             a = d;
             d = c;
             c = b;
@@ -807,42 +786,42 @@ fn aes_cbc_decrypt_simple(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
 
 /// AES S-box.
 const AES_SBOX: [u8; 256] = [
-    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
-    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
-    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
-    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
-    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
-    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
-    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
-    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
-    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
-    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
-    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
-    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
-    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
-    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
-    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
-    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16,
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 ];
 
 /// AES inverse S-box.
 const AES_INV_SBOX: [u8; 256] = [
-    0x52,0x09,0x6a,0xd5,0x30,0x36,0xa5,0x38,0xbf,0x40,0xa3,0x9e,0x81,0xf3,0xd7,0xfb,
-    0x7c,0xe3,0x39,0x82,0x9b,0x2f,0xff,0x87,0x34,0x8e,0x43,0x44,0xc4,0xde,0xe9,0xcb,
-    0x54,0x7b,0x94,0x32,0xa6,0xc2,0x23,0x3d,0xee,0x4c,0x95,0x0b,0x42,0xfa,0xc3,0x4e,
-    0x08,0x2e,0xa1,0x66,0x28,0xd9,0x24,0xb2,0x76,0x5b,0xa2,0x49,0x6d,0x8b,0xd1,0x25,
-    0x72,0xf8,0xf6,0x64,0x86,0x68,0x98,0x16,0xd4,0xa4,0x5c,0xcc,0x5d,0x65,0xb6,0x92,
-    0x6c,0x70,0x48,0x50,0xfd,0xed,0xb9,0xda,0x5e,0x15,0x46,0x57,0xa7,0x8d,0x9d,0x84,
-    0x90,0xd8,0xab,0x00,0x8c,0xbc,0xd3,0x0a,0xf7,0xe4,0x58,0x05,0xb8,0xb3,0x45,0x06,
-    0xd0,0x2c,0x1e,0x8f,0xca,0x3f,0x0f,0x02,0xc1,0xaf,0xbd,0x03,0x01,0x13,0x8a,0x6b,
-    0x3a,0x91,0x11,0x41,0x4f,0x67,0xdc,0xea,0x97,0xf2,0xcf,0xce,0xf0,0xb4,0xe6,0x73,
-    0x96,0xac,0x74,0x22,0xe7,0xad,0x35,0x85,0xe2,0xf9,0x37,0xe8,0x1c,0x75,0xdf,0x6e,
-    0x47,0xf1,0x1a,0x71,0x1d,0x29,0xc5,0x89,0x6f,0xb7,0x62,0x0e,0xaa,0x18,0xbe,0x1b,
-    0xfc,0x56,0x3e,0x4b,0xc6,0xd2,0x79,0x20,0x9a,0xdb,0xc0,0xfe,0x78,0xcd,0x5a,0xf4,
-    0x1f,0xdd,0xa8,0x33,0x88,0x07,0xc7,0x31,0xb1,0x12,0x10,0x59,0x27,0x80,0xec,0x5f,
-    0x60,0x51,0x7f,0xa9,0x19,0xb5,0x4a,0x0d,0x2d,0xe5,0x7a,0x9f,0x93,0xc9,0x9c,0xef,
-    0xa0,0xe0,0x3b,0x4d,0xae,0x2a,0xf5,0xb0,0xc8,0xeb,0xbb,0x3c,0x83,0x53,0x99,0x61,
-    0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d,
+    0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
+    0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
+    0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c, 0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e,
+    0x08, 0x2e, 0xa1, 0x66, 0x28, 0xd9, 0x24, 0xb2, 0x76, 0x5b, 0xa2, 0x49, 0x6d, 0x8b, 0xd1, 0x25,
+    0x72, 0xf8, 0xf6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xd4, 0xa4, 0x5c, 0xcc, 0x5d, 0x65, 0xb6, 0x92,
+    0x6c, 0x70, 0x48, 0x50, 0xfd, 0xed, 0xb9, 0xda, 0x5e, 0x15, 0x46, 0x57, 0xa7, 0x8d, 0x9d, 0x84,
+    0x90, 0xd8, 0xab, 0x00, 0x8c, 0xbc, 0xd3, 0x0a, 0xf7, 0xe4, 0x58, 0x05, 0xb8, 0xb3, 0x45, 0x06,
+    0xd0, 0x2c, 0x1e, 0x8f, 0xca, 0x3f, 0x0f, 0x02, 0xc1, 0xaf, 0xbd, 0x03, 0x01, 0x13, 0x8a, 0x6b,
+    0x3a, 0x91, 0x11, 0x41, 0x4f, 0x67, 0xdc, 0xea, 0x97, 0xf2, 0xcf, 0xce, 0xf0, 0xb4, 0xe6, 0x73,
+    0x96, 0xac, 0x74, 0x22, 0xe7, 0xad, 0x35, 0x85, 0xe2, 0xf9, 0x37, 0xe8, 0x1c, 0x75, 0xdf, 0x6e,
+    0x47, 0xf1, 0x1a, 0x71, 0x1d, 0x29, 0xc5, 0x89, 0x6f, 0xb7, 0x62, 0x0e, 0xaa, 0x18, 0xbe, 0x1b,
+    0xfc, 0x56, 0x3e, 0x4b, 0xc6, 0xd2, 0x79, 0x20, 0x9a, 0xdb, 0xc0, 0xfe, 0x78, 0xcd, 0x5a, 0xf4,
+    0x1f, 0xdd, 0xa8, 0x33, 0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f,
+    0x60, 0x51, 0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
+    0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53, 0x99, 0x61,
+    0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
 ];
 
 /// AES round constant.
@@ -854,7 +833,7 @@ fn aes128_key_expansion(key: &[u8]) -> Vec<[u8; 16]> {
 
     // First 4 words from the key
     for i in 0..4 {
-        w[i] = u32::from_be_bytes([key[4*i], key[4*i+1], key[4*i+2], key[4*i+3]]);
+        w[i] = u32::from_be_bytes([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
     }
 
     for i in 4..44 {
@@ -880,7 +859,7 @@ fn aes128_key_expansion(key: &[u8]) -> Vec<[u8; 16]> {
         let mut rk = [0u8; 16];
         for j in 0..4 {
             let bytes = w[r * 4 + j].to_be_bytes();
-            rk[4*j..4*j+4].copy_from_slice(&bytes);
+            rk[4 * j..4 * j + 4].copy_from_slice(&bytes);
         }
         round_keys.push(rk);
     }
@@ -968,10 +947,13 @@ fn inv_mix_columns(state: &mut [u8; 16]) {
         let s2 = state[col * 4 + 2];
         let s3 = state[col * 4 + 3];
 
-        state[col * 4]     = gf_mul(0x0e, s0) ^ gf_mul(0x0b, s1) ^ gf_mul(0x0d, s2) ^ gf_mul(0x09, s3);
-        state[col * 4 + 1] = gf_mul(0x09, s0) ^ gf_mul(0x0e, s1) ^ gf_mul(0x0b, s2) ^ gf_mul(0x0d, s3);
-        state[col * 4 + 2] = gf_mul(0x0d, s0) ^ gf_mul(0x09, s1) ^ gf_mul(0x0e, s2) ^ gf_mul(0x0b, s3);
-        state[col * 4 + 3] = gf_mul(0x0b, s0) ^ gf_mul(0x0d, s1) ^ gf_mul(0x09, s2) ^ gf_mul(0x0e, s3);
+        state[col * 4] = gf_mul(0x0e, s0) ^ gf_mul(0x0b, s1) ^ gf_mul(0x0d, s2) ^ gf_mul(0x09, s3);
+        state[col * 4 + 1] =
+            gf_mul(0x09, s0) ^ gf_mul(0x0e, s1) ^ gf_mul(0x0b, s2) ^ gf_mul(0x0d, s3);
+        state[col * 4 + 2] =
+            gf_mul(0x0d, s0) ^ gf_mul(0x09, s1) ^ gf_mul(0x0e, s2) ^ gf_mul(0x0b, s3);
+        state[col * 4 + 3] =
+            gf_mul(0x0b, s0) ^ gf_mul(0x0d, s1) ^ gf_mul(0x09, s2) ^ gf_mul(0x0e, s3);
     }
 }
 
@@ -1038,14 +1020,10 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                    }
-                    _ => continue,
-                }
-            }
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                _ => continue,
+            },
             _ => return 0,
         };
 
@@ -1187,7 +1165,9 @@ fn read_value_data<P: PhysicalMemoryProvider>(
         if (raw_len_bytes & 0x8000_0000) != 0 {
             // Inline data at 0x0C, up to 4 bytes.
             let inline_len = data_len.min(4) as usize;
-            return reader.read_bytes(val_addr + 0x0C, inline_len).unwrap_or_default();
+            return reader
+                .read_bytes(val_addr + 0x0C, inline_len)
+                .unwrap_or_default();
         }
 
         let data_off: u32 = match reader.read_bytes(val_addr + 0x0C, 4) {
@@ -1200,17 +1180,16 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             return Vec::new();
         }
 
-        return reader.read_bytes(data_addr, data_len as usize).unwrap_or_default();
+        return reader
+            .read_bytes(data_addr, data_len as usize)
+            .unwrap_or_default();
     }
 
     Vec::new()
 }
 
 /// Resolve a hive's flat base address for cell offset calculations.
-fn resolve_flat_base<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-) -> u64 {
+fn resolve_flat_base<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, hive_addr: u64) -> u64 {
     let base_block_off = reader
         .symbols()
         .field_offset("_HHIVE", "BaseBlock")
@@ -1233,7 +1212,11 @@ fn resolve_flat_base<P: PhysicalMemoryProvider>(
     match reader.read_bytes(hive_addr + storage_base, 8) {
         Ok(bytes) if bytes.len() == 8 => {
             let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            if addr != 0 { addr } else { base_block_addr + 0x1000 }
+            if addr != 0 {
+                addr
+            } else {
+                base_block_addr + 0x1000
+            }
         }
         _ => base_block_addr + 0x1000,
     }
@@ -1282,99 +1265,84 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn des_ecb_encrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
     // DES Initial Permutation table
     const IP: [u8; 64] = [
-        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4,
-        62, 54, 46, 38, 30, 22, 14, 6, 64, 56, 48, 40, 32, 24, 16, 8,
-        57, 49, 41, 33, 25, 17,  9, 1, 59, 51, 43, 35, 27, 19, 11, 3,
-        61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
+        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14,
+        6, 64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11,
+        3, 61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
     ];
 
     // DES Final Permutation (IP^-1)
     const FP: [u8; 64] = [
-        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31,
-        38, 6, 46, 14, 54, 22, 62, 30, 37, 5, 45, 13, 53, 21, 61, 29,
-        36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19, 59, 27,
-        34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41,  9, 49, 17, 57, 25,
+        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31, 38, 6, 46, 14, 54, 22, 62,
+        30, 37, 5, 45, 13, 53, 21, 61, 29, 36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19,
+        59, 27, 34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41, 9, 49, 17, 57, 25,
     ];
 
     // DES Expansion permutation
     const E: [u8; 48] = [
-        32,  1,  2,  3,  4,  5,  4,  5,  6,  7,  8,  9,
-         8,  9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17,
-        16, 17, 18, 19, 20, 21, 20, 21, 22, 23, 24, 25,
-        24, 25, 26, 27, 28, 29, 28, 29, 30, 31, 32,  1,
+        32, 1, 2, 3, 4, 5, 4, 5, 6, 7, 8, 9, 8, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 16, 17,
+        18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 24, 25, 26, 27, 28, 29, 28, 29, 30, 31, 32, 1,
     ];
 
     // DES P-box permutation
     const P: [u8; 32] = [
-        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10,
-        2, 8, 24, 14, 32, 27, 3, 9, 19, 13, 30, 6, 22, 11, 4, 25,
+        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10, 2, 8, 24, 14, 32, 27, 3, 9,
+        19, 13, 30, 6, 22, 11, 4, 25,
     ];
 
     // DES S-boxes
     const SBOXES: [[u8; 64]; 8] = [
         [
-            14,4,13,1,2,15,11,8,3,10,6,12,5,9,0,7,
-            0,15,7,4,14,2,13,1,10,6,12,11,9,5,3,8,
-            4,1,14,8,13,6,2,11,15,12,9,7,3,10,5,0,
-            15,12,8,2,4,9,1,7,5,11,3,14,10,0,6,13,
+            14, 4, 13, 1, 2, 15, 11, 8, 3, 10, 6, 12, 5, 9, 0, 7, 0, 15, 7, 4, 14, 2, 13, 1, 10, 6,
+            12, 11, 9, 5, 3, 8, 4, 1, 14, 8, 13, 6, 2, 11, 15, 12, 9, 7, 3, 10, 5, 0, 15, 12, 8, 2,
+            4, 9, 1, 7, 5, 11, 3, 14, 10, 0, 6, 13,
         ],
         [
-            15,1,8,14,6,11,3,4,9,7,2,13,12,0,5,10,
-            3,13,4,7,15,2,8,14,12,0,1,10,6,9,11,5,
-            0,14,7,11,10,4,13,1,5,8,12,6,9,3,2,15,
-            13,8,10,1,3,15,4,2,11,6,7,12,0,5,14,9,
+            15, 1, 8, 14, 6, 11, 3, 4, 9, 7, 2, 13, 12, 0, 5, 10, 3, 13, 4, 7, 15, 2, 8, 14, 12, 0,
+            1, 10, 6, 9, 11, 5, 0, 14, 7, 11, 10, 4, 13, 1, 5, 8, 12, 6, 9, 3, 2, 15, 13, 8, 10, 1,
+            3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9,
         ],
         [
-            10,0,9,14,6,3,15,5,1,13,12,7,11,4,2,8,
-            13,7,0,9,3,4,6,10,2,8,5,14,12,11,15,1,
-            13,6,4,9,8,15,3,0,11,1,2,12,5,10,14,7,
-            1,10,13,0,6,9,8,7,4,15,14,3,11,5,2,12,
+            10, 0, 9, 14, 6, 3, 15, 5, 1, 13, 12, 7, 11, 4, 2, 8, 13, 7, 0, 9, 3, 4, 6, 10, 2, 8,
+            5, 14, 12, 11, 15, 1, 13, 6, 4, 9, 8, 15, 3, 0, 11, 1, 2, 12, 5, 10, 14, 7, 1, 10, 13,
+            0, 6, 9, 8, 7, 4, 15, 14, 3, 11, 5, 2, 12,
         ],
         [
-            7,13,14,3,0,6,9,10,1,2,8,5,11,12,4,15,
-            13,8,11,5,6,15,0,3,4,7,2,12,1,10,14,9,
-            10,6,9,0,12,11,7,13,15,1,3,14,5,2,8,4,
-            3,15,0,6,10,1,13,8,9,4,5,11,12,7,2,14,
+            7, 13, 14, 3, 0, 6, 9, 10, 1, 2, 8, 5, 11, 12, 4, 15, 13, 8, 11, 5, 6, 15, 0, 3, 4, 7,
+            2, 12, 1, 10, 14, 9, 10, 6, 9, 0, 12, 11, 7, 13, 15, 1, 3, 14, 5, 2, 8, 4, 3, 15, 0, 6,
+            10, 1, 13, 8, 9, 4, 5, 11, 12, 7, 2, 14,
         ],
         [
-            2,12,4,1,7,10,11,6,8,5,3,15,13,0,14,9,
-            14,11,2,12,4,7,13,1,5,0,15,10,3,9,8,6,
-            4,2,1,11,10,13,7,8,15,9,12,5,6,3,0,14,
-            11,8,12,7,1,14,2,13,6,15,0,9,10,4,5,3,
+            2, 12, 4, 1, 7, 10, 11, 6, 8, 5, 3, 15, 13, 0, 14, 9, 14, 11, 2, 12, 4, 7, 13, 1, 5, 0,
+            15, 10, 3, 9, 8, 6, 4, 2, 1, 11, 10, 13, 7, 8, 15, 9, 12, 5, 6, 3, 0, 14, 11, 8, 12, 7,
+            1, 14, 2, 13, 6, 15, 0, 9, 10, 4, 5, 3,
         ],
         [
-            12,1,10,15,9,2,6,8,0,13,3,4,14,7,5,11,
-            10,15,4,2,7,12,9,5,6,1,13,14,0,11,3,8,
-            9,14,15,5,2,8,12,3,7,0,4,10,1,13,11,6,
-            4,3,2,12,9,5,15,10,11,14,1,7,6,0,8,13,
+            12, 1, 10, 15, 9, 2, 6, 8, 0, 13, 3, 4, 14, 7, 5, 11, 10, 15, 4, 2, 7, 12, 9, 5, 6, 1,
+            13, 14, 0, 11, 3, 8, 9, 14, 15, 5, 2, 8, 12, 3, 7, 0, 4, 10, 1, 13, 11, 6, 4, 3, 2, 12,
+            9, 5, 15, 10, 11, 14, 1, 7, 6, 0, 8, 13,
         ],
         [
-            4,11,2,14,15,0,8,13,3,12,9,7,5,10,6,1,
-            13,0,11,7,4,9,1,10,14,3,5,12,2,15,8,6,
-            1,4,11,13,12,3,7,14,10,15,6,8,0,5,9,2,
-            6,11,13,8,1,4,10,7,9,5,0,15,14,2,3,12,
+            4, 11, 2, 14, 15, 0, 8, 13, 3, 12, 9, 7, 5, 10, 6, 1, 13, 0, 11, 7, 4, 9, 1, 10, 14, 3,
+            5, 12, 2, 15, 8, 6, 1, 4, 11, 13, 12, 3, 7, 14, 10, 15, 6, 8, 0, 5, 9, 2, 6, 11, 13, 8,
+            1, 4, 10, 7, 9, 5, 0, 15, 14, 2, 3, 12,
         ],
         [
-            13,2,8,4,6,15,11,1,10,9,3,14,5,0,12,7,
-            1,15,13,8,10,3,7,4,12,5,6,2,0,14,9,11,
-            7,0,1,3,13,4,14,10,15,5,2,12,11,9,6,8,
-            2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11,
+            13, 2, 8, 4, 6, 15, 11, 1, 10, 9, 3, 14, 5, 0, 12, 7, 1, 15, 13, 8, 10, 3, 7, 4, 12, 5,
+            6, 2, 0, 14, 9, 11, 7, 0, 1, 3, 13, 4, 14, 10, 15, 5, 2, 12, 11, 9, 6, 8, 2, 1, 14, 7,
+            4, 10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11,
         ],
     ];
 
     // DES key schedule: PC-1 and PC-2 permutations, shift schedule
     const PC1: [u8; 56] = [
-        57, 49, 41, 33, 25, 17,  9,  1, 58, 50, 42, 34, 26, 18,
-        10,  2, 59, 51, 43, 35, 27, 19, 11,  3, 60, 52, 44, 36,
-        63, 55, 47, 39, 31, 23, 15,  7, 62, 54, 46, 38, 30, 22,
-        14,  6, 61, 53, 45, 37, 29, 21, 13,  5, 28, 20, 12,  4,
+        57, 49, 41, 33, 25, 17, 9, 1, 58, 50, 42, 34, 26, 18, 10, 2, 59, 51, 43, 35, 27, 19, 11, 3,
+        60, 52, 44, 36, 63, 55, 47, 39, 31, 23, 15, 7, 62, 54, 46, 38, 30, 22, 14, 6, 61, 53, 45,
+        37, 29, 21, 13, 5, 28, 20, 12, 4,
     ];
 
     const PC2: [u8; 48] = [
-        14, 17, 11, 24,  1,  5,  3, 28, 15,  6, 21, 10,
-        23, 19, 12,  4, 26,  8, 16,  7, 27, 20, 13,  2,
-        41, 52, 31, 37, 47, 55, 30, 40, 51, 45, 33, 48,
-        44, 49, 39, 56, 34, 53, 46, 42, 50, 36, 29, 32,
+        14, 17, 11, 24, 1, 5, 3, 28, 15, 6, 21, 10, 23, 19, 12, 4, 26, 8, 16, 7, 27, 20, 13, 2, 41,
+        52, 31, 37, 47, 55, 30, 40, 51, 45, 33, 48, 44, 49, 39, 56, 34, 53, 46, 42, 50, 36, 29, 32,
     ];
 
     const SHIFTS: [u8; 16] = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1];
@@ -1554,14 +1522,24 @@ fn rid_to_des_keys(rid: u32) -> ([u8; 8], [u8; 8]) {
 
     // First key: bytes 0,1,2,3,0,1,2
     let s1 = [
-        rid_bytes[0], rid_bytes[1], rid_bytes[2], rid_bytes[3],
-        rid_bytes[0], rid_bytes[1], rid_bytes[2],
+        rid_bytes[0],
+        rid_bytes[1],
+        rid_bytes[2],
+        rid_bytes[3],
+        rid_bytes[0],
+        rid_bytes[1],
+        rid_bytes[2],
     ];
 
     // Second key: bytes 3,0,1,2,3,0,1
     let s2 = [
-        rid_bytes[3], rid_bytes[0], rid_bytes[1], rid_bytes[2],
-        rid_bytes[3], rid_bytes[0], rid_bytes[1],
+        rid_bytes[3],
+        rid_bytes[0],
+        rid_bytes[1],
+        rid_bytes[2],
+        rid_bytes[3],
+        rid_bytes[0],
+        rid_bytes[1],
     ];
 
     (str_to_key(&s1), str_to_key(&s2))
@@ -1616,103 +1594,95 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
     // (Tables are identical, only the subkey application order changes.)
 
     const IP: [u8; 64] = [
-        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4,
-        62, 54, 46, 38, 30, 22, 14, 6, 64, 56, 48, 40, 32, 24, 16, 8,
-        57, 49, 41, 33, 25, 17,  9, 1, 59, 51, 43, 35, 27, 19, 11, 3,
-        61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
+        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14,
+        6, 64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11,
+        3, 61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
     ];
     const FP: [u8; 64] = [
-        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31,
-        38, 6, 46, 14, 54, 22, 62, 30, 37, 5, 45, 13, 53, 21, 61, 29,
-        36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19, 59, 27,
-        34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41,  9, 49, 17, 57, 25,
+        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31, 38, 6, 46, 14, 54, 22, 62,
+        30, 37, 5, 45, 13, 53, 21, 61, 29, 36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19,
+        59, 27, 34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41, 9, 49, 17, 57, 25,
     ];
     const E_TABLE: [u8; 48] = [
-        32,  1,  2,  3,  4,  5,  4,  5,  6,  7,  8,  9,
-         8,  9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17,
-        16, 17, 18, 19, 20, 21, 20, 21, 22, 23, 24, 25,
-        24, 25, 26, 27, 28, 29, 28, 29, 30, 31, 32,  1,
+        32, 1, 2, 3, 4, 5, 4, 5, 6, 7, 8, 9, 8, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 16, 17,
+        18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 24, 25, 26, 27, 28, 29, 28, 29, 30, 31, 32, 1,
     ];
     const P_TABLE: [u8; 32] = [
-        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10,
-        2, 8, 24, 14, 32, 27, 3, 9, 19, 13, 30, 6, 22, 11, 4, 25,
+        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10, 2, 8, 24, 14, 32, 27, 3, 9,
+        19, 13, 30, 6, 22, 11, 4, 25,
     ];
     const SBOXES: [[u8; 64]; 8] = [
         [
-            14,4,13,1,2,15,11,8,3,10,6,12,5,9,0,7,
-            0,15,7,4,14,2,13,1,10,6,12,11,9,5,3,8,
-            4,1,14,8,13,6,2,11,15,12,9,7,3,10,5,0,
-            15,12,8,2,4,9,1,7,5,11,3,14,10,0,6,13,
+            14, 4, 13, 1, 2, 15, 11, 8, 3, 10, 6, 12, 5, 9, 0, 7, 0, 15, 7, 4, 14, 2, 13, 1, 10, 6,
+            12, 11, 9, 5, 3, 8, 4, 1, 14, 8, 13, 6, 2, 11, 15, 12, 9, 7, 3, 10, 5, 0, 15, 12, 8, 2,
+            4, 9, 1, 7, 5, 11, 3, 14, 10, 0, 6, 13,
         ],
         [
-            15,1,8,14,6,11,3,4,9,7,2,13,12,0,5,10,
-            3,13,4,7,15,2,8,14,12,0,1,10,6,9,11,5,
-            0,14,7,11,10,4,13,1,5,8,12,6,9,3,2,15,
-            13,8,10,1,3,15,4,2,11,6,7,12,0,5,14,9,
+            15, 1, 8, 14, 6, 11, 3, 4, 9, 7, 2, 13, 12, 0, 5, 10, 3, 13, 4, 7, 15, 2, 8, 14, 12, 0,
+            1, 10, 6, 9, 11, 5, 0, 14, 7, 11, 10, 4, 13, 1, 5, 8, 12, 6, 9, 3, 2, 15, 13, 8, 10, 1,
+            3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9,
         ],
         [
-            10,0,9,14,6,3,15,5,1,13,12,7,11,4,2,8,
-            13,7,0,9,3,4,6,10,2,8,5,14,12,11,15,1,
-            13,6,4,9,8,15,3,0,11,1,2,12,5,10,14,7,
-            1,10,13,0,6,9,8,7,4,15,14,3,11,5,2,12,
+            10, 0, 9, 14, 6, 3, 15, 5, 1, 13, 12, 7, 11, 4, 2, 8, 13, 7, 0, 9, 3, 4, 6, 10, 2, 8,
+            5, 14, 12, 11, 15, 1, 13, 6, 4, 9, 8, 15, 3, 0, 11, 1, 2, 12, 5, 10, 14, 7, 1, 10, 13,
+            0, 6, 9, 8, 7, 4, 15, 14, 3, 11, 5, 2, 12,
         ],
         [
-            7,13,14,3,0,6,9,10,1,2,8,5,11,12,4,15,
-            13,8,11,5,6,15,0,3,4,7,2,12,1,10,14,9,
-            10,6,9,0,12,11,7,13,15,1,3,14,5,2,8,4,
-            3,15,0,6,10,1,13,8,9,4,5,11,12,7,2,14,
+            7, 13, 14, 3, 0, 6, 9, 10, 1, 2, 8, 5, 11, 12, 4, 15, 13, 8, 11, 5, 6, 15, 0, 3, 4, 7,
+            2, 12, 1, 10, 14, 9, 10, 6, 9, 0, 12, 11, 7, 13, 15, 1, 3, 14, 5, 2, 8, 4, 3, 15, 0, 6,
+            10, 1, 13, 8, 9, 4, 5, 11, 12, 7, 2, 14,
         ],
         [
-            2,12,4,1,7,10,11,6,8,5,3,15,13,0,14,9,
-            14,11,2,12,4,7,13,1,5,0,15,10,3,9,8,6,
-            4,2,1,11,10,13,7,8,15,9,12,5,6,3,0,14,
-            11,8,12,7,1,14,2,13,6,15,0,9,10,4,5,3,
+            2, 12, 4, 1, 7, 10, 11, 6, 8, 5, 3, 15, 13, 0, 14, 9, 14, 11, 2, 12, 4, 7, 13, 1, 5, 0,
+            15, 10, 3, 9, 8, 6, 4, 2, 1, 11, 10, 13, 7, 8, 15, 9, 12, 5, 6, 3, 0, 14, 11, 8, 12, 7,
+            1, 14, 2, 13, 6, 15, 0, 9, 10, 4, 5, 3,
         ],
         [
-            12,1,10,15,9,2,6,8,0,13,3,4,14,7,5,11,
-            10,15,4,2,7,12,9,5,6,1,13,14,0,11,3,8,
-            9,14,15,5,2,8,12,3,7,0,4,10,1,13,11,6,
-            4,3,2,12,9,5,15,10,11,14,1,7,6,0,8,13,
+            12, 1, 10, 15, 9, 2, 6, 8, 0, 13, 3, 4, 14, 7, 5, 11, 10, 15, 4, 2, 7, 12, 9, 5, 6, 1,
+            13, 14, 0, 11, 3, 8, 9, 14, 15, 5, 2, 8, 12, 3, 7, 0, 4, 10, 1, 13, 11, 6, 4, 3, 2, 12,
+            9, 5, 15, 10, 11, 14, 1, 7, 6, 0, 8, 13,
         ],
         [
-            4,11,2,14,15,0,8,13,3,12,9,7,5,10,6,1,
-            13,0,11,7,4,9,1,10,14,3,5,12,2,15,8,6,
-            1,4,11,13,12,3,7,14,10,15,6,8,0,5,9,2,
-            6,11,13,8,1,4,10,7,9,5,0,15,14,2,3,12,
+            4, 11, 2, 14, 15, 0, 8, 13, 3, 12, 9, 7, 5, 10, 6, 1, 13, 0, 11, 7, 4, 9, 1, 10, 14, 3,
+            5, 12, 2, 15, 8, 6, 1, 4, 11, 13, 12, 3, 7, 14, 10, 15, 6, 8, 0, 5, 9, 2, 6, 11, 13, 8,
+            1, 4, 10, 7, 9, 5, 0, 15, 14, 2, 3, 12,
         ],
         [
-            13,2,8,4,6,15,11,1,10,9,3,14,5,0,12,7,
-            1,15,13,8,10,3,7,4,12,5,6,2,0,14,9,11,
-            7,0,1,3,13,4,14,10,15,5,2,12,11,9,6,8,
-            2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11,
+            13, 2, 8, 4, 6, 15, 11, 1, 10, 9, 3, 14, 5, 0, 12, 7, 1, 15, 13, 8, 10, 3, 7, 4, 12, 5,
+            6, 2, 0, 14, 9, 11, 7, 0, 1, 3, 13, 4, 14, 10, 15, 5, 2, 12, 11, 9, 6, 8, 2, 1, 14, 7,
+            4, 10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11,
         ],
     ];
     const PC1: [u8; 56] = [
-        57, 49, 41, 33, 25, 17,  9,  1, 58, 50, 42, 34, 26, 18,
-        10,  2, 59, 51, 43, 35, 27, 19, 11,  3, 60, 52, 44, 36,
-        63, 55, 47, 39, 31, 23, 15,  7, 62, 54, 46, 38, 30, 22,
-        14,  6, 61, 53, 45, 37, 29, 21, 13,  5, 28, 20, 12,  4,
+        57, 49, 41, 33, 25, 17, 9, 1, 58, 50, 42, 34, 26, 18, 10, 2, 59, 51, 43, 35, 27, 19, 11, 3,
+        60, 52, 44, 36, 63, 55, 47, 39, 31, 23, 15, 7, 62, 54, 46, 38, 30, 22, 14, 6, 61, 53, 45,
+        37, 29, 21, 13, 5, 28, 20, 12, 4,
     ];
     const PC2: [u8; 48] = [
-        14, 17, 11, 24,  1,  5,  3, 28, 15,  6, 21, 10,
-        23, 19, 12,  4, 26,  8, 16,  7, 27, 20, 13,  2,
-        41, 52, 31, 37, 47, 55, 30, 40, 51, 45, 33, 48,
-        44, 49, 39, 56, 34, 53, 46, 42, 50, 36, 29, 32,
+        14, 17, 11, 24, 1, 5, 3, 28, 15, 6, 21, 10, 23, 19, 12, 4, 26, 8, 16, 7, 27, 20, 13, 2, 41,
+        52, 31, 37, 47, 55, 30, 40, 51, 45, 33, 48, 44, 49, 39, 56, 34, 53, 46, 42, 50, 36, 29, 32,
     ];
     const SHIFTS: [u8; 16] = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1];
 
     fn get_bit(data: &[u8], pos: u8) -> u8 {
         let byte_idx = ((pos - 1) / 8) as usize;
         let bit_idx = 7 - ((pos - 1) % 8);
-        if byte_idx < data.len() { (data[byte_idx] >> bit_idx) & 1 } else { 0 }
+        if byte_idx < data.len() {
+            (data[byte_idx] >> bit_idx) & 1
+        } else {
+            0
+        }
     }
 
     fn set_bit(data: &mut [u8], pos: u8, val: u8) {
         let byte_idx = ((pos - 1) / 8) as usize;
         let bit_idx = 7 - ((pos - 1) % 8);
         if byte_idx < data.len() {
-            if val == 1 { data[byte_idx] |= 1 << bit_idx; }
-            else { data[byte_idx] &= !(1 << bit_idx); }
+            if val == 1 {
+                data[byte_idx] |= 1 << bit_idx;
+            } else {
+                data[byte_idx] &= !(1 << bit_idx);
+            }
         }
     }
 
@@ -1722,7 +1692,9 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
         let bit = get_bit(key, PC1[i as usize]);
         let byte_idx = (i / 8) as usize;
         let bit_idx = 7 - (i % 8);
-        if bit == 1 { cd[byte_idx] |= 1 << bit_idx; }
+        if bit == 1 {
+            cd[byte_idx] |= 1 << bit_idx;
+        }
     }
 
     let mut c: u32 = 0;
@@ -1730,13 +1702,17 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
     for i in 0..28u8 {
         let byte_idx = (i / 8) as usize;
         let bit_idx = 7 - (i % 8);
-        if (cd[byte_idx] >> bit_idx) & 1 == 1 { c |= 1 << (27 - i); }
+        if (cd[byte_idx] >> bit_idx) & 1 == 1 {
+            c |= 1 << (27 - i);
+        }
     }
     for i in 0..28u8 {
         let src = i + 28;
         let byte_idx = (src / 8) as usize;
         let bit_idx = 7 - (src % 8);
-        if (cd[byte_idx] >> bit_idx) & 1 == 1 { d |= 1 << (27 - i); }
+        if (cd[byte_idx] >> bit_idx) & 1 == 1 {
+            d |= 1 << (27 - i);
+        }
     }
 
     let mut subkeys = [[0u8; 6]; 16];
@@ -1767,7 +1743,9 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
             let bit = get_bit(&cd56, src_pos);
             let byte_idx = (i / 8) as usize;
             let bit_idx = 7 - (i % 8);
-            if bit == 1 { subkeys[round][byte_idx] |= 1 << bit_idx; }
+            if bit == 1 {
+                subkeys[round][byte_idx] |= 1 << bit_idx;
+            }
         }
     }
 
@@ -1794,10 +1772,14 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
             let bit = get_bit(&r_bytes, E_TABLE[i as usize]);
             let byte_idx = (i / 8) as usize;
             let bit_idx = 7 - (i % 8);
-            if bit == 1 { expanded[byte_idx] |= 1 << bit_idx; }
+            if bit == 1 {
+                expanded[byte_idx] |= 1 << bit_idx;
+            }
         }
 
-        for i in 0..6 { expanded[i] ^= subkeys[round][i]; }
+        for i in 0..6 {
+            expanded[i] ^= subkeys[round][i];
+        }
 
         let mut sbox_out: u32 = 0;
         for s in 0..8u8 {
@@ -1820,7 +1802,9 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
         let mut p_out: u32 = 0;
         for i in 0..32u8 {
             let bit = get_bit(&sbox_bytes, P_TABLE[i as usize]);
-            if bit == 1 { p_out |= 1 << (31 - i); }
+            if bit == 1 {
+                p_out |= 1 << (31 - i);
+            }
         }
 
         r = old_l ^ p_out;
@@ -1979,7 +1963,11 @@ mod tests {
         assert_eq!(key.len(), 8);
         // Every byte should have odd parity
         for &b in &key {
-            assert_eq!(b.count_ones() % 2, 1, "byte {b:#04x} should have odd parity");
+            assert_eq!(
+                b.count_ones() % 2,
+                1,
+                "byte {b:#04x} should have odd parity"
+            );
         }
     }
 
@@ -2007,5 +1995,240 @@ mod tests {
         let ciphertext = des_ecb_encrypt(&key, &plaintext);
         let decrypted = des_ecb_decrypt(&key, &ciphertext);
         assert_eq!(decrypted, plaintext);
+    }
+
+    // ---------------------------------------------------------------
+    // Additional classifier and crypto coverage
+    // ---------------------------------------------------------------
+
+    /// All known-bad hashes are classified suspicious.
+    #[test]
+    fn classify_all_known_bad_hashes() {
+        let known_bad = [
+            "a4f49c406510bdcab6824ee7c30fd852", // "password"
+            "b4a06b2eafca1e1f17e321090e652794", // "Password1"
+            "209c6174da490caeb422f3fa5a7ae634", // "admin"
+            "161cff084477fe596a5db81874498a24", // "P@ssw0rd"
+            "0cb6948805f797bf2a82807973b89537", // "test"
+            "5835048ce94ad0564e29a924a03510ef", // "changeme"
+        ];
+        for &hash in &known_bad {
+            assert!(
+                classify_hashdump("anyuser", hash),
+                "known-bad hash {hash} should be suspicious"
+            );
+        }
+    }
+
+    /// HashdumpEntry serializes to JSON correctly.
+    #[test]
+    fn hashdump_entry_serializes() {
+        let entry = HashdumpEntry {
+            username: "Administrator".to_string(),
+            rid: 500,
+            lm_hash: EMPTY_LM_HASH.to_string(),
+            nt_hash: EMPTY_NT_HASH.to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("Administrator"));
+        assert!(json.contains("500"));
+        assert!(json.contains(EMPTY_NT_HASH));
+    }
+
+    /// decrypt_hashed_boot_key returns empty for short F data.
+    #[test]
+    fn decrypt_hashed_boot_key_short_f_data() {
+        let boot_key = vec![0u8; 16];
+        // Too short — less than 0x80 bytes.
+        let result = decrypt_hashed_boot_key(&[0u8; 64], &boot_key);
+        assert!(result.is_empty(), "Short F data should return empty");
+    }
+
+    /// decrypt_hashed_boot_key returns empty for wrong boot_key length.
+    #[test]
+    fn decrypt_hashed_boot_key_wrong_key_len() {
+        let f_data = vec![0u8; 0xA0];
+        // Boot key not 16 bytes.
+        let result = decrypt_hashed_boot_key(&f_data, &[0u8; 8]);
+        assert!(result.is_empty(), "Wrong boot_key length should return empty");
+    }
+
+    /// decrypt_hashed_boot_key with revision 2 marker and all-zero data
+    /// returns a result (may be zeros but not empty — RC4 of zeros is defined).
+    #[test]
+    fn decrypt_hashed_boot_key_rev2() {
+        let mut f_data = vec![0u8; 0xA0];
+        // Set revision bytes at 0x68..0x6A to 2 (little-endian u16).
+        f_data[0x68] = 0x02;
+        f_data[0x69] = 0x00;
+        let boot_key = vec![0u8; 16];
+        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
+        // Should produce 16 bytes (RC4 of zeros is well-defined).
+        assert_eq!(result.len(), 16);
+    }
+
+    /// decrypt_hashed_boot_key with revision 3 marker (AES path).
+    #[test]
+    fn decrypt_hashed_boot_key_rev3() {
+        let mut f_data = vec![0u8; 0x98];
+        // Revision = 3
+        f_data[0x68] = 0x03;
+        f_data[0x69] = 0x00;
+        let boot_key = vec![0u8; 16];
+        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
+        // AES path: 0x88..0x98 = 16 bytes encrypted data → should produce 16 bytes.
+        assert_eq!(result.len(), 16);
+    }
+
+    /// decrypt_hashed_boot_key with unknown revision returns empty.
+    #[test]
+    fn decrypt_hashed_boot_key_unknown_revision() {
+        let mut f_data = vec![0u8; 0xA0];
+        // Revision = 99 (unknown).
+        f_data[0x68] = 99;
+        let boot_key = vec![0u8; 16];
+        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
+        assert!(result.is_empty(), "Unknown revision should return empty");
+    }
+
+    /// extract_hashes_from_v with too-short V data returns empty hashes.
+    #[test]
+    fn extract_hashes_from_v_short_data() {
+        let (lm, nt) = extract_hashes_from_v(&[0u8; 0x10], &[0u8; 16], 500);
+        assert_eq!(lm, EMPTY_LM_HASH);
+        assert_eq!(nt, EMPTY_NT_HASH);
+    }
+
+    /// extract_hashes_from_v with empty hashed_boot_key returns empty hashes.
+    #[test]
+    fn extract_hashes_from_v_empty_boot_key() {
+        let v = vec![0u8; 0xCC + 64];
+        let (lm, nt) = extract_hashes_from_v(&v, &[], 500);
+        assert_eq!(lm, EMPTY_LM_HASH);
+        assert_eq!(nt, EMPTY_NT_HASH);
+    }
+
+    /// extract_hashes_from_v with zero offsets in V data returns empty hashes.
+    #[test]
+    fn extract_hashes_from_v_zero_offsets() {
+        // V data with zero nt_length and zero lm_length → both return empty hashes.
+        let v = vec![0u8; 0xCC + 32];
+        let hbk = vec![0xAAu8; 16];
+        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
+        assert_eq!(lm, EMPTY_LM_HASH);
+        assert_eq!(nt, EMPTY_NT_HASH);
+    }
+
+    /// rc4_crypt with empty key returns data unchanged.
+    #[test]
+    fn rc4_crypt_empty_key() {
+        let data = vec![0x01u8, 0x02, 0x03];
+        let result = rc4_crypt(&[], &data);
+        assert_eq!(result, data, "Empty key returns data unchanged");
+    }
+
+    /// rc4_crypt is self-inverse (XOR-based stream cipher).
+    #[test]
+    fn rc4_crypt_self_inverse() {
+        let key = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let plaintext = b"hello world test".to_vec();
+        let ciphertext = rc4_crypt(&key, &plaintext);
+        let decrypted = rc4_crypt(&key, &ciphertext);
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// aes_cbc_decrypt_simple returns empty for bad key/iv/data sizes.
+    #[test]
+    fn aes_cbc_decrypt_simple_bad_inputs() {
+        // Wrong key length.
+        assert!(aes_cbc_decrypt_simple(&[0u8; 8], &[0u8; 16], &[0u8; 16]).is_empty());
+        // Wrong IV length.
+        assert!(aes_cbc_decrypt_simple(&[0u8; 16], &[0u8; 8], &[0u8; 16]).is_empty());
+        // Empty data.
+        assert!(aes_cbc_decrypt_simple(&[0u8; 16], &[0u8; 16], &[]).is_empty());
+        // Data not 16-byte aligned.
+        assert!(aes_cbc_decrypt_simple(&[0u8; 16], &[0u8; 16], &[0u8; 15]).is_empty());
+    }
+
+    /// aes_cbc_decrypt_simple produces 16 bytes for a valid 16-byte input.
+    #[test]
+    fn aes_cbc_decrypt_simple_valid() {
+        let key = [0u8; 16];
+        let iv = [0u8; 16];
+        let data = [0u8; 16];
+        let result = aes_cbc_decrypt_simple(&key, &iv, &data);
+        assert_eq!(result.len(), 16);
+    }
+
+    /// md5_hash produces 16-byte output.
+    #[test]
+    fn md5_hash_produces_16_bytes() {
+        let result = md5_hash(b"hello");
+        assert_eq!(result.len(), 16);
+    }
+
+    /// md5_hash("") has a known RFC 1321 value.
+    #[test]
+    fn md5_hash_empty_string() {
+        let result = md5_hash(b"");
+        // MD5("") = d41d8cd98f00b204e9800998ecf8427e
+        let expected = [
+            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04,
+            0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e,
+        ];
+        assert_eq!(result, expected, "MD5(\"\") mismatch");
+    }
+
+    /// simple_md5_derive produces 16 bytes.
+    #[test]
+    fn simple_md5_derive_produces_16_bytes() {
+        let boot_key = [0u8; 16];
+        let salt = [0xFFu8; 16];
+        let result = simple_md5_derive(&boot_key, &salt);
+        assert_eq!(result.len(), 16);
+    }
+
+    /// decrypt_sam_hash_with_rid produces 16 bytes.
+    #[test]
+    fn decrypt_sam_hash_with_rid_produces_16_bytes() {
+        let hash = [0u8; 16];
+        let result = decrypt_sam_hash_with_rid(&hash, 500);
+        assert_eq!(result.len(), 16);
+    }
+
+    /// BOOT_KEY_SCRAMBLE has 16 elements all in range 0..16.
+    #[test]
+    fn boot_key_scramble_valid() {
+        assert_eq!(BOOT_KEY_SCRAMBLE.len(), 16);
+        for &idx in &BOOT_KEY_SCRAMBLE {
+            assert!(idx < 16, "scramble index {idx} out of range");
+        }
+    }
+
+    /// LSA_KEY_NAMES has exactly 4 elements.
+    #[test]
+    fn lsa_key_names_count() {
+        assert_eq!(LSA_KEY_NAMES.len(), 4);
+        assert_eq!(LSA_KEY_NAMES[0], "JD");
+        assert_eq!(LSA_KEY_NAMES[3], "Data");
+    }
+
+    /// Non-zero hive addresses but unreadable memory → empty Vec.
+    #[test]
+    fn walk_hashdump_unreadable_hive() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Both addresses are non-zero but unmapped → all reads fail → empty.
+        let result = walk_hashdump(&reader, 0xFFFF_8000_1111_0000, 0xFFFF_8000_2222_0000).unwrap();
+        assert!(result.is_empty());
     }
 }

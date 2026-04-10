@@ -249,4 +249,83 @@ mod tests {
         let results = walk_mbr_scan(&reader).unwrap();
         assert!(results.is_empty());
     }
+
+    /// Windows MBR with FA 31 C0 variant is also not suspicious.
+    #[test]
+    fn classify_windows_mbr_fa31c0_not_suspicious() {
+        let bootstrap = [0xFAu8, 0x31, 0xC0, 0xD0];
+        assert!(!classify_mbr(&bootstrap));
+    }
+
+    /// A bootstrap starting with 0xFA followed by an unknown byte is suspicious.
+    #[test]
+    fn classify_fa_unknown_suspicious() {
+        let bootstrap = [0xFAu8, 0x00, 0x00, 0x00];
+        assert!(classify_mbr(&bootstrap));
+    }
+
+    /// classify_mbr with fewer than 4 bytes returns false (too short to classify).
+    #[test]
+    fn classify_mbr_too_short_not_suspicious() {
+        assert!(!classify_mbr(&[]));
+        assert!(!classify_mbr(&[0x90]));
+        assert!(!classify_mbr(&[0xFA, 0x33]));
+        assert!(!classify_mbr(&[0xFA, 0x33, 0xC0]));
+    }
+
+    /// classify_mbr with a first byte other than 0xFA or 0x90 returns false.
+    #[test]
+    fn classify_mbr_other_first_byte_not_suspicious() {
+        let bootstrap = [0xEB, 0x63, 0x00, 0x00]; // GRUB-like
+        assert!(!classify_mbr(&bootstrap));
+
+        let bootstrap2 = [0x33, 0xC0, 0x8E, 0xD0];
+        assert!(!classify_mbr(&bootstrap2));
+    }
+
+    /// MbrInfo serializes to JSON correctly.
+    #[test]
+    fn mbr_info_serializes() {
+        let info = MbrInfo {
+            physical_offset: 0,
+            signature: 0xABCD1234,
+            boot_indicator: 0x80,
+            has_valid_magic: true,
+            is_suspicious: false,
+            bootstrap_hash: "deadbeef".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("physical_offset"));
+        assert!(json.contains("bootstrap_hash"));
+        assert!(json.contains("deadbeef"));
+    }
+
+    /// Walker with MmSystemRangeStart symbol but no readable physical memory
+    /// at offset 0 returns an empty results set (no valid magic bytes found).
+    #[test]
+    fn walk_mbr_scan_with_symbol_no_valid_sector() {
+        use memf_core::test_builders::SyntheticPhysMem;
+
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+
+        // Build ISF with MmSystemRangeStart symbol pointing somewhere.
+        let isf = IsfBuilder::new()
+            .add_symbol("MmSystemRangeStart", 0xFFFF_8000_0000_0000u64)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &[0u8; 16]);
+        let (cr3, mem) = ptb.build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // Physical memory at offset 0..65536 is not mapped, so all reads fail →
+        // walker skips every sector → empty results.
+        let results = walk_mbr_scan(&reader).unwrap();
+        assert!(results.is_empty(), "No valid 0x55AA magic → empty results");
+    }
 }

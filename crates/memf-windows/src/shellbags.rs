@@ -97,10 +97,7 @@ pub fn walk_shellbags<P: PhysicalMemoryProvider>(
     hive_addr: u64,
 ) -> crate::Result<Vec<ShellbagEntry>> {
     // Verify the _CM_KEY_NODE struct is available and we have a valid hive address.
-    let _sig_offset = match reader
-        .symbols()
-        .field_offset("_CM_KEY_NODE", "Signature")
-    {
+    let _sig_offset = match reader.symbols().field_offset("_CM_KEY_NODE", "Signature") {
         Some(offset) => offset,
         None => return Ok(Vec::new()),
     };
@@ -421,5 +418,159 @@ mod tests {
     #[test]
     fn classify_shellbag_empty() {
         assert!(!classify_shellbag(""));
+    }
+
+    /// AppData Local Temp path is suspicious.
+    #[test]
+    fn classify_shellbag_appdata_local_temp() {
+        assert!(classify_shellbag(
+            "C:\\Users\\victim\\AppData\\Local\\Temp\\malware"
+        ));
+    }
+
+    /// ProgramData Temp path is suspicious.
+    #[test]
+    fn classify_shellbag_programdata_temp() {
+        assert!(classify_shellbag("C:\\ProgramData\\Temp\\dropper"));
+    }
+
+    /// Users Public directory is suspicious.
+    #[test]
+    fn classify_shellbag_users_public() {
+        assert!(classify_shellbag("C:\\Users\\Public\\Documents"));
+    }
+
+    /// Case-insensitive detection works (mixed case paths).
+    #[test]
+    fn classify_shellbag_case_insensitive() {
+        assert!(classify_shellbag("c:\\windows\\temp\\payload"));
+        assert!(classify_shellbag("C:\\WINDOWS\\TEMP"));
+        assert!(classify_shellbag("\\\\SERVER\\SHARE"));
+    }
+
+    /// extract_folder_name with empty data returns empty string.
+    #[test]
+    fn extract_folder_name_empty() {
+        let result = extract_folder_name(&[]);
+        assert!(result.is_empty());
+    }
+
+    /// extract_folder_name with short ASCII string (>=2 bytes) returns that string.
+    #[test]
+    fn extract_folder_name_ascii() {
+        // Type byte (0x31) + ASCII "Documents\0"
+        let mut data = vec![0x31u8]; // type byte
+        data.extend_from_slice(b"Documents\0more");
+        let result = extract_folder_name(&data);
+        assert_eq!(result, "Documents");
+    }
+
+    /// extract_folder_name with a single-char ASCII result (< 2 bytes) tries UTF-16.
+    #[test]
+    fn extract_folder_name_single_char_falls_back() {
+        // Type byte + single printable ASCII byte — too short for ASCII path,
+        // but the UTF-16 fallback is attempted.
+        let data = [0x31u8, b'X']; // type byte + one char
+        let result = extract_folder_name(&data);
+        // Either empty or just "X" — we just verify it doesn't panic.
+        let _ = result;
+    }
+
+    /// extract_folder_name with valid UTF-16LE "AB\0" returns "AB".
+    #[test]
+    fn extract_folder_name_utf16le() {
+        // Type byte (0x31), then UTF-16LE for "AB\0":
+        // 'A' = 0x41 0x00, 'B' = 0x42 0x00, '\0' = 0x00 0x00
+        let data = [0x31u8, 0x41, 0x00, 0x42, 0x00, 0x00, 0x00];
+        let result = extract_folder_name(&data);
+        assert_eq!(result, "AB");
+    }
+
+    /// find_extension_timestamps with too-short blob returns (0, 0).
+    #[test]
+    fn find_extension_timestamps_too_short() {
+        let (access, creation) = find_extension_timestamps(&[0u8; 10]);
+        assert_eq!(access, 0);
+        assert_eq!(creation, 0);
+    }
+
+    /// find_extension_timestamps with no BEEF0004 signature returns (0, 0).
+    #[test]
+    fn find_extension_timestamps_no_signature() {
+        let blob = [0xABu8; 64];
+        let (access, creation) = find_extension_timestamps(&blob);
+        assert_eq!(access, 0);
+        assert_eq!(creation, 0);
+    }
+
+    /// find_extension_timestamps correctly parses a crafted BEEF0004 block.
+    #[test]
+    fn find_extension_timestamps_with_signature() {
+        // Craft a blob containing the BEEF0004 signature at offset 4.
+        let mut blob = [0u8; 48];
+        // BEEF0004 signature = [0x04, 0x00, 0xEF, 0xBE] at offset 4.
+        blob[4] = 0x04;
+        blob[5] = 0x00;
+        blob[6] = 0xEF;
+        blob[7] = 0xBE;
+        // creation time at blob[8..16] = 0x0000_0001_0000_0002 LE
+        blob[8..16].copy_from_slice(&0x0000_0001_0000_0002u64.to_le_bytes());
+        // access time at blob[16..24] = 0x0000_0003_0000_0004 LE
+        blob[16..24].copy_from_slice(&0x0000_0003_0000_0004u64.to_le_bytes());
+
+        let (access, creation) = find_extension_timestamps(&blob);
+        assert_eq!(access, 0x0000_0003_0000_0004);
+        assert_eq!(creation, 0x0000_0001_0000_0002);
+    }
+
+    /// ShellbagEntry serializes to JSON.
+    #[test]
+    fn shellbag_entry_serializes() {
+        let entry = ShellbagEntry {
+            path: "C:\\Users\\Public".to_string(),
+            slot_modified_time: 0,
+            access_time: 0,
+            creation_time: 0,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("C:\\\\Users\\\\Public"));
+        assert!(json.contains("is_suspicious"));
+    }
+
+    /// Walker returns empty when hive_addr is 0 even with Signature field present.
+    #[test]
+    fn walk_shellbags_zero_hive_with_symbol() {
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // hive_addr = 0 → should return empty immediately.
+        let result = walk_shellbags(&reader, 0).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Walk with no Signature field in ISF → graceful empty return.
+    #[test]
+    fn walk_shellbags_no_signature_field() {
+        // _CM_KEY_NODE exists but has no Signature field.
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_shellbags(&reader, 0xFFFF_8000_0000_1234).unwrap();
+        assert!(result.is_empty());
     }
 }
