@@ -1102,4 +1102,112 @@ mod tests {
         let cmd = format!("run {}", token);
         assert!(classify_console_command(&cmd));
     }
+
+    // ---------------------------------------------------------------
+    // walk_consoles: process loop body coverage
+    // ---------------------------------------------------------------
+
+    /// walk_consoles: "conhost.exe" process with peb_addr=0 → process is skipped.
+    /// Exercises the cr3==0||peb_addr==0 guard (line 136-138).
+    ///
+    /// Process layout: single conhost.exe EPROCESS with peb=0 in circular list.
+    #[test]
+    fn walk_consoles_conhost_no_peb_skipped() {
+        let ps_head_vaddr: u64 = 0xFFFF_8005_0000_0000;
+        let ps_head_paddr: u64 = 0x0030_0000;
+        let eproc_vaddr: u64   = 0xFFFF_8005_0100_0000;
+        let eproc_paddr: u64   = 0x0031_0000;
+
+        let mut ps_head_page = vec![0u8; 4096];
+        ps_head_page[0..8].copy_from_slice(&(eproc_vaddr + 0x448).to_le_bytes());
+
+        let mut eproc_page = vec![0u8; 4096];
+        eproc_page[0x448..0x450].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        eproc_page[0x440..0x448].copy_from_slice(&100u64.to_le_bytes()); // PID
+        eproc_page[0x540..0x548].copy_from_slice(&0u64.to_le_bytes());   // PPID
+        // ImageFileName = "conhost.exe\0"
+        let name = b"conhost.exe\0";
+        eproc_page[0x5A8..0x5A8 + name.len()].copy_from_slice(name);
+        // peb_addr = 0 → process skipped
+        eproc_page[0x550..0x558].copy_from_slice(&0u64.to_le_bytes());
+        // cr3 = some value (doesn't matter since peb=0)
+        eproc_page[0x28..0x30].copy_from_slice(&eproc_paddr.to_le_bytes());
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &ps_head_page)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // conhost.exe with peb=0 → skipped → empty result
+        let results = walk_consoles(&reader).unwrap();
+        assert!(
+            results.is_empty(),
+            "conhost.exe with peb=0 should be skipped: got {}",
+            results.len()
+        );
+    }
+
+    /// walk_consoles: "conhost.exe" with non-zero peb and cr3, but ProcessHeap
+    /// is zero (unmapped PEB) → extract_console_commands returns empty.
+    /// Exercises lines 140-150 (reader.with_cr3, extract_console_commands call).
+    #[test]
+    fn walk_consoles_conhost_valid_peb_no_heap() {
+        let ps_head_vaddr: u64 = 0xFFFF_8006_0000_0000;
+        let ps_head_paddr: u64 = 0x0034_0000;
+        let eproc_vaddr: u64   = 0xFFFF_8006_0100_0000;
+        let eproc_paddr: u64   = 0x0035_0000;
+        // PEB at a mapped address — but ProcessHeap will be 0
+        let peb_vaddr: u64     = 0x0000_7FFF_0000_0000;
+        let peb_paddr: u64     = 0x0036_0000;
+
+        let mut ps_head_page = vec![0u8; 4096];
+        ps_head_page[0..8].copy_from_slice(&(eproc_vaddr + 0x448).to_le_bytes());
+
+        let mut eproc_page = vec![0u8; 4096];
+        eproc_page[0x448..0x450].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        eproc_page[0x440..0x448].copy_from_slice(&200u64.to_le_bytes()); // PID
+        eproc_page[0x540..0x548].copy_from_slice(&0u64.to_le_bytes());   // PPID
+        let name = b"conhost.exe\0";
+        eproc_page[0x5A8..0x5A8 + name.len()].copy_from_slice(name);
+        // non-zero peb_addr
+        eproc_page[0x550..0x558].copy_from_slice(&peb_vaddr.to_le_bytes());
+        // cr3 = ps_head_paddr (reuse as a valid paddr for the CR3 switch)
+        eproc_page[0x28..0x30].copy_from_slice(&ps_head_paddr.to_le_bytes());
+
+        // PEB page: ProcessHeap at +0x30 = 0 → extract_console_commands returns early
+        let mut peb_page = vec![0u8; 4096];
+        peb_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes()); // ProcessHeap = 0
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .add_struct("_PEB", 0x400)
+            .add_field("_PEB", "ProcessHeap", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &ps_head_page)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_page)
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys(peb_paddr, &peb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_consoles(&reader).unwrap();
+        assert!(
+            results.is_empty(),
+            "conhost.exe with zero ProcessHeap should yield empty: got {}",
+            results.len()
+        );
+    }
 }
