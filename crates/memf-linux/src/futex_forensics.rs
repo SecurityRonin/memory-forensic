@@ -305,6 +305,26 @@ mod tests {
         );
     }
 
+    // --- FutexInfo: Clone + Debug + Serialize ---
+
+    #[test]
+    fn futex_info_clone_debug_serialize() {
+        let info = FutexInfo {
+            key_address: 0x7F00_0000_1000,
+            owner_pid: 42,
+            waiter_count: 3,
+            futex_type: "private".to_string(),
+            is_suspicious: false,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.owner_pid, 42);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("private"));
+        let json = serde_json::to_string(&cloned).unwrap();
+        assert!(json.contains("\"owner_pid\":42"));
+        assert!(json.contains("\"is_suspicious\":false"));
+    }
+
     // --- walk_futex_table: symbol + chain present, mapped memory, all buckets zero → exercises loop ---
     // Exercises the bucket scanning loop: chain_head reads succeed (memory mapped) but
     // first_q == 0 for every bucket → waiter_count stays 0 → no entries pushed.
@@ -344,5 +364,97 @@ mod tests {
             result.is_empty(),
             "all-zero buckets (first_q==0) → waiter_count stays 0 → empty results"
         );
+    }
+
+    // --- walk_futex_table: first bucket has a non-zero chain pointer → exercises while loop ---
+    // Maps a futex_hash_bucket whose chain (hlist_head.first) points to a futex_q node.
+    // The node's hlist_node.next (offset 0) is zero → loop runs once → waiter_count==1 →
+    // an entry is pushed to results.
+    #[test]
+    fn walk_futex_one_waiter_pushes_result() {
+        use memf_core::test_builders::flags as ptf;
+
+        // Layout:
+        //   bucket page (vaddr B):  [0..8]  = ptr to futex_q node (vaddr N)
+        //   node page   (vaddr N):  [0..8]  = 0 (hlist_node.next = null → loop ends)
+        //                           [8..16] = 0 (task ptr = 0 → first_pid stays 0)
+        //                           [16..24]= 0 (key = 0)
+        //                           [24..32]= 0 (key_offset_field → "private")
+        let bucket_vaddr: u64 = 0xFFFF_8800_00C0_0000;
+        let bucket_paddr: u64 = 0x00C0_0000; // < 16 MB
+        let node_vaddr: u64   = 0xFFFF_8800_00C1_0000;
+        let node_paddr: u64   = 0x00C1_0000;
+
+        let mut bucket_page = [0u8; 4096];
+        // chain at offset 0 points to node
+        bucket_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        let node_page = [0u8; 4096]; // all zeros: next=0, task=0, key=0
+
+        let isf = IsfBuilder::new()
+            .add_symbol("futex_queues", bucket_vaddr)
+            .add_struct("futex_hash_bucket", 64)
+            .add_field("futex_hash_bucket", "chain", 0, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bucket_vaddr, bucket_paddr, ptf::WRITABLE)
+            .write_phys(bucket_paddr, &bucket_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_futex_table(&reader).unwrap();
+        // First bucket has one waiter (node_vaddr → next=0) → one FutexInfo pushed.
+        assert_eq!(result.len(), 1, "one waiter in first bucket → one result");
+        assert_eq!(result[0].waiter_count, 1);
+        assert_eq!(result[0].futex_type, "private");
+        assert!(!result[0].is_suspicious, "key=0, pid=0, count=1 → benign");
+    }
+
+    // --- walk_futex_table: shared futex (key_offset_field bit 0 == 1) → futex_type "shared" ---
+    #[test]
+    fn walk_futex_shared_futex_type_detected() {
+        use memf_core::test_builders::flags as ptf;
+
+        let bucket_vaddr: u64 = 0xFFFF_8800_00D0_0000;
+        let bucket_paddr: u64 = 0x00D0_0000;
+        let node_vaddr: u64   = 0xFFFF_8800_00D1_0000;
+        let node_paddr: u64   = 0x00D1_0000;
+
+        let mut bucket_page = [0u8; 4096];
+        bucket_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        let mut node_page = [0u8; 4096];
+        // hlist_node.next at offset 0 = 0 (terminate loop)
+        // task ptr at offset 8 = 0
+        // futex key at offset 16 = 0
+        // key_offset_field at offset 24: bit 0 = 1 → "shared"
+        node_page[24..32].copy_from_slice(&1u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("futex_queues", bucket_vaddr)
+            .add_struct("futex_hash_bucket", 64)
+            .add_field("futex_hash_bucket", "chain", 0, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bucket_vaddr, bucket_paddr, ptf::WRITABLE)
+            .write_phys(bucket_paddr, &bucket_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_futex_table(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].futex_type, "shared", "bit 0 set → shared futex");
     }
 }

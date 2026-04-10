@@ -403,6 +403,63 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // walk_check_creds: symbol + list_head present, self-pointing list
+    // Exercises the full walk body: init_task info collected, group.len()<2
+    // since there is only one task → no results.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_check_creds_with_list_head_single_task_no_sharing() {
+        let sym_vaddr: u64 = 0xFFFF_8800_0010_0000;
+        let sym_paddr: u64 = 0x0010_0000; // < 16 MB
+        let tasks_offset: u64 = 16;
+
+        let mut page = [0u8; 4096];
+        // pid = 42
+        page[0..4].copy_from_slice(&42u32.to_le_bytes());
+        // tgid = 42
+        page[4..8].copy_from_slice(&42u32.to_le_bytes());
+        // tasks: self-pointing list_head
+        let self_ptr = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // comm = "init"
+        page[32..36].copy_from_slice(b"init");
+        // cred pointer (unique non-zero)
+        let cred_ptr: u64 = 0xFFFF_8800_CAFE_0000;
+        page[96..104].copy_from_slice(&cred_ptr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_field("list_head", "prev", 0x08, "pointer")
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tgid", 4, "unsigned int")
+            .add_field("task_struct", "tasks", 16, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "cred", 96, "pointer")
+            .add_struct("cred", 64)
+            .add_field("cred", "uid", 4, "unsigned int")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_check_creds(&reader).unwrap();
+        // Only one task → group.len() < 2 for every cred_addr → no suspicious entries.
+        assert!(result.is_empty(), "single task cannot share creds with another");
+    }
+
+    // ---------------------------------------------------------------
     // walk_check_creds: missing tasks field → empty Vec (graceful degradation)
     // ---------------------------------------------------------------
 

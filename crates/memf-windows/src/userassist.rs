@@ -976,6 +976,95 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// Walk body exercises past root-cell read when hive is mapped but root cell is 0.
+    ///
+    /// Puts a valid `_HBASE_BLOCK` in memory with `RootCell` = 0.
+    /// The walker reads the root cell at offset 0x24, gets 0, and returns empty.
+    #[test]
+    fn walk_userassist_mapped_hive_root_cell_zero_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HBASE_BLOCK", 0x200)
+            .add_field("_HBASE_BLOCK", "RootCell", 0x24, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_vaddr: u64 = 0xFFFF_8000_0100_0000;
+        let hive_paddr: u64 = 0x0010_0000;
+
+        // Build a 4096-byte page for the hive block with RootCell = 0 at offset 0x24.
+        let mut hive_page = [0u8; 4096];
+        // RootCell at offset 0x24 stays 0 (default zero-init).
+        let _ = hive_page; // used below
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_userassist(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "root cell == 0 should return empty");
+    }
+
+    /// Walk body: non-zero root cell pointing into mapped memory with no valid nk signature
+    /// exercises the signature check branch and returns empty gracefully.
+    #[test]
+    fn walk_userassist_root_cell_nonzero_bad_signature_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HBASE_BLOCK", 0x200)
+            .add_field("_HBASE_BLOCK", "RootCell", 0x24, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map 8 pages so we have room for hive block + HBIN region.
+        let hive_vaddr: u64 = 0xFFFF_8000_0200_0000;
+        // HBIN starts at hive_vaddr + 0x1000; root cell index 0x20 → cell_address = hive + 0x1000 + 0x20
+        let cell_index: u32 = 0x20;
+
+        // Page 0: hive block (offset 0x24 = root cell = cell_index).
+        let mut page0 = [0u8; 4096];
+        page0[0x24..0x28].copy_from_slice(&cell_index.to_le_bytes());
+
+        // Page 1: HBIN start (vaddr + 0x1000). The cell at cell_index = 0x20 within HBIN.
+        // read_cell_data reads 4 bytes for size at cell_vaddr, then reads data.
+        // cell_vaddr = hive_vaddr + 0x1000 + 0x20
+        // We write a size of -100 (signed) so abs_size = 100, data_len = 96.
+        // Then the first 2 bytes of data (at cell+4) are NOT "nk" (0x6B6E) — all zeros.
+        let page1 = [0u8; 4096];
+        // Write a negative cell size at offset 0x20: i32 of -100 = 0xFFFFFF9C
+        // but we leave it zero — the walker will get abs_size=0 → data_len = 0 → empty vec
+        // which causes read_cell_data to return Ok([]). Then nk_data.len() < NK_NAME_OFFSET → empty.
+        let _ = page1;
+        let mut page1 = [0u8; 4096];
+        // Write cell size = -200 (i32) so abs = 200, data_len = 196.
+        let cell_size: i32 = -200;
+        page1[cell_index as usize..cell_index as usize + 4]
+            .copy_from_slice(&cell_size.to_le_bytes());
+        // data bytes start at cell_index + 4; first two are signature — leave as 0x0000 (invalid).
+
+        let paddr0: u64 = 0x0030_0000;
+        let paddr1: u64 = 0x0031_0000;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, paddr0, flags::WRITABLE)
+            .map_4k(hive_vaddr + 0x1000, paddr1, flags::WRITABLE)
+            .write_phys(paddr0, &page0)
+            .write_phys(paddr1, &page1)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_userassist(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "bad nk signature should return empty");
+    }
+
     // ── UserAssistEntry struct tests ─────────────────────────────────
 
     #[test]
