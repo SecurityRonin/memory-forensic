@@ -402,6 +402,193 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // walk_iomem_regions: symbol present, child != 0 → exercises DFS loop
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_iomem_symbol_present_with_one_child_returns_entry() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Layout:
+        //   root_vaddr  = iomem_resource (struct resource)
+        //     child ptr (at +0x28) → child_vaddr
+        //   child_vaddr = one resource entry; sibling=0, child=0, name_ptr=0
+        let root_vaddr: u64 = 0xFFFF_8800_00B0_0000;
+        let root_paddr: u64 = 0x00B0_0000;
+        let child_vaddr: u64 = 0xFFFF_8800_00B1_0000;
+        let child_paddr: u64 = 0x00B1_0000;
+
+        // Root page: zeros except child pointer at offset 0x28
+        let mut root_page = [0u8; 4096];
+        root_page[0x28..0x30].copy_from_slice(&child_vaddr.to_le_bytes());
+
+        // Child page: start=0x1000, end=0x2000, flags=0x200, name_ptr=0, sibling=0, child=0
+        let mut child_page = [0u8; 4096];
+        child_page[0x00..0x08].copy_from_slice(&0x1000u64.to_le_bytes()); // start
+        child_page[0x08..0x10].copy_from_slice(&0x2000u64.to_le_bytes()); // end
+        child_page[0x10..0x18].copy_from_slice(&0x0200u64.to_le_bytes()); // flags
+        // name_ptr at 0x18 = 0 (null → name = "")
+        // sibling at 0x20 = 0
+        // child at 0x28 = 0
+
+        let isf = IsfBuilder::new()
+            .add_symbol("iomem_resource", root_vaddr)
+            .add_struct("resource", 0x60)
+            .add_field("resource", "start",   0x00u64, "unsigned long")
+            .add_field("resource", "end",     0x08u64, "unsigned long")
+            .add_field("resource", "flags",   0x10u64, "unsigned long")
+            .add_field("resource", "name",    0x18u64, "pointer")
+            .add_field("resource", "sibling", 0x20u64, "pointer")
+            .add_field("resource", "child",   0x28u64, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(root_vaddr, root_paddr, ptf::WRITABLE)
+            .write_phys(root_paddr, &root_page)
+            .map_4k(child_vaddr, child_paddr, ptf::WRITABLE)
+            .write_phys(child_paddr, &child_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_iomem_regions(&reader).unwrap_or_default();
+        assert_eq!(result.len(), 1, "should find exactly one resource entry");
+        assert_eq!(result[0].start, 0x1000);
+        assert_eq!(result[0].end, 0x2000);
+        assert_eq!(result[0].flags, 0x200);
+        assert_eq!(result[0].depth, 0);
+        // name_ptr=0 → empty name; size=0x1000 < 1MiB → not suspicious
+        assert!(!result[0].is_suspicious);
+    }
+
+    // ---------------------------------------------------------------
+    // walk_iomem_regions: child has a sibling → exercises sibling push
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_iomem_symbol_present_child_with_sibling() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // root → child_a (sibling → child_b)
+        let root_vaddr: u64 = 0xFFFF_8800_00C0_0000;
+        let root_paddr: u64 = 0x00C0_0000;
+        let child_a_vaddr: u64 = 0xFFFF_8800_00C1_0000;
+        let child_a_paddr: u64 = 0x00C1_0000;
+        let child_b_vaddr: u64 = 0xFFFF_8800_00C2_0000;
+        let child_b_paddr: u64 = 0x00C2_0000;
+
+        // root: child ptr at 0x28 = child_a_vaddr
+        let mut root_page = [0u8; 4096];
+        root_page[0x28..0x30].copy_from_slice(&child_a_vaddr.to_le_bytes());
+
+        // child_a: start=0x10000, end=0x20000, sibling=child_b, child=0
+        let mut a_page = [0u8; 4096];
+        a_page[0x00..0x08].copy_from_slice(&0x0001_0000u64.to_le_bytes());
+        a_page[0x08..0x10].copy_from_slice(&0x0002_0000u64.to_le_bytes());
+        a_page[0x20..0x28].copy_from_slice(&child_b_vaddr.to_le_bytes()); // sibling
+
+        // child_b: start=0x30000, end=0x40000, sibling=0, child=0
+        let mut b_page = [0u8; 4096];
+        b_page[0x00..0x08].copy_from_slice(&0x0003_0000u64.to_le_bytes());
+        b_page[0x08..0x10].copy_from_slice(&0x0004_0000u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("iomem_resource", root_vaddr)
+            .add_struct("resource", 0x60)
+            .add_field("resource", "start",   0x00u64, "unsigned long")
+            .add_field("resource", "end",     0x08u64, "unsigned long")
+            .add_field("resource", "flags",   0x10u64, "unsigned long")
+            .add_field("resource", "name",    0x18u64, "pointer")
+            .add_field("resource", "sibling", 0x20u64, "pointer")
+            .add_field("resource", "child",   0x28u64, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(root_vaddr, root_paddr, ptf::WRITABLE)
+            .write_phys(root_paddr, &root_page)
+            .map_4k(child_a_vaddr, child_a_paddr, ptf::WRITABLE)
+            .write_phys(child_a_paddr, &a_page)
+            .map_4k(child_b_vaddr, child_b_paddr, ptf::WRITABLE)
+            .write_phys(child_b_paddr, &b_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_iomem_regions(&reader).unwrap_or_default();
+        assert_eq!(result.len(), 2, "should find both sibling resource entries");
+    }
+
+    // ---------------------------------------------------------------
+    // walk_iomem_regions: child has a sub-child → exercises child push (depth+1)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_iomem_symbol_present_nested_child() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let root_vaddr: u64 = 0xFFFF_8800_00D0_0000;
+        let root_paddr: u64 = 0x00D0_0000;
+        let child_vaddr: u64 = 0xFFFF_8800_00D1_0000;
+        let child_paddr: u64 = 0x00D1_0000;
+        let grandchild_vaddr: u64 = 0xFFFF_8800_00D2_0000;
+        let grandchild_paddr: u64 = 0x00D2_0000;
+
+        let mut root_page = [0u8; 4096];
+        root_page[0x28..0x30].copy_from_slice(&child_vaddr.to_le_bytes());
+
+        // child: has a child → grandchild
+        let mut child_page = [0u8; 4096];
+        child_page[0x00..0x08].copy_from_slice(&0x1000u64.to_le_bytes());
+        child_page[0x08..0x10].copy_from_slice(&0x2000u64.to_le_bytes());
+        child_page[0x28..0x30].copy_from_slice(&grandchild_vaddr.to_le_bytes()); // child ptr
+
+        // grandchild: no further children
+        let mut gc_page = [0u8; 4096];
+        gc_page[0x00..0x08].copy_from_slice(&0x5000u64.to_le_bytes());
+        gc_page[0x08..0x10].copy_from_slice(&0x6000u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("iomem_resource", root_vaddr)
+            .add_struct("resource", 0x60)
+            .add_field("resource", "start",   0x00u64, "unsigned long")
+            .add_field("resource", "end",     0x08u64, "unsigned long")
+            .add_field("resource", "flags",   0x10u64, "unsigned long")
+            .add_field("resource", "name",    0x18u64, "pointer")
+            .add_field("resource", "sibling", 0x20u64, "pointer")
+            .add_field("resource", "child",   0x28u64, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(root_vaddr, root_paddr, ptf::WRITABLE)
+            .write_phys(root_paddr, &root_page)
+            .map_4k(child_vaddr, child_paddr, ptf::WRITABLE)
+            .write_phys(child_paddr, &child_page)
+            .map_4k(grandchild_vaddr, grandchild_paddr, ptf::WRITABLE)
+            .write_phys(grandchild_paddr, &gc_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_iomem_regions(&reader).unwrap_or_default();
+        assert_eq!(result.len(), 2, "child + grandchild = 2 entries");
+        // grandchild should be at depth 1
+        let gc = result.iter().find(|r| r.start == 0x5000).expect("grandchild entry");
+        assert_eq!(gc.depth, 1);
+    }
+
+    // ---------------------------------------------------------------
     // IoMemRegion: Clone + Debug + Serialize
     // ---------------------------------------------------------------
 

@@ -313,6 +313,79 @@ mod tests {
     }
 
     #[test]
+    fn walk_kernel_timers_uses_tvec_bases_fallback() {
+        // timer_bases absent but tvec_bases present → should use tvec_bases
+        // All vectors missing (no timer_base struct) → Err in loop → continue → empty
+        let isf = IsfBuilder::new()
+            .add_struct("timer_list", 64)
+            .add_field("timer_list", "entry", 0, "list_head")
+            .add_field("timer_list", "expires", 16, "unsigned long")
+            .add_field("timer_list", "function", 24, "pointer")
+            // No timer_bases symbol, only tvec_bases
+            .add_symbol("tvec_bases", 0xFFFF_8000_0020_0000u64)
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000u64)
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFFu64)
+            // No timer_base struct → read_pointer for vectors.{n} will Err → continue
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Should not panic; all Err paths → continue → empty result
+        let results = walk_kernel_timers(&reader).unwrap_or_default();
+        assert!(results.is_empty(), "tvec_bases fallback with no vectors → empty");
+    }
+
+    #[test]
+    fn walk_kernel_timers_vector_nonzero_but_walk_list_fails() {
+        // All three symbols present, timer_base vectors.0 reads as non-zero address,
+        // but walk_list fails because list_head is missing → Err → continue → empty
+        let bases_vaddr: u64 = 0xFFFF_8800_0060_0000;
+        let bases_paddr: u64 = 0x0060_0000;
+
+        // Put a non-zero value at offset 0 so vectors.0 reads as some address
+        let mut page = [0u8; 4096];
+        let fake_list_addr: u64 = 0xFFFF_DEAD_0000_0000; // not mapped
+        page[0..8].copy_from_slice(&fake_list_addr.to_le_bytes());
+
+        let mut isf_builder = IsfBuilder::new()
+            .add_struct("timer_base", 512)
+            .add_struct("timer_list", 64)
+            .add_field("timer_list", "entry", 0, "pointer")
+            .add_field("timer_list", "expires", 16, "unsigned long")
+            .add_field("timer_list", "function", 24, "pointer")
+            .add_symbol("timer_bases", bases_vaddr)
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000u64)
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFFu64);
+
+        // vectors.0 at offset 0; rest at same offset (all read the same fake addr)
+        for i in 0..TIMER_WHEEL_GROUPS {
+            isf_builder = isf_builder.add_field(
+                "timer_base",
+                &format!("vectors.{i}"),
+                0u64,
+                "pointer",
+            );
+        }
+        // No list_head struct → walk_list will fail → Err → continue
+        let isf = isf_builder.build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bases_vaddr, bases_paddr, flags::WRITABLE)
+            .write_phys(bases_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_kernel_timers(&reader).unwrap_or_default();
+        // walk_list fails for unmapped fake_list_addr → continue → empty
+        assert!(result.is_empty(), "failed walk_list → Err → continue → empty result");
+    }
+
+    #[test]
     fn classify_kernel_timer_just_below_kernel_start_is_suspicious() {
         let kernel_start = 0xFFFF_8000_0000_0000u64;
         let kernel_end = 0xFFFF_8000_00FF_FFFFu64;

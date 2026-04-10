@@ -425,6 +425,124 @@ mod tests {
     }
 
     #[test]
+    fn scan_proc_fops_with_entry_no_proc_fops() {
+        // proc_root → subdir → one entry with proc_fops == 0 → no hook info recorded
+        let proc_root_vaddr: u64 = 0xFFFF_8800_0070_0000;
+        let proc_root_paddr: u64 = 0x0040_0000;
+        let entry_vaddr: u64 = 0xFFFF_8800_0071_0000;
+        let entry_paddr: u64 = 0x0041_0000;
+        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
+
+        // proc_root page: subdir at offset 0 → entry_vaddr
+        let mut root_page = [0u8; 4096];
+        root_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes()); // subdir
+        // next at 8 = 0, proc_fops at 16 = 0
+
+        // entry page: subdir=0, next=0, proc_fops=0, name="modules"
+        let mut entry_page = [0u8; 4096];
+        // subdir at 0 = 0, next at 8 = 0, proc_fops at 16 = 0
+        entry_page[24..31].copy_from_slice(b"modules"); // name
+
+        let isf = IsfBuilder::new()
+            .add_struct("proc_dir_entry", 256)
+            .add_field("proc_dir_entry", "subdir",    0x00u64, "pointer")
+            .add_field("proc_dir_entry", "next",      0x08u64, "pointer")
+            .add_field("proc_dir_entry", "proc_fops", 0x10u64, "pointer")
+            .add_field("proc_dir_entry", "name",      0x18u64, "char")
+            .add_struct("file_operations", 256)
+            .add_field("file_operations", "read", 0x00u64, "pointer")
+            .add_symbol("proc_root", proc_root_vaddr)
+            .add_symbol("_stext", kernel_start)
+            .add_symbol("_etext", kernel_end)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(proc_root_vaddr, proc_root_paddr, ptflags::WRITABLE)
+            .write_phys(proc_root_paddr, &root_page)
+            .map_4k(entry_vaddr, entry_paddr, ptflags::WRITABLE)
+            .write_phys(entry_paddr, &entry_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = scan_proc_fops(&reader).unwrap_or_default();
+        // proc_fops == 0 → no FopsHookInfo pushed
+        assert!(results.is_empty(), "entry with proc_fops==0 should produce no hook entries");
+    }
+
+    #[test]
+    fn scan_proc_fops_with_entry_and_proc_fops_in_kernel() {
+        // proc_root → subdir → entry with proc_fops pointing to a mapped fops struct
+        // fops.read is inside kernel text → is_suspicious = false
+        let proc_root_vaddr: u64 = 0xFFFF_8800_0080_0000;
+        let proc_root_paddr: u64 = 0x0042_0000;
+        let entry_vaddr: u64 = 0xFFFF_8800_0081_0000;
+        let entry_paddr: u64 = 0x0043_0000;
+        let fops_vaddr: u64 = 0xFFFF_8800_0082_0000;
+        let fops_paddr: u64 = 0x0044_0000;
+        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
+        let kernel_func: u64 = kernel_start + 0x5000;
+
+        // proc_root: subdir → entry
+        let mut root_page = [0u8; 4096];
+        root_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes());
+
+        // entry: subdir=0, next=0, proc_fops=fops_vaddr, name="net"
+        let mut entry_page = [0u8; 4096];
+        // subdir at 0 = 0
+        // next at 8 = 0
+        entry_page[0x10..0x18].copy_from_slice(&fops_vaddr.to_le_bytes()); // proc_fops
+        entry_page[0x18..0x1b].copy_from_slice(b"net"); // name
+
+        // fops: read at offset 0 = kernel_func (inside kernel text)
+        let mut fops_page = [0u8; 4096];
+        fops_page[0..8].copy_from_slice(&kernel_func.to_le_bytes()); // read
+
+        let isf = IsfBuilder::new()
+            .add_struct("proc_dir_entry", 256)
+            .add_field("proc_dir_entry", "subdir",    0x00u64, "pointer")
+            .add_field("proc_dir_entry", "next",      0x08u64, "pointer")
+            .add_field("proc_dir_entry", "proc_fops", 0x10u64, "pointer")
+            .add_field("proc_dir_entry", "name",      0x18u64, "char")
+            .add_struct("file_operations", 256)
+            .add_field("file_operations", "read",         0x00u64, "pointer")
+            .add_field("file_operations", "write",        0x08u64, "pointer")
+            .add_field("file_operations", "open",         0x10u64, "pointer")
+            .add_field("file_operations", "release",      0x18u64, "pointer")
+            .add_field("file_operations", "unlocked_ioctl", 0x20u64, "pointer")
+            .add_field("file_operations", "llseek",       0x28u64, "pointer")
+            .add_field("file_operations", "mmap",         0x30u64, "pointer")
+            .add_field("file_operations", "poll",         0x38u64, "pointer")
+            .add_field("file_operations", "read_iter",    0x40u64, "pointer")
+            .add_field("file_operations", "write_iter",   0x48u64, "pointer")
+            .add_symbol("proc_root", proc_root_vaddr)
+            .add_symbol("_stext", kernel_start)
+            .add_symbol("_etext", kernel_end)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(proc_root_vaddr, proc_root_paddr, ptflags::WRITABLE)
+            .write_phys(proc_root_paddr, &root_page)
+            .map_4k(entry_vaddr, entry_paddr, ptflags::WRITABLE)
+            .write_phys(entry_paddr, &entry_page)
+            .map_4k(fops_vaddr, fops_paddr, ptflags::WRITABLE)
+            .write_phys(fops_paddr, &fops_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = scan_proc_fops(&reader).unwrap_or_default();
+        assert_eq!(results.len(), 1, "should find exactly one entry with proc_fops");
+        let entry = &results[0];
+        assert!(!entry.is_suspicious, "kernel-text pointer should not be suspicious");
+        assert!(entry.path.contains("net") || entry.path.contains("/proc"), "path should contain entry name");
+    }
+
+    #[test]
     fn check_fops_entry_null_pointer_skipped() {
         // file_operations struct where all pointers are NULL → no results
         let kernel_start: u64 = 0xFFFF_8000_0000_0000;

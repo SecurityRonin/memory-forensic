@@ -370,6 +370,79 @@ mod tests {
     }
 
     #[test]
+    fn scan_ptrace_nonzero_flags_parent_equals_real_parent_skipped() {
+        // ptrace flags != 0, but parent == real_parent → Ok(None) → no relationship recorded
+        use memf_core::test_builders::flags as ptf;
+
+        let task_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let task_paddr: u64 = 0x0090_0000;
+        let parent_vaddr: u64 = 0xFFFF_8000_0030_0000;
+
+        let mut data = vec![0u8; 512];
+        // ptrace flags = 1 (being traced)
+        data[8..12].copy_from_slice(&1u32.to_le_bytes());
+        // parent = parent_vaddr
+        data[16..24].copy_from_slice(&parent_vaddr.to_le_bytes());
+        // real_parent = parent_vaddr (same → reparenting not detected)
+        data[24..32].copy_from_slice(&parent_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "ptrace", 8, "unsigned int")
+            .add_field("task_struct", "parent", 16, "pointer")
+            .add_field("task_struct", "real_parent", 24, "pointer")
+            .add_field("task_struct", "comm", 32, "char");
+        let ptb = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &data);
+        let reader = make_reader(&isf, ptb);
+
+        let proc = fake_process(300, "victim", task_vaddr);
+        let result = scan_ptrace_relationships(&reader, &[proc]).unwrap();
+        assert!(
+            result.is_empty(),
+            "parent == real_parent → no reparenting → no relationship"
+        );
+    }
+
+    #[test]
+    fn scan_ptrace_nonzero_flags_parent_is_null_skipped() {
+        // ptrace flags != 0, but parent == 0 → Ok(None) → no relationship recorded
+        use memf_core::test_builders::flags as ptf;
+
+        let task_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let task_paddr: u64 = 0x00A0_0000;
+
+        let mut data = vec![0u8; 512];
+        // ptrace flags = 1
+        data[8..12].copy_from_slice(&1u32.to_le_bytes());
+        // parent = 0 (null)
+        data[16..24].copy_from_slice(&0u64.to_le_bytes());
+        // real_parent = some non-zero different value
+        data[24..32].copy_from_slice(&0xFFFF_8000_0050_0000u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "ptrace", 8, "unsigned int")
+            .add_field("task_struct", "parent", 16, "pointer")
+            .add_field("task_struct", "real_parent", 24, "pointer")
+            .add_field("task_struct", "comm", 32, "char");
+        let ptb = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &data);
+        let reader = make_reader(&isf, ptb);
+
+        let proc = fake_process(400, "victim", task_vaddr);
+        let result = scan_ptrace_relationships(&reader, &[proc]).unwrap();
+        assert!(
+            result.is_empty(),
+            "parent == 0 → cannot identify tracer → no relationship"
+        );
+    }
+
+    #[test]
     fn ptrace_relationship_serializes() {
         let rel = PtraceRelationship {
             tracer_pid: 42,

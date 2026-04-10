@@ -395,6 +395,75 @@ mod tests {
     }
 
     #[test]
+    fn walk_modxview_with_one_module_entry() {
+        // symbol present + one module in the list → exercises walk body
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Layout:
+        //   modules_vaddr  = LIST_HEAD (head of modules list)
+        //   mod_a_vaddr    = module A, list.next points back to head (circular)
+        //
+        // module struct layout used:
+        //   +0x00: list.next (pointer)
+        //   +0x08: list.prev (pointer)
+        //   +0x10: name (char[56])
+        //   +0x48: module_core (pointer) — base addr
+        //   +0x50: core_size (u32)
+        let head_vaddr: u64 = 0xFFFF_8800_00E0_0000;
+        let head_paddr: u64 = 0x00E0_0000;
+        let mod_a_vaddr: u64 = 0xFFFF_8800_00E1_0000;
+        let mod_a_paddr: u64 = 0x00E1_0000;
+
+        let mut head_page = [0u8; 4096];
+        // head.next → mod_a list node (start of module A)
+        head_page[0..8].copy_from_slice(&mod_a_vaddr.to_le_bytes());
+        head_page[8..16].copy_from_slice(&mod_a_vaddr.to_le_bytes());
+
+        let mut mod_a_page = [0u8; 4096];
+        // list.next → head (so walk terminates after mod_a)
+        mod_a_page[0..8].copy_from_slice(&head_vaddr.to_le_bytes());
+        mod_a_page[8..16].copy_from_slice(&head_vaddr.to_le_bytes());
+        // name at +0x10
+        mod_a_page[0x10..0x15].copy_from_slice(b"dummy");
+        // module_core at +0x48
+        mod_a_page[0x48..0x50].copy_from_slice(&0xFFFF_A000_0000u64.to_le_bytes());
+        // core_size at +0x50
+        mod_a_page[0x50..0x54].copy_from_slice(&0x4000u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("module", 256)
+            .add_field("module", "list",        0x00u64, "list_head")
+            .add_field("module", "name",        0x10u64, "char")
+            .add_field("module", "module_core", 0x48u64, "pointer")
+            .add_field("module", "core_size",   0x50u64, "unsigned int")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_field("list_head", "prev", 0x08u64, "pointer")
+            .add_symbol("modules", head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, ptf::WRITABLE)
+            .write_phys(head_paddr, &head_page)
+            .map_4k(mod_a_vaddr, mod_a_paddr, ptf::WRITABLE)
+            .write_phys(mod_a_paddr, &mod_a_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_modxview(&reader).unwrap_or_default();
+        assert_eq!(result.len(), 1, "should find exactly one module entry");
+        assert_eq!(result[0].name, "dummy");
+        assert_eq!(result[0].base_addr, 0xFFFF_A000_0000);
+        assert_eq!(result[0].size, 0x4000);
+        assert!(result[0].in_module_list, "module found in list");
+    }
+
+    #[test]
     fn check_kobj_linkage_unreadable_memory_returns_true() {
         // All offsets available but memory not mapped → read fails → assume present
         use memf_core::test_builders::PageTableBuilder;

@@ -387,6 +387,107 @@ mod tests {
     }
 
     #[test]
+    fn walk_netfilter_rules_init_net_present_no_xt_field_returns_empty() {
+        // init_net present but net.xt field missing → read_xt_table returns Err
+        // → errors are swallowed in the for loop → Ok(vec![])
+        let init_net_vaddr: u64 = 0xFFFF_8800_0080_0000;
+        let init_net_paddr: u64 = 0x00D0_0000;
+
+        let page = [0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_net", init_net_vaddr)
+            // "net" struct exists but has no "xt" field → field_offset returns None
+            .add_struct("net", 256)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_net_vaddr, init_net_paddr, flags::WRITABLE)
+            .write_phys(init_net_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_netfilter_rules(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "missing net.xt field → all tables fail → empty result");
+    }
+
+    #[test]
+    fn walk_netfilter_rules_init_net_present_no_netns_xt_tables_returns_empty() {
+        // init_net + net.xt present, but netns_xt.tables missing → read_xt_table fails
+        let init_net_vaddr: u64 = 0xFFFF_8800_0090_0000;
+        let init_net_paddr: u64 = 0x00E0_0000;
+
+        let page = [0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_net", init_net_vaddr)
+            .add_struct("net", 256)
+            .add_field("net", "xt", 0x00u64, "netns_xt")
+            // netns_xt struct exists but no "tables" field
+            .add_struct("netns_xt", 256)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_net_vaddr, init_net_paddr, flags::WRITABLE)
+            .write_phys(init_net_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_netfilter_rules(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "missing netns_xt.tables → all tables fail → empty result");
+    }
+
+    #[test]
+    fn walk_netfilter_rules_init_net_with_empty_xt_list() {
+        // init_net + net.xt + netns_xt.tables present; walk_list on the list_head
+        // returns empty because the list_head is self-pointing (no entries)
+        let init_net_vaddr: u64 = 0xFFFF_8800_00A0_0000;
+        let init_net_paddr: u64 = 0x00B0_0000;
+
+        // We put list_head for AF_INET (index 2) at offset = xt_offset + tables_offset + 2*16
+        // xt_offset = 0, tables_offset = 0, list_head_size=16 → AF_INET list at byte 32
+        // list_head is self-pointing → empty list
+        let af_inet_list_offset: usize = 32; // 0 + 0 + 2*16
+        let af_inet_list_vaddr = init_net_vaddr + af_inet_list_offset as u64;
+
+        let mut page = [0u8; 4096];
+        // Self-pointing list_head at offset 32
+        page[af_inet_list_offset..af_inet_list_offset + 8]
+            .copy_from_slice(&af_inet_list_vaddr.to_le_bytes());
+        page[af_inet_list_offset + 8..af_inet_list_offset + 16]
+            .copy_from_slice(&af_inet_list_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_net", init_net_vaddr)
+            .add_struct("net", 256)
+            .add_field("net", "xt", 0x00u64, "netns_xt")
+            .add_struct("netns_xt", 256)
+            .add_field("netns_xt", "tables", 0x00u64, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_field("list_head", "prev", 0x08u64, "pointer")
+            .add_struct("xt_table", 128)
+            .add_field("xt_table", "list", 0x00u64, "list_head")
+            .add_field("xt_table", "name", 0x10u64, "char")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_net_vaddr, init_net_paddr, flags::WRITABLE)
+            .write_phys(init_net_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_netfilter_rules(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "empty xt_table list should produce no rules");
+    }
+
+    #[test]
     fn format_ipv4_correct() {
         // 192.168.1.1 stored as little-endian u32: 0xC0A80101
         // bytes: [0x01, 0x01, 0xA8, 0xC0] → "1.1.168.192"

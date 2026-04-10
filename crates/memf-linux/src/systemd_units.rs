@@ -686,6 +686,185 @@ mod tests {
         assert!(!classify_systemd_unit("myapp.service", "/lib/systemd/myapp"));
     }
 
+    // ---------------------------------------------------------------------------
+    // walk_systemd_units: full path — systemd found, mm non-null, VMA with
+    // readable+non-exec flags, VMA data contains a unit extension string.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn walk_systemd_units_scans_readable_vma_for_units() {
+        // Build a synthetic memory where:
+        //   init_task (pid=1, comm="systemd") → mm → VMA (readable, non-exec)
+        //   VMA data contains "evil.service\0"
+        let task_vaddr: u64 = 0xFFFF_8800_0100_0000;
+        let task_paddr: u64 = 0x00F0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_0101_0000;
+        let mm_paddr: u64 = 0x00F1_0000;
+        let vma_vaddr: u64 = 0xFFFF_8800_0102_0000;
+        let vma_paddr: u64 = 0x00F2_0000;
+        // The actual data page that the VMA points at
+        let data_vaddr: u64 = 0xFFFF_8800_0103_0000;
+        let data_paddr: u64 = 0x00F3_0000;
+
+        let tasks_offset: u64 = 16;
+
+        // task_struct page
+        let mut task_page = [0u8; 4096];
+        // pid = 1
+        task_page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // tasks: self-pointing (only init_task in list)
+        let list_self = task_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        task_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        // comm = "systemd"
+        task_page[32..39].copy_from_slice(b"systemd");
+        // mm pointer at offset 48
+        task_page[48..56].copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // mm_struct page: mmap at offset 8
+        let mut mm_page = [0u8; 4096];
+        mm_page[8..16].copy_from_slice(&vma_vaddr.to_le_bytes());
+
+        // vm_area_struct page
+        let mut vma_page = [0u8; 4096];
+        vma_page[0..8].copy_from_slice(&data_vaddr.to_le_bytes()); // vm_start
+        let data_end = data_vaddr + 4096u64;
+        vma_page[8..16].copy_from_slice(&data_end.to_le_bytes());  // vm_end
+        vma_page[16..24].copy_from_slice(&0u64.to_le_bytes());     // vm_next = 0
+        // vm_flags: readable (bit 0) = 1, not executable (bit 2) = 0 → 0x1
+        vma_page[24..32].copy_from_slice(&0x1u64.to_le_bytes());
+
+        // Data page: put "evil.service\0" near the start
+        let mut data_page = [0u8; 4096];
+        let unit = b"evil.service\0";
+        data_page[100..100 + unit.len()].copy_from_slice(unit);
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid",   0x00u64, "unsigned int")
+            .add_field("task_struct", "tasks", 16u64,   "list_head")
+            .add_field("task_struct", "comm",  32u64,   "char")
+            .add_field("task_struct", "mm",    48u64,   "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_field("list_head", "prev", 0x08u64, "pointer")
+            .add_struct("mm_struct", 64)
+            .add_field("mm_struct", "mmap", 8u64, "pointer")
+            .add_struct("vm_area_struct", 64)
+            .add_field("vm_area_struct", "vm_start", 0x00u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_end",   0x08u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_next",  0x10u64, "pointer")
+            .add_field("vm_area_struct", "vm_flags", 0x18u64, "unsigned long")
+            .add_symbol("init_task", task_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptflags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, ptflags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .map_4k(data_vaddr, data_paddr, ptflags::WRITABLE)
+            .write_phys(data_paddr, &data_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_systemd_units(&reader).unwrap_or_default();
+        // We should find "evil.service" in the VMA
+        assert!(
+            result.iter().any(|u| u.unit_name.contains(".service")),
+            "should detect .service extension in VMA data; got: {:?}",
+            result.iter().map(|u| &u.unit_name).collect::<Vec<_>>()
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // walk_systemd_units: VMA with executable flag set → skipped (not scanned)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn walk_systemd_units_exec_vma_skipped() {
+        // VMA has readable+executable flags → should not be scanned → no unit found
+        let task_vaddr: u64 = 0xFFFF_8800_0200_0000;
+        let task_paddr: u64 = 0x00F4_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_0201_0000;
+        let mm_paddr: u64 = 0x00F5_0000;
+        let vma_vaddr: u64 = 0xFFFF_8800_0202_0000;
+        let vma_paddr: u64 = 0x00F6_0000;
+        let data_vaddr: u64 = 0xFFFF_8800_0203_0000;
+        let data_paddr: u64 = 0x00F7_0000;
+
+        let tasks_offset: u64 = 16;
+
+        let mut task_page = [0u8; 4096];
+        task_page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let list_self = task_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        task_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        task_page[32..39].copy_from_slice(b"systemd");
+        task_page[48..56].copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        let mut mm_page = [0u8; 4096];
+        mm_page[8..16].copy_from_slice(&vma_vaddr.to_le_bytes());
+
+        let mut vma_page = [0u8; 4096];
+        vma_page[0..8].copy_from_slice(&data_vaddr.to_le_bytes());
+        vma_page[8..16].copy_from_slice(&(data_vaddr + 4096).to_le_bytes());
+        vma_page[16..24].copy_from_slice(&0u64.to_le_bytes());
+        // vm_flags: readable (bit 0) + executable (bit 2) = 0x5
+        vma_page[24..32].copy_from_slice(&0x5u64.to_le_bytes());
+
+        let mut data_page = [0u8; 4096];
+        data_page[100..113].copy_from_slice(b"evil.service\0");
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid",   0x00u64, "unsigned int")
+            .add_field("task_struct", "tasks", 16u64,   "list_head")
+            .add_field("task_struct", "comm",  32u64,   "char")
+            .add_field("task_struct", "mm",    48u64,   "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_field("list_head", "prev", 0x08u64, "pointer")
+            .add_struct("mm_struct", 64)
+            .add_field("mm_struct", "mmap", 8u64, "pointer")
+            .add_struct("vm_area_struct", 64)
+            .add_field("vm_area_struct", "vm_start", 0x00u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_end",   0x08u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_next",  0x10u64, "pointer")
+            .add_field("vm_area_struct", "vm_flags", 0x18u64, "unsigned long")
+            .add_symbol("init_task", task_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptflags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, ptflags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .map_4k(data_vaddr, data_paddr, ptflags::WRITABLE)
+            .write_phys(data_paddr, &data_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_systemd_units(&reader).unwrap_or_default();
+        assert!(
+            result.is_empty(),
+            "executable VMA must not be scanned; found: {:?}",
+            result.iter().map(|u| &u.unit_name).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn systemd_unit_info_debug_format() {
         let info = SystemdUnitInfo {
