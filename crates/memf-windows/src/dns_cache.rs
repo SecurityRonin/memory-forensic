@@ -301,6 +301,311 @@ mod tests {
         ObjectReader::new(vas, Box::new(resolver))
     }
 
+    // ── walk_dns_cache: AAAA (type 28), CNAME (type 5), PTR (type 12), fallback ──
+
+    fn build_dns_reader_with_type(
+        record_type: u16,
+        data_bytes: Vec<u8>,
+        data_vaddr: u64,
+        data_paddr: u64,
+    ) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_struct("DNS_HASHTABLE", 64)
+            .add_field("DNS_HASHTABLE", "BucketCount", 0, "unsigned int")
+            .add_field("DNS_HASHTABLE", "Buckets", 8, "pointer")
+            .add_struct("DNS_CACHE_ENTRY", 48)
+            .add_field("DNS_CACHE_ENTRY", "Next", 0, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Name", 8, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Type", 16, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Ttl", 20, "unsigned int")
+            .add_field("DNS_CACHE_ENTRY", "DataLength", 24, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Data", 32, "pointer")
+            .add_symbol("g_HashTable", HASHTABLE_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut ht_data = vec![0u8; 4096];
+        ht_data[0..4].copy_from_slice(&1u32.to_le_bytes()); // BucketCount = 1
+        ht_data[8..16].copy_from_slice(&ENTRY_VADDR.to_le_bytes()); // Buckets[0]
+
+        let mut entry_data = vec![0u8; 4096];
+        entry_data[0..8].copy_from_slice(&0u64.to_le_bytes()); // Next = NULL
+        entry_data[8..16].copy_from_slice(&NAME_VADDR.to_le_bytes()); // Name ptr
+        entry_data[16..18].copy_from_slice(&record_type.to_le_bytes()); // Type
+        entry_data[20..24].copy_from_slice(&60u32.to_le_bytes()); // TTL = 60
+        entry_data[24..26].copy_from_slice(&(data_bytes.len() as u16).to_le_bytes());
+        entry_data[32..40].copy_from_slice(&data_vaddr.to_le_bytes()); // Data ptr
+
+        // Name: "test.example.com" as UTF-16LE
+        let mut name_data = vec![0u8; 4096];
+        let name = "test.example.com";
+        for (i, ch) in name.encode_utf16().enumerate() {
+            let off = i * 2;
+            name_data[off..off + 2].copy_from_slice(&ch.to_le_bytes());
+        }
+
+        let mut ip_data = vec![0u8; 4096];
+        ip_data[..data_bytes.len().min(4096)].copy_from_slice(&data_bytes[..data_bytes.len().min(4096)]);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(HASHTABLE_VADDR, HASHTABLE_PADDR, flags::WRITABLE)
+            .write_phys(HASHTABLE_PADDR, &ht_data)
+            .map_4k(ENTRY_VADDR, ENTRY_PADDR, flags::WRITABLE)
+            .write_phys(ENTRY_PADDR, &entry_data)
+            .map_4k(NAME_VADDR, NAME_PADDR, flags::WRITABLE)
+            .write_phys(NAME_PADDR, &name_data)
+            .map_4k(data_vaddr, data_paddr, flags::WRITABLE)
+            .write_phys(data_paddr, &ip_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// AAAA record (type 28) produces formatted IPv6 string.
+    #[test]
+    fn walk_dns_cache_aaaa_record() {
+        // IPv6 address: 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+        let ipv6_bytes = [
+            0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x00, 0x00,
+            0x00, 0x00, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x34,
+        ];
+        let data_vaddr: u64 = 0xFFFF_8000_0020_4000;
+        let data_paddr: u64 = 0x0080_4000;
+        let reader = build_dns_reader_with_type(28, ipv6_bytes.to_vec(), data_vaddr, data_paddr);
+        let entries = walk_dns_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.record_type, DnsRecordType::Aaaa);
+        // Should be 8 hex groups joined by colons
+        assert_eq!(e.data.matches(':').count(), 7);
+        assert_eq!(e.data, "2001:0db8:85a3:0000:0000:8a2e:0370:7334");
+    }
+
+    /// CNAME record (type 5) reads as wide string from data pointer.
+    #[test]
+    fn walk_dns_cache_cname_record() {
+        // CNAME target: "cname.example.com" as null-terminated UTF-16LE
+        let cname = "cname.example.com";
+        let mut wide_bytes = vec![0u8; 512];
+        for (i, ch) in cname.encode_utf16().enumerate() {
+            let off = i * 2;
+            wide_bytes[off..off + 2].copy_from_slice(&ch.to_le_bytes());
+        }
+        let data_vaddr: u64 = 0xFFFF_8000_0020_5000;
+        let data_paddr: u64 = 0x0080_5000;
+        let reader = build_dns_reader_with_type(5, wide_bytes, data_vaddr, data_paddr);
+        let entries = walk_dns_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.record_type, DnsRecordType::Cname);
+        assert_eq!(e.data, cname);
+    }
+
+    /// PTR record (type 12) reads as wide string.
+    #[test]
+    fn walk_dns_cache_ptr_record() {
+        let ptr_target = "ptr.example.com";
+        let mut wide_bytes = vec![0u8; 512];
+        for (i, ch) in ptr_target.encode_utf16().enumerate() {
+            let off = i * 2;
+            wide_bytes[off..off + 2].copy_from_slice(&ch.to_le_bytes());
+        }
+        let data_vaddr: u64 = 0xFFFF_8000_0020_6000;
+        let data_paddr: u64 = 0x0080_6000;
+        let reader = build_dns_reader_with_type(12, wide_bytes, data_vaddr, data_paddr);
+        let entries = walk_dns_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].data, ptr_target);
+    }
+
+    /// Unknown record type (e.g. MX = 15) dumps as hex via DataLength field.
+    #[test]
+    fn walk_dns_cache_unknown_type_hex_dump() {
+        // For unknown type, read_record_data reads DataLength field (24, u16)
+        // and hex-dumps up to 32 bytes. We put 4 bytes of data.
+        // But wait: DataLength at entry_data[24..26] must match what we put.
+        // We construct this directly with type=15 (MX) and DataLength=4.
+        let isf = IsfBuilder::new()
+            .add_struct("DNS_HASHTABLE", 64)
+            .add_field("DNS_HASHTABLE", "BucketCount", 0, "unsigned int")
+            .add_field("DNS_HASHTABLE", "Buckets", 8, "pointer")
+            .add_struct("DNS_CACHE_ENTRY", 48)
+            .add_field("DNS_CACHE_ENTRY", "Next", 0, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Name", 8, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Type", 16, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Ttl", 20, "unsigned int")
+            .add_field("DNS_CACHE_ENTRY", "DataLength", 24, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Data", 32, "pointer")
+            .add_symbol("g_HashTable", HASHTABLE_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let data_vaddr: u64 = 0xFFFF_8000_0020_7000;
+        let data_paddr: u64 = 0x0080_7000;
+
+        let mut ht_data = vec![0u8; 4096];
+        ht_data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        ht_data[8..16].copy_from_slice(&ENTRY_VADDR.to_le_bytes());
+
+        let mut entry_data = vec![0u8; 4096];
+        entry_data[0..8].copy_from_slice(&0u64.to_le_bytes()); // Next = NULL
+        entry_data[8..16].copy_from_slice(&NAME_VADDR.to_le_bytes());
+        entry_data[16..18].copy_from_slice(&15u16.to_le_bytes()); // Type = MX (15)
+        entry_data[20..24].copy_from_slice(&300u32.to_le_bytes());
+        entry_data[24..26].copy_from_slice(&4u16.to_le_bytes()); // DataLength = 4
+        entry_data[32..40].copy_from_slice(&data_vaddr.to_le_bytes());
+
+        let mut name_data = vec![0u8; 4096];
+        let name = "mx.example.com";
+        for (i, ch) in name.encode_utf16().enumerate() {
+            let off = i * 2;
+            name_data[off..off + 2].copy_from_slice(&ch.to_le_bytes());
+        }
+
+        let mut ip_data = vec![0u8; 4096];
+        ip_data[0] = 0xDE;
+        ip_data[1] = 0xAD;
+        ip_data[2] = 0xBE;
+        ip_data[3] = 0xEF;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(HASHTABLE_VADDR, HASHTABLE_PADDR, flags::WRITABLE)
+            .write_phys(HASHTABLE_PADDR, &ht_data)
+            .map_4k(ENTRY_VADDR, ENTRY_PADDR, flags::WRITABLE)
+            .write_phys(ENTRY_PADDR, &entry_data)
+            .map_4k(NAME_VADDR, NAME_PADDR, flags::WRITABLE)
+            .write_phys(NAME_PADDR, &name_data)
+            .map_4k(data_vaddr, data_paddr, flags::WRITABLE)
+            .write_phys(data_paddr, &ip_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_dns_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        // Hex dump of [0xDE, 0xAD, 0xBE, 0xEF]
+        assert_eq!(e.data, "deadbeef");
+    }
+
+    /// read_wide_string with null-ptr name returns empty string name.
+    #[test]
+    fn walk_dns_cache_null_name_ptr_returns_empty_name() {
+        // Set Name pointer to 0 — should produce empty name string.
+        let isf = IsfBuilder::new()
+            .add_struct("DNS_HASHTABLE", 64)
+            .add_field("DNS_HASHTABLE", "BucketCount", 0, "unsigned int")
+            .add_field("DNS_HASHTABLE", "Buckets", 8, "pointer")
+            .add_struct("DNS_CACHE_ENTRY", 48)
+            .add_field("DNS_CACHE_ENTRY", "Next", 0, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Name", 8, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Type", 16, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Ttl", 20, "unsigned int")
+            .add_field("DNS_CACHE_ENTRY", "DataLength", 24, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Data", 32, "pointer")
+            .add_symbol("g_HashTable", HASHTABLE_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut ht_data = vec![0u8; 4096];
+        ht_data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        ht_data[8..16].copy_from_slice(&ENTRY_VADDR.to_le_bytes());
+
+        let mut entry_data = vec![0u8; 4096];
+        entry_data[0..8].copy_from_slice(&0u64.to_le_bytes()); // Next = NULL
+        entry_data[8..16].copy_from_slice(&0u64.to_le_bytes()); // Name = NULL → empty string
+        entry_data[16..18].copy_from_slice(&1u16.to_le_bytes()); // Type = A
+        entry_data[20..24].copy_from_slice(&60u32.to_le_bytes());
+        entry_data[24..26].copy_from_slice(&4u16.to_le_bytes());
+        entry_data[32..40].copy_from_slice(&DATA_VADDR.to_le_bytes());
+
+        let mut ip_data = vec![0u8; 4096];
+        ip_data[0] = 127; ip_data[1] = 0; ip_data[2] = 0; ip_data[3] = 1;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(HASHTABLE_VADDR, HASHTABLE_PADDR, flags::WRITABLE)
+            .write_phys(HASHTABLE_PADDR, &ht_data)
+            .map_4k(ENTRY_VADDR, ENTRY_PADDR, flags::WRITABLE)
+            .write_phys(ENTRY_PADDR, &entry_data)
+            .map_4k(DATA_VADDR, DATA_PADDR, flags::WRITABLE)
+            .write_phys(DATA_PADDR, &ip_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_dns_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, ""); // null Name ptr → empty string
+        assert_eq!(entries[0].data, "127.0.0.1");
+    }
+
+    /// walk_dns_cache: entry with Data=0 for A record → empty data string.
+    #[test]
+    fn walk_dns_cache_null_data_ptr_returns_empty_data() {
+        let isf = IsfBuilder::new()
+            .add_struct("DNS_HASHTABLE", 64)
+            .add_field("DNS_HASHTABLE", "BucketCount", 0, "unsigned int")
+            .add_field("DNS_HASHTABLE", "Buckets", 8, "pointer")
+            .add_struct("DNS_CACHE_ENTRY", 48)
+            .add_field("DNS_CACHE_ENTRY", "Next", 0, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Name", 8, "pointer")
+            .add_field("DNS_CACHE_ENTRY", "Type", 16, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Ttl", 20, "unsigned int")
+            .add_field("DNS_CACHE_ENTRY", "DataLength", 24, "unsigned short")
+            .add_field("DNS_CACHE_ENTRY", "Data", 32, "pointer")
+            .add_symbol("g_HashTable", HASHTABLE_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut ht_data = vec![0u8; 4096];
+        ht_data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        ht_data[8..16].copy_from_slice(&ENTRY_VADDR.to_le_bytes());
+
+        let mut entry_data = vec![0u8; 4096];
+        entry_data[0..8].copy_from_slice(&0u64.to_le_bytes()); // Next = NULL
+        entry_data[8..16].copy_from_slice(&NAME_VADDR.to_le_bytes());
+        entry_data[16..18].copy_from_slice(&1u16.to_le_bytes()); // Type = A
+        entry_data[20..24].copy_from_slice(&60u32.to_le_bytes());
+        entry_data[24..26].copy_from_slice(&4u16.to_le_bytes());
+        entry_data[32..40].copy_from_slice(&0u64.to_le_bytes()); // Data = NULL
+
+        let mut name_data = vec![0u8; 4096];
+        let name = "null.example.com";
+        for (i, ch) in name.encode_utf16().enumerate() {
+            name_data[i * 2..i * 2 + 2].copy_from_slice(&ch.to_le_bytes());
+        }
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(HASHTABLE_VADDR, HASHTABLE_PADDR, flags::WRITABLE)
+            .write_phys(HASHTABLE_PADDR, &ht_data)
+            .map_4k(ENTRY_VADDR, ENTRY_PADDR, flags::WRITABLE)
+            .write_phys(ENTRY_PADDR, &entry_data)
+            .map_4k(NAME_VADDR, NAME_PADDR, flags::WRITABLE)
+            .write_phys(NAME_PADDR, &name_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_dns_cache(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].data, ""); // Data ptr = 0 → empty
+    }
+
+    /// DnsCacheEntry serializes correctly.
+    #[test]
+    fn dns_cache_entry_serializes() {
+        use crate::{DnsCacheEntry, DnsRecordType};
+        let entry = DnsCacheEntry {
+            name: "evil.c2.example.com".to_string(),
+            record_type: DnsRecordType::A,
+            data: "10.0.0.1".to_string(),
+            ttl: 300,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("evil.c2.example.com"));
+        assert!(json.contains("\"ttl\":300"));
+    }
+
     /// Single A record in the DNS cache → correct DnsCacheEntry.
     #[test]
     fn walk_dns_cache_single_a_record() {

@@ -704,6 +704,291 @@ mod tests {
         assert_eq!(access, 0x1111_2222_3333_4444);
     }
 
+    // ── Additional coverage: walk_bagmru_node direct invocation ───────
+
+    /// walk_bagmru_node with depth >= MAX_DEPTH returns early (line 154).
+    #[test]
+    fn walk_bagmru_node_max_depth_returns_early() {
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let mut entries = Vec::new();
+        // depth = MAX_DEPTH (32) → returns immediately
+        walk_bagmru_node(
+            &reader,
+            0x1000,
+            String::new(),
+            MAX_DEPTH,
+            0x20,
+            0x28,
+            0x08,
+            &mut entries,
+        );
+        assert!(entries.is_empty(), "max depth should yield no entries");
+    }
+
+    /// walk_bagmru_node with node_addr = 0 returns early (line 153 branch).
+    #[test]
+    fn walk_bagmru_node_zero_addr_returns_early() {
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let mut entries = Vec::new();
+        walk_bagmru_node(&reader, 0, String::new(), 0, 0x20, 0x28, 0x08, &mut entries);
+        assert!(entries.is_empty());
+    }
+
+    /// walk_bagmru_node with a mapped node where value_list_addr != 0 → parse_shitemid called.
+    /// Also covers the "parent_path + folder_name" format path (line 181) when both are non-empty.
+    #[test]
+    fn walk_bagmru_node_mapped_node_with_value_list() {
+        // Node layout at node_vaddr (virtual, within kernel range):
+        //   LastWriteTime at +0x08 = 0x1234
+        //   ValueList (pointer to SHITEMID) at +0x28 = SHITEMID_VADDR
+        //   SubKeyLists (pointer to subkey list) at +0x20 = 0 (no subkeys)
+        //
+        // SHITEMID: cb=12, type byte, ASCII "Doc\0"
+        // Physical addresses must be < 16 MB (0x00FF_FFFF).
+        //
+        // ISF: _CM_KEY_NODE.LastWriteTime at 0x08, SubKeyLists at 0x20, ValueList at 0x28
+        use memf_core::test_builders::{flags, SyntheticPhysMem};
+
+        let node_vaddr: u64    = 0xFFFF_8000_0010_0000;
+        let node_paddr: u64    = 0x0010_0000;
+        let shitemid_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let shitemid_paddr: u64 = 0x0020_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut node_page = vec![0u8; 0x1000];
+        // LastWriteTime at +0x08 = 0x1234
+        node_page[0x08..0x10].copy_from_slice(&0x0000_0000_0000_1234u64.to_le_bytes());
+        // ValueList (pointer) at +0x28 = shitemid_vaddr
+        node_page[0x28..0x30].copy_from_slice(&shitemid_vaddr.to_le_bytes());
+        // SubKeyLists at +0x20 = 0 (no subkeys → break immediately after entry push)
+        node_page[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());
+
+        // SHITEMID: cb=12, type byte, ASCII "Doc\0" (4 bytes after type), total 12 bytes
+        let mut shitem_page = vec![0u8; 0x1000];
+        // cb at [0..2] = 12
+        shitem_page[0] = 12u8;
+        shitem_page[1] = 0u8;
+        // type byte at [2]
+        shitem_page[2] = 0x31;
+        // name "Doc\0" starting at [3]
+        shitem_page[3] = b'D';
+        shitem_page[4] = b'o';
+        shitem_page[5] = b'c';
+        shitem_page[6] = 0; // null terminator
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(node_vaddr, node_paddr, flags::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .map_4k(shitemid_vaddr, shitemid_paddr, flags::WRITABLE)
+            .write_phys(shitemid_paddr, &shitem_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let mut entries = Vec::new();
+        // parent_path = "C:\\Users" so current_path = "C:\\Users\\Doc" (line 181)
+        walk_bagmru_node(
+            &reader,
+            node_vaddr,
+            "C:\\Users".to_string(),
+            0,   // depth = 0
+            0x20, // subkeys_offset
+            0x28, // value_list_offset
+            0x08, // last_write_offset
+            &mut entries,
+        );
+
+        // Should have one entry with path "C:\\Users\\Doc"
+        assert_eq!(entries.len(), 1, "should push one entry");
+        assert!(entries[0].path.contains("Doc"), "path should contain folder name");
+        assert_eq!(entries[0].slot_modified_time, 0x1234);
+    }
+
+    /// walk_bagmru_node with non-empty parent but empty folder_name → uses parent path (line 179).
+    #[test]
+    fn walk_bagmru_node_empty_folder_uses_parent_path() {
+        use memf_core::test_builders::{flags, SyntheticPhysMem};
+
+        // Node with value_list_addr=0 → folder_name="" → current_path = parent_path
+        // Physical address must be < 16 MB.
+        let node_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let node_paddr: u64 = 0x0030_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut node_page = vec![0u8; 0x1000];
+        // ValueList = 0 → value_list_addr = 0 → folder_name = ""
+        node_page[0x28..0x30].copy_from_slice(&0u64.to_le_bytes());
+        // SubKeyLists = 0
+        node_page[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(node_vaddr, node_paddr, flags::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let mut entries = Vec::new();
+        // parent_path = "C:\\Desktop", folder_name = "" → current_path = "C:\\Desktop"
+        walk_bagmru_node(
+            &reader,
+            node_vaddr,
+            "C:\\Desktop".to_string(),
+            0,
+            0x20,
+            0x28,
+            0x08,
+            &mut entries,
+        );
+        assert_eq!(entries.len(), 1, "should push one entry with parent path");
+        assert_eq!(entries[0].path, "C:\\Desktop");
+    }
+
+    /// walk_bagmru_node with non-zero subkey list containing one subkey → recurses.
+    #[test]
+    fn walk_bagmru_node_with_subkeys_recurses() {
+        use memf_core::test_builders::{flags, SyntheticPhysMem};
+
+        // Layout:
+        //   root_node: SubKeyLists → subkey_list
+        //   subkey_list[0] = child_node
+        //   subkey_list[1] = 0 (stops iteration)
+        //   child_node: ValueList = 0, SubKeyLists = 0
+        // Physical addresses must be < 16 MB.
+
+        let root_vaddr: u64   = 0xFFFF_8000_0040_0000;
+        let root_paddr: u64   = 0x0040_0000;
+        let sklist_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let sklist_paddr: u64 = 0x0050_0000;
+        let child_vaddr: u64  = 0xFFFF_8000_0060_0000;
+        let child_paddr: u64  = 0x0060_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut root_page = vec![0u8; 0x1000];
+        // SubKeyLists → sklist_vaddr
+        root_page[0x20..0x28].copy_from_slice(&sklist_vaddr.to_le_bytes());
+        // ValueList = 0 (no SHITEMID, folder_name = "")
+        root_page[0x28..0x30].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut sklist_page = vec![0u8; 0x1000];
+        // [0..8] = child_vaddr (first subkey)
+        sklist_page[0..8].copy_from_slice(&child_vaddr.to_le_bytes());
+        // [8..16] = 0 (stops iteration)
+        sklist_page[8..16].copy_from_slice(&0u64.to_le_bytes());
+
+        let child_page = vec![0u8; 0x1000]; // SubKeyLists = ValueList = 0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(root_vaddr, root_paddr, flags::WRITABLE)
+            .write_phys(root_paddr, &root_page)
+            .map_4k(sklist_vaddr, sklist_paddr, flags::WRITABLE)
+            .write_phys(sklist_paddr, &sklist_page)
+            .map_4k(child_vaddr, child_paddr, flags::WRITABLE)
+            .write_phys(child_paddr, &child_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let mut entries = Vec::new();
+        // parent="C:\\BagMRU", folder_name="" → current_path = "C:\\BagMRU"
+        // Then recursion: child folder_name="" → current_path = "C:\\BagMRU" (parent used)
+        walk_bagmru_node(
+            &reader,
+            root_vaddr,
+            "C:\\BagMRU".to_string(),
+            0,
+            0x20,
+            0x28,
+            0x08,
+            &mut entries,
+        );
+        // root pushes "C:\\BagMRU", child also has same path (parent propagated, folder empty)
+        assert!(entries.len() >= 1, "should push at least root entry");
+    }
+
+    /// walk_shellbags with a mapped non-zero hive where all reads succeed but
+    /// no folder names extracted → returns empty (exercises inner walker body).
+    #[test]
+    fn walk_shellbags_mapped_hive_no_folder_names() {
+        use memf_core::test_builders::{flags, SyntheticPhysMem};
+
+        // Hive has Signature field available.
+        // Hive node: SubKeyLists = 0, ValueList = 0 → no entries.
+        // Physical address must be < 16 MB.
+        let hive_vaddr: u64 = 0xFFFF_8000_0070_0000;
+        let hive_paddr: u64 = 0x0070_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_page = vec![0u8; 0x1000]; // all zeros: SubKeyLists=0, ValueList=0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // Non-zero hive_addr, Signature field present: walker should enter walk_bagmru_node,
+        // read value_list_addr=0 (→ empty folder_name), current_path = "" → no entry,
+        // then subkeys_list_addr = 0 → return.
+        let result = walk_shellbags(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "no folder names → empty entries");
+    }
+
     // ── Additional coverage: walk_shellbags with mapped memory ────────
 
     /// walk_shellbags with non-zero hive_addr but all reads fail → empty (graceful).

@@ -1023,4 +1023,123 @@ mod tests {
             );
         }
     }
+
+    // ---------------------------------------------------------------
+    // walk_getsids with a real EPROCESS+TOKEN+SID chain
+    // ---------------------------------------------------------------
+
+    /// walk_getsids: one process "malware.exe" with Token → UserAndGroups → S-1-5-18 (SYSTEM).
+    ///
+    /// Covers walk_getsids lines 222-269 (walk body: token read, SID extraction,
+    /// well_known_sid resolution, integrity level, classify, results.push).
+    ///
+    /// Memory layout:
+    ///   head_vaddr (process list head): Flink → eproc+0x448
+    ///   eproc_vaddr:
+    ///     [0x28] DirectoryTableBase = eproc_paddr
+    ///     [0x440] UniqueProcessId = 1234
+    ///     [0x448] ActiveProcessLinks.Flink = head_vaddr (sentinel)
+    ///     [0x4B8] Token = token_vaddr
+    ///     [0x540] InheritedFromUniqueProcessId = 0
+    ///     [0x5A8] ImageFileName = "malware.exe\0"
+    ///   token_vaddr:
+    ///     [0x88] UserAndGroupCount = 1
+    ///     [0x90] UserAndGroups = ug_vaddr
+    ///   ug_vaddr (_SID_AND_ATTRIBUTES[0]):
+    ///     [0x00] Sid = sid_vaddr
+    ///   sid_vaddr (S-1-5-18):
+    ///     Revision=1, SubAuthorityCount=1, Auth=[0,0,0,0,0,5], SubAuth=[18]
+    #[test]
+    fn walk_getsids_one_process_system_sid_is_suspicious() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // All paddrs < 0x00FF_FFFF (SyntheticPhysMem limit)
+        let head_vaddr:  u64 = 0xFFFF_8000_00F0_0000;
+        let head_paddr:  u64 = 0x00F0_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_00F1_0000;
+        let eproc_paddr: u64 = 0x00F2_0000; // Use a different paddr for CR3
+        let token_vaddr: u64 = 0xFFFF_8000_00F3_0000;
+        let token_paddr: u64 = 0x00F3_0000;
+        let ug_vaddr:    u64 = 0xFFFF_8000_00F4_0000;
+        let ug_paddr:    u64 = 0x00F4_0000;
+        let sid_vaddr:   u64 = 0xFFFF_8000_00F5_0000;
+        let sid_paddr:   u64 = 0x00F5_0000;
+
+        // _EPROCESS.ActiveProcessLinks is at 0x448 (Flink at +0, Blink at +8).
+        // head.Flink → eproc+0x448 = eproc_vaddr + 0x448
+        let eproc_links_vaddr = eproc_vaddr + 0x448;
+
+        // head page: Flink = eproc+0x448
+        let mut head_page = vec![0u8; 0x1000];
+        head_page[0x00..0x08].copy_from_slice(&eproc_links_vaddr.to_le_bytes()); // Flink
+        head_page[0x08..0x10].copy_from_slice(&eproc_links_vaddr.to_le_bytes()); // Blink
+
+        // eproc page
+        let mut eproc_page = vec![0u8; 0x1000];
+        // _KPROCESS.DirectoryTableBase at eproc+0x28 (Pcb is at +0, so kproc=eproc)
+        eproc_page[0x28..0x30].copy_from_slice(&(eproc_paddr as u64).to_le_bytes());
+        // UniqueProcessId at +0x440
+        eproc_page[0x440..0x448].copy_from_slice(&1234u64.to_le_bytes());
+        // ActiveProcessLinks.Flink at +0x448 = head_vaddr (sentinel → stop)
+        eproc_page[0x448..0x450].copy_from_slice(&head_vaddr.to_le_bytes());
+        eproc_page[0x450..0x458].copy_from_slice(&head_vaddr.to_le_bytes());
+        // Token at +0x4B8 = token_vaddr (low bits clear)
+        eproc_page[0x4B8..0x4C0].copy_from_slice(&token_vaddr.to_le_bytes());
+        // InheritedFromUniqueProcessId at +0x540
+        eproc_page[0x540..0x548].copy_from_slice(&0u64.to_le_bytes());
+        // Peb at +0x550 = 0 (no PEB)
+        // ImageFileName at +0x5A8 = "malware.exe\0"
+        let img_name = b"malware.exe\0";
+        eproc_page[0x5A8..0x5A8 + img_name.len()].copy_from_slice(img_name);
+
+        // token page
+        let mut token_page = vec![0u8; 0x1000];
+        // UserAndGroupCount at +0x88 = 1
+        token_page[0x88..0x8C].copy_from_slice(&1u32.to_le_bytes());
+        // UserAndGroups at +0x90 = ug_vaddr
+        token_page[0x90..0x98].copy_from_slice(&ug_vaddr.to_le_bytes());
+
+        // ug page (_SID_AND_ATTRIBUTES[0]): Sid at +0x00 = sid_vaddr
+        let mut ug_page = vec![0u8; 0x1000];
+        ug_page[0x00..0x08].copy_from_slice(&sid_vaddr.to_le_bytes());
+
+        // sid page: S-1-5-18 (SYSTEM)
+        let mut sid_page = vec![0u8; 0x100];
+        sid_page[0] = 1; // Revision
+        sid_page[1] = 1; // SubAuthorityCount
+        sid_page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 5]); // NT Authority
+        sid_page[8..12].copy_from_slice(&18u32.to_le_bytes()); // SubAuthority[0] = 18
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(head_vaddr,  head_paddr,  flags::WRITABLE)
+            .write_phys(head_paddr, &head_page)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_page)
+            .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
+            .write_phys(token_paddr, &token_page)
+            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
+            .write_phys(ug_paddr, &ug_page)
+            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .write_phys(sid_paddr, &sid_page)
+            .build();
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_getsids(&reader, head_vaddr).unwrap();
+        assert_eq!(results.len(), 1, "should find one process");
+
+        let proc = &results[0];
+        assert_eq!(proc.pid, 1234);
+        assert_eq!(proc.process_name, "malware.exe");
+        assert_eq!(proc.user_sid, "S-1-5-18");
+        assert_eq!(proc.sid_name, "SYSTEM");
+        assert!(proc.is_suspicious, "non-system process as SYSTEM should be suspicious");
+    }
 }

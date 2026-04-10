@@ -1118,4 +1118,332 @@ mod tests {
         let result = find_key_cell(&reader, hive_vaddr, "");
         assert_eq!(result, Some(0x100), "empty path returns root cell index");
     }
+
+    // ── walk_svc_diff with a real SCM service list ─────────────────────
+
+    /// ISF builder that includes _SERVICE_RECORD, _LIST_ENTRY, _UNICODE_STRING.
+    fn make_svc_diff_reader(ptb: PageTableBuilder) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        // _SERVICE_RECORD field offsets (matching service.rs tests).
+        const SR_SERVICE_LIST: u64 = 0x00;
+        const SR_SERVICE_NAME: u64 = 0x10;
+        const SR_DISPLAY_NAME: u64 = 0x18;
+        const SR_CURRENT_STATE: u64 = 0x20;
+        const SR_SERVICE_TYPE: u64 = 0x24;
+        const SR_START_TYPE: u64 = 0x28;
+        const SR_IMAGE_PATH: u64 = 0x30;
+        const SR_OBJECT_NAME: u64 = 0x38;
+        const SR_PROCESS_ID: u64 = 0x40;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_SERVICE_RECORD", 0x80)
+            .add_field("_SERVICE_RECORD", "ServiceList",   SR_SERVICE_LIST,   "_LIST_ENTRY")
+            .add_field("_SERVICE_RECORD", "ServiceName",   SR_SERVICE_NAME,   "pointer")
+            .add_field("_SERVICE_RECORD", "DisplayName",   SR_DISPLAY_NAME,   "pointer")
+            .add_field("_SERVICE_RECORD", "CurrentState",  SR_CURRENT_STATE,  "unsigned int")
+            .add_field("_SERVICE_RECORD", "ServiceType",   SR_SERVICE_TYPE,   "unsigned int")
+            .add_field("_SERVICE_RECORD", "StartType",     SR_START_TYPE,     "unsigned int")
+            .add_field("_SERVICE_RECORD", "ImagePath",     SR_IMAGE_PATH,     "pointer")
+            .add_field("_SERVICE_RECORD", "ObjectName",    SR_OBJECT_NAME,    "pointer")
+            .add_field("_SERVICE_RECORD", "ProcessId",     SR_PROCESS_ID,     "unsigned int")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
+            .add_struct("_UNICODE_STRING", 16)
+            .add_field("_UNICODE_STRING", "Length",        0, "unsigned short")
+            .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
+            .add_field("_UNICODE_STRING", "Buffer",        8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// Encode a string as UTF-16LE bytes.
+    fn utf16le_bytes(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    /// walk_svc_diff: one SCM service ("EvilSvc", AutoStart) not in registry
+    /// → in_scm=true, in_registry=false, is_suspicious=true.
+    ///
+    /// Covers walk_svc_diff lines 84-93 (SCM map built) and 129-149 (SCM loop).
+    #[test]
+    fn walk_svc_diff_scm_service_not_in_registry_is_suspicious() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        // Virtual addresses (paddr must be < 0x00FF_FFFF for SyntheticPhysMem).
+        let head_vaddr: u64 = 0xFFFF_8000_00D0_0000;
+        let head_paddr: u64 = 0x00D0_0000;
+        let sr_vaddr:   u64 = 0xFFFF_8000_00D1_0000;
+        let sr_paddr:   u64 = 0x00D1_0000;
+        let str_vaddr:  u64 = 0xFFFF_8000_00D2_0000;
+        let str_paddr:  u64 = 0x00D2_0000;
+
+        // Encode "EvilSvc" as UTF-16LE for the ServiceName string buffer.
+        let name_utf16 = utf16le_bytes("EvilSvc");
+        let name_len = name_utf16.len() as u16;
+
+        // str_page layout:
+        //   [0x000..0x010]: _UNICODE_STRING for ServiceName
+        //     [0..2]  = length (bytes)
+        //     [2..4]  = max length
+        //     [8..16] = Buffer pointer → str_vaddr + 0x100
+        //   [0x100..]: UTF-16LE "EvilSvc"
+        let mut str_page = vec![0u8; 0x200];
+        str_page[0x00..0x02].copy_from_slice(&name_len.to_le_bytes());
+        str_page[0x02..0x04].copy_from_slice(&(name_len + 2).to_le_bytes());
+        let buf_vaddr = str_vaddr + 0x100;
+        str_page[0x08..0x10].copy_from_slice(&buf_vaddr.to_le_bytes());
+        str_page[0x100..0x100 + name_utf16.len()].copy_from_slice(&name_utf16);
+
+        // head_page: LIST_ENTRY that acts as sentinel/head.
+        //   head.Flink = sr_vaddr  (points to SERVICE_RECORD.ServiceList)
+        //   head.Blink = sr_vaddr
+        let mut head_page = vec![0u8; 0x100];
+        head_page[0x00..0x08].copy_from_slice(&sr_vaddr.to_le_bytes()); // Flink
+        head_page[0x08..0x10].copy_from_slice(&sr_vaddr.to_le_bytes()); // Blink
+
+        // sr_page: _SERVICE_RECORD at offset 0.
+        //   [0x00..0x08] ServiceList.Flink = head_vaddr (sentinel → stop)
+        //   [0x08..0x10] ServiceList.Blink = head_vaddr
+        //   [0x10..0x18] ServiceName pointer = str_vaddr
+        //   [0x18..0x20] DisplayName pointer = 0 (empty)
+        //   [0x20..0x24] CurrentState = 4 (Running)
+        //   [0x24..0x28] ServiceType  = 0x10 (WIN32_OWN_PROCESS)
+        //   [0x28..0x2C] StartType    = 2 (AutoStart)
+        //   [0x30..0x38] ImagePath ptr = 0 (empty)
+        //   [0x38..0x40] ObjectName ptr = 0 (empty)
+        //   [0x40..0x44] ProcessId    = 1234
+        let mut sr_page = vec![0u8; 0x100];
+        sr_page[0x00..0x08].copy_from_slice(&head_vaddr.to_le_bytes()); // Flink → sentinel
+        sr_page[0x08..0x10].copy_from_slice(&head_vaddr.to_le_bytes()); // Blink
+        sr_page[0x10..0x18].copy_from_slice(&str_vaddr.to_le_bytes());  // ServiceName
+        sr_page[0x20..0x24].copy_from_slice(&4u32.to_le_bytes());        // CurrentState Running
+        sr_page[0x24..0x28].copy_from_slice(&0x10u32.to_le_bytes());     // ServiceType
+        sr_page[0x28..0x2C].copy_from_slice(&2u32.to_le_bytes());        // StartType AutoStart
+        sr_page[0x40..0x44].copy_from_slice(&1234u32.to_le_bytes());     // ProcessId
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .write_phys(head_paddr, &head_page)
+            .map_4k(sr_vaddr, sr_paddr, flags::WRITABLE)
+            .write_phys(sr_paddr, &sr_page)
+            .map_4k(str_vaddr, str_paddr, flags::WRITABLE)
+            .write_phys(str_paddr, &str_page);
+
+        let reader = make_svc_diff_reader(ptb);
+
+        // system_hive_addr = 0 → no registry entries.
+        // SCM has "EvilSvc" (AutoStart=2) not in registry → suspicious.
+        let result = walk_svc_diff(&reader, head_vaddr, 0).unwrap();
+        assert!(!result.is_empty(), "should find SCM-only service");
+        let entry = result.iter().find(|e| e.service_name == "EvilSvc");
+        assert!(entry.is_some(), "should find EvilSvc");
+        let entry = entry.unwrap();
+        assert!(entry.in_scm,    "EvilSvc should be in SCM");
+        assert!(!entry.in_registry, "EvilSvc should not be in registry");
+        assert!(entry.is_suspicious, "SCM-only AutoStart service is suspicious");
+        assert_eq!(entry.start_type, 2, "start_type from SCM = AutoStart=2");
+    }
+
+    /// walk_svc_diff: registry-only AutoStart service not in SCM → suspicious.
+    ///
+    /// Covers walk_svc_diff lines 101-106 (service_subkeys populated),
+    /// lines 110-122 (for loop over subkeys with read_registry_values),
+    /// and lines 153-168 (registry-only entries loop).
+    #[test]
+    fn walk_svc_diff_registry_only_auto_start_service_is_suspicious() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        // Hive layout: SYSTEM hive with CurrentControlSet\Services\BackdoorSvc
+        // The svc_diff module uses its own simpler NK reader (not registry_keys).
+        // Layout:
+        //   hive_vaddr (root): root_cell_index = 0 at offset 0x24
+        //   cell_page (hive_vaddr + 0x1000):
+        //     root NK at 0x04 (cell header 4 bytes + data)
+        //       name_len = 4, name = "ROOT" [actually unnamed, not navigated]
+        //       stable_count = 1, list_cell = 0x80
+        //     lf list at 0x84:
+        //       sig=0x666C, count=1, entry[0].cell=0x100
+        //     CurrentControlSet NK at 0x104:
+        //       name = "CurrentControlSet", stable_count = 1, list_cell = 0x180
+        //     lf list at 0x184:
+        //       sig=0x666C, count=1, entry[0].cell=0x200
+        //     Services NK at 0x204:
+        //       name = "Services", stable_count = 1, list_cell = 0x280
+        //     lf list at 0x284:
+        //       sig=0x666C, count=1, entry[0].cell=0x300
+        //     BackdoorSvc NK at 0x304:
+        //       name = "BackdoorSvc" (11 bytes), stable_count=0, value_count=0
+        //
+        // Note: svc_diff's find_key_cell reads with its own NK layout constants:
+        //   NK_STABLE_COUNT = 0x14, NK_STABLE_LIST = 0x1C, NK_NAME_LEN = 0x48, NK_NAME_DATA = 0x4C
+        // and read_cell reads vaddr+4 (skips cell header).
+        //
+        // registry_keys::read_registry_values uses NK_VALUE_COUNT at 0x24 and NK_VALUES_LIST at 0x28
+        // (relative to cell data = after 4-byte header).
+
+        let hive_vaddr: u64 = 0xFFFF_8000_00E0_0000;
+        let hive_paddr: u64 = 0x00E0_0000;
+        let cell_vaddr_base: u64 = hive_vaddr + 0x1000; // HBIN_START
+        let cell_paddr_base: u64 = 0x00E1_0000;
+
+        // Helper to write u32 LE into a buffer.
+        let mut cp = vec![0u8; 0x1000];
+
+        // svc_diff NK field offsets (relative to cell data = bytes after 4-byte cell header):
+        // NK_STABLE_COUNT = 0x14, NK_STABLE_LIST = 0x1C, NK_NAME_LEN = 0x48, NK_NAME_DATA = 0x4C
+        //
+        // Cell at offset X in cp: cp[X..X+4] = cell size header, cp[X+4..] = cell data.
+        // read_cell(vaddr) → reads from vaddr+4.
+        // cell_vaddr(hive, idx) = hive + 0x1000 + idx
+        // So cell at cp[0] corresponds to idx=0, and cp[4..] is cell data.
+
+        fn w32(buf: &mut Vec<u8>, off: usize, val: u32) {
+            buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        fn w16(buf: &mut Vec<u8>, off: usize, val: u16) {
+            buf[off..off + 2].copy_from_slice(&val.to_le_bytes());
+        }
+
+        // Root cell at idx=0 → cp[0..] header, cp[4..] data.
+        // data[0x00..0x02] = NK_SIG
+        // data[0x14..0x18] = stable_count = 1 (svc_diff NK_STABLE_COUNT = 0x14)
+        // data[0x1C..0x20] = list_cell = 0x80 (svc_diff NK_STABLE_LIST = 0x1C)
+        w32(&mut cp, 0, 0xFFFF_FF80u32); // cell header (negative = allocated)
+        w16(&mut cp, 4, NK_SIG);
+        w32(&mut cp, 4 + NK_STABLE_COUNT, 1u32);   // stable_count = 1
+        w32(&mut cp, 4 + NK_STABLE_LIST, 0x80u32); // list_cell = 0x80
+
+        // lf list at idx=0x80 → cp[0x80..] header, cp[0x84..] data.
+        // data[0..2] = 0x666C ("lf"), data[2..4] = count=1, data[4..8] = entry cell=0x100, [8..12]=hash
+        w32(&mut cp, 0x80, 0xFFFF_FF80u32);
+        w16(&mut cp, 0x84, 0x666Cu16); // lf sig
+        w16(&mut cp, 0x86, 1u16);       // count = 1
+        w32(&mut cp, 0x88, 0x100u32);   // child cell = 0x100
+        // [0x8C..0x90] = hash (0, ignored)
+
+        // CurrentControlSet NK at idx=0x100.
+        let ccs_name = b"CurrentControlSet";
+        w32(&mut cp, 0x100, 0xFFFF_FF00u32);
+        w16(&mut cp, 0x104, NK_SIG);
+        w32(&mut cp, 0x104 + NK_STABLE_COUNT, 1u32);    // stable_count = 1
+        w32(&mut cp, 0x104 + NK_STABLE_LIST, 0x180u32); // list_cell = 0x180
+        w16(&mut cp, 0x104 + NK_NAME_LEN, ccs_name.len() as u16);
+        cp[0x104 + NK_NAME_DATA..0x104 + NK_NAME_DATA + ccs_name.len()].copy_from_slice(ccs_name);
+
+        // lf list at idx=0x180.
+        w32(&mut cp, 0x180, 0xFFFF_FF80u32);
+        w16(&mut cp, 0x184, 0x666Cu16);
+        w16(&mut cp, 0x186, 1u16);
+        w32(&mut cp, 0x188, 0x200u32); // child cell = 0x200
+
+        // Services NK at idx=0x200.
+        let svc_name = b"Services";
+        w32(&mut cp, 0x200, 0xFFFF_FF00u32);
+        w16(&mut cp, 0x204, NK_SIG);
+        w32(&mut cp, 0x204 + NK_STABLE_COUNT, 1u32);    // stable_count = 1
+        w32(&mut cp, 0x204 + NK_STABLE_LIST, 0x280u32); // list_cell = 0x280
+        w16(&mut cp, 0x204 + NK_NAME_LEN, svc_name.len() as u16);
+        cp[0x204 + NK_NAME_DATA..0x204 + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
+
+        // lf list at idx=0x280.
+        w32(&mut cp, 0x280, 0xFFFF_FF80u32);
+        w16(&mut cp, 0x284, 0x666Cu16);
+        w16(&mut cp, 0x286, 1u16);
+        w32(&mut cp, 0x288, 0x300u32); // child cell = 0x300
+
+        // BackdoorSvc NK at idx=0x300 (value_count=0, so read_registry_values returns []).
+        // Start value comes from registry_keys::read_registry_values → [] → default 3 (DemandStart).
+        // Wait: we want AutoStart=2 to be suspicious. But read_registry_values returns [] →
+        // default start_type = 3 (line 121: .unwrap_or(3)). So start_type=3 → not suspicious.
+        //
+        // To get start_type=2 (auto), we need a "Start" value. Let's add one:
+        //   registry_keys layout: NK at 0x300:
+        //     value_count at NK_VALUE_COUNT_OFFSET (0x24) = 1
+        //     values_list at NK_VALUES_LIST_OFFSET (0x28) = 0x380
+        //   vk cell at 0x380:
+        //     sig = 0x6B76 ("vk")
+        //     name_len = 5 ("Start")
+        //     data_len = 4 (inline bit NOT set → external; but easier with inline)
+        //     data_offset = inline: set MSB of data_len (0x8000_0004) + data in data_offset field
+        //     Actually: inline data = MSB of DataLength set → data is in DataOffset field itself
+        //     So: data_len = 0x8000_0004 (inline, 4 bytes), data_offset = 2 (AutoStart)
+        //     type = 4 (REG_DWORD)
+        //     name = "Start" (5 bytes)
+        //
+        // registry_keys VK offsets (relative to cell data after 4-byte header):
+        //   VK_SIGNATURE   = sig at [0..2] = 0x6B76
+        //   VK_NAME_LENGTH = [0x02..0x04] = name_len
+        //   VK_DATA_LENGTH = [0x04..0x08] = data_len (MSB set = inline)
+        //   VK_DATA_OFFSET = [0x08..0x0C] = data (inline value when MSB set)
+        //   VK_TYPE        = [0x0C..0x10] = type
+        //   VK_NAME        = [0x14..]    = name bytes
+
+        // BackdoorSvc NK:
+        let bd_name = b"BackdoorSvc";
+        w32(&mut cp, 0x300, 0xFFFF_FF00u32);
+        w16(&mut cp, 0x304, NK_SIG);
+        w32(&mut cp, 0x304 + NK_STABLE_COUNT, 0u32);    // no subkeys
+        // NK_VALUE_COUNT_OFFSET = 0x24 (registry_keys.rs)
+        w32(&mut cp, 0x304 + 0x24, 1u32);               // value_count = 1
+        // NK_VALUES_LIST_OFFSET = 0x28
+        w32(&mut cp, 0x304 + 0x28, 0x380u32);           // values_list cell = 0x380
+        w16(&mut cp, 0x304 + NK_NAME_LEN, bd_name.len() as u16);
+        cp[0x304 + NK_NAME_DATA..0x304 + NK_NAME_DATA + bd_name.len()].copy_from_slice(bd_name);
+
+        // Values list cell at idx=0x380: one entry (cell index of vk cell = 0x400)
+        w32(&mut cp, 0x380, 0xFFFF_FF80u32);
+        w32(&mut cp, 0x384, 0x400u32); // vk cell index
+
+        // VK cell at idx=0x400: "Start" value stored as REG_SZ "2" (inline, 2 UTF-16LE bytes).
+        //
+        // Why REG_SZ instead of REG_DWORD?
+        // svc_diff.rs line 120 parses `data_preview` as u32. For REG_DWORD,
+        // format_data_preview returns "0x00000002 (2)" which doesn't parse.
+        // REG_SZ with content "2" gives data_preview = "2" which parses fine.
+        //
+        // Inline storage: MSB of data_length = 1 → data is in data_offset field.
+        // UTF-16LE '2' = [0x32, 0x00] stored in low 2 bytes of data_offset:
+        //   data_offset = 0x0000_0032 → to_le_bytes() = [0x32, 0x00, 0x00, 0x00]
+        //   inline_bytes[..2] = [0x32, 0x00] → decoded as UTF-16LE = "2"
+        let start_name = b"Start";
+        w32(&mut cp, 0x400, 0xFFFF_FF80u32);
+        // vk data starts at cp[0x404]:
+        w16(&mut cp, 0x404, 0x6B76u16);          // VK sig
+        w16(&mut cp, 0x406, start_name.len() as u16); // name_len = 5
+        // data_len with MSB set = inline, 2 bytes (REG_SZ "2" in UTF-16LE)
+        w32(&mut cp, 0x408, 0x8000_0002u32);     // inline, 2 bytes
+        // data_offset: first 2 bytes are [0x32, 0x00] = UTF-16LE '2'
+        w32(&mut cp, 0x40C, 0x0000_0032u32);     // inline data = '2' in UTF-16LE
+        w32(&mut cp, 0x410, 1u32);               // type = REG_SZ
+        // name at VK_NAME_OFFSET (0x14):
+        cp[0x404 + 0x14..0x404 + 0x14 + start_name.len()].copy_from_slice(start_name);
+
+        // Hive page: root_cell_index = 0 at offset ROOT_CELL_OFFSET (0x24).
+        let mut hive_page = vec![0u8; 0x1000];
+        // root_cell_index = 0 (already zero)
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_vaddr_base, cell_paddr_base, flags::WRITABLE)
+            .write_phys(cell_paddr_base, &cp);
+
+        // SCM head = 0 → no SCM services.
+        // Registry has "BackdoorSvc" with Start=2 (AutoStart), not in SCM → suspicious.
+        let reader = make_svc_diff_reader(ptb);
+        let result = walk_svc_diff(&reader, 0, hive_vaddr).unwrap();
+
+        assert!(!result.is_empty(), "should find registry-only service");
+        let entry = result.iter().find(|e| e.service_name == "BackdoorSvc");
+        assert!(entry.is_some(), "should find BackdoorSvc");
+        let entry = entry.unwrap();
+        assert!(!entry.in_scm,    "BackdoorSvc should not be in SCM");
+        assert!(entry.in_registry, "BackdoorSvc should be in registry");
+        assert_eq!(entry.start_type, 2, "start_type should be 2 (AutoStart)");
+        assert!(entry.is_suspicious, "registry-only AutoStart service is suspicious");
+    }
 }

@@ -395,4 +395,88 @@ mod tests {
         assert_eq!(result[1].file_name, "Z:\\foo");
         assert_eq!(result[1].object_addr, obj1_fo_vaddr);
     }
+
+    /// scan_file_objects with an unmapped process list returns an empty Vec gracefully.
+    ///
+    /// Covers scan_file_objects lines 61-74: PsActiveProcessHead is present in the
+    /// ISF preset, but the address is unmapped → walk_handles fails → returns Ok([]).
+    #[test]
+    fn scan_file_objects_no_processes_returns_empty() {
+        let ptb = PageTableBuilder::new();
+        let reader = make_win_reader(ptb);
+
+        // PsActiveProcessHead is present in the preset at a fixed virtual address,
+        // but no memory is mapped there → walk_processes → Err → Ok(Vec::new())
+        let result = scan_file_objects(&reader).unwrap();
+        assert!(result.is_empty(), "no processes → no file objects");
+    }
+
+    /// walk_file_objects with DeviceObject != 0 triggers resolve_device_name.
+    ///
+    /// Covers resolve_device_name lines 140-162 (non-null device path).
+    /// Layout:
+    ///   _FILE_OBJECT.DeviceObject → _DEVICE_OBJECT.DriverObject → _DRIVER_OBJECT.DriverName
+    #[test]
+    fn walk_file_objects_with_device_object_resolves_driver_name() {
+        // _DEVICE_OBJECT.DriverObject is at offset 0x08 (from windows_kernel_preset).
+        // _DRIVER_OBJECT.DriverName (_UNICODE_STRING) is at offset 0x38.
+        // _UNICODE_STRING: Length(u16)+MaxLen(u16) at 0/2, Buffer(ptr) at 8.
+        //
+        // Addresses (paddr < 0x00FF_FFFF):
+        let obj_header_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let obj_header_paddr: u64 = 0x0050_0000;
+        let file_obj_paddr  = obj_header_paddr + OBJ_HEADER_BODY;
+
+        let dev_vaddr:  u64 = 0xFFFF_8000_0031_0000;
+        let dev_paddr:  u64 = 0x0051_0000;
+        let drv_vaddr:  u64 = 0xFFFF_8000_0032_0000;
+        let drv_paddr:  u64 = 0x0052_0000;
+        let str_vaddr:  u64 = 0xFFFF_8000_0033_0000;
+        let str_paddr:  u64 = 0x0053_0000;
+
+        let driver_name = "\\Driver\\disk";
+        let name_utf16 = utf16le(driver_name);
+        let name_len = name_utf16.len() as u16;
+
+        let ptb = PageTableBuilder::new()
+            // _OBJECT_HEADER + _FILE_OBJECT
+            .map_4k(obj_header_vaddr, obj_header_paddr, flags::WRITABLE)
+            // _FILE_OBJECT.DeviceObject at fo_paddr + 0x08 = dev_vaddr
+            .write_phys_u64(file_obj_paddr + FO_DEVICE_OBJECT, dev_vaddr)
+            // _FILE_OBJECT.FileName = empty (length = 0 at FO_FILENAME)
+            .write_phys(file_obj_paddr + FO_FLAGS, &0u32.to_le_bytes())
+            .write_phys(file_obj_paddr + FO_DELETE_PENDING, &[0u8])
+            .write_phys(file_obj_paddr + FO_SHARED_READ, &[0u8])
+            .write_phys(file_obj_paddr + FO_SHARED_WRITE, &[0u8])
+            .write_phys(file_obj_paddr + FO_SHARED_DELETE, &[0u8])
+            // _DEVICE_OBJECT
+            .map_4k(dev_vaddr, dev_paddr, flags::WRITABLE)
+            // _DEVICE_OBJECT.DriverObject at dev_paddr + 0x08 = drv_vaddr
+            .write_phys_u64(dev_paddr + 0x08, drv_vaddr)
+            // _DRIVER_OBJECT
+            .map_4k(drv_vaddr, drv_paddr, flags::WRITABLE)
+            // _DRIVER_OBJECT.DriverName (_UNICODE_STRING) at drv_paddr + 0x38
+            .write_phys(drv_paddr + 0x38, &name_len.to_le_bytes())               // Length
+            .write_phys(drv_paddr + 0x3A, &(name_len + 2).to_le_bytes())          // MaximumLength
+            .write_phys_u64(drv_paddr + 0x40, str_vaddr)                          // Buffer ptr
+            // String data
+            .map_4k(str_vaddr, str_paddr, flags::WRITABLE)
+            .write_phys(str_paddr, &name_utf16);
+
+        let reader = make_win_reader(ptb);
+
+        let handles = vec![WinHandleInfo {
+            pid: 4,
+            image_name: "System".into(),
+            handle_value: 4,
+            object_addr: obj_header_vaddr,
+            object_type: "File".into(),
+            granted_access: 0x0012_019F,
+        }];
+
+        let result = walk_file_objects(&reader, &handles).unwrap();
+        assert_eq!(result.len(), 1, "should find one file object");
+        assert_eq!(result[0].device_name, "\\Driver\\disk",
+            "device_name should be resolved from driver");
+    }
 }

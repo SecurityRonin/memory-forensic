@@ -486,6 +486,66 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// Test all IRP major function names not covered by the targeted tests above.
+    ///
+    /// Covers irp_name match arms 1-13, 15-27.
+    #[test]
+    fn irp_name_all_known_values() {
+        // Every named index should return a non-empty string (not IRP_MJ_UNKNOWN)
+        let named: &[(u8, &str)] = &[
+            (1,  "IRP_MJ_CREATE_NAMED_PIPE"),
+            (2,  "IRP_MJ_CLOSE"),
+            (3,  "IRP_MJ_READ"),
+            (4,  "IRP_MJ_WRITE"),
+            (5,  "IRP_MJ_QUERY_INFORMATION"),
+            (6,  "IRP_MJ_SET_INFORMATION"),
+            (7,  "IRP_MJ_QUERY_EA"),
+            (8,  "IRP_MJ_SET_EA"),
+            (9,  "IRP_MJ_FLUSH_BUFFERS"),
+            (10, "IRP_MJ_QUERY_VOLUME_INFORMATION"),
+            (11, "IRP_MJ_SET_VOLUME_INFORMATION"),
+            (12, "IRP_MJ_DIRECTORY_CONTROL"),
+            (13, "IRP_MJ_FILE_SYSTEM_CONTROL"),
+            (15, "IRP_MJ_INTERNAL_DEVICE_CONTROL"),
+            (16, "IRP_MJ_SHUTDOWN"),
+            (17, "IRP_MJ_LOCK_CONTROL"),
+            (18, "IRP_MJ_CLEANUP"),
+            (19, "IRP_MJ_CREATE_MAILSLOT"),
+            (20, "IRP_MJ_QUERY_SECURITY"),
+            (21, "IRP_MJ_SET_SECURITY"),
+            (22, "IRP_MJ_POWER"),
+            (23, "IRP_MJ_SYSTEM_CONTROL"),
+            (24, "IRP_MJ_DEVICE_CHANGE"),
+            (25, "IRP_MJ_QUERY_QUOTA"),
+            (26, "IRP_MJ_SET_QUOTA"),
+        ];
+        for &(idx, expected) in named {
+            assert_eq!(irp_name(idx), expected, "irp_name({idx}) mismatch");
+        }
+    }
+
+    /// check_driver_irp_hooks: unmapped driver object → Err → skip (line 215).
+    ///
+    /// Provides one unmapped address → check_driver_object returns Err →
+    /// loop continues → result is empty.
+    #[test]
+    fn check_driver_irp_hooks_skips_unmapped_driver_object() {
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Unmapped driver object address → read_field fails → Err → skip
+        let result = check_driver_irp_hooks(&reader, &[0xFFFF_8000_DEAD_0000], &[]).unwrap();
+        assert!(result.is_empty(), "unmapped driver object should be skipped");
+    }
+
     // ── serialization test ─────────────────────────────────────────
 
     #[test]

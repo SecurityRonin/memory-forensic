@@ -604,4 +604,91 @@ mod tests {
         assert_eq!(entries[0].device_type, 0);
         assert!(entries[0].is_suspicious);
     }
+
+    /// Test every device_type_name match arm to ensure full coverage.
+    ///
+    /// Covers device_type_name lines 47-115 (all match arms).
+    #[test]
+    fn device_type_name_all_known_values() {
+        let cases: &[(u32, &str)] = &[
+            (0x01, "Beep"),
+            (0x02, "CDRom"),
+            (0x03, "CDRomFileSystem"),
+            (0x04, "Controller"),
+            (0x05, "Datalink"),
+            (0x06, "Dfs"),
+            (0x07, "Disk"),
+            (0x08, "DiskFileSystem"),
+            (0x09, "FileSystem"),
+            (0x0A, "InPortPort"),
+            (0x0B, "Keyboard"),
+            (0x0C, "Mailslot"),
+            (0x0D, "MidiIn"),
+            (0x0E, "MidiOut"),
+            (0x0F, "Mouse"),
+            (0x10, "MultiUncProvider"),
+            (0x11, "NamedPipe"),
+            (0x12, "Network"),
+            (0x13, "NetworkBrowser"),
+            (0x14, "NetworkFileSystem"),
+            (0x15, "Null"),
+            (0x16, "ParallelPort"),
+            (0x17, "PhysicalNetcard"),
+            (0x18, "Printer"),
+            (0x19, "Scanner"),
+            (0x1A, "SerialMousePort"),
+            (0x1B, "SerialPort"),
+            (0x1C, "Screen"),
+            (0x1D, "Sound"),
+            (0x1E, "Streams"),
+            (0x1F, "Tape"),
+            (0x20, "TapeFileSystem"),
+            (0x21, "Transport"),
+            (0x22, "Unknown"),
+            (0x23, "Video"),
+            (0x24, "VirtualDisk"),
+            (0x25, "WaveIn"),
+            (0x26, "WaveOut"),
+            (0x27, "Port8042"),
+            (0x28, "NetworkRedirector"),
+            (0x29, "Battery"),
+            (0x2A, "BusExtender"),
+            (0x2B, "Modem"),
+            (0x2C, "Vdm"),
+            (0x2D, "MassStorage"),
+            (0x2E, "Smb"),
+            (0x2F, "Ks"),
+            (0x30, "Changer"),
+            (0x31, "Smartcard"),
+            (0x32, "Acpi"),
+            (0x33, "Dvd"),
+            (0x34, "FullscreenVideo"),
+            (0x35, "DfsFileSystem"),
+            (0x36, "DfsVolume"),
+            (0x37, "Serenum"),
+            (0x38, "TerminalServer"),
+            (0x39, "Ksec"),
+            (0x3A, "Fips"),
+            (0x3B, "Infiniband"),
+            (0x3E, "Vmbus"),
+            (0x3F, "CryptProvider"),
+            (0x40, "Wpd"),
+            (0x41, "Bluetooth"),
+            (0x42, "MtComposite"),
+            (0x43, "MtTransport"),
+            (0x44, "Biometric"),
+            (0x45, "Pmi"),
+            // gaps / unknown
+            (0x3C, "Other"),
+            (0x3D, "Other"),
+            (0x00, "Other"),
+            (0xFF, "Other"),
+        ];
+        for &(dt, expected) in cases {
+            assert_eq!(
+                device_type_name(dt), expected,
+                "device_type_name(0x{dt:02X}) should be {expected}"
+            );
+        }
+    }
 }

@@ -326,6 +326,109 @@ mod tests {
         );
     }
 
+    // ── walk_skeleton_key body coverage tests ──────────────────────────────
+
+    /// Build a reader with the windows_kernel_preset and one EPROCESS for
+    /// the given image_name. Returns the reader plus the head vaddr.
+    ///
+    /// EPROCESS layout (from windows_kernel_preset):
+    ///   _KPROCESS.DirectoryTableBase at eproc + 0x28
+    ///   CreateTime at 0x430, ExitTime at 0x438
+    ///   UniqueProcessId at 0x440
+    ///   ActiveProcessLinks at 0x448 (Flink@0, Blink@8)
+    ///   InheritedFromUniqueProcessId at 0x540
+    ///   Peb at 0x550
+    ///   ImageFileName at 0x5A8
+    fn make_reader_with_process(
+        image_name: &str,
+        pid: u64,
+        cr3_val: u64,
+        peb_val: u64,
+    ) -> (ObjectReader<memf_core::test_builders::SyntheticPhysMem>, u64) {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // PsActiveProcessHead symbol vaddr (from preset)
+        let head_vaddr: u64  = 0xFFFFF805_5A400000;
+        let head_paddr: u64  = 0x0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let eproc_paddr: u64 = 0x0020_0000;
+
+        let elinks_vaddr = eproc_vaddr + 0x448;
+
+        let name_bytes = image_name.as_bytes();
+        let mut ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            // head.Flink → elinks_vaddr
+            .write_phys_u64(head_paddr, elinks_vaddr)
+            // head.Blink → elinks_vaddr
+            .write_phys_u64(head_paddr + 8, elinks_vaddr)
+            // _KPROCESS.DirectoryTableBase at eproc + 0x28
+            .write_phys_u64(eproc_paddr + 0x28, cr3_val)
+            // UniqueProcessId at 0x440
+            .write_phys_u64(eproc_paddr + 0x440, pid)
+            // ActiveProcessLinks.Flink → head_vaddr (circular: one-entry list)
+            .write_phys_u64(eproc_paddr + 0x448, head_vaddr)
+            // ActiveProcessLinks.Blink → head_vaddr
+            .write_phys_u64(eproc_paddr + 0x448 + 8, head_vaddr)
+            // InheritedFromUniqueProcessId
+            .write_phys_u64(eproc_paddr + 0x540, 0)
+            // Peb
+            .write_phys_u64(eproc_paddr + 0x550, peb_val)
+            // ImageFileName
+            .write_phys(eproc_paddr + 0x5A8, name_bytes);
+        if name_bytes.len() < 15 {
+            ptb = ptb.write_phys(eproc_paddr + 0x5A8 + name_bytes.len() as u64, &[0]);
+        }
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3_root, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3_root, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        (reader, head_vaddr)
+    }
+
+    /// Process list with no lsass.exe (e.g., only System) → returns empty.
+    /// Covers lines 82-89: procs.find() returns None.
+    #[test]
+    fn walk_skeleton_key_no_lsass_returns_empty() {
+        let (reader, _) = make_reader_with_process("System", 4, 0x1ab000, 0);
+        let results = walk_skeleton_key(&reader).unwrap();
+        assert!(results.is_empty(), "no lsass.exe → empty indicators");
+    }
+
+    /// lsass.exe found but cr3 == 0 → returns empty.
+    /// Covers line 92: `if lsass.cr3 == 0 || lsass.peb_addr == 0`.
+    #[test]
+    fn walk_skeleton_key_lsass_zero_cr3_returns_empty() {
+        let (reader, _) = make_reader_with_process("lsass.exe", 668, 0, 0x7FF0_0000);
+        let results = walk_skeleton_key(&reader).unwrap();
+        assert!(results.is_empty(), "lsass.exe with cr3=0 → empty indicators");
+    }
+
+    /// lsass.exe found with non-zero cr3 but peb_addr == 0 → returns empty.
+    /// Covers line 92: second branch of `if lsass.cr3 == 0 || lsass.peb_addr == 0`.
+    #[test]
+    fn walk_skeleton_key_lsass_zero_peb_returns_empty() {
+        let (reader, _) = make_reader_with_process("lsass.exe", 668, 0x1AB000, 0);
+        let results = walk_skeleton_key(&reader).unwrap();
+        assert!(results.is_empty(), "lsass.exe with peb_addr=0 → empty indicators");
+    }
+
+    /// lsass.exe found with valid cr3 and peb_addr, but DLL walk fails
+    /// (peb_addr is unmapped) → walk_dlls returns Err → returns empty (line 98-101).
+    #[test]
+    fn walk_skeleton_key_lsass_dll_walk_fails_returns_empty() {
+        // peb_addr is non-zero but points to unmapped memory → walk_dlls fails.
+        let (reader, _) = make_reader_with_process("lsass.exe", 668, 0x1AB000, 0xFFFF_DEAD_0000);
+        let results = walk_skeleton_key(&reader).unwrap();
+        assert!(results.is_empty(), "lsass.exe with unmapped PEB → empty indicators");
+    }
+
     // -- find_nop_sled tests -------------------------------------------------
 
     #[test]
