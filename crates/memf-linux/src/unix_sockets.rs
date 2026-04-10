@@ -165,7 +165,9 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
                     break 'path String::new();
                 }
                 // sun_path starts at addr_ptr + sun_path_off (skip sa_family u16).
-                let path_bytes = reader.read_bytes(addr_ptr + sun_path_off, 108).unwrap_or_default();
+                let path_bytes = reader
+                    .read_bytes(addr_ptr + sun_path_off, 108)
+                    .unwrap_or_default();
                 // Abstract socket: first byte is '\0', display as '@' prefix.
                 if path_bytes.first().copied() == Some(0) {
                     let inner: String = path_bytes[1..]
@@ -197,9 +199,10 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
                         return None;
                     }
                     // socket.file offset varies; inode is typically at +0x18.
-                    reader.read_bytes(socket_ptr + 0x18, 8).ok().and_then(|ib| {
-                        Some(u64::from_le_bytes(ib[..8].try_into().ok()?))
-                    })
+                    reader
+                        .read_bytes(socket_ptr + 0x18, 8)
+                        .ok()
+                        .and_then(|ib| Some(u64::from_le_bytes(ib[..8].try_into().ok()?)))
                 })
                 .unwrap_or(0);
 
@@ -304,5 +307,98 @@ mod tests {
         assert!(json.contains("\"inode\":12345"));
         assert!(json.contains("\"path\":\"/var/run/test.sock\""));
         assert!(json.contains("\"is_suspicious\":false"));
+    }
+
+    #[test]
+    fn unix_socket_info_clone_and_debug() {
+        let info = UnixSocketInfo {
+            inode: 1,
+            path: "@abstract".to_string(),
+            socket_type: "DGRAM".to_string(),
+            state: "UNCONNECTED".to_string(),
+            owner_pid: 0,
+            peer_pid: 0,
+            is_suspicious: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.inode, 1);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("abstract"));
+    }
+
+    // -----------------------------------------------------------------------
+    // socket_type_name boundary: all possible named values
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn socket_type_all_named() {
+        assert_eq!(socket_type_name(1), "STREAM");
+        assert_eq!(socket_type_name(2), "DGRAM");
+        assert_eq!(socket_type_name(5), "SEQPACKET");
+        // All other values → UNKNOWN
+        assert_eq!(socket_type_name(4), "UNKNOWN");
+        assert_eq!(socket_type_name(u32::MAX), "UNKNOWN");
+    }
+
+    // -----------------------------------------------------------------------
+    // classify_unix_socket: edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_abstract_pid_boundary() {
+        // pid=999 is just below threshold → not suspicious (abstract path)
+        assert!(!classify_unix_socket("", 999));
+        // pid=1000 is at threshold → suspicious
+        assert!(classify_unix_socket("", 1000));
+        // pid=1001 → suspicious
+        assert!(classify_unix_socket("", 1001));
+    }
+
+    #[test]
+    fn classify_at_prefix_with_system_pid_not_suspicious() {
+        // @ prefix, system PID → not suspicious
+        assert!(!classify_unix_socket("@/org/freedesktop/systemd1", 999));
+    }
+
+    #[test]
+    fn classify_dev_shm_prefix_match() {
+        // Exact prefix match /dev/shm
+        assert!(classify_unix_socket("/dev/shm", 0));
+        // Path that starts with /dev/shm/ but is longer
+        assert!(classify_unix_socket("/dev/shm/nested/path.sock", 0));
+    }
+
+    #[test]
+    fn classify_tmp_prefix_exact() {
+        // /tmp itself (edge: path == /tmp prefix)
+        assert!(classify_unix_socket("/tmp", 0));
+    }
+
+    #[test]
+    fn classify_normal_non_suspicious_paths() {
+        assert!(!classify_unix_socket("/run/user/1000/pulse/native", 1000));
+        assert!(!classify_unix_socket("/var/run/docker.sock", 0));
+        assert!(!classify_unix_socket("/run/systemd/private/tmp-sock", 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_unix_sockets: no symbol → empty Vec
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_unix_sockets_no_symbol_returns_empty() {
+        use memf_core::test_builders::{PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        assert!(result.is_empty(), "missing unix_socket_table symbol must yield empty vec");
     }
 }

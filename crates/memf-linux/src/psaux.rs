@@ -110,9 +110,7 @@ pub fn classify_psaux(state: u64, uid: u32, flags: u64, vsize: u64) -> bool {
 ///
 /// Returns `Ok(Vec::new())` when the `init_task` symbol is not found
 /// (e.g., wrong profile or missing symbols).
-pub fn walk_psaux<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-) -> Result<Vec<PsAuxInfo>> {
+pub fn walk_psaux<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<PsAuxInfo>> {
     let init_task_addr = match reader.symbols().symbol_address("init_task") {
         Some(addr) => addr,
         None => return Ok(Vec::new()),
@@ -325,6 +323,35 @@ mod tests {
         assert_eq!(task_state_name(32), "Dead");
     }
 
+    #[test]
+    fn state_tracing() {
+        assert_eq!(task_state_name(8), "Tracing");
+    }
+
+    #[test]
+    fn state_wakekill() {
+        assert_eq!(task_state_name(64), "Wakekill");
+    }
+
+    #[test]
+    fn state_waking() {
+        assert_eq!(task_state_name(128), "Waking");
+    }
+
+    #[test]
+    fn state_parked() {
+        assert_eq!(task_state_name(256), "Parked");
+    }
+
+    #[test]
+    fn state_unknown_zero_based_checks() {
+        // Verify a variety of non-matching values produce Unknown(n)
+        assert_eq!(task_state_name(3), "Unknown(3)");
+        assert_eq!(task_state_name(5), "Unknown(5)");
+        assert_eq!(task_state_name(512), "Unknown(512)");
+        assert_eq!(task_state_name(u64::MAX), format!("Unknown({})", u64::MAX));
+    }
+
     // -----------------------------------------------------------------------
     // classify_psaux tests
     // -----------------------------------------------------------------------
@@ -349,6 +376,19 @@ mod tests {
     }
 
     #[test]
+    fn classify_exact_vsize_threshold_suspicious() {
+        // Exactly one byte over the threshold → suspicious
+        let over = VSIZE_ABUSE_THRESHOLD + 1;
+        assert!(classify_psaux(0, 1000, 0, over));
+    }
+
+    #[test]
+    fn classify_exact_vsize_threshold_benign() {
+        // Exactly at the threshold → not suspicious (> not >=)
+        assert!(!classify_psaux(0, 1000, 0, VSIZE_ABUSE_THRESHOLD));
+    }
+
+    #[test]
     fn classify_normal_benign() {
         // Normal sleeping process, UID 1000, no flags, 1 GB vsize
         assert!(!classify_psaux(1, 1000, 0, 1024 * 1024 * 1024));
@@ -364,6 +404,72 @@ mod tests {
     fn classify_nonroot_zombie_benign() {
         // Zombie but not root → not suspicious by this heuristic
         assert!(!classify_psaux(16, 1000, 0, 0));
+    }
+
+    #[test]
+    fn classify_pf_kthread_uid_1_suspicious() {
+        // PF_KTHREAD with uid=1 (not root) → suspicious
+        assert!(classify_psaux(0, 1, PF_KTHREAD, 0));
+    }
+
+    #[test]
+    fn classify_multiple_flags_with_pf_kthread_nonroot_suspicious() {
+        // Additional flags alongside PF_KTHREAD, nonroot → still suspicious
+        let flags = PF_KTHREAD | 0x0001_0000;
+        assert!(classify_psaux(0, 500, flags, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // PsAuxInfo struct tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ps_aux_info_serializes_to_json() {
+        let info = PsAuxInfo {
+            pid: 42,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "bash".to_string(),
+            state: "Sleeping".to_string(),
+            nice: 0,
+            vsize: 4096,
+            rss: 2,
+            tty: "pts/0".to_string(),
+            start_time: 12345678,
+            flags: 0,
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":42"));
+        assert!(json.contains("\"comm\":\"bash\""));
+        assert!(json.contains("\"state\":\"Sleeping\""));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("\"tty\":\"pts/0\""));
+    }
+
+    #[test]
+    fn ps_aux_info_clone_and_debug() {
+        let info = PsAuxInfo {
+            pid: 1,
+            ppid: 0,
+            uid: 0,
+            gid: 0,
+            comm: "systemd".to_string(),
+            state: "Running".to_string(),
+            nice: -5,
+            vsize: 0,
+            rss: 0,
+            tty: String::new(),
+            start_time: 0,
+            flags: 0,
+            is_suspicious: false,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.pid, 1);
+        // Debug trait exercised
+        let debug_str = format!("{:?}", cloned);
+        assert!(debug_str.contains("systemd"));
     }
 
     // -----------------------------------------------------------------------
@@ -394,5 +500,29 @@ mod tests {
 
         let result = walk_psaux(&reader).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn walk_missing_tasks_field_returns_error() {
+        use memf_core::test_builders::{PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // init_task symbol present, but task_struct.tasks field is missing
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // NOTE: no "tasks" field
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_psaux(&reader);
+        assert!(result.is_err(), "missing tasks field must return an error");
     }
 }

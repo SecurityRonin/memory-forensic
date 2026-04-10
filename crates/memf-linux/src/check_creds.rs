@@ -267,4 +267,109 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
+
+    // ---------------------------------------------------------------
+    // is_likely_kernel_thread tests (via classify_shared_creds behaviour)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn is_likely_kernel_thread_pid_0_benign() {
+        // PID 0 (swapper/idle) is a kernel thread → uid-0 sharing is benign
+        assert!(!classify_shared_creds(0, &[2], 0));
+    }
+
+    #[test]
+    fn is_likely_kernel_thread_pid_1_shares_with_pid_2_suspicious() {
+        // PID 1 (init/systemd) is NOT a kernel thread (pid > 2), shares with pid 2
+        // uid=0, pid=1 → is_likely_kernel_thread(1) = true (pid <= 2)
+        // So this should be benign (kernel thread path)
+        assert!(!classify_shared_creds(1, &[2], 0));
+    }
+
+    #[test]
+    fn is_likely_kernel_thread_pid_3_uid_0_suspicious_when_sharing_non_init() {
+        // PID 3, uid=0 but pid > 2 → NOT a kernel thread, shares with pid 100
+        // is_likely_kernel_thread(3) = false → falls through to !shared_with.is_empty()
+        assert!(classify_shared_creds(3, &[100], 0));
+    }
+
+    #[test]
+    fn classify_sharing_with_pid_1_uid_0_kernel_thread_benign() {
+        // pid=2 (kthreadd), uid=0, shares with pid=1 → benign (kernel cred)
+        assert!(!classify_shared_creds(2, &[1], 0));
+    }
+
+    #[test]
+    fn classify_sharing_with_pid_1_uid_0_non_kernel_thread_suspicious() {
+        // pid=100, uid=0, shares with init (pid=1)
+        // is_likely_kernel_thread(100) = false → suspicious
+        assert!(classify_shared_creds(100, &[1], 0));
+    }
+
+    #[test]
+    fn classify_uid_0_kernel_thread_no_sharing_benign() {
+        // uid=0, pid=2, no other shared PIDs → benign (kernel thread path)
+        assert!(!classify_shared_creds(2, &[], 0));
+    }
+
+    #[test]
+    fn classify_uid_0_non_kernel_thread_sharing_suspicious() {
+        // uid=0, pid=50 (not kernel thread), shares with pid 60
+        // Falls through to !shared_with.is_empty() → suspicious
+        assert!(classify_shared_creds(50, &[60], 0));
+    }
+
+    #[test]
+    fn classify_is_pid_1_self_not_suspicious() {
+        // PID 1 checking shared_with containing no pid 1
+        // shared_with=[500], uid=0, pid=1 → is_likely_kernel_thread(1)=true → benign
+        assert!(!classify_shared_creds(1, &[500], 0));
+    }
+
+    // ---------------------------------------------------------------
+    // SharedCredInfo: Clone + Debug + Serialize
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn shared_cred_info_clone_debug_serialize() {
+        let info = SharedCredInfo {
+            pid: 42,
+            process_name: "evil".to_string(),
+            uid: 0,
+            cred_address: 0xDEAD_BEEF,
+            shared_with_pids: vec![1],
+            is_suspicious: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.pid, 42);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("evil"));
+        let json = serde_json::to_string(&cloned).unwrap();
+        assert!(json.contains("\"pid\":42"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
+    // ---------------------------------------------------------------
+    // walk_check_creds: missing tasks field → empty Vec (graceful degradation)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_check_creds_missing_tasks_field_returns_empty() {
+        // init_task symbol present but task_struct.tasks field absent → graceful empty
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // No "tasks" field → field_offset returns None → return Ok(empty)
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_check_creds(&reader);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
 }

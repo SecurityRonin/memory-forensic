@@ -21,11 +21,18 @@ use crate::{Error, Result};
 /// Package managers and their helpers frequently replace their own binaries
 /// during upgrade operations, causing a transient "(deleted)" state.
 const KNOWN_BENIGN_COMMS: &[&str] = &[
-    "apt", "apt-get", "apt-check", "aptd",
-    "dpkg", "dpkg-deb",
-    "yum", "dnf",
-    "rpm", "rpmdb",
-    "packagekitd", "unattended-upgr",
+    "apt",
+    "apt-get",
+    "apt-check",
+    "aptd",
+    "dpkg",
+    "dpkg-deb",
+    "yum",
+    "dnf",
+    "rpm",
+    "rpmdb",
+    "packagekitd",
+    "unattended-upgr",
 ];
 
 /// Information about a process whose executable may have been deleted.
@@ -279,6 +286,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn classify_deleted_empty_comm_benign() {
+        // Deleted path but empty comm → kernel thread, not suspicious
+        assert!(
+            !classify_deleted_exe("/tmp/.evil (deleted)", ""),
+            "empty comm with deleted exe must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_all_known_benign_comms() {
+        // Every entry in KNOWN_BENIGN_COMMS must be suppressed
+        for comm in KNOWN_BENIGN_COMMS {
+            let path = format!("/usr/bin/{comm} (deleted)");
+            assert!(
+                !classify_deleted_exe(&path, comm),
+                "known-benign comm '{comm}' must not be flagged suspicious"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_benign_comm_case_insensitive() {
+        // Classification is case-insensitive for known-benign names
+        assert!(!classify_deleted_exe("/usr/bin/APT (deleted)", "APT"));
+        assert!(!classify_deleted_exe("/usr/bin/Dpkg (deleted)", "Dpkg"));
+        assert!(!classify_deleted_exe("/usr/bin/YUM (deleted)", "YUM"));
+    }
+
+    #[test]
+    fn classify_near_benign_name_suspicious() {
+        // "apt2" is NOT in the benign list → suspicious
+        assert!(classify_deleted_exe("/usr/bin/apt2 (deleted)", "apt2"));
+        // "dpkg-query" is not in the list → suspicious
+        assert!(classify_deleted_exe("/usr/bin/dpkg-query (deleted)", "dpkg-query"));
+    }
+
+    #[test]
+    fn classify_deleted_exe_info_struct_fields() {
+        let info = DeletedExeInfo {
+            pid: 999,
+            comm: "evil".to_string(),
+            exe_path: "/tmp/.x (deleted)".to_string(),
+            is_deleted: true,
+            is_suspicious: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.pid, 999);
+        assert!(cloned.is_deleted);
+        assert!(cloned.is_suspicious);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("evil"));
+    }
+
+    #[test]
+    fn classify_deleted_exe_info_serializes_to_json() {
+        let info = DeletedExeInfo {
+            pid: 42,
+            comm: "malware".to_string(),
+            exe_path: "/dev/shm/.bin (deleted)".to_string(),
+            is_deleted: true,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":42"));
+        assert!(json.contains("\"is_deleted\":true"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
     // --- walk_deleted_exe integration test ---
 
     /// Helper: build an ObjectReader with no init_task symbol.
@@ -303,6 +379,9 @@ mod tests {
         // Without init_task symbol, walk should return an error (not panic).
         let reader = make_reader_no_symbol();
         let result = walk_deleted_exe(&reader);
-        assert!(result.is_err(), "walk_deleted_exe must error when init_task symbol is missing");
+        assert!(
+            result.is_err(),
+            "walk_deleted_exe must error when init_task symbol is missing"
+        );
     }
 }

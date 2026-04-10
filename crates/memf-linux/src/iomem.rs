@@ -274,4 +274,107 @@ mod tests {
         let result = walk_iomem_regions(&reader).unwrap();
         assert!(result.is_empty(), "missing symbol should yield empty vec");
     }
+
+    // ---------------------------------------------------------------
+    // classify_iomem: additional boundary and branch tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn classify_empty_name_exactly_1mib_not_suspicious() {
+        // Empty name, region size exactly 1 MiB → NOT suspicious (> not >=)
+        let size: u64 = 1024 * 1024;
+        assert!(!classify_iomem("", 0, size));
+    }
+
+    #[test]
+    fn classify_empty_name_1mib_plus_1_suspicious() {
+        // Empty name, region size 1 MiB + 1 byte → suspicious
+        let size: u64 = 1024 * 1024 + 1;
+        assert!(classify_iomem("", 0, size));
+    }
+
+    #[test]
+    fn classify_empty_name_small_region_explicit_benign() {
+        // Empty name on 0-byte region → not suspicious
+        assert!(!classify_iomem("", 100, 100)); // end == start → size = 0
+    }
+
+    #[test]
+    fn classify_named_region_small_benign() {
+        // Named region of any size is not suspicious on name-check alone
+        assert!(!classify_iomem("Reserved", 0, 0x0100_0000)); // 16 MiB but named
+    }
+
+    #[test]
+    fn classify_kernel_text_overlap_exact_boundary_suspicious() {
+        // Region starts exactly at KERNEL_TEXT_START, not named "Kernel code"
+        const KERNEL_TEXT_START: u64 = 0xffff_ffff_8100_0000;
+        const KERNEL_TEXT_END: u64 = 0xffff_ffff_8200_0000;
+        // start < KERNEL_TEXT_END AND end > KERNEL_TEXT_START
+        assert!(classify_iomem("Other", KERNEL_TEXT_START, KERNEL_TEXT_END));
+    }
+
+    #[test]
+    fn classify_region_just_before_kernel_text_benign() {
+        // Region ends at exactly KERNEL_TEXT_START → no overlap (end > start check: end == start fails >)
+        const KERNEL_TEXT_START: u64 = 0xffff_ffff_8100_0000;
+        // end == KERNEL_TEXT_START means end is NOT > KERNEL_TEXT_START
+        assert!(!classify_iomem("Anything", 0xffff_ffff_8000_0000, KERNEL_TEXT_START));
+    }
+
+    #[test]
+    fn classify_region_just_after_kernel_text_benign() {
+        // Region starts at exactly KERNEL_TEXT_END → start < KERNEL_TEXT_END fails (== not <)
+        const KERNEL_TEXT_END: u64 = 0xffff_ffff_8200_0000;
+        assert!(!classify_iomem("Anything", KERNEL_TEXT_END, KERNEL_TEXT_END + 0x1000));
+    }
+
+    #[test]
+    fn classify_kernel_code_partial_overlap_benign() {
+        // Legitimately named "Kernel code" overlapping kernel text range is benign
+        const KERNEL_TEXT_START: u64 = 0xffff_ffff_8100_0000;
+        assert!(!classify_iomem("Kernel code", KERNEL_TEXT_START, KERNEL_TEXT_START + 0x1000));
+    }
+
+    #[test]
+    fn classify_tab_char_in_name_suspicious() {
+        // Tab is a control character → suspicious
+        assert!(classify_iomem("System\tRAM", 0, 0x1000));
+    }
+
+    #[test]
+    fn classify_newline_char_in_name_suspicious() {
+        // Newline is a control character → suspicious
+        assert!(classify_iomem("Sys\nRAM", 0, 0x1000));
+    }
+
+    #[test]
+    fn classify_saturating_sub_overflow_protection() {
+        // end < start → saturating_sub yields 0 → not suspicious on size alone
+        assert!(!classify_iomem("", 0x1000, 0x0)); // end < start → size = 0
+    }
+
+    // ---------------------------------------------------------------
+    // IoMemRegion: Clone + Debug + Serialize
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn io_mem_region_clone_debug_serialize() {
+        let region = IoMemRegion {
+            start: 0x1000,
+            end: 0x2000,
+            name: "System RAM".to_string(),
+            flags: 0x200,
+            depth: 0,
+            is_suspicious: false,
+        };
+        let cloned = region.clone();
+        assert_eq!(cloned.start, 0x1000);
+        assert_eq!(cloned.depth, 0);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("System RAM"));
+        let json = serde_json::to_string(&cloned).unwrap();
+        assert!(json.contains("\"start\":4096"));
+        assert!(json.contains("\"is_suspicious\":false"));
+    }
 }

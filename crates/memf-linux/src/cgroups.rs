@@ -50,11 +50,7 @@ pub fn classify_cgroup(path: &str) -> (bool, String) {
         if let Some(idx) = path.find(prefix) {
             let after_prefix = &path[idx + prefix.len()..];
             // Extract the container ID: take everything up to the next '/' or end.
-            let id = after_prefix
-                .split('/')
-                .next()
-                .unwrap_or("")
-                .to_string();
+            let id = after_prefix.split('/').next().unwrap_or("").to_string();
             return (true, id);
         }
     }
@@ -268,7 +264,10 @@ mod tests {
     fn classify_docker_container() {
         let path = "/system.slice/docker/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2/init.scope";
         let (is_container, id) = classify_cgroup(path);
-        assert!(is_container, "Docker path should be classified as containerized");
+        assert!(
+            is_container,
+            "Docker path should be classified as containerized"
+        );
         assert_eq!(
             id,
             "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
@@ -279,7 +278,10 @@ mod tests {
     fn classify_lxc_container() {
         let path = "/lxc/my-container/init.scope";
         let (is_container, id) = classify_cgroup(path);
-        assert!(is_container, "LXC path should be classified as containerized");
+        assert!(
+            is_container,
+            "LXC path should be classified as containerized"
+        );
         assert_eq!(id, "my-container");
     }
 
@@ -287,7 +289,10 @@ mod tests {
     fn classify_kubepods_container() {
         let path = "/kubepods/burstable/pod1234abcd-ef56-7890/container-id-here";
         let (is_container, id) = classify_cgroup(path);
-        assert!(is_container, "Kubepods path should be classified as containerized");
+        assert!(
+            is_container,
+            "Kubepods path should be classified as containerized"
+        );
         assert_eq!(id, "burstable");
     }
 
@@ -295,7 +300,10 @@ mod tests {
     fn classify_containerd_container() {
         let path = "/system.slice/containerd/abc123def456";
         let (is_container, id) = classify_cgroup(path);
-        assert!(is_container, "containerd path should be classified as containerized");
+        assert!(
+            is_container,
+            "containerd path should be classified as containerized"
+        );
         assert_eq!(id, "abc123def456");
     }
 
@@ -303,15 +311,24 @@ mod tests {
     fn classify_host_process_not_containerized() {
         let path = "/system.slice/sshd.service";
         let (is_container, id) = classify_cgroup(path);
-        assert!(!is_container, "Host sshd should NOT be classified as containerized");
-        assert!(id.is_empty(), "Non-container should have empty container ID");
+        assert!(
+            !is_container,
+            "Host sshd should NOT be classified as containerized"
+        );
+        assert!(
+            id.is_empty(),
+            "Non-container should have empty container ID"
+        );
     }
 
     #[test]
     fn classify_root_path_not_containerized() {
         let path = "/";
         let (is_container, id) = classify_cgroup(path);
-        assert!(!is_container, "Root path should NOT be classified as containerized");
+        assert!(
+            !is_container,
+            "Root path should NOT be classified as containerized"
+        );
         assert!(id.is_empty());
     }
 
@@ -393,6 +410,155 @@ mod tests {
         let suspicious = is_suspicious_cgroup(path, 99);
         assert!(is_container);
         assert_eq!(id, "deadbeef01234567");
-        assert!(suspicious, "Privileged Docker container should be suspicious");
+        assert!(
+            suspicious,
+            "Privileged Docker container should be suspicious"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // classify_cgroup: additional edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_empty_path_not_containerized() {
+        let (is_container, id) = classify_cgroup("");
+        assert!(!is_container);
+        assert!(id.is_empty());
+    }
+
+    #[test]
+    fn classify_docker_at_root_level() {
+        // Docker cgroup directly at /docker/<id>
+        let path = "/docker/abc123";
+        let (is_container, id) = classify_cgroup(path);
+        assert!(is_container);
+        assert_eq!(id, "abc123");
+    }
+
+    #[test]
+    fn classify_docker_id_no_trailing_slash() {
+        // Path ends right after container ID
+        let path = "/docker/feedcafe1234";
+        let (is_container, id) = classify_cgroup(path);
+        assert!(is_container);
+        assert_eq!(id, "feedcafe1234");
+    }
+
+    #[test]
+    fn classify_kubepods_nested_id() {
+        // kubepods with nested path: first segment after /kubepods/ is "besteffort"
+        let path = "/kubepods/besteffort/podXYZ/container123";
+        let (is_container, id) = classify_cgroup(path);
+        assert!(is_container);
+        assert_eq!(id, "besteffort");
+    }
+
+    #[test]
+    fn classify_containerd_empty_after_prefix() {
+        // Unusual: /containerd/ with nothing after
+        let path = "/containerd/";
+        let (is_container, id) = classify_cgroup(path);
+        assert!(is_container);
+        // After /containerd/ and split('/'), first element is ""
+        assert_eq!(id, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_suspicious_cgroup: boundary tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn not_suspicious_non_root_path_pid_1() {
+        // PID 1 in a non-root path is NOT suspicious
+        assert!(!is_suspicious_cgroup("/system.slice/init.scope", 1));
+    }
+
+    #[test]
+    fn not_suspicious_root_cgroup_pid_0() {
+        // PID 0 (idle thread) in root cgroup — unusual but pid != 1 check matters
+        // pid=0 IS != 1, so it IS suspicious
+        assert!(is_suspicious_cgroup("/", 0));
+    }
+
+    #[test]
+    fn suspicious_privileged_in_any_path() {
+        // The word "privileged" anywhere in path is suspicious regardless of PID
+        assert!(is_suspicious_cgroup("/kubepods/privileged/pod1", 1));
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_cgroups: missing field offset → empty Vec
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_cgroups_no_cgroups_field_returns_empty() {
+        use memf_core::test_builders::{PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+        use crate::ProcessInfo;
+
+        // task_struct without a "cgroups" field → walk_cgroups returns Ok(empty)
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // deliberately no "cgroups" field
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let processes: Vec<ProcessInfo> = vec![];
+        let result = walk_cgroups(&reader, &processes).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn walk_cgroups_empty_process_list_returns_empty() {
+        use memf_core::test_builders::{PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+        use crate::ProcessInfo;
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "cgroups", 64, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // Empty process list → empty results regardless of offsets
+        let processes: Vec<ProcessInfo> = vec![];
+        let result = walk_cgroups(&reader, &processes).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // CgroupInfo: Debug + Clone
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cgroup_info_clone_and_debug() {
+        let info = CgroupInfo {
+            pid: 1,
+            comm: "init".to_string(),
+            cgroup_path: "/".to_string(),
+            controllers: String::new(),
+            is_containerized: false,
+            container_id: String::new(),
+            is_suspicious: false,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.pid, 1);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("init"));
     }
 }
