@@ -390,4 +390,93 @@ mod tests {
         assert!(json.contains("\"is_suspicious\":true"));
         assert!(json.contains("\"author\":\"SYSTEM\""));
     }
+
+    /// TaskSchedulerTaskList fallback symbol used when UbpmTaskEnumerator absent.
+    /// List head points to itself → empty list → empty result.
+    #[test]
+    fn walk_scheduled_tasks_fallback_symbol_empty_list() {
+        let list_vaddr: u64 = 0xFFFF_8000_0070_0000;
+        let list_paddr: u64 = 0x0070_0000;
+
+        // Flink at offset 0 points back to list_vaddr → empty list.
+        let ptb = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TASK_ENTRY", 0x80)
+            .add_symbol("TaskSchedulerTaskList", list_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_scheduled_tasks(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "list head == first should yield no tasks"
+        );
+    }
+
+    /// UbpmTaskEnumerator present, list head Flink == 0 → empty result.
+    #[test]
+    fn walk_scheduled_tasks_ubpm_symbol_first_is_null() {
+        let list_vaddr: u64 = 0xFFFF_8000_0071_0000;
+        let list_paddr: u64 = 0x0071_0000;
+
+        // Flink = 0 (null).
+        let ptb = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TASK_ENTRY", 0x80)
+            .add_symbol("UbpmTaskEnumerator", list_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_scheduled_tasks(&reader).unwrap();
+        assert!(result.is_empty(), "null Flink should yield no tasks");
+    }
+
+    /// UbpmTaskEnumerator present, read of list head fails (unmapped) → empty result.
+    #[test]
+    fn walk_scheduled_tasks_ubpm_symbol_unreadable_head() {
+        let list_vaddr: u64 = 0xFFFF_8000_DEAD_BEEF;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TASK_ENTRY", 0x80)
+            .add_symbol("UbpmTaskEnumerator", list_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_scheduled_tasks(&reader).unwrap();
+        assert!(result.is_empty(), "unreadable list head should yield no tasks");
+    }
+
+    /// classify_scheduled_task: appdata path is suspicious.
+    #[test]
+    fn classify_suspicious_appdata_path() {
+        assert!(classify_scheduled_task(
+            "\\Task",
+            "C:\\Users\\admin\\AppData\\Roaming\\evil.exe"
+        ));
+    }
+
+    /// Non-Microsoft task name without powershell/wscript/cscript but with a
+    /// benign exe is not suspicious.
+    #[test]
+    fn classify_nonstandard_task_benign_action_not_suspicious() {
+        assert!(!classify_scheduled_task(
+            "\\MyCompany\\UpdateChecker",
+            "C:\\Program Files\\MyApp\\updater.exe --check"
+        ));
+    }
 }

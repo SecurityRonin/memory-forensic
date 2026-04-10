@@ -552,4 +552,128 @@ mod tests {
         let name = key_node_name(&data);
         assert!(name.len() <= 5);
     }
+
+    // ── find_key_cell / enum_direct_subkeys with bad data ────────────────
+
+    /// find_key_cell with a mapped hive_addr but bad root cell bytes returns None.
+    /// This exercises the root bytes read path and the NK_SIG check branches.
+    #[test]
+    fn find_key_cell_bad_root_cell_data() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        // hive_addr chosen so cell_vaddr arithmetic lands within our mapped page.
+        // ROOT_CELL_OFFSET (0x24) is read from hive_addr + 0x24.
+        // We need: hive_addr + 0x24 to be readable (4 bytes), and
+        // cell_vaddr(hive_addr, root_cell_index) + 4 to be readable (4096 bytes).
+        //
+        // cell_vaddr = hive_addr + HBIN_START(0x1000) + cell_index
+        //
+        // Strategy: put hive_addr at 0x0050_0000, so
+        //   hive_addr + 0x24 = 0x0050_0024 (root cell offset read)
+        //   root_cell_index from bytes [0,0,0,0] = 0
+        //   cell_vaddr = 0x0050_0000 + 0x1000 + 0 = 0x0051_0000
+        //
+        // Map one page covering 0x0050_0000..0x0051_0FFF.
+        // Write: root_cell_index = 0 at offset 0x24.
+        // At cell_vaddr(0x0050_0000, 0) = 0x0051_0000: write bad NK sig (not 0x6B6E).
+
+        let hive_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let hive_paddr: u64 = 0x0050_0000;
+        let cell_vaddr_val = hive_vaddr + HBIN_START; // cell index 0 -> +0x1000
+        let cell_paddr: u64 = 0x0051_0000;
+
+        // root cell index = 0 (4 LE bytes at hive_paddr + 0x24)
+        let mut hive_page = [0u8; 4096];
+        // leave [0x24..0x28] as 0 → root_cell_index = 0
+
+        // At the cell page: write bad signature (0xDEAD instead of NK_SIG)
+        let mut cell_page = [0u8; 4096];
+        cell_page[0] = 0xAD;
+        cell_page[1] = 0xDE; // 0xDEAD — not 0x6B6E
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_vaddr_val, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &cell_page)
+            .build();
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // find_key_cell should return None because sig != NK_SIG
+        let result = find_key_cell(&reader, hive_vaddr, "CurrentControlSet\\Services");
+        assert!(result.is_none(), "bad NK sig should return None");
+    }
+
+    /// enum_direct_subkeys with a mapped hive_addr that has no valid NK_SIG
+    /// returns an empty Vec (exercises all the early-return guards).
+    #[test]
+    fn enum_direct_subkeys_bad_sig_returns_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        let hive_vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let hive_paddr: u64 = 0x0060_0000;
+        let cell_vaddr_val = hive_vaddr + HBIN_START;
+        let cell_paddr: u64 = 0x0061_0000;
+
+        let hive_page = [0u8; 4096]; // root_cell_index = 0
+        let mut cell_page = [0u8; 4096];
+        // Write valid NK_SIG so find_key_cell recurse doesn't hit sig check,
+        // but set stable count = 0 so it returns None immediately.
+        let sig_bytes = NK_SIG.to_le_bytes();
+        cell_page[0] = sig_bytes[0];
+        cell_page[1] = sig_bytes[1];
+        // NK_STABLE_COUNT (0x14) = 0 (already 0 from zeroed array)
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_vaddr_val, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &cell_page)
+            .build();
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // find_key_cell("CurrentControlSet\\Services") iterates path components,
+        // reads the root cell (NK_SIG ok, count==0) → returns None → enum returns [].
+        let names = enum_direct_subkeys(&reader, hive_vaddr, "CurrentControlSet\\Services");
+        assert!(names.is_empty(), "zero stable count should return empty");
+    }
+
+    /// walk_svc_diff with non-zero hive_addr but no readable root cell bytes
+    /// (all reads fail) returns Ok(empty) gracefully.
+    #[test]
+    fn walk_svc_diff_nonzero_hive_unreadable_returns_empty() {
+        let reader = make_reader(); // no pages mapped
+        // hive_addr non-zero but all reads fail → enum_direct_subkeys returns []
+        // → scm_services empty → result empty
+        let result = walk_svc_diff(&reader, 0, 0xFFFF_8000_BEEF_0000).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// cell_vaddr wrapping arithmetic does not panic.
+    #[test]
+    fn cell_vaddr_wrapping() {
+        // u64::MAX + 1 wraps to 0 (saturating_add not used, wrapping_add is used).
+        let v = cell_vaddr(u64::MAX, 0);
+        // Should not panic regardless of result.
+        let _ = v;
+    }
+
+    /// key_node_name with exactly NK_NAME_DATA bytes and zero length returns empty string.
+    #[test]
+    fn key_node_name_zero_length() {
+        let mut data = vec![0u8; NK_NAME_DATA + 8];
+        // name length field = 0
+        data[NK_NAME_LEN] = 0;
+        data[NK_NAME_LEN + 1] = 0;
+        let name = key_node_name(&data);
+        assert_eq!(name, "");
+    }
 }

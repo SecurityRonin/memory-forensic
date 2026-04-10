@@ -390,4 +390,210 @@ mod tests {
         let results = walk_debug_registers(&reader, page_vaddr).unwrap();
         assert!(results.is_empty());
     }
+
+    // -- read_u64 helper tests -----------------------------------------------
+
+    /// read_u64 from a mapped address returns the correct value.
+    #[test]
+    fn read_u64_from_mapped_memory() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let paddr: u64 = 0x0020_0000;
+        let value: u64 = 0xDEAD_BEEF_1234_5678;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &value.to_le_bytes())
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(read_u64(&reader, vaddr), value);
+    }
+
+    /// read_u64 from unmapped memory returns 0.
+    #[test]
+    fn read_u64_from_unmapped_memory_returns_zero() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(read_u64(&reader, 0xFFFF_DEAD_BEEF_0000), 0);
+    }
+
+    // -- read_thread_debug_regs tests ----------------------------------------
+
+    /// read_thread_debug_regs returns None when TrapFrame pointer is null (zero).
+    #[test]
+    fn read_thread_debug_regs_null_trap_frame() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Map a kthread page where TrapFrame pointer (at DEFAULT_KTHREAD_TRAP_FRAME=0x90) = 0.
+        let kthread_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let kthread_paddr: u64 = 0x0030_0000;
+        let page = [0u8; 4096]; // all zeros → TrapFrame ptr = 0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
+            .write_phys(kthread_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // TrapFrame = 0 → None
+        let result = read_thread_debug_regs(&reader, kthread_vaddr);
+        assert!(result.is_none(), "null TrapFrame pointer should return None");
+    }
+
+    /// read_thread_debug_regs returns None when TrapFrame points to unmapped memory.
+    #[test]
+    fn read_thread_debug_regs_unmapped_trap_frame() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Map a kthread page where TrapFrame pointer = some unmapped address.
+        let kthread_vaddr: u64 = 0xFFFF_8000_0031_0000;
+        let kthread_paddr: u64 = 0x0031_0000;
+        let trap_ptr: u64 = 0xFFFF_8000_DEAD_0000; // unmapped
+
+        let mut page = [0u8; 4096];
+        page[DEFAULT_KTHREAD_TRAP_FRAME as usize
+            ..DEFAULT_KTHREAD_TRAP_FRAME as usize + 8]
+            .copy_from_slice(&trap_ptr.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
+            .write_phys(kthread_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // TrapFrame != 0 but its memory is unmapped → read_u64 returns 0 for all regs.
+        // The function returns Some((0,0,0,0,0,0)) rather than None because the
+        // TrapFrame pointer itself is non-zero and read_u64 falls back to 0.
+        let result = read_thread_debug_regs(&reader, kthread_vaddr);
+        assert!(
+            result.is_some(),
+            "non-null TrapFrame should return Some (with zeroed regs)"
+        );
+        let (dr0, dr1, dr2, dr3, dr6, dr7) = result.unwrap();
+        assert_eq!((dr0, dr1, dr2, dr3, dr6, dr7), (0, 0, 0, 0, 0, 0));
+    }
+
+    /// read_thread_debug_regs with a valid TrapFrame page returns mapped register values.
+    #[test]
+    fn read_thread_debug_regs_with_valid_trap_frame() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let kthread_vaddr: u64 = 0xFFFF_8000_0032_0000;
+        let kthread_paddr: u64 = 0x0032_0000;
+        let trap_vaddr: u64 = 0xFFFF_8000_0033_0000;
+        let trap_paddr: u64 = 0x0033_0000;
+
+        // Write TrapFrame pointer into kthread at DEFAULT_KTHREAD_TRAP_FRAME.
+        let mut kthread_page = [0u8; 4096];
+        kthread_page[DEFAULT_KTHREAD_TRAP_FRAME as usize
+            ..DEFAULT_KTHREAD_TRAP_FRAME as usize + 8]
+            .copy_from_slice(&trap_vaddr.to_le_bytes());
+
+        // Write known DR values into the trap frame page at default offsets.
+        let dr0_val: u64 = 0x1111_0000_1111_0000;
+        let dr1_val: u64 = 0x2222_0000_2222_0000;
+        let dr2_val: u64 = 0x3333_0000_3333_0000;
+        let dr3_val: u64 = 0x4444_0000_4444_0000;
+        let dr6_val: u64 = 0x5555_0000_5555_0000;
+        let dr7_val: u64 = 0x0000_0000_0000_0055; // L0+L1+L2+L3 local bits
+
+        let mut trap_page = [0u8; 4096];
+        trap_page[DEFAULT_KTRAP_FRAME_DR0 as usize..DEFAULT_KTRAP_FRAME_DR0 as usize + 8]
+            .copy_from_slice(&dr0_val.to_le_bytes());
+        trap_page[DEFAULT_KTRAP_FRAME_DR1 as usize..DEFAULT_KTRAP_FRAME_DR1 as usize + 8]
+            .copy_from_slice(&dr1_val.to_le_bytes());
+        trap_page[DEFAULT_KTRAP_FRAME_DR2 as usize..DEFAULT_KTRAP_FRAME_DR2 as usize + 8]
+            .copy_from_slice(&dr2_val.to_le_bytes());
+        trap_page[DEFAULT_KTRAP_FRAME_DR3 as usize..DEFAULT_KTRAP_FRAME_DR3 as usize + 8]
+            .copy_from_slice(&dr3_val.to_le_bytes());
+        trap_page[DEFAULT_KTRAP_FRAME_DR6 as usize..DEFAULT_KTRAP_FRAME_DR6 as usize + 8]
+            .copy_from_slice(&dr6_val.to_le_bytes());
+        trap_page[DEFAULT_KTRAP_FRAME_DR7 as usize..DEFAULT_KTRAP_FRAME_DR7 as usize + 8]
+            .copy_from_slice(&dr7_val.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
+            .write_phys(kthread_paddr, &kthread_page)
+            .map_4k(trap_vaddr, trap_paddr, flags::WRITABLE)
+            .write_phys(trap_paddr, &trap_page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_thread_debug_regs(&reader, kthread_vaddr);
+        assert!(result.is_some(), "should return Some with valid TrapFrame");
+        let (dr0, dr1, dr2, dr3, dr6, dr7) = result.unwrap();
+        assert_eq!(dr0, dr0_val);
+        assert_eq!(dr1, dr1_val);
+        assert_eq!(dr2, dr2_val);
+        assert_eq!(dr3, dr3_val);
+        assert_eq!(dr6, dr6_val);
+        assert_eq!(dr7, dr7_val);
+
+        // With all DRs non-zero and DR7 local enable bits set, classify as suspicious.
+        assert!(classify_debug_registers(dr0, dr1, dr2, dr3, dr7));
+    }
+
+    /// walk_debug_registers with unreadable process list head returns empty (graceful degradation).
+    #[test]
+    fn walk_debug_registers_unreadable_head_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // walk_processes with unmapped head fails → Ok(Vec::new())
+        let results = walk_debug_registers(&reader, 0xFFFF_8000_DEAD_C0FF).unwrap_or_default();
+        assert!(results.is_empty());
+    }
 }

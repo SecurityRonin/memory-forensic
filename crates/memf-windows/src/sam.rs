@@ -806,6 +806,76 @@ mod tests {
         assert_eq!(UAC_NORMAL_ACCOUNT, 0x0200);
     }
 
+    /// Exercises the full hive navigation path: builds a minimal hive with a valid
+    /// root NK cell that has subkey_count=0, so find_subkey_by_name("SAM") returns 0.
+    /// Covers lines 177-184 (sam_key == 0 branch).
+    #[test]
+    fn walk_sam_users_root_cell_no_sam_subkey() {
+        // Layout:
+        //   hive_vaddr  = 0x0070_0000  → maps to 0x0070_0000
+        //   base_block  = 0x0071_0000  → maps to 0x0071_0000
+        //   flat_base   = base_block + 0x1000 = 0x0072_0000  → maps to 0x0072_0000
+        //
+        // root_cell_off = 0x20 (from base_block+0x24)
+        // root cell address = flat_base + 0x20 + 4 = 0x0072_0024
+        // At root cell we write a valid-looking header (2 readable bytes) so
+        // read_cell_addr returns non-zero, then find_subkey_by_name reads
+        // subkey_count at +0x18 = 0 → returns 0 (sam_key == 0 branch).
+
+        let hive_vaddr: u64 = 0x0070_0000;
+        let hive_paddr: u64 = 0x0070_0000;
+        let base_block: u64 = 0x0071_0000;
+        let base_block_paddr: u64 = 0x0071_0000;
+        let flat_base_paddr: u64 = 0x0072_0000;
+        let root_cell_off: u32 = 0x20;
+        // flat_base = base_block + 0x1000 (storage ptr is 0 → fallback)
+        // root_addr = flat_base + root_cell_off + 4 = flat_base + 0x24
+        // = 0x0072_0000 + 0x24 = 0x0072_0024
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        // storage at 0x30 = 0 → flat_base = base_block + 0x1000
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        // flat_base page: root cell at offset root_cell_off within flat_base.
+        // read_cell_addr reads 2 bytes at flat_base + root_cell_off + 4
+        // For this to succeed we just need those 2 bytes to be readable (mapped).
+        // Then find_subkey_by_name reads subkey_count at root_addr + 0x18.
+        // root_addr = flat_base_paddr + root_cell_off + 4 = flat_base_paddr + 0x24
+        // subkey_count at root_addr + 0x18 = flat_base_paddr + 0x3C = offset 0x3C in flat_base page
+        // Write subkey_count = 0 so sam_key = 0 → returns empty.
+        let mut flat_page = vec![0u8; 0x1000];
+        // subkey_count at offset (root_cell_off + 4 + 0x18) = 0x3C
+        let subkey_count_offset = (root_cell_off + 4 + 0x18) as usize;
+        flat_page[subkey_count_offset..subkey_count_offset + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "no SAM subkey should return empty");
+    }
+
     // ── SamUserInfo construction ──────────────────────────────────────
 
     #[test]
@@ -959,6 +1029,72 @@ mod tests {
         // → read_cell_addr returns 0 → empty Vec
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
         assert!(result.is_empty());
+    }
+
+    /// base_block_addr == 0 after reading BaseBlock pointer → early return.
+    #[test]
+    fn walk_sam_users_base_block_addr_zero_early_return() {
+        // Map the hive page but write 0 as the BaseBlock pointer value.
+        let hive_vaddr: u64 = 0x0050_0000;
+        let hive_paddr: u64 = 0x0050_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        // BaseBlock at offset 0x10 = 0 → triggers base_block_addr == 0 guard
+        hive_page[0x10..0x18].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "base_block_addr==0 should return empty");
+    }
+
+    /// root_cell_off == u32::MAX → early return.
+    #[test]
+    fn walk_sam_users_root_cell_off_max_early_return() {
+        let hive_vaddr: u64 = 0x0060_0000;
+        let hive_paddr: u64 = 0x0060_0000;
+        let base_block: u64 = 0x0061_0000;
+        let base_block_paddr: u64 = 0x0061_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        // root_cell_off = u32::MAX → early return
+        bb_page[0x24..0x28].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "root_cell_off==MAX should return empty");
     }
 
     /// Exercises the Storage fallback: Storage pointer is non-zero.

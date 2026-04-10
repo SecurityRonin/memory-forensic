@@ -1853,7 +1853,7 @@ fn decrypt_sam_hash_with_rid(encrypted: &[u8], rid: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::PageTableBuilder;
+    use memf_core::test_builders::{flags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
@@ -2212,6 +2212,156 @@ mod tests {
         assert_eq!(LSA_KEY_NAMES.len(), 4);
         assert_eq!(LSA_KEY_NAMES[0], "JD");
         assert_eq!(LSA_KEY_NAMES[3], "Data");
+    }
+
+    /// system_flat_base succeeds but system_root resolves to 0 → empty Vec.
+    /// Covers line 130 (system_root == 0 check).
+    #[test]
+    fn walk_hashdump_system_root_zero_empty() {
+        // Map the SYSTEM hive so resolve_flat_base succeeds, but leave
+        // base_block area unmapped so resolve_root_cell returns 0.
+        // sam hive is non-zero but unmapped (doesn't matter; fails earlier).
+        let sys_vaddr: u64 = 0x0050_1000;
+        let sys_paddr: u64 = 0x0050_1000;
+        let sys_bb: u64 = 0x0051_1000;
+        let sys_bb_paddr: u64 = 0x0051_1000;
+
+        let mut sys_page = vec![0u8; 0x1000];
+        // BaseBlock at 0x10 = sys_bb
+        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
+        // Storage at 0x30 = 0 → flat_base = sys_bb + 0x1000
+        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut sys_bb_page = vec![0u8; 0x1000];
+        // root_cell_off at 0x24 = 0 → resolve_root_cell returns 0
+        sys_bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
+            .write_phys(sys_paddr, &sys_page)
+            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
+            .write_phys(sys_bb_paddr, &sys_bb_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_hashdump(&reader, 0xDEAD_0000, sys_vaddr).unwrap();
+        assert!(result.is_empty(), "system_root==0 should return empty");
+    }
+
+    /// system resolves fully but sam_flat_base returns 0 → empty Vec.
+    /// Covers line 135 (sam_flat_base == 0 check).
+    #[test]
+    fn walk_hashdump_sam_flat_base_zero_empty() {
+        // Build a SYSTEM hive with enough data so resolve_flat_base succeeds
+        // AND resolve_root_cell returns non-zero, but then extract_boot_key
+        // fails because CurrentControlSet is not found → returns empty boot key.
+        //
+        // For the SAM hive, we leave it unmapped so resolve_flat_base returns 0.
+
+        let sys_vaddr: u64 = 0x0060_1000;
+        let sys_paddr: u64 = 0x0060_1000;
+        let sys_bb: u64 = 0x0061_1000;
+        let sys_bb_paddr: u64 = 0x0061_1000;
+        let sys_flat_paddr: u64 = 0x0062_1000; // sys_bb + 0x1000
+
+        let root_cell_off: u32 = 0x20;
+
+        let mut sys_page = vec![0u8; 0x1000];
+        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
+        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut sys_bb_page = vec![0u8; 0x1000];
+        sys_bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        // flat_base page: put readable bytes at root_cell_off+4 so read_cell_addr
+        // returns non-zero. Then resolve_root_cell returns that address.
+        // Then extract_boot_key will call find_subkey_by_name for
+        // "CurrentControlSet" on the root NK which has subkey_count=0 → returns 0
+        // → extract_boot_key returns empty → walk returns empty.
+        let mut sys_flat_page = vec![0u8; 0x1000];
+        // subkey_count at (root_cell_off+4+0x18) = 0x3C stays 0
+        let _ = sys_flat_page[0]; // silence unused warning
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // SAM hive: unmapped → resolve_flat_base returns 0
+        let sam_vaddr: u64 = 0xDEAD_BEEF_1000;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
+            .write_phys(sys_paddr, &sys_page)
+            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
+            .write_phys(sys_bb_paddr, &sys_bb_page)
+            .map_4k(sys_bb + 0x1000, sys_flat_paddr, flags::WRITABLE)
+            .write_phys(sys_flat_paddr, &sys_flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // system hive resolves, boot_key extraction fails (no CCS subkey),
+        // walk returns empty before ever checking sam_flat_base.
+        let result = walk_hashdump(&reader, sam_vaddr, sys_vaddr).unwrap();
+        assert!(result.is_empty(), "empty boot key should return empty");
+    }
+
+    /// sam_flat_base resolves but system_root returns 0 → empty Vec.
+    /// Covers line 131 (system_root == 0 check from resolve_root_cell).
+    #[test]
+    fn walk_hashdump_system_root_zero_via_mapped_hive() {
+        // SYSTEM hive with valid BaseBlock and root_cell_off = 0 →
+        // resolve_root_cell returns 0 → early return.
+        let sys_vaddr: u64 = 0x0070_1000;
+        let sys_paddr: u64 = 0x0070_1000;
+        let sys_bb: u64 = 0x0071_1000;
+        let sys_bb_paddr: u64 = 0x0071_1000;
+        let sys_flat_paddr: u64 = 0x0072_1000;
+
+        let mut sys_page = vec![0u8; 0x1000];
+        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
+        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut sys_bb_page = vec![0u8; 0x1000];
+        // root_cell_off = 0 → resolve_root_cell returns 0
+        sys_bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let sys_flat_page = vec![0u8; 0x1000];
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
+            .write_phys(sys_paddr, &sys_page)
+            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
+            .write_phys(sys_bb_paddr, &sys_bb_page)
+            .map_4k(sys_bb + 0x1000, sys_flat_paddr, flags::WRITABLE)
+            .write_phys(sys_flat_paddr, &sys_flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_hashdump(&reader, 0xDEAD_0000, sys_vaddr).unwrap();
+        assert!(result.is_empty(), "system_root==0 should return empty");
     }
 
     /// Non-zero hive addresses but unreadable memory → empty Vec.

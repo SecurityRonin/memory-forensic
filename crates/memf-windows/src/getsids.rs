@@ -536,4 +536,274 @@ mod tests {
         assert!(json.contains("\"sid_name\":\"SYSTEM\""));
         assert!(json.contains("\"is_suspicious\":false"));
     }
+
+    // ---------------------------------------------------------------
+    // read_sid_at tests via mapped memory
+    // ---------------------------------------------------------------
+
+    fn make_base_reader() -> memf_core::object_reader::ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// read_sid_at with sid_ptr == 0 returns empty string.
+    #[test]
+    fn read_sid_at_null_ptr_returns_empty() {
+        let reader = make_base_reader();
+        let result = read_sid_at(&reader, 0);
+        assert_eq!(result, "");
+    }
+
+    /// read_sid_at with unmapped memory returns empty string.
+    #[test]
+    fn read_sid_at_unmapped_returns_empty() {
+        let reader = make_base_reader();
+        let result = read_sid_at(&reader, 0xFFFF_8000_DEAD_0000);
+        assert_eq!(result, "");
+    }
+
+    /// read_sid_at with a valid SID in mapped memory returns the expected string.
+    #[test]
+    fn read_sid_at_valid_system_sid() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // S-1-5-18 (SYSTEM):
+        //   Revision=1, SubAuthorityCount=1, Authority=[0,0,0,0,0,5], SubAuth=[18]
+        let sid_vaddr: u64 = 0xFFFF_8000_0090_0000;
+        let sid_paddr: u64 = 0x0090_0000;
+
+        let mut page = [0u8; 4096];
+        page[0] = 1; // Revision
+        page[1] = 1; // SubAuthorityCount
+        page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 5]); // NT Authority
+        // SubAuthority[0] = 18 at offset 8
+        page[8..12].copy_from_slice(&18u32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
+            .write_phys(sid_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_sid_at(&reader, sid_vaddr);
+        assert_eq!(result, "S-1-5-18");
+    }
+
+    /// read_sid_at with SubAuthorityCount == 0 returns string without sub-authorities.
+    #[test]
+    fn read_sid_at_zero_sub_authority_count() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let sid_vaddr: u64 = 0xFFFF_8000_0091_0000;
+        let sid_paddr: u64 = 0x0091_0000;
+
+        let mut page = [0u8; 4096];
+        page[0] = 1; // Revision
+        page[1] = 0; // SubAuthorityCount = 0
+        page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 1]); // authority = 1 (World Authority)
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
+            .write_phys(sid_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_sid_at(&reader, sid_vaddr);
+        // S-1-1 (no sub-authorities)
+        assert_eq!(result, "S-1-1");
+    }
+
+    /// read_sid_at with SubAuthorityCount > 15 returns empty string (invalid).
+    #[test]
+    fn read_sid_at_excessive_sub_authority_count_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let sid_vaddr: u64 = 0xFFFF_8000_0092_0000;
+        let sid_paddr: u64 = 0x0092_0000;
+
+        let mut page = [0u8; 4096];
+        page[0] = 1;  // Revision
+        page[1] = 16; // SubAuthorityCount = 16 > 15 → invalid
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
+            .write_phys(sid_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_sid_at(&reader, sid_vaddr);
+        assert_eq!(result, "", "excessive SubAuthorityCount should return empty");
+    }
+
+    /// read_sid_at with a high-authority SID (top 2 bytes of authority non-zero)
+    /// formats authority as hex.
+    #[test]
+    fn read_sid_at_high_authority_hex_format() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let sid_vaddr: u64 = 0xFFFF_8000_0093_0000;
+        let sid_paddr: u64 = 0x0093_0000;
+
+        let mut page = [0u8; 4096];
+        page[0] = 1; // Revision
+        page[1] = 0; // SubAuthorityCount = 0
+        // High authority: first byte non-zero (authority >= 0x1_0000_0000)
+        page[2] = 0x00;
+        page[3] = 0x01; // authority[1] = 1 → auth_value = 0x0001_0000_0000
+        page[4..8].copy_from_slice(&[0, 0, 0, 0]);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
+            .write_phys(sid_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_sid_at(&reader, sid_vaddr);
+        // auth_value = 0x000100000000 >= 0x1_0000_0000 → hex format
+        assert!(result.starts_with("S-1-0x"), "expected hex authority format, got: {result}");
+    }
+
+    /// read_sid_at for S-1-5-21-... (domain SID with 4 sub-authorities).
+    #[test]
+    fn read_sid_at_domain_sid_four_sub_authorities() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let sid_vaddr: u64 = 0xFFFF_8000_0094_0000;
+        let sid_paddr: u64 = 0x0094_0000;
+
+        let mut page = [0u8; 4096];
+        page[0] = 1; // Revision
+        page[1] = 4; // 4 sub-authorities
+        page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 5]); // NT Authority
+        // Sub-authorities: 21, 100, 200, 500
+        page[8..12].copy_from_slice(&21u32.to_le_bytes());
+        page[12..16].copy_from_slice(&100u32.to_le_bytes());
+        page[16..20].copy_from_slice(&200u32.to_le_bytes());
+        page[20..24].copy_from_slice(&500u32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
+            .write_phys(sid_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_sid_at(&reader, sid_vaddr);
+        assert_eq!(result, "S-1-5-21-100-200-500");
+    }
+
+    // ---------------------------------------------------------------
+    // well_known_sid completeness checks
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn well_known_sid_all_covered() {
+        // Verify every entry in the match arm is reachable and correct.
+        assert!(well_known_sid("S-1-5-18").is_some());
+        assert!(well_known_sid("S-1-5-19").is_some());
+        assert!(well_known_sid("S-1-5-20").is_some());
+        assert!(well_known_sid("S-1-5-32-544").is_some());
+        assert!(well_known_sid("S-1-5-32-545").is_some());
+        assert!(well_known_sid("S-1-5-32-555").is_some());
+        assert!(well_known_sid("S-1-1-0").is_some());
+        assert!(well_known_sid("S-1-5-7").is_some());
+        // Non-matching
+        assert!(well_known_sid("S-1-99-99").is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // classify_process_sid edge cases
+    // ---------------------------------------------------------------
+
+    /// LSASS.EXE (all-caps variant) as SYSTEM is still benign.
+    #[test]
+    fn classify_lsass_upper_case_benign() {
+        assert!(!classify_process_sid("LSASS.EXE", "S-1-5-18"));
+    }
+
+    /// An empty process name with SYSTEM SID is suspicious.
+    #[test]
+    fn classify_empty_process_name_system_suspicious() {
+        assert!(classify_process_sid("", "S-1-5-18"));
+    }
+
+    /// ANONYMOUS LOGON is suspicious even for known system processes.
+    #[test]
+    fn classify_lsass_anonymous_suspicious() {
+        assert!(classify_process_sid("lsass.exe", "S-1-5-7"));
+    }
+
+    // ---------------------------------------------------------------
+    // integrity_level_name exhaustive tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn integrity_levels_all_entries() {
+        let cases = [
+            ("S-1-16-0", "Untrusted"),
+            ("S-1-16-4096", "Low"),
+            ("S-1-16-8192", "Medium"),
+            ("S-1-16-8448", "MediumPlus"),
+            ("S-1-16-12288", "High"),
+            ("S-1-16-16384", "System"),
+            ("S-1-16-20480", "Protected"),
+            ("S-1-16-28672", "Secure"),
+            ("S-1-16-99999", "Unknown"),
+        ];
+        for (sid, expected) in &cases {
+            assert_eq!(
+                integrity_level_name(sid),
+                *expected,
+                "SID {sid} should map to {expected}"
+            );
+        }
+    }
 }

@@ -431,4 +431,132 @@ mod tests {
         assert_eq!(info.technique, "direct_syscall");
         assert!(info.is_suspicious);
     }
+
+    // -- read_thread_syscall_info tests -------------------------------------
+
+    /// read_thread_syscall_info from unmapped ethread addr returns Some((0, 0, "direct_syscall")).
+    /// The function uses unwrap_or(0) so it always returns Some.
+    #[test]
+    fn read_thread_syscall_info_unmapped_returns_some_zeroes() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_thread_syscall_info(&reader, 0xFFFF_8000_DEAD_0000);
+        // Unmapped → all fields default to 0 → Some((0, 0, "direct_syscall"))
+        assert!(result.is_some());
+        let (addr, num, technique) = result.unwrap();
+        assert_eq!(addr, 0);
+        assert_eq!(num, 0);
+        assert_eq!(technique, "direct_syscall");
+    }
+
+    /// read_thread_syscall_info with a 32-bit (WoW64) Win32StartAddress returns heavens_gate.
+    #[test]
+    fn read_thread_syscall_info_wow64_address_heavens_gate() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Default Win32StartAddress offset = 0x560.
+        let ethread_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let ethread_paddr: u64 = 0x0050_0000;
+
+        // Write a 32-bit address at offset 0x560 (within the 32-bit address space).
+        let win32_start: u64 = 0x0000_0000_7FFF_0010; // <= 0xFFFF_FFFF → heavens_gate
+        let syscall_number: u32 = 0x2A;
+
+        let mut page = [0u8; 4096];
+        // SystemCallNumber at offset 0x80 (default)
+        page[0x80..0x84].copy_from_slice(&syscall_number.to_le_bytes());
+        // Win32StartAddress at offset 0x560 (default)
+        page[0x560..0x568].copy_from_slice(&win32_start.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ethread_vaddr, ethread_paddr, flags::WRITABLE)
+            .write_phys(ethread_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_thread_syscall_info(&reader, ethread_vaddr).unwrap();
+        let (addr, num, technique) = result;
+        assert_eq!(addr, win32_start);
+        assert_eq!(num, syscall_number);
+        assert_eq!(technique, "heavens_gate", "low address should classify as heavens_gate");
+        // heavens_gate is always suspicious regardless of in_ntdll
+        assert!(classify_syscall_technique(true, &technique));
+        assert!(classify_syscall_technique(false, &technique));
+    }
+
+    /// read_thread_syscall_info with a 64-bit Win32StartAddress returns direct_syscall.
+    #[test]
+    fn read_thread_syscall_info_64bit_address_direct_syscall() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let ethread_vaddr: u64 = 0xFFFF_8000_0051_0000;
+        let ethread_paddr: u64 = 0x0051_0000;
+
+        // 64-bit address (> 0xFFFF_FFFF) → direct_syscall technique.
+        let win32_start: u64 = 0x7FFF_1234_5678_ABCD;
+        let syscall_number: u32 = 0x3B;
+
+        let mut page = [0u8; 4096];
+        page[0x80..0x84].copy_from_slice(&syscall_number.to_le_bytes());
+        page[0x560..0x568].copy_from_slice(&win32_start.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ethread_vaddr, ethread_paddr, flags::WRITABLE)
+            .write_phys(ethread_paddr, &page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_thread_syscall_info(&reader, ethread_vaddr).unwrap();
+        let (addr, num, technique) = result;
+        assert_eq!(addr, win32_start);
+        assert_eq!(num, syscall_number);
+        assert_eq!(technique, "direct_syscall", "high address should classify as direct_syscall");
+    }
+
+    /// DirectSyscallInfo serialization includes all expected fields.
+    #[test]
+    fn direct_syscall_info_serializes() {
+        let info = DirectSyscallInfo {
+            pid: 999,
+            process_name: "inject.exe".to_string(),
+            thread_id: 1111,
+            syscall_address: 0xDEAD_BEEF_1234,
+            syscall_number: 0xFF,
+            technique: "heavens_gate".to_string(),
+            in_ntdll: false,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":999"));
+        assert!(json.contains("\"technique\":\"heavens_gate\""));
+        assert!(json.contains("\"in_ntdll\":false"));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"syscall_number\":255"));
+    }
 }

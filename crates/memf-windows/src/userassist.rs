@@ -1065,6 +1065,143 @@ mod tests {
         assert!(result.is_empty(), "bad nk signature should return empty");
     }
 
+    // ── find_subkey unit tests ───────────────────────────────────────
+
+    /// find_subkey returns None when nk_data is too short to contain subkey list offset.
+    /// Covers lines 269-270 (nk_data.len() < NK_STABLE_SUBKEYS_LIST_OFFSET + 4).
+    #[test]
+    fn find_subkey_nk_data_too_short_returns_none() {
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        // nk_data shorter than NK_STABLE_SUBKEYS_LIST_OFFSET (0x1C) + 4 = 0x20
+        let nk_data = vec![0u8; 10];
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap();
+        assert!(result.is_none(), "too-short nk_data should return None");
+    }
+
+    /// find_subkey returns None when subkey_count == 0.
+    /// Covers line 279-281 (subkey_count == 0).
+    #[test]
+    fn find_subkey_zero_subkey_count_returns_none() {
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        // nk_data long enough (> NK_STABLE_SUBKEYS_LIST_OFFSET + 4 = 0x20),
+        // but subkey_count at NK_STABLE_SUBKEY_COUNT_OFFSET (0x14) = 0.
+        let nk_data = vec![0u8; 0x40];
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap();
+        assert!(result.is_none(), "zero subkey_count should return None");
+    }
+
+    /// find_subkey with a non-zero subkey_count but unmapped list cell → returns None.
+    /// Covers lines 283-296 (list_data.len() < 4).
+    #[test]
+    fn find_subkey_list_cell_unmapped_returns_none() {
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        // nk_data with subkey_count=1 and subkeys_list_cell=0x100 (points somewhere unmapped).
+        let mut nk_data = vec![0u8; 0x40];
+        // subkey_count at NK_STABLE_SUBKEY_COUNT_OFFSET = 0x14
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        // subkeys_list_cell at NK_STABLE_SUBKEYS_LIST_OFFSET = 0x1C
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&0x100u32.to_le_bytes());
+        // cell_address = hive_addr + HBIN_START_OFFSET + 0x100 = 0x1000_0000 + 0x1000 + 0x100
+        // This address is not mapped in the reader, so read_cell_data will return Err,
+        // which find_subkey propagates. The caller should treat Err as None.
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software")
+            .unwrap_or(None);
+        assert!(result.is_none(), "unmapped list cell should return None or Err");
+    }
+
+    // ── list_subkeys unit tests ──────────────────────────────────────
+
+    /// list_subkeys returns empty when nk_data too short.
+    #[test]
+    fn list_subkeys_nk_data_too_short_returns_empty() {
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        let nk_data = vec![0u8; 10];
+        let result = list_subkeys(&reader, hive_addr, &nk_data).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// list_subkeys returns empty when subkey_count == 0.
+    #[test]
+    fn list_subkeys_zero_count_returns_empty() {
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        let nk_data = vec![0u8; 0x40]; // subkey_count at 0x14 = 0 (all zeros)
+        let result = list_subkeys(&reader, hive_addr, &nk_data).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ── read_cell_data unit tests ────────────────────────────────────
+
+    /// read_cell_data returns empty Vec when abs_size <= 4 (covers line 218).
+    /// We map a page with a cell size of exactly 4 (i32 = -4 or +4).
+    #[test]
+    fn read_cell_data_abs_size_le_4_returns_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map a page and write a cell size of 4 at offset 0.
+        let cell_vaddr: u64 = 0xFFFF_8000_0300_0000;
+        let cell_paddr: u64 = 0x0040_0000;
+        let mut page = [0u8; 4096];
+        // Write i32 of 4 (positive = free, abs_size = 4) → returns empty.
+        page[0..4].copy_from_slice(&4i32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(cell_vaddr, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_cell_data(&reader, cell_vaddr).unwrap();
+        assert!(
+            result.is_empty(),
+            "abs_size == 4 should return empty Vec"
+        );
+    }
+
+    /// read_cell_data with a negative size (allocated cell) returns data bytes.
+    #[test]
+    fn read_cell_data_negative_size_returns_data() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let cell_vaddr: u64 = 0xFFFF_8000_0400_0000;
+        let cell_paddr: u64 = 0x0045_0000;
+        let mut page = [0u8; 4096];
+        // Write i32 of -20 (allocated, abs_size=20, data_len=16).
+        page[0..4].copy_from_slice(&(-20i32).to_le_bytes());
+        // Write some data bytes.
+        page[4..20].copy_from_slice(&[0xAB; 16]);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(cell_vaddr, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_cell_data(&reader, cell_vaddr).unwrap();
+        assert_eq!(result.len(), 16);
+        assert!(result.iter().all(|&b| b == 0xAB));
+    }
+
     // ── UserAssistEntry struct tests ─────────────────────────────────
 
     #[test]
