@@ -447,4 +447,105 @@ mod tests {
             "tagged xa_head (retry entry) must be skipped → empty vec"
         );
     }
+
+    // --- walk_bpf_programs: xa_head is an xarray node (low bits 0x2) ---
+    // Exercises the `is_node` branch in walk_idr_entries: real_addr decoded, slots
+    // array iterated. All slots are 0 → no leaf entries → empty result.
+    #[test]
+    fn walk_bpf_programs_xa_node_all_zero_slots_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+
+        // idr struct at idr_vaddr; idr_rt (offset 0) = xa_node_addr | 0x2
+        let idr_vaddr: u64 = 0xFFFF_8800_0055_0000;
+        let idr_paddr: u64 = 0x0055_0000;
+
+        // xa_node is at a separate mapped page; slots at offset 16 (default used by code)
+        let xa_node_paddr: u64 = 0x0056_0000;
+        let xa_node_vaddr: u64 = 0xFFFF_8800_0056_0000;
+        // The tagged node pointer: xa_node_vaddr | 0x2
+        let xa_head_tagged: u64 = xa_node_vaddr | 0x2;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("bpf_prog_idr", idr_vaddr)
+            .add_struct("idr", 0x20)
+            .add_field("idr", "idr_rt", 0x00, "pointer")
+            // xa_node.slots at offset 16 (matches unwrap_or(16) default in code)
+            .add_struct("xa_node", 0x400)
+            .add_field("xa_node", "slots", 0x10, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // idr page: idr_rt = xa_head_tagged
+        let mut idr_page = [0u8; 4096];
+        idr_page[0..8].copy_from_slice(&xa_head_tagged.to_le_bytes());
+
+        // xa_node page: all slots zero → nothing to recurse into
+        let xa_node_page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(idr_vaddr, idr_paddr, ptf::WRITABLE)
+            .write_phys(idr_paddr, &idr_page)
+            .map_4k(xa_node_vaddr, xa_node_paddr, ptf::WRITABLE)
+            .write_phys(xa_node_paddr, &xa_node_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bpf_programs(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "xa_node with all-zero slots → no bpf_prog entries"
+        );
+    }
+
+    // --- walk_bpf_programs: xa_head is a leaf pointer (low bits 0x0, > 0x1000) ---
+    // Exercises the leaf branch in walk_idr_entries: read_bpf_prog is called.
+    // bpf_prog.type field missing → read_bpf_prog returns Err → entry silently skipped.
+    #[test]
+    fn walk_bpf_programs_leaf_ptr_read_fails_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+
+        let idr_vaddr: u64 = 0xFFFF_8800_0057_0000;
+        let idr_paddr: u64 = 0x0057_0000;
+
+        // A clean leaf pointer (low bits 0x0, > 0x1000) pointing to an unmapped page.
+        // read_bpf_prog will fail trying to read bpf_prog.type → silently skipped.
+        let leaf_ptr: u64 = 0xFFFF_8800_DEAD_0000; // unmapped → read fails
+
+        let isf = IsfBuilder::new()
+            .add_symbol("bpf_prog_idr", idr_vaddr)
+            .add_struct("idr", 0x20)
+            .add_field("idr", "idr_rt", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut idr_page = [0u8; 4096];
+        idr_page[0..8].copy_from_slice(&leaf_ptr.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(idr_vaddr, idr_paddr, ptf::WRITABLE)
+            .write_phys(idr_paddr, &idr_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bpf_programs(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "leaf ptr pointing to unreadable addr → read_bpf_prog fails → empty vec"
+        );
+    }
+
+    // --- prog_type_name: unknown index returns formatted string ---
+    // Exercises the map_or_else branch in prog_type_name for an out-of-range raw value.
+    #[test]
+    fn classify_bpf_unknown_indexed_type_not_suspicious() {
+        // prog_type_name(99) returns "unknown(99)"; classify_bpf_program falls through to _ => false
+        assert!(
+            !classify_bpf_program("unknown(99)", ""),
+            "unknown prog type string must not be suspicious"
+        );
+    }
 }

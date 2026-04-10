@@ -570,4 +570,194 @@ mod tests {
             "null files ptr → no fd table → no raw sockets"
         );
     }
+
+    // --- collect_raw_sockets_for_task: files != 0 but fdt_ptr == 0 ---
+    // Exercises the `if fdt_ptr == 0 { return }` branch.
+    #[test]
+    fn walk_raw_sockets_fdt_ptr_null_returns_empty() {
+        use memf_core::test_builders::flags as ptf;
+
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
+
+        let sym_vaddr: u64 = 0xFFFF_8800_0091_0000;
+        let sym_paddr: u64 = 0x0091_0000;
+
+        // files_struct at a separate mapped page; fdt at offset 0 = 0 (null).
+        let files_vaddr: u64 = 0xFFFF_8800_0092_0000;
+        let files_paddr: u64 = 0x0092_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "files", files_offset, "pointer")
+            .add_struct("files_struct", 0x100)
+            .add_field("files_struct", "fdt", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // init_task page: tasks self-pointing; files = files_vaddr.
+        let mut task_page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[files_offset as usize..files_offset as usize + 8]
+            .copy_from_slice(&files_vaddr.to_le_bytes());
+
+        // files_struct page: fdt at offset 0 = 0.
+        let files_page = [0u8; 4096]; // all zeros → fdt_ptr = 0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(files_vaddr, files_paddr, ptf::WRITABLE)
+            .write_phys(files_paddr, &files_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert!(result.is_empty(), "fdt_ptr == 0 → early return → no raw sockets");
+    }
+
+    // --- collect_raw_sockets_for_task: fdt != 0, fd_array_ptr == 0 ---
+    // Exercises the `if fd_array_ptr == 0 { return }` branch.
+    #[test]
+    fn walk_raw_sockets_fd_array_null_returns_empty() {
+        use memf_core::test_builders::flags as ptf;
+
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
+
+        let sym_vaddr: u64 = 0xFFFF_8800_0093_0000;
+        let sym_paddr: u64 = 0x0093_0000;
+
+        let files_vaddr: u64 = 0xFFFF_8800_0094_0000;
+        let files_paddr: u64 = 0x0094_0000;
+
+        let fdt_vaddr: u64 = 0xFFFF_8800_0095_0000;
+        let fdt_paddr: u64 = 0x0095_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "files", files_offset, "pointer")
+            .add_struct("files_struct", 0x100)
+            .add_field("files_struct", "fdt", 0x00, "pointer")
+            .add_struct("fdtable", 0x40)
+            .add_field("fdtable", "fd", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut task_page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[files_offset as usize..files_offset as usize + 8]
+            .copy_from_slice(&files_vaddr.to_le_bytes());
+
+        // files_struct: fdt = fdt_vaddr.
+        let mut files_page = [0u8; 4096];
+        files_page[0..8].copy_from_slice(&fdt_vaddr.to_le_bytes());
+
+        // fdtable: fd (offset 0) = 0 → fd_array_ptr = 0.
+        let fdt_page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(files_vaddr, files_paddr, ptf::WRITABLE)
+            .write_phys(files_paddr, &files_page)
+            .map_4k(fdt_vaddr, fdt_paddr, ptf::WRITABLE)
+            .write_phys(fdt_paddr, &fdt_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert!(result.is_empty(), "fd_array_ptr == 0 → early return → no raw sockets");
+    }
+
+    // --- collect_raw_sockets_for_task: fd_array has all-zero entries → no file ptrs ---
+    // Exercises the fd-slot loop: all file_ptr == 0 → continue → no try_read_raw_socket calls.
+    #[test]
+    fn walk_raw_sockets_all_fd_slots_null_returns_empty() {
+        use memf_core::test_builders::flags as ptf;
+
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
+
+        let sym_vaddr: u64 = 0xFFFF_8800_0096_0000;
+        let sym_paddr: u64 = 0x0096_0000;
+
+        let files_vaddr: u64 = 0xFFFF_8800_0097_0000;
+        let files_paddr: u64 = 0x0097_0000;
+
+        let fdt_vaddr: u64 = 0xFFFF_8800_0098_0000;
+        let fdt_paddr: u64 = 0x0098_0000;
+
+        let fd_array_vaddr: u64 = 0xFFFF_8800_0099_0000;
+        let fd_array_paddr: u64 = 0x0099_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "files", files_offset, "pointer")
+            .add_struct("files_struct", 0x100)
+            .add_field("files_struct", "fdt", 0x00, "pointer")
+            .add_struct("fdtable", 0x40)
+            .add_field("fdtable", "fd", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut task_page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[files_offset as usize..files_offset as usize + 8]
+            .copy_from_slice(&files_vaddr.to_le_bytes());
+
+        let mut files_page = [0u8; 4096];
+        files_page[0..8].copy_from_slice(&fdt_vaddr.to_le_bytes());
+
+        let mut fdt_page = [0u8; 4096];
+        fdt_page[0..8].copy_from_slice(&fd_array_vaddr.to_le_bytes());
+
+        // fd_array page: all zeros → every file_ptr == 0 → all slots skipped.
+        let fd_array_page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(files_vaddr, files_paddr, ptf::WRITABLE)
+            .write_phys(files_paddr, &files_page)
+            .map_4k(fdt_vaddr, fdt_paddr, ptf::WRITABLE)
+            .write_phys(fdt_paddr, &fdt_page)
+            .map_4k(fd_array_vaddr, fd_array_paddr, ptf::WRITABLE)
+            .write_phys(fd_array_paddr, &fd_array_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert!(result.is_empty(), "all-zero fd slots → no raw sockets");
+    }
 }

@@ -439,4 +439,252 @@ mod tests {
             "all-zero hash buckets → no unix sockets found"
         );
     }
+
+    // --- walk_unix_sockets: bucket[0] has a valid non-zero hlist node that self-terminates ---
+    // Exercises the inner while loop: node != 0, hlist next == 0 → one iteration → one socket.
+    #[test]
+    fn walk_unix_sockets_single_node_one_entry() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Layout:
+        //   table_vaddr  = unix_socket_table (256 buckets × 8 bytes = 2 KB, fits in 4K page)
+        //   node_vaddr   = the single unix_sock entry
+        //
+        // The walker reads:
+        //   bucket[0] = node_vaddr              (first hlist node)
+        //   node[0..8] = next pointer = 0       (terminates the hlist)
+        //   node[sk_type_off..+2] = 1 (STREAM)
+        //   node[sk_state_off..+1] = 3 (CONNECTED)
+        //   node[unix_addr_off..+8] = 0         (no path → empty string)
+        //   node[sk_socket_off..+8] = 0         (no socket → inode = 0)
+        //
+        // With an empty path and owner_pid=0 → classify_unix_socket("", 0) = false.
+
+        let table_vaddr: u64 = 0xFFFF_8800_0071_0000;
+        let table_paddr: u64 = 0x0071_0000;
+
+        let node_vaddr: u64 = 0xFFFF_8800_0072_0000;
+        let node_paddr: u64 = 0x0072_0000;
+
+        // Default offsets used by walk_unix_sockets when ISF fields are missing:
+        //   sk_type_off  = unwrap_or(0x12) = 0x12
+        //   sk_state_off = unwrap_or(0x14) = 0x14
+        //   sk_socket_off= unwrap_or(0x30) = 0x30
+        //   unix_addr_off= unwrap_or(0x288)= 0x288
+        let sk_type_off: usize = 0x12;
+        let sk_state_off: usize = 0x14;
+        // unix_addr_off = 0x288 — leave as zero (addr_ptr=0 → path="")
+        // sk_socket_off = 0x30  — leave as zero (socket_ptr=0 → inode=0)
+
+        // Build the hash-table page: bucket[0] = node_vaddr; rest = 0.
+        let mut table_page = [0u8; 4096];
+        table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        // Build the node page.
+        let mut node_page = [0u8; 4096];
+        // hlist next (offset 0) = 0 → terminates after one iteration
+        node_page[0..8].copy_from_slice(&0u64.to_le_bytes());
+        // sk_type = 1 (STREAM)
+        node_page[sk_type_off..sk_type_off + 2].copy_from_slice(&1u16.to_le_bytes());
+        // sk_state = 3 (CONNECTED)
+        node_page[sk_state_off] = 3u8;
+        // unix_addr_off at 0x288 — bytes remain 0 (addr_ptr=0 → path="")
+        // sk_socket_off at 0x30 — bytes remain 0 (socket_ptr=0 → inode=0)
+
+        let isf = IsfBuilder::new()
+            .add_symbol("unix_socket_table", table_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, ptf::WRITABLE)
+            .write_phys(table_paddr, &table_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        assert_eq!(result.len(), 1, "one hlist node → exactly one unix socket entry");
+        assert_eq!(result[0].socket_type, "STREAM");
+        assert_eq!(result[0].state, "CONNECTED");
+        assert_eq!(result[0].inode, 0);
+        assert!(result[0].path.is_empty());
+        assert!(!result[0].is_suspicious, "empty path + pid=0 must not be suspicious");
+    }
+
+    // --- walk_unix_sockets: node with abstract path (@name) is classified correctly ---
+    #[test]
+    fn walk_unix_sockets_node_with_abstract_path_high_pid() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // The walker uses classify_unix_socket(&path, 0) internally — owner_pid is always 0
+        // at this point in the code. So an abstract path with pid=0 is NOT suspicious.
+        // We test that the abstract-path decoding (first byte == 0 → '@' prefix) works.
+
+        let table_vaddr: u64 = 0xFFFF_8800_0073_0000;
+        let table_paddr: u64 = 0x0073_0000;
+
+        let node_vaddr: u64 = 0xFFFF_8800_0074_0000;
+        let node_paddr: u64 = 0x0074_0000;
+
+        // unix_address struct at addr_ptr: 2 bytes sa_family + sun_path
+        let addr_vaddr: u64 = 0xFFFF_8800_0075_0000;
+        let addr_paddr: u64 = 0x0075_0000;
+
+        let unix_addr_off: usize = 0x288; // default used by walker
+
+        let mut table_page = [0u8; 4096];
+        table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        let mut node_page = [0u8; 4096];
+        // hlist next = 0
+        node_page[0..8].copy_from_slice(&0u64.to_le_bytes());
+        // sk_type = 2 (DGRAM) at 0x12
+        node_page[0x12..0x14].copy_from_slice(&2u16.to_le_bytes());
+        // sk_state = 1 (UNCONNECTED) at 0x14
+        node_page[0x14] = 1u8;
+        // unix_addr pointer at unix_addr_off = addr_vaddr
+        node_page[unix_addr_off..unix_addr_off + 8].copy_from_slice(&addr_vaddr.to_le_bytes());
+
+        // addr page: sun_path_off = 2; first byte of sun_path = 0 (abstract), then "hidden\0"
+        let mut addr_page = [0u8; 4096];
+        // sa_family at [0..2], sun_path at [2..]:
+        // sun_path[0] = 0 → abstract; "hidden" as inner name
+        addr_page[2] = 0u8; // abstract marker
+        addr_page[3..9].copy_from_slice(b"hidden");
+        addr_page[9] = 0u8;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("unix_socket_table", table_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, ptf::WRITABLE)
+            .write_phys(table_paddr, &table_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .map_4k(addr_vaddr, addr_paddr, ptf::WRITABLE)
+            .write_phys(addr_paddr, &addr_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        assert_eq!(result.len(), 1, "one node → one entry");
+        assert_eq!(result[0].path, "@hidden", "abstract path must be decoded as @<name>");
+        assert_eq!(result[0].socket_type, "DGRAM");
+        assert_eq!(result[0].state, "UNCONNECTED");
+        // classify_unix_socket("@hidden", 0) → is_abstract=true, owner_pid=0 < 1000 → false
+        assert!(!result[0].is_suspicious, "abstract path with pid=0 is not suspicious");
+    }
+
+    // --- walk_unix_sockets: cycle detection via seen set ---
+    // Two nodes that point to each other → cycle detected → second iteration breaks.
+    #[test]
+    fn walk_unix_sockets_cycle_detected_breaks() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let table_vaddr: u64 = 0xFFFF_8800_0076_0000;
+        let table_paddr: u64 = 0x0076_0000;
+
+        // Two nodes: nodeA.next = nodeB, nodeB.next = nodeA (cycle)
+        let node_a_vaddr: u64 = 0xFFFF_8800_0077_0000;
+        let node_a_paddr: u64 = 0x0077_0000;
+
+        let node_b_vaddr: u64 = 0xFFFF_8800_0078_0000;
+        let node_b_paddr: u64 = 0x0078_0000;
+
+        let mut table_page = [0u8; 4096];
+        table_page[0..8].copy_from_slice(&node_a_vaddr.to_le_bytes());
+
+        // nodeA: next = node_b_vaddr; sk_type = 1 (STREAM); sk_state = 1 (UNCONNECTED)
+        let mut node_a_page = [0u8; 4096];
+        node_a_page[0..8].copy_from_slice(&node_b_vaddr.to_le_bytes());
+        node_a_page[0x12..0x14].copy_from_slice(&1u16.to_le_bytes());
+        node_a_page[0x14] = 1u8;
+
+        // nodeB: next = node_a_vaddr (cycle!); sk_type = 2 (DGRAM); sk_state = 1
+        let mut node_b_page = [0u8; 4096];
+        node_b_page[0..8].copy_from_slice(&node_a_vaddr.to_le_bytes());
+        node_b_page[0x12..0x14].copy_from_slice(&2u16.to_le_bytes());
+        node_b_page[0x14] = 1u8;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("unix_socket_table", table_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, ptf::WRITABLE)
+            .write_phys(table_paddr, &table_page)
+            .map_4k(node_a_vaddr, node_a_paddr, ptf::WRITABLE)
+            .write_phys(node_a_paddr, &node_a_page)
+            .map_4k(node_b_vaddr, node_b_paddr, ptf::WRITABLE)
+            .write_phys(node_b_paddr, &node_b_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        // Should get exactly 2 entries (nodeA + nodeB), then cycle detected → stop
+        assert_eq!(result.len(), 2, "cycle detected after 2 unique nodes → exactly 2 entries");
+    }
+
+    // --- walk_unix_sockets: sk_state unknown value → state = "UNKNOWN" ---
+    #[test]
+    fn walk_unix_sockets_unknown_sk_state() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let table_vaddr: u64 = 0xFFFF_8800_0079_0000;
+        let table_paddr: u64 = 0x0079_0000;
+
+        let node_vaddr: u64 = 0xFFFF_8800_007A_0000;
+        let node_paddr: u64 = 0x007A_0000;
+
+        let mut table_page = [0u8; 4096];
+        table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        let mut node_page = [0u8; 4096];
+        node_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // next = 0
+        node_page[0x12..0x14].copy_from_slice(&5u16.to_le_bytes()); // SEQPACKET
+        node_page[0x14] = 99u8; // unknown sk_state → "UNKNOWN"
+
+        let isf = IsfBuilder::new()
+            .add_symbol("unix_socket_table", table_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, ptf::WRITABLE)
+            .write_phys(table_paddr, &table_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].state, "UNKNOWN");
+        assert_eq!(result[0].socket_type, "SEQPACKET");
+    }
 }

@@ -524,4 +524,178 @@ mod tests {
         assert!(json.contains("\"is_suspicious\":true"));
         assert!(json.contains("\"is_executable\":true"));
     }
+
+    // --- collect_memfd_for_task: mm != 0 but mm_struct.mmap read fails → graceful ---
+    // Exercises the `read_field(mm_ptr, "mm_struct", "mmap")` Err → return branch.
+    #[test]
+    fn walk_memfd_mm_nonzero_mmap_unreadable_returns_empty() {
+        let sym_vaddr: u64 = 0xFFFF_8800_0060_0000;
+        let sym_paddr: u64 = 0x0060_0000;
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64 = 48;
+
+        // mm pointer is set to an unmapped address → mm_struct.mmap read will fail.
+        let mm_vaddr: u64 = 0xFFFF_DEAD_BEEF_0000; // unmapped
+
+        let mut page = [0u8; 4096];
+        // pid = 1
+        page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // tasks self-pointing
+        let self_ptr = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // comm = "proc\0"
+        page[32..36].copy_from_slice(b"proc");
+        // mm = mm_vaddr (non-zero but unmapped → mmap read fails)
+        page[mm_offset as usize..mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x200)
+            .add_field("mm_struct", "mmap", 0x00, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "unreadable mm_struct → mmap unreadable → no memfd results");
+    }
+
+    // --- collect_memfd_for_task: mm != 0, mmap readable, mmap_ptr == 0 → no VMAs ---
+    // Exercises the VMA while loop: vma_addr = 0 → loop body never entered.
+    #[test]
+    fn walk_memfd_mm_nonzero_mmap_zero_returns_empty() {
+        let sym_vaddr: u64 = 0xFFFF_8800_0061_0000;
+        let sym_paddr: u64 = 0x0061_0000;
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64 = 48;
+
+        let mm_vaddr: u64 = 0xFFFF_8800_0062_0000;
+        let mm_paddr: u64 = 0x0062_0000;
+
+        let mut task_page = [0u8; 4096];
+        page_write_u32(&mut task_page, 0, 2u32); // pid = 2
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[32..36].copy_from_slice(b"proc");
+        task_page[mm_offset as usize..mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // mm_struct page: mmap at offset 0 = 0 → vma_addr = 0 → loop never runs
+        let mm_page = [0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x200)
+            .add_field("mm_struct", "mmap", 0x00, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "mmap_ptr == 0 → no VMAs → no memfd results");
+    }
+
+    // --- collect_memfd_for_task: VMA chain with vm_file = 0 → skipped ---
+    // Exercises try_read_memfd_vma: vm_file == 0 → returns None → no entry.
+    // Then vm_next read fails → VMA loop breaks.
+    #[test]
+    fn walk_memfd_vma_vm_file_null_skipped() {
+        let sym_vaddr: u64 = 0xFFFF_8800_0063_0000;
+        let sym_paddr: u64 = 0x0063_0000;
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64 = 48;
+
+        let mm_vaddr: u64 = 0xFFFF_8800_0064_0000;
+        let mm_paddr: u64 = 0x0064_0000;
+
+        let vma_vaddr: u64 = 0xFFFF_8800_0065_0000;
+        let vma_paddr: u64 = 0x0065_0000;
+
+        let mut task_page = [0u8; 4096];
+        page_write_u32(&mut task_page, 0, 3u32);
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[32..36].copy_from_slice(b"proc");
+        task_page[mm_offset as usize..mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // mm_struct: mmap = vma_vaddr
+        let mut mm_page = [0u8; 4096];
+        mm_page[0..8].copy_from_slice(&vma_vaddr.to_le_bytes());
+
+        // vma page: vm_file at 0x08 = 0 (null → try_read_memfd_vma returns None)
+        //           vm_next at 0x00 = 0 (loop ends)
+        let vma_page = [0u8; 4096]; // all zeros
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x200)
+            .add_field("mm_struct", "mmap", 0x00, "pointer")
+            .add_struct("vm_area_struct", 0x100)
+            .add_field("vm_area_struct", "vm_next", 0x00, "pointer")
+            .add_field("vm_area_struct", "vm_file", 0x08, "pointer")
+            .add_field("vm_area_struct", "vm_start", 0x10, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 0x18, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 0x20, "unsigned long")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, flags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "vm_file = 0 → try_read_memfd_vma returns None → no entries");
+    }
+
+    // Helper to write a u32 into a page slice.
+    fn page_write_u32(page: &mut [u8], offset: usize, val: u32) {
+        page[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+    }
 }
