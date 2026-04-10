@@ -603,6 +603,29 @@ mod tests {
         );
     }
 
+    // --- walk_perf_events: init_task tasks read fails → returns empty ---
+    // Exercises line 91-93: read_field(init_task_addr, "task_struct", "tasks") Err → Ok(Vec::new()).
+    #[test]
+    fn walk_perf_events_tasks_read_fails_returns_empty() {
+        // init_task symbol present, tasks+ctxp offsets resolved, but the address is unmapped
+        // so reading tasks pointer fails → early return Ok(Vec::new()).
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_DEAD_CAFE_0000) // unmapped
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", 0x10, "pointer")
+            .add_field("task_struct", "perf_event_ctxp", 0x20, "pointer")
+            .add_field("task_struct", "pid", 0x30, "unsigned int")
+            .add_field("task_struct", "comm", 0x38, "char")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_perf_events(&reader).unwrap();
+        assert!(result.is_empty(), "unreadable init_task → early return empty");
+    }
+
     // --- walk_perf_events: PerfEventInfo serialization ---
     #[test]
     fn perf_event_info_serializes() {

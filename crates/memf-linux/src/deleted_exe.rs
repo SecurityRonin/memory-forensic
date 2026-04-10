@@ -446,6 +446,110 @@ mod tests {
         );
     }
 
+    // --- walk_deleted_exe: exe_file non-null, dentry chain fully readable, non-deleted path ---
+    // Exercises read_deleted_exe_info returning Some (lines 120, 124-126), and
+    // read_file_dentry_name (lines 177-203) on a path without "(deleted)".
+    #[test]
+    fn walk_deleted_exe_full_chain_no_deleted_marker() {
+        use memf_core::test_builders::flags as ptf;
+
+        // Layout (all physical addrs < 16 MB):
+        //   sym_vaddr  = init_task                tasks @ 0x10, mm @ 0x30, pid @ 0, comm @ 0x20
+        //   mm_vaddr   = mm_struct                exe_file @ 0x18
+        //   file_vaddr = struct file              f_path embedded (f_path_offset=0x10)
+        //   dentry_vaddr = dentry struct          d_name embedded (d_name_offset=0x08)
+        //   name_vaddr   = actual name string     "/usr/bin/bash\0"
+        let sym_vaddr: u64    = 0xFFFF_8800_00A0_0000;
+        let sym_paddr: u64    = 0x00A0_0000;
+        let mm_vaddr: u64     = 0xFFFF_8800_00A1_0000;
+        let mm_paddr: u64     = 0x00A1_0000;
+        let file_vaddr: u64   = 0xFFFF_8800_00A2_0000;
+        let file_paddr: u64   = 0x00A2_0000;
+        let dentry_vaddr: u64 = 0xFFFF_8800_00A3_0000;
+        let dentry_paddr: u64 = 0x00A3_0000;
+        let name_vaddr: u64   = 0xFFFF_8800_00A4_0000;
+        let name_paddr: u64   = 0x00A4_0000;
+
+        let tasks_offset: u64   = 0x10;
+        let mm_offset: u64      = 0x30;
+        let f_path_offset: u64  = 0x10; // offset of embedded path inside file
+        let dentry_in_path: u64 = 0x00; // offset of dentry* inside path
+        let d_name_offset: u64  = 0x08; // offset of embedded qstr inside dentry
+        let name_in_qstr: u64   = 0x00; // offset of name* inside qstr
+
+        // init_task page
+        let mut task_page = [0u8; 4096];
+        task_page[0..4].copy_from_slice(&7u32.to_le_bytes()); // pid=7
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[0x20..0x25].copy_from_slice(b"bash\0");
+        task_page[mm_offset as usize..mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // mm_struct page: exe_file at 0x18
+        let mut mm_page = [0u8; 4096];
+        mm_page[0x18..0x20].copy_from_slice(&file_vaddr.to_le_bytes());
+
+        // file page: dentry ptr at f_path_offset + dentry_in_path = 0x10
+        let mut file_page = [0u8; 4096];
+        file_page[0x10..0x18].copy_from_slice(&dentry_vaddr.to_le_bytes());
+
+        // dentry page: name ptr at d_name_offset + name_in_qstr = 0x08
+        let mut dentry_page = [0u8; 4096];
+        dentry_page[0x08..0x10].copy_from_slice(&name_vaddr.to_le_bytes());
+
+        // name string page
+        let mut name_page = [0u8; 4096];
+        name_page[..14].copy_from_slice(b"/usr/bin/bash\0");
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_field("list_head", "prev", 0x08, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x200)
+            .add_field("mm_struct", "exe_file", 0x18, "pointer")
+            .add_struct("file", 0x200)
+            .add_field("file", "f_path", f_path_offset, "pointer")
+            .add_struct("path", 0x20)
+            .add_field("path", "dentry", dentry_in_path, "pointer")
+            .add_struct("dentry", 0x200)
+            .add_field("dentry", "d_name", d_name_offset, "pointer")
+            .add_struct("qstr", 0x20)
+            .add_field("qstr", "name", name_in_qstr, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptf::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(file_vaddr, file_paddr, ptf::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .map_4k(dentry_vaddr, dentry_paddr, ptf::WRITABLE)
+            .write_phys(dentry_paddr, &dentry_page)
+            .map_4k(name_vaddr, name_paddr, ptf::WRITABLE)
+            .write_phys(name_paddr, &name_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_deleted_exe(&reader).unwrap();
+        // init_task (pid=7, comm="bash") has a fully readable exe path that is NOT deleted.
+        assert_eq!(result.len(), 1, "init_task with full dentry chain should produce one entry");
+        assert_eq!(result[0].pid, 7);
+        assert!(!result[0].is_deleted, "path without (deleted) must not be flagged");
+        assert!(!result[0].is_suspicious);
+    }
+
     // --- walk_deleted_exe: symbol present, self-pointing tasks list, mm == 0 → exercises body ---
     // Exercises the task-list body and `read_deleted_exe_info`: init_task has mm=0 (kernel thread),
     // so it is skipped, and walk_list returns empty → result is empty but no error.

@@ -235,4 +235,157 @@ mod tests {
         let result = check_tty_hooks(&reader);
         assert!(result.is_err(), "missing tty_driver.tty_drivers field should error");
     }
+
+    // --- check_tty_hooks: list with a real driver entry, ops non-zero, handler in text range ---
+    // Exercises the driver-loop body (lines 46-77): ops_ptr != 0, read handler, hooked=false.
+    #[test]
+    fn check_tty_hooks_driver_with_clean_ops() {
+        // Layout:
+        //   page at vaddr (paddr):
+        //     +0x000: tty_driver struct
+        //       +0x000: name ptr (points to name string at +0xE00)
+        //       +0x010: ops ptr  (points to tty_operations at +0xC00)
+        //       +0x018: tty_drivers list_head
+        //     +0x800: tty_drivers global list_head (next=driver_entry, prev=driver_entry)
+        //     +0xC00: tty_operations struct
+        //       +0x000: open handler
+        //       +0x008: close handler
+        //       +0x010: write handler
+        //       +0x030: ioctl handler
+        //     +0xE00: name string "ttyS\0"
+        //
+        //   stext = 0xFFFF_8000_0000_0000, etext = 0xFFFF_8000_00FF_FFFF
+        //   All handlers inside [stext, etext] → hooked = false.
+
+        let vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let paddr: u64 = 0x0020_0000;
+
+        let stext: u64 = 0xFFFF_8000_0000_0000;
+        let etext: u64 = 0xFFFF_8000_00FF_FFFF;
+
+        // A handler value inside the text region.
+        let clean_handler: u64 = 0xFFFF_8000_0001_0000;
+
+        // tty_drivers list head sits at vaddr + 0x800 (as per make_test_reader).
+        let drivers_head: u64 = vaddr + 0x800;
+        // Driver entry's tty_drivers list_head is at driver_base + 0x018.
+        let driver_list_entry: u64 = vaddr + 0x018;
+        // ops pointer stored at driver_base + 0x010.
+        let ops_ptr: u64 = vaddr + 0xC00;
+        // Name pointer stored at driver_base + 0x000 (name field at offset 0).
+        let name_ptr: u64 = vaddr + 0xE00;
+
+        let mut data = vec![0u8; 4096];
+
+        // --- tty_driver at base 0x000 ---
+        // name ptr (field offset=0): points to name string
+        data[0x000..0x008].copy_from_slice(&name_ptr.to_le_bytes());
+        // ops ptr (field offset=16=0x010)
+        data[0x010..0x018].copy_from_slice(&ops_ptr.to_le_bytes());
+        // tty_drivers list_head (field offset=24=0x018):
+        //   next = drivers_head  (so walk_list returns this one driver)
+        //   prev = drivers_head
+        data[0x018..0x020].copy_from_slice(&drivers_head.to_le_bytes()); // next
+        data[0x020..0x028].copy_from_slice(&drivers_head.to_le_bytes()); // prev
+
+        // --- tty_drivers global list_head at 0x800 ---
+        // next = driver_list_entry (the driver's embedded list_head)
+        // prev = driver_list_entry
+        data[0x800..0x808].copy_from_slice(&driver_list_entry.to_le_bytes());
+        data[0x808..0x810].copy_from_slice(&driver_list_entry.to_le_bytes());
+
+        // --- tty_operations at 0xC00 ---
+        data[0xC00..0xC08].copy_from_slice(&clean_handler.to_le_bytes()); // open
+        data[0xC08..0xC10].copy_from_slice(&clean_handler.to_le_bytes()); // close
+        data[0xC10..0xC18].copy_from_slice(&clean_handler.to_le_bytes()); // write
+        data[0xC30..0xC38].copy_from_slice(&clean_handler.to_le_bytes()); // ioctl
+
+        // --- name string at 0xE00 ---
+        data[0xE00..0xE05].copy_from_slice(b"ttyS\0");
+
+        let reader = make_test_reader(&data, vaddr, paddr, stext, etext);
+        let results = check_tty_hooks(&reader).expect("should not error");
+
+        // 4 ops checked, all within text region → hooked=false for all.
+        assert!(!results.is_empty(), "expected at least one ops entry from the driver");
+        for r in &results {
+            assert!(!r.hooked, "clean handler inside text region must not be flagged");
+        }
+    }
+
+    // --- check_tty_hooks: driver with ops outside text region → hooked = true ---
+    #[test]
+    fn check_tty_hooks_driver_with_hooked_ops() {
+        let vaddr: u64 = 0xFFFF_8000_0021_0000;
+        let paddr: u64 = 0x0021_0000;
+
+        let stext: u64 = 0xFFFF_8000_0000_0000;
+        let etext: u64 = 0xFFFF_8000_00FF_FFFF;
+
+        // A handler value OUTSIDE the text region (suspicious).
+        let hooked_handler: u64 = 0xFFFF_CAFE_DEAD_0001;
+
+        let drivers_head: u64   = vaddr + 0x800;
+        let driver_list_entry: u64 = vaddr + 0x018;
+        let ops_ptr: u64        = vaddr + 0xC00;
+        let name_ptr: u64       = vaddr + 0xE00;
+
+        let mut data = vec![0u8; 4096];
+
+        data[0x000..0x008].copy_from_slice(&name_ptr.to_le_bytes());
+        data[0x010..0x018].copy_from_slice(&ops_ptr.to_le_bytes());
+        data[0x018..0x020].copy_from_slice(&drivers_head.to_le_bytes());
+        data[0x020..0x028].copy_from_slice(&drivers_head.to_le_bytes());
+
+        data[0x800..0x808].copy_from_slice(&driver_list_entry.to_le_bytes());
+        data[0x808..0x810].copy_from_slice(&driver_list_entry.to_le_bytes());
+
+        // All ops point outside text region.
+        data[0xC00..0xC08].copy_from_slice(&hooked_handler.to_le_bytes());
+        data[0xC08..0xC10].copy_from_slice(&hooked_handler.to_le_bytes());
+        data[0xC10..0xC18].copy_from_slice(&hooked_handler.to_le_bytes());
+        data[0xC30..0xC38].copy_from_slice(&hooked_handler.to_le_bytes());
+
+        data[0xE00..0xE09].copy_from_slice(b"rootkit0\0");
+
+        let reader = make_test_reader(&data, vaddr, paddr, stext, etext);
+        let results = check_tty_hooks(&reader).expect("should not error");
+
+        assert!(!results.is_empty(), "hooked ops must produce entries");
+        for r in &results {
+            assert!(r.hooked, "handler outside text region must be flagged as hooked");
+        }
+    }
+
+    // --- check_tty_hooks: driver with ops == 0 → skipped (continue branch) ---
+    #[test]
+    fn check_tty_hooks_driver_ops_null_skipped() {
+        let vaddr: u64 = 0xFFFF_8000_0022_0000;
+        let paddr: u64 = 0x0022_0000;
+
+        let stext: u64 = 0xFFFF_8000_0000_0000;
+        let etext: u64 = 0xFFFF_8000_00FF_FFFF;
+
+        let drivers_head: u64      = vaddr + 0x800;
+        let driver_list_entry: u64 = vaddr + 0x018;
+        let name_ptr: u64          = vaddr + 0xE00;
+
+        let mut data = vec![0u8; 4096];
+
+        data[0x000..0x008].copy_from_slice(&name_ptr.to_le_bytes());
+        // ops at 0x010 = 0 (null) → ops branch: `Ok(v) if v != 0` fails → continue
+        data[0x010..0x018].copy_from_slice(&0u64.to_le_bytes());
+        data[0x018..0x020].copy_from_slice(&drivers_head.to_le_bytes());
+        data[0x020..0x028].copy_from_slice(&drivers_head.to_le_bytes());
+
+        data[0x800..0x808].copy_from_slice(&driver_list_entry.to_le_bytes());
+        data[0x808..0x810].copy_from_slice(&driver_list_entry.to_le_bytes());
+
+        data[0xE00..0xE09].copy_from_slice(b"nullops\0\0");
+
+        let reader = make_test_reader(&data, vaddr, paddr, stext, etext);
+        let results = check_tty_hooks(&reader).expect("should not error");
+
+        assert!(results.is_empty(), "null ops_ptr → driver skipped → no results");
+    }
 }

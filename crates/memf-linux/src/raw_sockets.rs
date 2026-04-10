@@ -690,6 +690,25 @@ mod tests {
         assert!(result.is_empty(), "fd_array_ptr == 0 → early return → no raw sockets");
     }
 
+    // --- RawSocketInfo struct coverage ---
+    #[test]
+    fn raw_socket_info_serializes() {
+        let info = RawSocketInfo {
+            pid: 99,
+            comm: "sniffer".to_string(),
+            socket_type: "AF_PACKET".to_string(),
+            protocol: 0x0300,
+            is_promiscuous: false,
+            is_suspicious: true,
+        };
+        let cloned = info.clone();
+        let json = serde_json::to_string(&cloned).unwrap();
+        assert!(json.contains("\"pid\":99"));
+        assert!(json.contains("AF_PACKET"));
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("sniffer"));
+    }
+
     // --- collect_raw_sockets_for_task: fd_array has all-zero entries → no file ptrs ---
     // Exercises the fd-slot loop: all file_ptr == 0 → continue → no try_read_raw_socket calls.
     #[test]
@@ -759,5 +778,211 @@ mod tests {
 
         let result = walk_raw_sockets(&reader).expect("should not error");
         assert!(result.is_empty(), "all-zero fd slots → no raw sockets");
+    }
+
+    // --- try_read_raw_socket: file_ptr readable, private_data != 0, sk_family == AF_PACKET ---
+    // Exercises try_read_raw_socket (lines 188-238) and try_read_promisc (lines 243-273).
+    // private_data (sock_ptr) → socket.type=SOCK_RAW, socket.sk → sock.sk_family=AF_PACKET.
+    // prot_hook field missing from ISF → try_read_promisc returns false (graceful).
+    #[test]
+    fn walk_raw_sockets_af_packet_sock_detected() {
+        use memf_core::test_builders::flags as ptf;
+
+        let tasks_offset: u64   = 0x10;
+        let files_offset: u64   = 0x30;
+
+        let sym_vaddr: u64      = 0xFFFF_8800_009A_0000;
+        let sym_paddr: u64      = 0x009A_0000;
+
+        let files_vaddr: u64    = 0xFFFF_8800_009B_0000;
+        let files_paddr: u64    = 0x009B_0000;
+
+        let fdt_vaddr: u64      = 0xFFFF_8800_009C_0000;
+        let fdt_paddr: u64      = 0x009C_0000;
+
+        let fd_array_vaddr: u64 = 0xFFFF_8800_009D_0000;
+        let fd_array_paddr: u64 = 0x009D_0000;
+
+        // file struct: private_data at offset 0 → sock_vaddr
+        let file_vaddr: u64     = 0xFFFF_8800_009E_0000;
+        let file_paddr: u64     = 0x009E_0000;
+
+        // socket struct: type at 0, sk at 8
+        let sock_vaddr: u64     = 0xFFFF_8800_009F_0000;
+        let sock_paddr: u64     = 0x009F_0000;
+
+        // struct sock: sk_family at 0, sk_protocol at 2
+        let sk_vaddr: u64       = 0xFFFF_8800_00C0_0000;
+        let sk_paddr: u64       = 0x00C0_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "files", files_offset, "pointer")
+            .add_struct("files_struct", 0x100)
+            .add_field("files_struct", "fdt", 0x00, "pointer")
+            .add_struct("fdtable", 0x40)
+            .add_field("fdtable", "fd", 0x00, "pointer")
+            .add_struct("file", 0x100)
+            .add_field("file", "private_data", 0x00, "pointer")
+            .add_struct("socket", 0x80)
+            .add_field("socket", "type", 0x00, "unsigned short")
+            .add_field("socket", "sk", 0x08, "pointer")
+            .add_struct("sock", 0x100)
+            .add_field("sock", "sk_family", 0x00, "unsigned short")
+            .add_field("sock", "sk_protocol", 0x02, "unsigned short")
+            // packet_sock intentionally omitted → try_read_promisc returns false
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Task page
+        let mut task_page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[0x20..0x28].copy_from_slice(b"sniffer\0");
+        task_page[0x00..0x04].copy_from_slice(&200u32.to_le_bytes()); // pid=200
+        task_page[files_offset as usize..files_offset as usize + 8]
+            .copy_from_slice(&files_vaddr.to_le_bytes());
+
+        // files_struct: fdt at 0
+        let mut files_page = [0u8; 4096];
+        files_page[0..8].copy_from_slice(&fdt_vaddr.to_le_bytes());
+
+        // fdtable: fd array at 0
+        let mut fdt_page = [0u8; 4096];
+        fdt_page[0..8].copy_from_slice(&fd_array_vaddr.to_le_bytes());
+
+        // fd array: slot 0 → file_vaddr, rest zero
+        let mut fd_array_page = [0u8; 4096];
+        fd_array_page[0..8].copy_from_slice(&file_vaddr.to_le_bytes());
+        // slot 1 = 0 → loop will continue (already covered), then eventually breaks
+        // when reading beyond the mapped page fails.
+
+        // file struct: private_data at 0 → sock_vaddr
+        let mut file_page = [0u8; 4096];
+        file_page[0..8].copy_from_slice(&sock_vaddr.to_le_bytes());
+
+        // socket struct: type=SOCK_RAW(3) at byte 0, sk at 8
+        let mut socket_page = [0u8; 4096];
+        socket_page[0..2].copy_from_slice(&3u16.to_le_bytes()); // type=SOCK_RAW
+        socket_page[8..16].copy_from_slice(&sk_vaddr.to_le_bytes());
+
+        // sock struct: sk_family=AF_PACKET(17) at 0, sk_protocol=0x0300 at 2
+        let mut sk_page = [0u8; 4096];
+        sk_page[0..2].copy_from_slice(&17u16.to_le_bytes()); // sk_family=AF_PACKET
+        sk_page[2..4].copy_from_slice(&0x0300u16.to_le_bytes()); // sk_protocol
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(files_vaddr, files_paddr, ptf::WRITABLE)
+            .write_phys(files_paddr, &files_page)
+            .map_4k(fdt_vaddr, fdt_paddr, ptf::WRITABLE)
+            .write_phys(fdt_paddr, &fdt_page)
+            .map_4k(fd_array_vaddr, fd_array_paddr, ptf::WRITABLE)
+            .write_phys(fd_array_paddr, &fd_array_page)
+            .map_4k(file_vaddr, file_paddr, ptf::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .map_4k(sock_vaddr, sock_paddr, ptf::WRITABLE)
+            .write_phys(sock_paddr, &socket_page)
+            .map_4k(sk_vaddr, sk_paddr, ptf::WRITABLE)
+            .write_phys(sk_paddr, &sk_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert_eq!(result.len(), 1, "one AF_PACKET socket should be detected");
+        assert_eq!(result[0].socket_type, "AF_PACKET");
+        assert_eq!(result[0].pid, 200);
+        assert!(!result[0].is_promiscuous, "promisc false when packet_sock missing");
+    }
+
+    // --- try_read_raw_socket: private_data == 0 → returns None → no entry ---
+    #[test]
+    fn walk_raw_sockets_private_data_null_no_entry() {
+        use memf_core::test_builders::flags as ptf;
+
+        let tasks_offset: u64   = 0x10;
+        let files_offset: u64   = 0x30;
+        let sym_vaddr: u64      = 0xFFFF_8800_00C1_0000;
+        let sym_paddr: u64      = 0x00C1_0000;
+        let files_vaddr: u64    = 0xFFFF_8800_00C2_0000;
+        let files_paddr: u64    = 0x00C2_0000;
+        let fdt_vaddr: u64      = 0xFFFF_8800_00C3_0000;
+        let fdt_paddr: u64      = 0x00C3_0000;
+        let fd_array_vaddr: u64 = 0xFFFF_8800_00C4_0000;
+        let fd_array_paddr: u64 = 0x00C4_0000;
+        let file_vaddr: u64     = 0xFFFF_8800_00C5_0000;
+        let file_paddr: u64     = 0x00C5_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "files", files_offset, "pointer")
+            .add_struct("files_struct", 0x100)
+            .add_field("files_struct", "fdt", 0x00, "pointer")
+            .add_struct("fdtable", 0x40)
+            .add_field("fdtable", "fd", 0x00, "pointer")
+            .add_struct("file", 0x100)
+            .add_field("file", "private_data", 0x00, "pointer")
+            .add_struct("socket", 0x80)
+            .add_field("socket", "type", 0x00, "unsigned short")
+            .add_field("socket", "sk", 0x08, "pointer")
+            .add_struct("sock", 0x100)
+            .add_field("sock", "sk_family", 0x00, "unsigned short")
+            .add_field("sock", "sk_protocol", 0x02, "unsigned short")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut task_page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[files_offset as usize..files_offset as usize + 8]
+            .copy_from_slice(&files_vaddr.to_le_bytes());
+
+        let mut files_page = [0u8; 4096];
+        files_page[0..8].copy_from_slice(&fdt_vaddr.to_le_bytes());
+
+        let mut fdt_page = [0u8; 4096];
+        fdt_page[0..8].copy_from_slice(&fd_array_vaddr.to_le_bytes());
+
+        let mut fd_array_page = [0u8; 4096];
+        fd_array_page[0..8].copy_from_slice(&file_vaddr.to_le_bytes());
+
+        // file page: private_data at 0 = 0 → try_read_raw_socket returns None
+        let file_page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(files_vaddr, files_paddr, ptf::WRITABLE)
+            .write_phys(files_paddr, &files_page)
+            .map_4k(fdt_vaddr, fdt_paddr, ptf::WRITABLE)
+            .write_phys(fdt_paddr, &fdt_page)
+            .map_4k(fd_array_vaddr, fd_array_paddr, ptf::WRITABLE)
+            .write_phys(fd_array_paddr, &fd_array_page)
+            .map_4k(file_vaddr, file_paddr, ptf::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert!(result.is_empty(), "private_data=0 → no raw socket entry");
     }
 }

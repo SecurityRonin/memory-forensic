@@ -482,4 +482,191 @@ mod tests {
         let result = parse_ld_preload("/lib/a.so\t/lib/b.so");
         assert_eq!(result, vec!["/lib/a.so", "/lib/b.so"]);
     }
+
+    // ---------------------------------------------------------------
+    // scan_ld_preload: process with mm=0 (kernel thread) → skipped
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn scan_ld_preload_mm_null_skipped() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let task_vaddr: u64 = 0xFFFF_8800_00D0_0000;
+        let task_paddr: u64 = 0x00D0_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 0x200)
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "mm", 0x08, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "env_start", 0x00, "unsigned long")
+            .add_field("mm_struct", "env_end", 0x08, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // task page: mm at 0x08 = 0 (kernel thread)
+        let mut task_page = [0u8; 4096];
+        task_page[0..4].copy_from_slice(&77u32.to_le_bytes()); // pid=77
+        // mm stays 0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let proc = ProcessInfo {
+            pid: 77,
+            ppid: 1,
+            comm: "kworker".to_string(),
+            state: crate::types::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        };
+
+        let result = scan_ld_preload(&reader, &[proc]).unwrap();
+        assert!(result.is_empty(), "kernel thread with mm=0 must be skipped");
+    }
+
+    // ---------------------------------------------------------------
+    // scan_ld_preload: env block readable, LD_PRELOAD present → LdPreloadInfo produced
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn scan_ld_preload_env_block_with_ld_preload_produces_entry() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Layout:
+        //   task_vaddr: task_struct (mm at 0x08)
+        //   mm_vaddr:   mm_struct   (env_start at 0x00, env_end at 0x08)
+        //   env_vaddr:  env block containing "LD_PRELOAD=/tmp/evil.so\0"
+
+        let task_vaddr: u64 = 0xFFFF_8800_00D1_0000;
+        let task_paddr: u64 = 0x00D1_0000;
+        let mm_vaddr: u64   = 0xFFFF_8800_00D2_0000;
+        let mm_paddr: u64   = 0x00D2_0000;
+        let env_vaddr: u64  = 0xFFFF_8800_00D3_0000;
+        let env_paddr: u64  = 0x00D3_0000;
+
+        let env_data: &[u8] = b"PATH=/usr/bin\0LD_PRELOAD=/tmp/evil.so\0HOME=/root\0";
+        let env_end_vaddr = env_vaddr + env_data.len() as u64;
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 0x200)
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "mm", 0x08, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "env_start", 0x00, "unsigned long")
+            .add_field("mm_struct", "env_end", 0x08, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // task page: mm at 0x08 → mm_vaddr
+        let mut task_page = [0u8; 4096];
+        task_page[0..4].copy_from_slice(&123u32.to_le_bytes()); // pid=123
+        task_page[8..16].copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // mm page: env_start, env_end
+        let mut mm_page = [0u8; 4096];
+        mm_page[0..8].copy_from_slice(&env_vaddr.to_le_bytes());
+        mm_page[8..16].copy_from_slice(&env_end_vaddr.to_le_bytes());
+
+        // env page
+        let mut env_page = [0u8; 4096];
+        env_page[..env_data.len()].copy_from_slice(env_data);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptf::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(env_vaddr, env_paddr, ptf::WRITABLE)
+            .write_phys(env_paddr, &env_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let proc = ProcessInfo {
+            pid: 123,
+            ppid: 1,
+            comm: "evil_proc".to_string(),
+            state: crate::types::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        };
+
+        let result = scan_ld_preload(&reader, &[proc]).unwrap();
+        assert_eq!(result.len(), 1, "one LD_PRELOAD entry should be produced");
+        assert_eq!(result[0].ld_preload_value, "/tmp/evil.so");
+        assert_eq!(result[0].preloaded_libraries, vec!["/tmp/evil.so"]);
+        assert!(result[0].is_suspicious, "/tmp/ path must be suspicious");
+        assert_eq!(result[0].pid, 123);
+    }
+
+    // ---------------------------------------------------------------
+    // scan_ld_preload: env_start == env_end → None (empty env)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn scan_ld_preload_empty_env_region_skipped() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let task_vaddr: u64 = 0xFFFF_8800_00D4_0000;
+        let task_paddr: u64 = 0x00D4_0000;
+        let mm_vaddr: u64   = 0xFFFF_8800_00D5_0000;
+        let mm_paddr: u64   = 0x00D5_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 0x200)
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "mm", 0x08, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "env_start", 0x00, "unsigned long")
+            .add_field("mm_struct", "env_end", 0x08, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut task_page = [0u8; 4096];
+        task_page[8..16].copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // mm: env_start = env_end = 0x1000 → size=0 → None
+        let mut mm_page = [0u8; 4096];
+        let same_addr: u64 = 0xFFFF_8800_00D6_0000;
+        mm_page[0..8].copy_from_slice(&same_addr.to_le_bytes()); // env_start
+        mm_page[8..16].copy_from_slice(&same_addr.to_le_bytes()); // env_end (equal → skip)
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptf::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let proc = ProcessInfo {
+            pid: 88,
+            ppid: 1,
+            comm: "proc88".to_string(),
+            state: crate::types::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        };
+
+        let result = scan_ld_preload(&reader, &[proc]).unwrap();
+        assert!(result.is_empty(), "env_start == env_end → empty env region → no entry");
+    }
 }

@@ -526,6 +526,83 @@ mod tests {
         assert!(result.is_err(), "missing tasks field must return an error");
     }
 
+    // --- walk_psaux: symbol present, self-pointing list, real_parent readable ---
+    // Exercises read_parent_pid (lines 221-227): real_parent ptr is non-zero, readable.
+    // Also exercises read_cred_ids (lines 230-241): cred ptr zero → returns (0, 0).
+    // Also exercises read_mm_stats (lines 244-260): mm ptr zero → returns (0, 0).
+    // Also exercises read_tty_name (lines 263-281): signal ptr zero → returns "".
+    #[test]
+    fn walk_psaux_with_readable_parent_and_minimal_fields() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Two pages: init_task and a fake "parent" process.
+        // init_task.real_parent → parent_vaddr → parent has pid=1.
+        let tasks_offset: u64   = 0x10;
+        let parent_offset: u64  = 0x40;  // real_parent field
+        let cred_offset: u64    = 0x48;  // cred ptr
+        let mm_offset: u64      = 0x50;  // mm ptr
+        let signal_offset: u64  = 0x58;  // signal ptr
+
+        let sym_vaddr: u64    = 0xFFFF_8800_00B0_0000;
+        let sym_paddr: u64    = 0x00B0_0000;
+        let parent_vaddr: u64 = 0xFFFF_8800_00B1_0000;
+        let parent_paddr: u64 = 0x00B1_0000;
+
+        // init_task page
+        let mut task_page = [0u8; 4096];
+        task_page[0..4].copy_from_slice(&42u32.to_le_bytes()); // pid=42
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes()); // self-pointing tasks
+        task_page[0x20..0x27].copy_from_slice(b"worker\0"); // comm
+        task_page[parent_offset as usize..parent_offset as usize + 8]
+            .copy_from_slice(&parent_vaddr.to_le_bytes()); // real_parent → parent
+        // cred=0, mm=0, signal=0 → default fallbacks in helpers
+
+        // parent page: just needs a readable pid field
+        let mut parent_page = [0u8; 4096];
+        parent_page[0..4].copy_from_slice(&1u32.to_le_bytes()); // ppid=1
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "state", 0x08, "int")
+            .add_field("task_struct", "real_parent", parent_offset, "pointer")
+            .add_field("task_struct", "cred", cred_offset, "pointer")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_field("task_struct", "signal", signal_offset, "pointer")
+            .add_field("task_struct", "static_prio", 0x60, "int")
+            .add_field("task_struct", "flags", 0x64, "unsigned int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(parent_vaddr, parent_paddr, ptf::WRITABLE)
+            .write_phys(parent_paddr, &parent_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_psaux(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].pid, 42);
+        assert_eq!(result[0].ppid, 1, "ppid should be read from real_parent.pid");
+        assert_eq!(result[0].uid, 0, "cred=null → uid defaults to 0");
+        assert_eq!(result[0].vsize, 0, "mm=null → vsize defaults to 0");
+        assert!(result[0].tty.is_empty(), "signal=null → tty defaults to empty");
+    }
+
     // --- walk_psaux: symbol present, self-pointing tasks list → exercises loop body ---
     // Walks the tasks list (finding no additional tasks) and reads init_task itself.
     #[test]

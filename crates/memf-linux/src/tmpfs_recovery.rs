@@ -732,6 +732,77 @@ mod tests {
         assert!(result.is_empty(), "tmpfs sb with s_inodes but no i_sb_list → empty (graceful)");
     }
 
+    // --- walk_tmpfs_files: s_type ptr readable, name_ptr == 0 → is_tmpfs = false ---
+    // Exercises the `name_ptr != 0` guard inside the is_tmpfs block: name_ptr = 0 → false.
+    #[test]
+    fn walk_tmpfs_null_name_ptr_is_not_tmpfs() {
+        use memf_core::test_builders::flags as ptf;
+
+        let sym_vaddr: u64       = 0xFFFF_8800_0054_0000;
+        let sym_paddr: u64       = 0x0054_0000;
+        let sb_entry_vaddr: u64  = 0xFFFF_8800_0055_0000;
+        let sb_entry_paddr: u64  = 0x0055_0000;
+        let fs_type_vaddr: u64   = 0xFFFF_8800_0056_0000;
+        let fs_type_paddr: u64   = 0x0056_0000;
+
+        let mut sym_page = [0u8; 4096];
+        sym_page[0..8].copy_from_slice(&sb_entry_vaddr.to_le_bytes());
+
+        let mut sb_page = [0u8; 4096];
+        sb_page[0x00..0x08].copy_from_slice(&sym_vaddr.to_le_bytes()); // s_list.next = head
+        sb_page[0x08..0x10].copy_from_slice(&fs_type_vaddr.to_le_bytes()); // s_type
+
+        // fs_type page: name pointer at offset 0 = 0 (null) → name_ptr == 0 → is_tmpfs = false
+        let fs_type_page = [0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_symbol("super_blocks", sym_vaddr)
+            .add_struct("super_block", 0x200)
+            .add_field("super_block", "s_list", 0x00, "pointer")
+            .add_field("super_block", "s_type", 0x08, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .map_4k(sb_entry_vaddr, sb_entry_paddr, ptf::WRITABLE)
+            .write_phys(sb_entry_paddr, &sb_page)
+            .map_4k(fs_type_vaddr, fs_type_paddr, ptf::WRITABLE)
+            .write_phys(fs_type_paddr, &fs_type_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tmpfs_files(&reader).unwrap();
+        assert!(result.is_empty(), "null name_ptr → is_tmpfs false → no entries");
+    }
+
+    // --- classify_tmpfs_file: TmpfsFileInfo struct coverage ---
+    #[test]
+    fn tmpfs_file_info_clone_debug_serialize() {
+        let info = TmpfsFileInfo {
+            inode_number: 42,
+            filename: ".evil".to_string(),
+            file_size: 1024,
+            uid: 0,
+            gid: 0,
+            mode: 0o100_755,
+            atime_sec: 1000,
+            mtime_sec: 2000,
+            ctime_sec: 3000,
+            is_suspicious: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.inode_number, 42);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("evil"));
+        let json = serde_json::to_string(&cloned).unwrap();
+        assert!(json.contains("\"inode_number\":42"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
     // --- walk_tmpfs_files: full path — tmpfs sb with self-pointing inode list → empty inodes ---
     // Exercises: is_tmpfs=true, s_inodes_offset found, i_sb_list_offset found,
     // inode list is self-pointing → inner loop terminates immediately → no TmpfsFileInfo pushed.

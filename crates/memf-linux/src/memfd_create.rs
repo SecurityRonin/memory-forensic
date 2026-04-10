@@ -698,4 +698,117 @@ mod tests {
     fn page_write_u32(page: &mut [u8], offset: usize, val: u32) {
         page[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
     }
+
+    // --- try_read_memfd_vma: vm_file != 0, dentry chain readable, name NOT "memfd:" → None ---
+    // Exercises read_file_dentry_name (lines 267-307) and the strip_prefix check.
+    // Also exercises collect_memfd_for_task merge logic placeholder (no merge needed when empty).
+    #[test]
+    fn walk_memfd_vm_file_nonzero_non_memfd_name_skipped() {
+        let sym_vaddr: u64 = 0xFFFF_8800_0070_0000;
+        let sym_paddr: u64 = 0x0070_0000;
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64 = 48;
+
+        let mm_vaddr: u64  = 0xFFFF_8800_0071_0000;
+        let mm_paddr: u64  = 0x0071_0000;
+
+        let vma_vaddr: u64 = 0xFFFF_8800_0072_0000;
+        let vma_paddr: u64 = 0x0072_0000;
+
+        // file, dentry, name chain
+        let file_vaddr: u64   = 0xFFFF_8800_0073_0000;
+        let file_paddr: u64   = 0x0073_0000;
+        let dentry_vaddr: u64 = 0xFFFF_8800_0074_0000;
+        let dentry_paddr: u64 = 0x0074_0000;
+        let name_vaddr: u64   = 0xFFFF_8800_0075_0000;
+        let name_paddr: u64   = 0x0075_0000;
+
+        // Field offsets
+        let f_path_off: u64    = 0x10; // f_path embedded at file+0x10
+        let dentry_in_path: u64 = 0x00; // dentry* at path+0x00
+        let d_name_off: u64    = 0x08; // qstr embedded at dentry+0x08
+        let name_in_qstr: u64  = 0x00; // name* at qstr+0x00
+
+        let mut task_page = [0u8; 4096];
+        page_write_u32(&mut task_page, 0, 5u32); // pid=5
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[32..37].copy_from_slice(b"bash\0");
+        task_page[mm_offset as usize..mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // mm: mmap = vma_vaddr
+        let mut mm_page = [0u8; 4096];
+        mm_page[0..8].copy_from_slice(&vma_vaddr.to_le_bytes());
+
+        // vma: vm_next at 0, vm_file at 8, vm_start at 0x10, vm_end at 0x18, vm_flags at 0x20
+        let mut vma_page = [0u8; 4096];
+        vma_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // vm_next = 0 → loop ends
+        vma_page[8..16].copy_from_slice(&file_vaddr.to_le_bytes()); // vm_file != 0
+        vma_page[0x10..0x18].copy_from_slice(&0x1000u64.to_le_bytes()); // vm_start
+        vma_page[0x18..0x20].copy_from_slice(&0x2000u64.to_le_bytes()); // vm_end
+        vma_page[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());       // vm_flags
+
+        // file: dentry ptr at f_path_off + dentry_in_path = 0x10
+        let mut file_page = [0u8; 4096];
+        file_page[0x10..0x18].copy_from_slice(&dentry_vaddr.to_le_bytes());
+
+        // dentry: name ptr at d_name_off + name_in_qstr = 0x08
+        let mut dentry_page = [0u8; 4096];
+        dentry_page[0x08..0x10].copy_from_slice(&name_vaddr.to_le_bytes());
+
+        // name string: NOT a memfd prefix (no "memfd:") → strip_prefix returns None
+        let mut name_page = [0u8; 4096];
+        name_page[..10].copy_from_slice(b"/dev/null\0");
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x200)
+            .add_field("mm_struct", "mmap", 0x00, "pointer")
+            .add_struct("vm_area_struct", 0x100)
+            .add_field("vm_area_struct", "vm_next", 0x00, "pointer")
+            .add_field("vm_area_struct", "vm_file", 0x08, "pointer")
+            .add_field("vm_area_struct", "vm_start", 0x10, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 0x18, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 0x20, "unsigned long")
+            .add_struct("file", 0x200)
+            .add_field("file", "f_path", f_path_off, "pointer")
+            .add_struct("path", 0x20)
+            .add_field("path", "dentry", dentry_in_path, "pointer")
+            .add_struct("dentry", 0x200)
+            .add_field("dentry", "d_name", d_name_off, "pointer")
+            .add_struct("qstr", 0x20)
+            .add_field("qstr", "name", name_in_qstr, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, flags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .map_4k(file_vaddr, file_paddr, flags::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .map_4k(dentry_vaddr, dentry_paddr, flags::WRITABLE)
+            .write_phys(dentry_paddr, &dentry_page)
+            .map_4k(name_vaddr, name_paddr, flags::WRITABLE)
+            .write_phys(name_paddr, &name_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "non-memfd dentry name → strip_prefix fails → no entries");
+    }
 }
