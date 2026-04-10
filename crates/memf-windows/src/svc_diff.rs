@@ -481,6 +481,28 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// Non-zero scm_list_head pointing to unmapped memory, zero hive →
+    /// SCM walk fails gracefully (unwrap_or_default) → empty diff result.
+    #[test]
+    fn walk_svc_diff_unmapped_scm_zero_hive_empty() {
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Non-zero scm_list_head pointing to unmapped memory.
+        let result = walk_svc_diff(&reader, 0xFFFF_8000_DEAD_0000, 0).unwrap_or_default();
+        assert!(result.is_empty());
+    }
+
     // ── cell_vaddr / internal helpers ─────────────────────────────────
 
     #[test]

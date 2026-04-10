@@ -549,6 +549,42 @@ mod tests {
         );
     }
 
+    /// Walk body: PEB is non-zero but CR3 (DirectoryTableBase) is 0 → returns empty.
+    /// This exercises the cr3 == 0 guard in the walk body.
+    #[test]
+    fn walk_iat_hooks_nonzero_peb_zero_cr3_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let eproc_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let eproc_paddr: u64 = 0x0070_0000;
+
+        let mut eproc_data = vec![0u8; 8192];
+        // _EPROCESS.Peb at offset 0x550 — write a non-zero PEB address.
+        eproc_data[0x550..0x558].copy_from_slice(&0x0000_7FF0_0000u64.to_le_bytes());
+        // _KPROCESS.DirectoryTableBase at offset 0x28 — write 0 (no cr3).
+        eproc_data[0x28..0x30].copy_from_slice(&0u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_data[..4096])
+            .write_phys(eproc_paddr + 0x1000, &eproc_data[4096..])
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_iat_hooks(&reader, eproc_vaddr, 4, "test.exe").unwrap_or_default();
+        assert!(results.is_empty(), "zero CR3 should return empty hook list");
+    }
+
     #[test]
     fn iat_hook_serializes() {
         let hook = IatHookInfo {

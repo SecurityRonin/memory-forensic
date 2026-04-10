@@ -431,4 +431,80 @@ mod tests {
         assert!(stations.is_empty());
         assert!(desktops.is_empty());
     }
+
+    /// grpWinStaList present and mapped, but the pointer at list_head is 0 →
+    /// exercises the walk body past the symbol check, returns empty.
+    #[test]
+    fn walk_desktops_symbol_present_first_ws_zero() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let list_vaddr: u64 = 0xFFFF_8000_00A0_0000;
+        let list_paddr: u64 = 0x00A0_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("grpWinStaList", list_vaddr)
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map a page at list_vaddr with first 8 bytes = 0 (null first_ws pointer).
+        let page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let (stations, desktops) = walk_desktops(&reader).unwrap_or_default();
+        assert!(stations.is_empty(), "null first_ws should yield no stations");
+        assert!(desktops.is_empty(), "null first_ws should yield no desktops");
+    }
+
+    /// grpWinStaList present, first_ws non-zero and mapped, but all fields zero →
+    /// exercises the station walk loop (reads ws_name, session_id, desktop list).
+    #[test]
+    fn walk_desktops_symbol_with_mapped_ws_zero_fields() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let list_vaddr: u64 = 0xFFFF_8000_00B0_0000;
+        let list_paddr: u64 = 0x00B0_0000;
+        let ws_vaddr: u64 = 0xFFFF_8000_00B1_0000;
+        let ws_paddr: u64 = 0x00B1_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("grpWinStaList", list_vaddr)
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // list_vaddr page: first 8 bytes = ws_vaddr (non-null first station).
+        let mut list_page = [0u8; 4096];
+        list_page[0..8].copy_from_slice(&ws_vaddr.to_le_bytes());
+
+        // ws_vaddr page: all zeroes → ws_name = "", session_id = 0, rpwinstaNext = 0 (stop).
+        // rpdeskList (at default offset 0x30) = 0 → no desktops.
+        let ws_page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .map_4k(ws_vaddr, ws_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .write_phys(ws_paddr, &ws_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let (stations, desktops) = walk_desktops(&reader).unwrap_or_default();
+        // Should get exactly 1 station (with empty name) and no desktops.
+        assert_eq!(stations.len(), 1, "should find exactly one station");
+        assert!(desktops.is_empty(), "no desktops (rpdeskList == 0)");
+        // Empty name is suspicious.
+        assert!(stations[0].is_suspicious);
+        assert_eq!(stations[0].session_id, 0);
+        assert_eq!(stations[0].desktop_count, 0);
+    }
 }

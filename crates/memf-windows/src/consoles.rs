@@ -698,6 +698,44 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // walk_consoles: PsActiveProcessHead present, empty process list
+    // ---------------------------------------------------------------
+
+    /// When PsActiveProcessHead is present but the process list is empty
+    /// (Flink == list head), the walker exercises the body and returns empty.
+    #[test]
+    fn walk_consoles_empty_process_list_returns_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let ps_head_vaddr: u64 = 0xFFFF_8000_0080_0000;
+        let ps_head_paddr: u64 = 0x0080_1000;
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Empty circular list: Flink = Blink = ps_head_vaddr.
+        let mut page = [0u8; 4096];
+        page[0..8].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        page[8..16].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_consoles(&reader).unwrap_or_default();
+        assert!(results.is_empty(), "empty process list should yield no console entries");
+    }
+
+    // ---------------------------------------------------------------
     // Constants
     // ---------------------------------------------------------------
 

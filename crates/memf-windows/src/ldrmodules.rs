@@ -297,6 +297,45 @@ mod tests {
         );
     }
 
+    /// Walk body: PEB is non-zero and mapped, but _PEB.Ldr = 0 → returns empty.
+    /// This exercises the ldr_addr == 0 guard inside the walk body.
+    #[test]
+    fn walk_ldrmodules_nonzero_peb_zero_ldr_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let eproc_vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let eproc_paddr: u64 = 0x0060_0000;
+        let peb_vaddr: u64 = 0x0000_7FF0_1000_0000;
+        let peb_paddr: u64 = 0x0061_0000;
+
+        let mut eproc_data = vec![0u8; 4096];
+        // _EPROCESS.Peb at offset 0x550 — non-zero PEB address.
+        eproc_data[0x550..0x558].copy_from_slice(&peb_vaddr.to_le_bytes());
+
+        // PEB page: _PEB.Ldr at offset 0x18 — write 0 (null Ldr).
+        let mut peb_data = vec![0u8; 4096];
+        peb_data[0x18..0x20].copy_from_slice(&0u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_data)
+            .write_phys(peb_paddr, &peb_data)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_ldrmodules(&reader, eproc_vaddr, 4, "test.exe").unwrap_or_default();
+        assert!(results.is_empty(), "null Ldr pointer should return empty vec");
+    }
+
     #[test]
     fn classify_not_in_any_list_benign() {
         // No presence in any list — nothing to flag.

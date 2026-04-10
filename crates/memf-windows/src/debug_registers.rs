@@ -324,6 +324,44 @@ mod tests {
 
     // -- Walker tests --------------------------------------------------------
 
+    /// Walker with process_list_head pointing to mapped memory whose Flink
+    /// loops back to the head immediately — exercises the walk body and
+    /// returns empty (no threads with non-zero debug registers).
+    #[test]
+    fn walk_debug_registers_empty_process_list() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Minimal Windows kernel ISF so walk_processes can parse _EPROCESS.
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map a page for the list head, writing Flink = Blink = list_head_vaddr
+        // (an empty circular doubly-linked list).
+        let list_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let list_paddr: u64 = 0x0050_0000;
+
+        let mut page = [0u8; 4096];
+        // _LIST_ENTRY: Flink at 0, Blink at 8.  Both point back to list_vaddr.
+        page[0..8].copy_from_slice(&list_vaddr.to_le_bytes());
+        page[8..16].copy_from_slice(&list_vaddr.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // walk_processes will walk the empty list and return 0 processes → empty debug info.
+        let results = walk_debug_registers(&reader, list_vaddr).unwrap_or_default();
+        assert!(results.is_empty(), "empty process list should yield no debug register entries");
+    }
+
     #[test]
     fn walk_no_symbol_returns_empty() {
         use memf_core::object_reader::ObjectReader;

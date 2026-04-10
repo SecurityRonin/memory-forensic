@@ -378,6 +378,42 @@ mod tests {
         assert!(classify_syscall_technique(false, "some_technique"));
     }
 
+    /// Walker with PsActiveProcessHead pointing to an empty circular list
+    /// exercises the walk body (process loop) and returns empty.
+    #[test]
+    fn walk_direct_syscalls_empty_process_list() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let ps_head_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let ps_head_paddr: u64 = 0x0040_0000;
+
+        // ISF with PsActiveProcessHead symbol + minimal _EPROCESS for walk_processes.
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Empty circular doubly-linked list: Flink = Blink = ps_head_vaddr.
+        let mut page = [0u8; 4096];
+        page[0..8].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        page[8..16].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_direct_syscalls(&reader).unwrap_or_default();
+        assert!(results.is_empty(), "empty process list should yield no syscall entries");
+    }
+
     /// DirectSyscallInfo can be constructed and its fields are accessible.
     #[test]
     fn direct_syscall_info_fields() {

@@ -300,6 +300,64 @@ mod tests {
         assert!(json.contains("deadbeef"));
     }
 
+    /// Walker with MmSystemRangeStart symbol AND a mapped sector at virtual offset 0
+    /// that contains the 0x55AA magic — exercises classify_mbr and SHA-256 paths.
+    ///
+    /// Only the first 4 KB page (vaddr 0) is mapped; the walker reads 512-byte
+    /// sectors sequentially. Sectors in unmapped pages are skipped gracefully.
+    /// The sector at vaddr 0 contains valid 0x55AA magic and a Windows-style
+    /// bootstrap (FA 33 C0) so is_suspicious == false.
+    #[test]
+    fn walk_mbr_scan_finds_sector_with_valid_magic() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        // MmSystemRangeStart symbol is required; value doesn't matter for scan logic.
+        let isf = IsfBuilder::new()
+            .add_symbol("MmSystemRangeStart", 0xFFFF_8000_0000_0000u64)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Build a 512-byte sector in a 4096-byte page at virtual address 0.
+        let mut first_phys_page = [0u8; 4096];
+        // Windows MBR bootstrap: FA 33 C0 ...
+        first_phys_page[0] = 0xFA;
+        first_phys_page[1] = 0x33;
+        first_phys_page[2] = 0xC0;
+        // MBR magic at sector offset 510.
+        first_phys_page[510] = 0x55;
+        first_phys_page[511] = 0xAA;
+        // Disk signature at offset 0x1B8.
+        first_phys_page[0x1B8] = 0xAB;
+        first_phys_page[0x1B9] = 0xCD;
+        first_phys_page[0x1BA] = 0xEF;
+        first_phys_page[0x1BB] = 0x01;
+        // Boot indicator at 0x1BE.
+        first_phys_page[0x1BE] = 0x80;
+
+        // Map only vaddr 0..0x1000 at a safe physical address (well below 16 MB).
+        // Sectors in subsequent pages will fail to read and be skipped — that's fine.
+        let page_paddr: u64 = 0x0010_0000; // 1 MB — safely within the 16 MB limit
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(0, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &first_phys_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_mbr_scan(&reader).unwrap_or_default();
+        // Should find the MBR entry at offset 0.
+        assert!(!results.is_empty(), "should find the sector with 0x55AA magic");
+        let mbr = &results[0];
+        assert_eq!(mbr.physical_offset, 0);
+        assert!(mbr.has_valid_magic);
+        assert!(!mbr.is_suspicious, "Windows FA 33 C0 MBR should not be suspicious");
+        assert_eq!(mbr.signature, 0x01EF_CDAB); // little-endian [AB CD EF 01]
+        assert_eq!(mbr.boot_indicator, 0x80);
+        assert_eq!(mbr.bootstrap_hash.len(), 64); // SHA-256 hex = 64 chars
+    }
+
     /// Walker with MmSystemRangeStart symbol but no readable physical memory
     /// at offset 0 returns an empty results set (no valid magic bytes found).
     #[test]

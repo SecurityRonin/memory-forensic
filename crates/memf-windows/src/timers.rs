@@ -351,4 +351,63 @@ mod tests {
         let result = walk_timers(&reader).unwrap();
         assert!(result.is_empty());
     }
+
+    /// KiTimerTableListHead present and mapped, but all buckets have Flink == entry_addr
+    /// (empty timer lists) → exercises the full bucket-walking loop, returns empty.
+    ///
+    /// We only map a small number of buckets (enough for the first few) to avoid
+    /// excessive physical memory use. The rest will fail to read and be skipped.
+    #[test]
+    fn walk_timers_with_symbol_empty_buckets() {
+        // KiTimerTableListHead symbol + _KTIMER_TABLE_ENTRY size = 0x20 (default).
+        // 256 buckets × 0x20 = 0x2000 bytes = 2 pages.
+        // We'll map 2 pages for the table so the walker can read all 256 buckets.
+        // Each bucket's Flink (first 8 bytes) points back to its own entry_addr
+        // to indicate an empty list.
+
+        let table_vaddr: u64 = 0xFFFF_8000_0090_0000;
+        let table_paddr0: u64 = 0x0090_0000;
+        let table_paddr1: u64 = 0x0091_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("KiTimerTableListHead", table_vaddr)
+            .add_struct("_KTIMER", 0x40)
+            .add_struct("_KTIMER_TABLE_ENTRY", 0x20)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Build 2 pages for the timer table.
+        // Each entry is 0x20 bytes. Flink (first 8 bytes of entry) = entry_addr.
+        let entry_size: u64 = 0x20;
+        let mut page0 = [0u8; 4096];
+        let mut page1 = [0u8; 4096];
+
+        for bucket in 0u64..256 {
+            let entry_addr = table_vaddr + bucket * entry_size;
+            let flink_bytes = entry_addr.to_le_bytes();
+
+            let byte_off = (bucket * entry_size) as usize;
+            if byte_off + 8 <= 4096 {
+                page0[byte_off..byte_off + 8].copy_from_slice(&flink_bytes);
+            } else {
+                let off_in_p1 = byte_off - 4096;
+                if off_in_p1 + 8 <= 4096 {
+                    page1[off_in_p1..off_in_p1 + 8].copy_from_slice(&flink_bytes);
+                }
+            }
+        }
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr0, flags::WRITABLE)
+            .map_4k(table_vaddr + 0x1000, table_paddr1, flags::WRITABLE)
+            .write_phys(table_paddr0, &page0)
+            .write_phys(table_paddr1, &page1)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_timers(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "all empty timer buckets should yield no timers");
+    }
 }
