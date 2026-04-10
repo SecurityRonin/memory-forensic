@@ -176,11 +176,10 @@ pub fn walk_debug_registers<P: PhysicalMemoryProvider>(
         };
 
         for thr in &threads {
-            let (dr0, dr1, dr2, dr3, dr6, dr7) =
-                match read_thread_debug_regs(reader, thr.vaddr) {
-                    Some(regs) => regs,
-                    None => continue,
-                };
+            let (dr0, dr1, dr2, dr3, dr6, dr7) = match read_thread_debug_regs(reader, thr.vaddr) {
+                Some(regs) => regs,
+                None => continue,
+            };
 
             // Skip threads where all debug registers are zero (the common case).
             if dr0 == 0 && dr1 == 0 && dr2 == 0 && dr3 == 0 && dr6 == 0 && dr7 == 0 {
@@ -271,12 +270,56 @@ mod tests {
     fn classify_all_breakpoints_armed_suspicious() {
         // All four DRs have addresses, DR7 enables all four local bits.
         assert!(classify_debug_registers(
-            0x1000,
-            0x2000,
-            0x3000,
-            0x4000,
-            0x55 // bits 0, 2, 4, 6
+            0x1000, 0x2000, 0x3000, 0x4000, 0x55 // bits 0, 2, 4, 6
         ));
+    }
+
+    #[test]
+    fn classify_dr3_enabled_suspicious() {
+        // Only DR3 is set with L3 (bit 6) enabled.
+        assert!(classify_debug_registers(0, 0, 0, 0xCAFE_BABE, 0x40));
+    }
+
+    #[test]
+    fn classify_dr1_enabled_suspicious() {
+        // Only DR1 is set with L1 (bit 2) enabled.
+        assert!(classify_debug_registers(0, 0xBEEF, 0, 0, 0x04));
+    }
+
+    #[test]
+    fn classify_dr7_all_global_bits_no_address_benign() {
+        // DR7 has global enable bits set (bits 1, 3, 5, 7) but no addresses.
+        // Global bits do NOT affect our local-enable check.
+        assert!(!classify_debug_registers(0, 0, 0, 0, 0xAA));
+    }
+
+    #[test]
+    fn classify_max_address_with_enable_bit() {
+        // DR0 at u64::MAX with L0 enabled — still suspicious.
+        assert!(classify_debug_registers(u64::MAX, 0, 0, 0, 0x01));
+    }
+
+    #[test]
+    fn debug_register_info_serializes() {
+        let info = DebugRegisterInfo {
+            pid: 1234,
+            tid: 5678,
+            process_name: "malware.exe".to_string(),
+            dr0: 0xDEAD_BEEF,
+            dr1: 0,
+            dr2: 0,
+            dr3: 0,
+            dr6: 0,
+            dr7: 0x01,
+            is_suspicious: true,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":1234"));
+        assert!(json.contains("\"tid\":5678"));
+        assert!(json.contains("\"process_name\":\"malware.exe\""));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"dr7\":1"));
     }
 
     // -- Walker tests --------------------------------------------------------

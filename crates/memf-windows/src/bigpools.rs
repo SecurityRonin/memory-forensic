@@ -178,7 +178,13 @@ pub fn walk_bigpools<P: PhysicalMemoryProvider>(
         let tag_bytes = tag_raw.to_le_bytes();
         let pool_tag: String = tag_bytes
             .iter()
-            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '\0' })
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    '\0'
+                }
+            })
             .collect();
 
         results.push(BigPoolEntry {
@@ -254,6 +260,82 @@ mod tests {
     #[test]
     fn classify_blank_tag_suspicious() {
         assert!(classify_bigpool("    ", 4096));
+    }
+
+    /// Exactly 100 MB is not suspicious (threshold is strictly > 100 MB).
+    #[test]
+    fn classify_exactly_100mb_benign() {
+        let exactly_100mb = 100u64 * 1024 * 1024;
+        assert!(!classify_bigpool("CM31", exactly_100mb));
+    }
+
+    /// One byte over 100 MB is suspicious.
+    #[test]
+    fn classify_just_over_100mb_suspicious() {
+        let just_over = 100u64 * 1024 * 1024 + 1;
+        assert!(classify_bigpool("Tag1", just_over));
+    }
+
+    /// Zero-size allocation with normal tag is benign.
+    #[test]
+    fn classify_zero_size_normal_tag_benign() {
+        assert!(!classify_bigpool("MmSt", 0));
+    }
+
+    // ── pool_type_name remaining variants ──────────────────────────
+
+    #[test]
+    fn pool_type_must_succeed() {
+        assert_eq!(pool_type_name(2), "NonPagedPoolMustSucceed");
+    }
+
+    #[test]
+    fn pool_type_dont_use() {
+        assert_eq!(pool_type_name(3), "DontUseThisType");
+    }
+
+    #[test]
+    fn pool_type_cache_aligned_nonpaged() {
+        assert_eq!(pool_type_name(4), "NonPagedPoolCacheAligned");
+    }
+
+    #[test]
+    fn pool_type_cache_aligned_paged() {
+        assert_eq!(pool_type_name(5), "PagedPoolCacheAligned");
+    }
+
+    // ── BigPoolEntry serialization ──────────────────────────────────
+
+    #[test]
+    fn big_pool_entry_serializes() {
+        let entry = BigPoolEntry {
+            address: 0xFFFF_8000_1234_5678,
+            pool_tag: "CM31".to_string(),
+            size: 8192,
+            pool_type: "NonPagedPool".to_string(),
+            is_free: false,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"pool_tag\":\"CM31\""));
+        assert!(json.contains("\"size\":8192"));
+        assert!(json.contains("\"pool_type\":\"NonPagedPool\""));
+        assert!(json.contains("\"is_free\":false"));
+    }
+
+    #[test]
+    fn big_pool_entry_free_serializes() {
+        let entry = BigPoolEntry {
+            address: 0xFFFF_8000_0000_0002,
+            pool_tag: "\0\0\0\0".to_string(),
+            size: 0,
+            pool_type: "PagedPool".to_string(),
+            is_free: true,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"is_free\":true"));
+        assert!(json.contains("\"pool_type\":\"PagedPool\""));
     }
 
     // ── walk_bigpools tests ─────────────────────────────────────────

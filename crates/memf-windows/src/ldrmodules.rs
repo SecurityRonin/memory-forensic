@@ -103,22 +103,16 @@ pub fn walk_ldrmodules<P: PhysicalMemoryProvider>(
     let load_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
-        .ok_or_else(|| {
-            Error::Walker("missing _PEB_LDR_DATA.InLoadOrderModuleList".into())
-        })?;
+        .ok_or_else(|| Error::Walker("missing _PEB_LDR_DATA.InLoadOrderModuleList".into()))?;
     let mem_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InMemoryOrderModuleList")
-        .ok_or_else(|| {
-            Error::Walker("missing _PEB_LDR_DATA.InMemoryOrderModuleList".into())
-        })?;
+        .ok_or_else(|| Error::Walker("missing _PEB_LDR_DATA.InMemoryOrderModuleList".into()))?;
     let init_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InInitializationOrderModuleList")
         .ok_or_else(|| {
-            Error::Walker(
-                "missing _PEB_LDR_DATA.InInitializationOrderModuleList".into(),
-            )
+            Error::Walker("missing _PEB_LDR_DATA.InInitializationOrderModuleList".into())
         })?;
 
     /// Walk a single linked list, returning `(entry_addr, DllBase)` pairs.
@@ -147,8 +141,7 @@ pub fn walk_ldrmodules<P: PhysicalMemoryProvider>(
             if !seen.insert(entry_addr) {
                 break; // cycle detected
             }
-            let base: u64 =
-                reader.read_field(entry_addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
+            let base: u64 = reader.read_field(entry_addr, "_LDR_DATA_TABLE_ENTRY", "DllBase")?;
             if base != 0 {
                 results.push((entry_addr, base));
             }
@@ -158,8 +151,12 @@ pub fn walk_ldrmodules<P: PhysicalMemoryProvider>(
 
     let load_entries = walk_single_list(reader, ldr_addr, load_head_off, "InLoadOrderLinks")?;
     let mem_entries = walk_single_list(reader, ldr_addr, mem_head_off, "InMemoryOrderLinks")?;
-    let init_entries =
-        walk_single_list(reader, ldr_addr, init_head_off, "InInitializationOrderLinks")?;
+    let init_entries = walk_single_list(
+        reader,
+        ldr_addr,
+        init_head_off,
+        "InInitializationOrderLinks",
+    )?;
 
     // Collect base addresses into sets for presence checking.
     let load_bases: HashSet<u64> = load_entries.iter().map(|&(_, b)| b).collect();
@@ -183,9 +180,7 @@ pub fn walk_ldrmodules<P: PhysicalMemoryProvider>(
     let base_dll_name_off = reader
         .symbols()
         .field_offset("_LDR_DATA_TABLE_ENTRY", "BaseDllName")
-        .ok_or_else(|| {
-            Error::Walker("missing _LDR_DATA_TABLE_ENTRY.BaseDllName".into())
-        })?;
+        .ok_or_else(|| Error::Walker("missing _LDR_DATA_TABLE_ENTRY.BaseDllName".into()))?;
 
     // Cross-reference: for each unique base address, check presence in all three lists.
     let mut results = Vec::new();
@@ -296,7 +291,68 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_ldrmodules(&reader, eproc_vaddr, 4, "System").unwrap();
-        assert!(results.is_empty(), "process with null PEB should return empty vec");
+        assert!(
+            results.is_empty(),
+            "process with null PEB should return empty vec"
+        );
+    }
+
+    #[test]
+    fn classify_not_in_any_list_benign() {
+        // No presence in any list — nothing to flag.
+        assert!(
+            !classify_ldr_module(false, false, false, "ghost.dll"),
+            "module absent from all lists should not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_only_in_load_suspicious() {
+        assert!(
+            classify_ldr_module(true, false, false, "evil.dll"),
+            "module only in InLoad should be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_only_in_mem_suspicious() {
+        assert!(
+            classify_ldr_module(false, true, false, "evil.dll"),
+            "module only in InMem should be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_only_in_init_suspicious() {
+        assert!(
+            classify_ldr_module(false, false, true, "evil.dll"),
+            "module only in InInit should be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_ntdll_missing_load_suspicious() {
+        // ntdll.dll exception only applies to the (true, true, false) pattern.
+        // Missing from load is still suspicious even for ntdll.
+        assert!(
+            classify_ldr_module(false, true, true, "ntdll.dll"),
+            "ntdll missing from InLoad should still be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_ntdll_missing_mem_suspicious() {
+        assert!(
+            classify_ldr_module(true, false, true, "ntdll.dll"),
+            "ntdll missing from InMem should still be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_ntdll_missing_init_case_insensitive_benign() {
+        // Already tested in existing test, but verify all case variants.
+        assert!(!classify_ldr_module(true, true, false, "NTDLL.DLL"));
+        assert!(!classify_ldr_module(true, true, false, "Ntdll.Dll"));
     }
 
     #[test]

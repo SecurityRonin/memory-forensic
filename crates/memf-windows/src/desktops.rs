@@ -325,6 +325,93 @@ mod tests {
         assert!(classify_desktop("", "WinSta0"));
     }
 
+    /// "Disconnect" desktop on WinSta0 is benign (standard name).
+    #[test]
+    fn classify_desktop_disconnect_benign() {
+        assert!(!classify_desktop("Disconnect", "WinSta0"));
+    }
+
+    /// "Screen-saver" desktop on WinSta0 is benign (standard name).
+    #[test]
+    fn classify_desktop_screen_saver_benign() {
+        assert!(!classify_desktop("Screen-saver", "WinSta0"));
+    }
+
+    /// Any desktop on a service station (non-WinSta0) is benign.
+    #[test]
+    fn classify_desktop_on_service_station_benign() {
+        assert!(!classify_desktop("Default", "Service-0x0-3e7$"));
+        assert!(!classify_desktop("HiddenDesktop", "Service-0x0-3e7$"));
+    }
+
+    /// Empty name on a non-WinSta0 station is still suspicious.
+    #[test]
+    fn classify_desktop_empty_name_on_service_station_suspicious() {
+        assert!(classify_desktop("", "Service-0x0-3e7$"));
+    }
+
+    // ── classify_winstation additional cases ─────────────────────────
+
+    /// Empty window station name is suspicious.
+    #[test]
+    fn classify_winstation_empty_suspicious() {
+        assert!(classify_winstation(""));
+    }
+
+    /// Service station with various suffixes is benign.
+    #[test]
+    fn classify_winstation_various_service_names_benign() {
+        assert!(!classify_winstation("Service-0x0-3e7$"));
+        assert!(!classify_winstation("Service-0x0-3e4$"));
+        assert!(!classify_winstation("Service-0x0-1f4$"));
+    }
+
+    /// Names that look like service stations but aren't are suspicious.
+    #[test]
+    fn classify_winstation_fake_service_prefix_suspicious() {
+        assert!(classify_winstation("Service-0x1-3e7$")); // 0x1 not 0x0
+        assert!(classify_winstation("service-0x0-3e7$")); // lowercase 's'
+    }
+
+    // ── Serialization tests ──────────────────────────────────────────
+
+    #[test]
+    fn window_station_info_serializes() {
+        let info = WindowStationInfo {
+            address: 0xFFFF_9A00_1234_0000,
+            name: "WinSta0".to_string(),
+            session_id: 1,
+            is_interactive: true,
+            desktop_count: 3,
+            is_suspicious: false,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"name\":\"WinSta0\""));
+        assert!(json.contains("\"session_id\":1"));
+        assert!(json.contains("\"is_interactive\":true"));
+        assert!(json.contains("\"desktop_count\":3"));
+        assert!(json.contains("\"is_suspicious\":false"));
+    }
+
+    #[test]
+    fn desktop_info_serializes() {
+        let info = DesktopInfo {
+            address: 0xFFFF_9A00_ABCD_0000,
+            name: "HiddenDesktop".to_string(),
+            winstation_name: "WinSta0".to_string(),
+            heap_size: 0x0010_0000,
+            thread_count: 5,
+            is_suspicious: true,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"name\":\"HiddenDesktop\""));
+        assert!(json.contains("\"winstation_name\":\"WinSta0\""));
+        assert!(json.contains("\"thread_count\":5"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
     // ---------------------------------------------------------------
     // walk_desktops tests
     // ---------------------------------------------------------------

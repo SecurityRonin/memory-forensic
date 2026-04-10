@@ -37,7 +37,13 @@ pub fn well_known_sid(sid: &str) -> Option<&'static str> {
 ///   svchost, smss) but runs as SYSTEM (`S-1-5-18`).
 /// - Its SID is ANONYMOUS LOGON (`S-1-5-7`) regardless of process name.
 pub fn classify_process_sid(process_name: &str, sid: &str) -> bool {
-    const SYSTEM_PROCS: &[&str] = &["csrss.exe", "lsass.exe", "services.exe", "svchost.exe", "smss.exe"];
+    const SYSTEM_PROCS: &[&str] = &[
+        "csrss.exe",
+        "lsass.exe",
+        "services.exe",
+        "svchost.exe",
+        "smss.exe",
+    ];
 
     // Any process running as ANONYMOUS LOGON is suspicious
     if sid == "S-1-5-7" {
@@ -166,19 +172,18 @@ fn read_integrity_level<P: PhysicalMemoryProvider>(
     token_addr: u64,
 ) -> String {
     // Try to get IntegrityLevelIndex first
-    let integrity_index: u32 =
-        match reader.read_field(token_addr, "_TOKEN", "IntegrityLevelIndex") {
-            Ok(v) => v,
-            Err(_) => {
-                // Fall back: read UserAndGroupCount - 1 as the integrity entry index
-                let count: u32 =
-                    match reader.read_field(token_addr, "_TOKEN", "UserAndGroupCount") {
-                        Ok(v) if v > 0 => v,
-                        _ => return String::new(),
-                    };
-                count - 1
-            }
-        };
+    let integrity_index: u32 = match reader.read_field(token_addr, "_TOKEN", "IntegrityLevelIndex")
+    {
+        Ok(v) => v,
+        Err(_) => {
+            // Fall back: read UserAndGroupCount - 1 as the integrity entry index
+            let count: u32 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroupCount") {
+                Ok(v) if v > 0 => v,
+                _ => return String::new(),
+            };
+            count - 1
+        }
+    };
 
     let user_and_groups: u64 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroups") {
         Ok(v) if v != 0 => v,
@@ -391,7 +396,10 @@ mod tests {
     fn classify_normal_user_benign() {
         // Normal user SID is not suspicious
         assert!(
-            !classify_process_sid("explorer.exe", "S-1-5-21-1234567890-987654321-111222333-1001"),
+            !classify_process_sid(
+                "explorer.exe",
+                "S-1-5-21-1234567890-987654321-111222333-1001"
+            ),
             "normal user SID should not be suspicious"
         );
     }
@@ -403,6 +411,79 @@ mod tests {
             !classify_process_sid("SVCHOST.EXE", "S-1-5-18"),
             "classification should be case-insensitive"
         );
+    }
+
+    #[test]
+    fn classify_network_service_benign() {
+        // Network service SID is not in our suspicious list, but it's not
+        // ANONYMOUS LOGON and not SYSTEM, so it's benign.
+        assert!(
+            !classify_process_sid("svchost.exe", "S-1-5-20"),
+            "NETWORK SERVICE SID should not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_administrator_sid_benign() {
+        // Administrators group SID — not suspicious.
+        assert!(
+            !classify_process_sid("explorer.exe", "S-1-5-32-544"),
+            "Administrators group SID should not be suspicious"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // integrity_level_name tests (via public classify_process_sid path)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn integrity_level_untrusted() {
+        assert_eq!(integrity_level_name("S-1-16-0"), "Untrusted");
+    }
+
+    #[test]
+    fn integrity_level_low() {
+        assert_eq!(integrity_level_name("S-1-16-4096"), "Low");
+    }
+
+    #[test]
+    fn integrity_level_medium() {
+        assert_eq!(integrity_level_name("S-1-16-8192"), "Medium");
+    }
+
+    #[test]
+    fn integrity_level_medium_plus() {
+        assert_eq!(integrity_level_name("S-1-16-8448"), "MediumPlus");
+    }
+
+    #[test]
+    fn integrity_level_high() {
+        assert_eq!(integrity_level_name("S-1-16-12288"), "High");
+    }
+
+    #[test]
+    fn integrity_level_system() {
+        assert_eq!(integrity_level_name("S-1-16-16384"), "System");
+    }
+
+    #[test]
+    fn integrity_level_protected() {
+        assert_eq!(integrity_level_name("S-1-16-20480"), "Protected");
+    }
+
+    #[test]
+    fn integrity_level_secure() {
+        assert_eq!(integrity_level_name("S-1-16-28672"), "Secure");
+    }
+
+    #[test]
+    fn integrity_level_unknown() {
+        assert_eq!(integrity_level_name("S-1-16-99999"), "Unknown");
+    }
+
+    #[test]
+    fn integrity_level_empty() {
+        assert_eq!(integrity_level_name(""), "Unknown");
     }
 
     // ---------------------------------------------------------------
@@ -423,8 +504,8 @@ mod tests {
         // Empty circular list: head points to itself
         let ptb = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
-            .write_phys_u64(head_paddr, head_vaddr)       // Flink → self
-            .write_phys_u64(head_paddr + 8, head_vaddr);  // Blink → self
+            .write_phys_u64(head_paddr, head_vaddr) // Flink → self
+            .write_phys_u64(head_paddr + 8, head_vaddr); // Blink → self
 
         let isf = IsfBuilder::windows_kernel_preset().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();

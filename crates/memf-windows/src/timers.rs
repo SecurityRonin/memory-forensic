@@ -132,9 +132,7 @@ pub fn walk_timers<P: PhysicalMemoryProvider>(
 
         // Read Flink from the _LIST_ENTRY at the start of this bucket.
         let flink = match reader.read_bytes(entry_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => {
-                u64::from_le_bytes(bytes[..8].try_into().unwrap())
-            }
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
             _ => continue,
         };
 
@@ -152,25 +150,19 @@ pub fn walk_timers<P: PhysicalMemoryProvider>(
 
             // Read DueTime (i64, 8 bytes).
             let due_time = match reader.read_bytes(timer_addr.wrapping_add(due_time_off), 8) {
-                Ok(bytes) if bytes.len() == 8 => {
-                    i64::from_le_bytes(bytes[..8].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 8 => i64::from_le_bytes(bytes[..8].try_into().unwrap()),
                 _ => 0,
             };
 
             // Read Period (u32, 4 bytes).
             let period = match reader.read_bytes(timer_addr.wrapping_add(period_off), 4) {
-                Ok(bytes) if bytes.len() == 4 => {
-                    u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => 0,
             };
 
             // Read DPC pointer (u64).
             let dpc_address = match reader.read_bytes(timer_addr.wrapping_add(dpc_off), 8) {
-                Ok(bytes) if bytes.len() == 8 => {
-                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
                 _ => 0,
             };
 
@@ -213,9 +205,7 @@ pub fn walk_timers<P: PhysicalMemoryProvider>(
 
             // Follow Flink to next entry.
             current = match reader.read_bytes(current, 8) {
-                Ok(bytes) if bytes.len() == 8 => {
-                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
                 _ => break,
             };
         }
@@ -299,12 +289,60 @@ mod tests {
 
     // --- walk_timers tests ---
 
+    /// DPC routine at the exact end of the kernel image (kernel_base + kernel_size)
+    /// is just outside the range — suspicious.
+    #[test]
+    fn classify_timer_at_end_of_kernel_suspicious() {
+        let kernel_base: u64 = 0xfffff800_04000000;
+        let kernel_size: u64 = 0x00800000;
+        let routine = kernel_base + kernel_size; // exactly at the end, exclusive
+
+        assert!(classify_timer(routine, kernel_base, kernel_size));
+    }
+
+    /// DPC routine one byte before end of kernel range is benign.
+    #[test]
+    fn classify_timer_one_before_end_benign() {
+        let kernel_base: u64 = 0xfffff800_04000000;
+        let kernel_size: u64 = 0x00800000;
+        let routine = kernel_base + kernel_size - 1; // last valid byte
+
+        assert!(!classify_timer(routine, kernel_base, kernel_size));
+    }
+
+    /// KernelTimerInfo serializes correctly.
+    #[test]
+    fn kernel_timer_info_serializes() {
+        let info = KernelTimerInfo {
+            address: 0xFFFF_8000_1234_0000,
+            due_time: 132_000_000_000_i64,
+            period: 1000,
+            dpc_address: 0xFFFF_8000_DEAD_0000,
+            dpc_routine: 0xFFFF_8000_BEEF_0100,
+            dpc_context: 0,
+            is_suspicious: true,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"period\":1000"));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"dpc_context\":0"));
+    }
+
+    #[test]
+    fn classify_timer_zero_size_kernel_suspicious() {
+        // If kernel_size is 0, any non-zero routine is outside the (empty) range.
+        let kernel_base: u64 = 0xfffff800_04000000;
+        let routine = kernel_base; // even at the base
+
+        // Range [base, base+0) is empty, so even kernel_base is suspicious.
+        assert!(classify_timer(routine, kernel_base, 0));
+    }
+
     /// No KiTimerTableListHead symbol → empty Vec.
     #[test]
     fn walk_timers_no_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("_KTIMER", 0x40)
-            .build_json();
+        let isf = IsfBuilder::new().add_struct("_KTIMER", 0x40).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);

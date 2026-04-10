@@ -49,18 +49,10 @@ pub struct SkeletonKeyIndicator {
 /// Unknown combinations receive a generic description with lower confidence.
 pub fn classify_skeleton_key_pattern(module: &str, pattern_type: &str) -> (String, u8) {
     match (module, pattern_type) {
-        ("msv1_0.dll", "auth_patch") => {
-            ("MSV1_0 authentication bypass patch".into(), 90)
-        }
-        ("kdcsvc.dll", "kdc_patch") => {
-            ("KDC service Kerberos validation bypass".into(), 90)
-        }
-        ("cryptdll.dll", "rc4_patch") => {
-            ("RC4 HMAC encryption downgrade patch".into(), 80)
-        }
-        ("lsasrv.dll", "auth_patch") => {
-            ("LSA Server authentication bypass".into(), 85)
-        }
+        ("msv1_0.dll", "auth_patch") => ("MSV1_0 authentication bypass patch".into(), 90),
+        ("kdcsvc.dll", "kdc_patch") => ("KDC service Kerberos validation bypass".into(), 90),
+        ("cryptdll.dll", "rc4_patch") => ("RC4 HMAC encryption downgrade patch".into(), 80),
+        ("lsasrv.dll", "auth_patch") => ("LSA Server authentication bypass".into(), 85),
         _ => ("Unknown modification".into(), 50),
     }
 }
@@ -332,6 +324,203 @@ mod tests {
             results.is_empty(),
             "no PsActiveProcessHead should yield empty results"
         );
+    }
+
+    // -- find_nop_sled tests -------------------------------------------------
+
+    #[test]
+    fn find_nop_sled_not_found_empty() {
+        assert_eq!(find_nop_sled(&[], 5), None);
+    }
+
+    #[test]
+    fn find_nop_sled_not_enough_nops() {
+        // Only 4 consecutive NOPs, threshold is 5 — should return None.
+        let data = [0x55u8, 0x90, 0x90, 0x90, 0x90, 0x48];
+        assert_eq!(find_nop_sled(&data, 5), None);
+    }
+
+    #[test]
+    fn find_nop_sled_exact_threshold() {
+        // Exactly 5 NOPs starting at index 1.
+        let data = [0x55u8, 0x90, 0x90, 0x90, 0x90, 0x90, 0x48];
+        assert_eq!(find_nop_sled(&data, 5), Some(1));
+    }
+
+    #[test]
+    fn find_nop_sled_returns_first_occurrence() {
+        // First sled starts at index 0 (5 NOPs), second starts at index 8.
+        let data = [0x90u8, 0x90, 0x90, 0x90, 0x90, 0x48, 0x89, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90];
+        assert_eq!(find_nop_sled(&data, 5), Some(0));
+    }
+
+    #[test]
+    fn find_nop_sled_no_nops_in_data() {
+        let data = [0x55u8, 0x48, 0x89, 0xE5, 0x41, 0x57];
+        assert_eq!(find_nop_sled(&data, 5), None);
+    }
+
+    #[test]
+    fn find_nop_sled_all_nops() {
+        let data = [0x90u8; 10];
+        assert_eq!(find_nop_sled(&data, 5), Some(0));
+    }
+
+    // -- find_patched_conditional_jump tests ---------------------------------
+
+    #[test]
+    fn find_patched_jump_not_found_empty() {
+        assert_eq!(find_patched_conditional_jump(&[]), None);
+    }
+
+    #[test]
+    fn find_patched_jump_eb_after_cmp() {
+        // 0x3B (cmp r/m) followed by 0xEB (short jmp) — matches.
+        let data = [0x48u8, 0x3B, 0xEB, 0x05, 0x00];
+        assert_eq!(find_patched_conditional_jump(&data), Some(2));
+    }
+
+    #[test]
+    fn find_patched_jump_eb_after_test() {
+        // 0x85 (test) followed by 0xEB — matches.
+        let data = [0x85u8, 0xEB, 0x10];
+        assert_eq!(find_patched_conditional_jump(&data), Some(1));
+    }
+
+    #[test]
+    fn find_patched_jump_eb_after_unrelated() {
+        // 0xEB after an unrelated byte (0x48, MOV prefix) — not a match.
+        let data = [0x48u8, 0xEB, 0x05];
+        assert_eq!(find_patched_conditional_jump(&data), None);
+    }
+
+    #[test]
+    fn find_patched_jump_eb_after_f7() {
+        // 0xF7 (test r/m32) followed by 0xEB — matches.
+        let data = [0x00u8, 0xF7, 0xEB, 0x08];
+        assert_eq!(find_patched_conditional_jump(&data), Some(2));
+    }
+
+    #[test]
+    fn find_patched_jump_eb_after_84() {
+        // 0x84 (test r/m8, r8) followed by 0xEB — matches.
+        let data = [0x00u8, 0x84, 0xEB, 0x08];
+        assert_eq!(find_patched_conditional_jump(&data), Some(2));
+    }
+
+    #[test]
+    fn find_patched_jump_eb_after_83() {
+        // 0x83 (cmp r/m, imm8) followed by 0xEB — matches.
+        let data = [0x00u8, 0x83, 0xEB, 0x00];
+        assert_eq!(find_patched_conditional_jump(&data), Some(2));
+    }
+
+    #[test]
+    fn find_patched_jump_eb_after_39() {
+        // 0x39 (cmp r/m, r) followed by 0xEB — matches.
+        let data = [0x00u8, 0x39, 0xEB, 0x08];
+        assert_eq!(find_patched_conditional_jump(&data), Some(2));
+    }
+
+    #[test]
+    fn find_patched_jump_no_eb_at_all() {
+        let data = [0x48u8, 0x83, 0xC0, 0x01, 0x75, 0x0A];
+        assert_eq!(find_patched_conditional_jump(&data), None);
+    }
+
+    // -- is_suspicious_dll_path tests ----------------------------------------
+
+    #[test]
+    fn suspicious_path_standard_system32_benign() {
+        assert!(!is_suspicious_dll_path("C:\\Windows\\System32\\msv1_0.dll"));
+        assert!(!is_suspicious_dll_path("c:\\windows\\system32\\ntdll.dll"));
+    }
+
+    #[test]
+    fn suspicious_path_systemroot_benign() {
+        assert!(!is_suspicious_dll_path("\\SystemRoot\\System32\\msv1_0.dll"));
+    }
+
+    #[test]
+    fn suspicious_path_device_prefix_benign() {
+        assert!(!is_suspicious_dll_path("\\??\\C:\\Windows\\System32\\lsasrv.dll"));
+    }
+
+    #[test]
+    fn suspicious_path_temp_suspicious() {
+        assert!(is_suspicious_dll_path("C:\\Temp\\msv1_0.dll"));
+    }
+
+    #[test]
+    fn suspicious_path_appdata_suspicious() {
+        assert!(is_suspicious_dll_path("C:\\Users\\evil\\AppData\\Roaming\\msv1_0.dll"));
+    }
+
+    #[test]
+    fn suspicious_path_empty_benign() {
+        // Empty path returns false (not suspicious, treated as unknown).
+        assert!(!is_suspicious_dll_path(""));
+    }
+
+    // -- scan_module_patterns tests ------------------------------------------
+
+    #[test]
+    fn scan_module_patterns_msv_with_nop_sled() {
+        let mut indicators = Vec::new();
+        let mut data = vec![0x55u8; 10];
+        // Insert a NOP sled at offset 5
+        data[5..10].fill(0x90);
+        scan_module_patterns("msv1_0.dll", 0x1000_0000, &data, &mut indicators);
+        assert_eq!(indicators.len(), 1);
+        assert_eq!(indicators[0].indicator_type, "auth_patch");
+        assert_eq!(indicators[0].module, "msv1_0.dll");
+        assert!(indicators[0].is_detected);
+    }
+
+    #[test]
+    fn scan_module_patterns_msv_no_nop_sled() {
+        let mut indicators = Vec::new();
+        let data = vec![0x48u8, 0x89, 0xC3, 0x55, 0x41]; // no NOPs
+        scan_module_patterns("msv1_0.dll", 0x1000_0000, &data, &mut indicators);
+        assert!(indicators.is_empty());
+    }
+
+    #[test]
+    fn scan_module_patterns_kdcsvc_with_patched_jump() {
+        let mut indicators = Vec::new();
+        // 0x3B (cmp) then 0xEB (patched jmp) at index 1
+        let data = [0x3Bu8, 0xEB, 0x08, 0x00, 0x00];
+        scan_module_patterns("kdcsvc.dll", 0x2000_0000, &data, &mut indicators);
+        assert_eq!(indicators.len(), 1);
+        assert_eq!(indicators[0].indicator_type, "kdc_patch");
+    }
+
+    #[test]
+    fn scan_module_patterns_cryptdll_with_nop_sled() {
+        let mut indicators = Vec::new();
+        let data = [0x90u8; 8];
+        scan_module_patterns("cryptdll.dll", 0x3000_0000, &data, &mut indicators);
+        assert_eq!(indicators.len(), 1);
+        assert_eq!(indicators[0].indicator_type, "rc4_patch");
+    }
+
+    #[test]
+    fn scan_module_patterns_lsasrv_with_nop_sled() {
+        let mut indicators = Vec::new();
+        let data = [0x90u8; 6];
+        scan_module_patterns("lsasrv.dll", 0x4000_0000, &data, &mut indicators);
+        assert_eq!(indicators.len(), 1);
+        assert_eq!(indicators[0].indicator_type, "auth_patch");
+        assert_eq!(indicators[0].module, "lsasrv.dll");
+    }
+
+    #[test]
+    fn scan_module_patterns_unknown_module_no_crash() {
+        let mut indicators = Vec::new();
+        let data = [0x90u8; 8];
+        scan_module_patterns("unknown.dll", 0x5000_0000, &data, &mut indicators);
+        // Unknown modules produce no indicators.
+        assert!(indicators.is_empty());
     }
 
     #[test]

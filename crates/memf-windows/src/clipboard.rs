@@ -102,8 +102,7 @@ fn contains_ip_url(text: &str) -> bool {
                         .find(|c: char| c == '/' || c == ':')
                         .unwrap_or(after.len());
                     let host = &after[..host_end];
-                    if host.chars().all(|c| c.is_ascii_digit() || c == '.') && host.contains('.')
-                    {
+                    if host.chars().all(|c| c.is_ascii_digit() || c == '.') && host.contains('.') {
                         return true;
                     }
                 }
@@ -192,17 +191,13 @@ pub fn walk_clipboard<P: PhysicalMemoryProvider>(
 
         // Read format code.
         let fmt = match reader.read_bytes(clip_addr + clip_fmt_off, 4) {
-            Ok(bytes) if bytes.len() == 4 => {
-                u32::from_le_bytes(bytes[..4].try_into().unwrap())
-            }
+            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
             _ => continue,
         };
 
         // Read data handle.
         let h_data = match reader.read_bytes(clip_addr + clip_hdata_off, 8) {
-            Ok(bytes) if bytes.len() == 8 => {
-                u64::from_le_bytes(bytes[..8].try_into().unwrap())
-            }
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
             _ => continue,
         };
 
@@ -323,7 +318,9 @@ mod tests {
     fn classify_clipboard_normal_text_benign() {
         assert!(!classify_clipboard("Hello, world!"));
         assert!(!classify_clipboard("Meeting at 3pm tomorrow"));
-        assert!(!classify_clipboard("The quick brown fox jumps over the lazy dog"));
+        assert!(!classify_clipboard(
+            "The quick brown fox jumps over the lazy dog"
+        ));
     }
 
     /// Long base64-like string (>100 chars, no spaces) → suspicious.
@@ -346,6 +343,111 @@ mod tests {
     fn classify_clipboard_url_with_ip_suspicious() {
         assert!(classify_clipboard("http://192.168.1.1/payload.exe"));
         assert!(classify_clipboard("https://10.0.0.5:8080/cmd"));
+    }
+
+    /// URL with hostname (not raw IP) → benign.
+    #[test]
+    fn classify_clipboard_url_with_hostname_benign() {
+        assert!(!classify_clipboard("https://example.com/page"));
+        assert!(!classify_clipboard("http://www.google.com/search?q=test"));
+    }
+
+    /// Exactly 100 chars, no spaces — not long enough to be suspicious.
+    #[test]
+    fn classify_clipboard_exactly_100_chars_no_spaces_benign() {
+        let s = "a".repeat(100);
+        // Must be > 100, so exactly 100 is benign.
+        assert!(!classify_clipboard(&s));
+    }
+
+    /// 101 chars with a space — not suspicious (space breaks the no-space rule).
+    #[test]
+    fn classify_clipboard_101_chars_with_space_benign() {
+        let s = format!("{} {}", "a".repeat(50), "b".repeat(49));
+        assert_eq!(s.len(), 101);
+        assert!(!classify_clipboard(&s));
+    }
+
+    /// passwd variant triggers suspicious flag.
+    #[test]
+    fn classify_clipboard_passwd_variant_suspicious() {
+        assert!(classify_clipboard("my passwd is secret"));
+        assert!(classify_clipboard("enter PASSWD:"));
+    }
+
+    /// -encodedcommand (without trailing space) does not trigger false positive.
+    #[test]
+    fn classify_clipboard_encodedcommand_no_trailing_space_benign() {
+        // The check is for "-encodedcommand " (with trailing space) — without space is benign.
+        assert!(!classify_clipboard("info about -encodedcommandline option"));
+    }
+
+    /// https URL with IP but no slash or colon after IP → still suspicious.
+    #[test]
+    fn classify_clipboard_https_ip_no_path_suspicious() {
+        assert!(classify_clipboard("https://172.16.0.1"));
+    }
+
+    // ── ClipboardEntry serialization ──────────────────────────────────
+
+    #[test]
+    fn clipboard_entry_serializes() {
+        let entry = ClipboardEntry {
+            format: 1,
+            format_name: "CF_TEXT".to_string(),
+            data_size: 42,
+            preview: "hello world".to_string(),
+            owner_pid: 1234,
+            is_suspicious: false,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"format\":1"));
+        assert!(json.contains("\"format_name\":\"CF_TEXT\""));
+        assert!(json.contains("\"data_size\":42"));
+        assert!(json.contains("\"preview\":\"hello world\""));
+        assert!(json.contains("\"owner_pid\":1234"));
+        assert!(json.contains("\"is_suspicious\":false"));
+    }
+
+    #[test]
+    fn clipboard_entry_suspicious_serializes() {
+        let entry = ClipboardEntry {
+            format: 13,
+            format_name: "CF_UNICODETEXT".to_string(),
+            data_size: 256,
+            preview: "password: hunter2".to_string(),
+            owner_pid: 0,
+            is_suspicious: true,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"format_name\":\"CF_UNICODETEXT\""));
+    }
+
+    // ── contains_ip_url edge cases ────────────────────────────────────
+
+    #[test]
+    fn contains_ip_url_with_port_only_suspicious() {
+        // https://10.0.0.1:443 — has colon after IP (port), still recognized as IP.
+        assert!(contains_ip_url("https://10.0.0.1:443"));
+    }
+
+    #[test]
+    fn contains_ip_url_hostname_not_ip() {
+        assert!(!contains_ip_url("http://malware-c2.ru/cmd"));
+    }
+
+    #[test]
+    fn contains_ip_url_ip_without_dot_not_recognized() {
+        // "1234" with no dot — not a valid IP pattern.
+        assert!(!contains_ip_url("http://12345/path"));
+    }
+
+    #[test]
+    fn contains_ip_url_empty_string() {
+        assert!(!contains_ip_url(""));
     }
 
     // ── format_name tests ─────────────────────────────────────────────
