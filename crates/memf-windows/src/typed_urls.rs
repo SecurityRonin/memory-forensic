@@ -892,4 +892,183 @@ mod tests {
         assert_eq!(TYPED_URLS_TIME_PATH[0], "Software");
         assert_eq!(TYPED_URLS_TIME_PATH[3], "TypedURLsTime");
     }
+
+    // ── walk_typed_urls body coverage ────────────────────────────────
+    //
+    // walk_typed_urls reads:
+    //   1. hive_addr + HBASE_BLOCK_ROOT_CELL_OFFSET (0x24) → root_cell_index
+    //   2. root nk cell at cell_address(hive_addr, root_cell_index)
+    //   3. NK_SIGNATURE check
+    //   4. Subkey navigation: Software → Microsoft → Internet Explorer → TypedURLs
+    //
+    // We provide synthetic physical memory so the body is exercised
+    // past the zero-guard and the root-cell read.
+
+    use memf_core::test_builders::flags;
+
+    fn make_typed_url_isf() -> serde_json::Value {
+        IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .build_json()
+    }
+
+    /// Hive mapped; root_cell_index = 0 → cell_address = hive + HBIN_START_OFFSET;
+    /// the cell page is mapped with data that has raw_size=0 → read_cell_data
+    /// returns empty Vec → sig check fails → empty result.
+    #[test]
+    fn walk_typed_urls_root_cell_zero_index_no_nk() {
+        let hive_vaddr: u64 = 0x0020_0000;
+        let hive_paddr: u64 = 0x0020_0000;
+
+        // cell_address(hive_vaddr, 0) = hive_vaddr + HBIN_START_OFFSET
+        // = 0x0020_0000 + 0x1000 = 0x0021_0000
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = cell_page_vaddr;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        // root_cell_index at offset 0x24 = 0
+        hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        // cell page: i32 size = 0 at offset 0 → abs_size=0 → read_cell_data returns empty
+        let cell_page = vec![0u8; 0x1000];
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "alice").unwrap();
+        assert!(result.is_empty(), "empty/bad nk cell → empty Vec");
+    }
+
+    /// Hive mapped; root cell has data but wrong signature → empty Vec.
+    #[test]
+    fn walk_typed_urls_root_cell_wrong_signature() {
+        let hive_vaddr: u64 = 0x0030_0000;
+        let hive_paddr: u64 = 0x0030_0000;
+        let root_cell_index: u32 = 0x00; // cell at hive + HBIN_START_OFFSET + 0
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = cell_page_vaddr;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // allocated cell: size = -128 (0x80)
+        let raw_size: i32 = -128i32;
+        cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
+        // data[0..2] = 0xDEAD (not NK_SIGNATURE) → sig check fails
+        cell_page[4..6].copy_from_slice(&0xDEADu16.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "bob").unwrap();
+        assert!(result.is_empty(), "wrong NK_SIGNATURE → empty Vec");
+    }
+
+    /// Hive mapped; root nk cell has NK_SIGNATURE but stable_subkey_count=0
+    /// → find_subkey("Software") returns None → empty Vec.
+    #[test]
+    fn walk_typed_urls_root_nk_no_subkeys() {
+        let hive_vaddr: u64 = 0x0040_0000;
+        let hive_paddr: u64 = 0x0040_0000;
+        let root_cell_index: u32 = 0x00;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = cell_page_vaddr;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        let raw_size: i32 = -0x80i32;
+        cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
+        // NK_SIGNATURE at data[0..2]
+        cell_page[4..6].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // stable_subkey_count at nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..+4]
+        // = data[4 + 0x14 .. 4 + 0x18] = 0 (already zero from initialisation)
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "carol").unwrap();
+        assert!(result.is_empty(), "no Software subkey → empty Vec");
+    }
+
+    /// Hive mapped; root nk has NK_SIGNATURE and a non-zero stable_subkey_count
+    /// pointing to a subkeys list cell that has an unknown list signature →
+    /// find_subkey returns None → empty Vec.
+    #[test]
+    fn walk_typed_urls_unknown_list_signature() {
+        let hive_vaddr: u64 = 0x0050_0000;
+        let hive_paddr: u64 = 0x0050_0000;
+        let root_cell_index: u32 = 0x00;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = cell_page_vaddr;
+
+        // subkeys_list_cell index = 0x80; it lives at same page offset 0x80
+        let subkeys_list_cell: u32 = 0x80;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // Root nk cell at offset 0 in cell_page:
+        let raw_size: i32 = -0x100i32;
+        cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
+        let nk_off = 4usize;
+        cell_page[nk_off..nk_off + 2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // stable_subkey_count = 1 at nk_data[0x14] = cell_page[nk_off + 0x14]
+        cell_page[nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET..nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        // stable_subkeys_list = subkeys_list_cell at nk_data[0x1C]
+        cell_page[nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET..nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&subkeys_list_cell.to_le_bytes());
+
+        // List cell at offset subkeys_list_cell in cell_page:
+        let list_raw_size: i32 = -0x80i32;
+        let lc = subkeys_list_cell as usize;
+        cell_page[lc..lc + 4].copy_from_slice(&list_raw_size.to_le_bytes());
+        // list sig = 0xFFFF (unknown) → match falls through to `_ => {}`
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        // count = 0
+        cell_page[lc + 6..lc + 8].copy_from_slice(&0u16.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "dave").unwrap();
+        assert!(result.is_empty(), "unknown list sig → Software not found → empty Vec");
+    }
 }

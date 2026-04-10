@@ -866,4 +866,138 @@ mod tests {
         assert!(MAX_USERS > 0);
         assert!(MAX_USERS <= 65536);
     }
+
+    // ── walk_sam_users body coverage ─────────────────────────────────
+    //
+    // These tests exercise the walk body past the hive_addr=0 guard by
+    // providing minimal synthetic physical memory.  All addresses are
+    // kept well below 16 MB so they fit inside the SyntheticPhysMem
+    // image that PageTableBuilder allocates.
+
+    /// Hive at a mapped vaddr whose page contains a non-zero BaseBlock
+    /// pointer.  Navigation fails gracefully once the BaseBlock page
+    /// returns a zero root_cell_off → empty Vec.
+    #[test]
+    fn walk_sam_users_mapped_hive_base_block_zero_root_cell() {
+        // Layout (all virtual = physical for simplicity):
+        //   hive_vaddr  = 0x0020_0000  (mapped → paddr 0x0020_0000)
+        //   base_block  = 0x0021_0000  (mapped → paddr 0x0021_0000)
+        //
+        // At hive_vaddr + 0x10 (BaseBlock offset) we write base_block.
+        // At base_block  + 0x24 (root_cell_off) we write 0 → early return.
+        let hive_vaddr: u64 = 0x0020_0000;
+        let hive_paddr: u64 = 0x0020_0000;
+        let base_block: u64 = 0x0021_0000;
+        let base_block_paddr: u64 = 0x0021_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        // root_cell_off at offset 0x24 = 0 → early return
+        bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "zero root_cell_off should return empty Vec");
+    }
+
+    /// Hive with a non-zero root_cell_off exercises the storage/flat_base
+    /// code path and then cell navigation, which fails (no hbin data) →
+    /// empty Vec.
+    #[test]
+    fn walk_sam_users_mapped_hive_nonzero_root_cell_no_hbin() {
+        let hive_vaddr: u64 = 0x0030_0000;
+        let hive_paddr: u64 = 0x0030_0000;
+        let base_block: u64 = 0x0031_0000;
+        let base_block_paddr: u64 = 0x0031_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        // BaseBlock at offset 0x10
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        // Storage at offset 0x30 = 0 → flat_base = base_block + 0x1000
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        // root_cell_off at 0x24 = 0x20 (non-zero, non-MAX)
+        bb_page[0x24..0x28].copy_from_slice(&0x20u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // flat_base = base_block + 0x1000 = 0x0032_0000; cell addr not mapped
+        // → read_cell_addr returns 0 → empty Vec
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Exercises the Storage fallback: Storage pointer is non-zero.
+    /// Cell navigation fails because the hbin area is not fully mapped.
+    #[test]
+    fn walk_sam_users_storage_ptr_nonzero_graceful() {
+        let hive_vaddr: u64 = 0x0040_0000;
+        let hive_paddr: u64 = 0x0040_0000;
+        let base_block: u64 = 0x0041_0000;
+        let base_block_paddr: u64 = 0x0041_0000;
+        let storage_ptr: u64 = 0x0042_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        // Storage at 0x30 = non-zero storage_ptr
+        hive_page[0x30..0x38].copy_from_slice(&storage_ptr.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&0x20u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // flat_base = storage_ptr (not mapped) → read_cell_addr → 0 → empty
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty());
+    }
 }

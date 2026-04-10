@@ -655,4 +655,133 @@ mod tests {
         assert!(MAX_CACHED_CREDS >= 10);
         assert!(MAX_CACHED_CREDS <= 1024);
     }
+
+    // ── walk_cached_credentials body coverage ────────────────────────
+    //
+    // The walker reads: hive BaseBlock → root_cell_off → flat_base
+    // → root_addr → Cache key → value list → NL$ entries.
+    // We provide synthetic physical memory so the body is exercised
+    // past the hive_addr=0 guard.
+
+    use memf_core::test_builders::flags;
+
+    fn make_cachedump_isf() -> serde_json::Value {
+        IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json()
+    }
+
+    /// Hive mapped, base_block pointer at hive+0x10 is zero → early return.
+    #[test]
+    fn walk_cached_creds_null_base_block() {
+        let hive_vaddr: u64 = 0x0020_0000;
+        let hive_paddr: u64 = 0x0020_0000;
+        // All zeros in hive page → base_block_addr = 0 → early return
+        let hive_page = vec![0u8; 0x1000];
+        let isf = make_cachedump_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "null base_block → empty Vec");
+    }
+
+    /// Hive mapped; base_block valid; root_cell = 0 → early return.
+    #[test]
+    fn walk_cached_creds_zero_root_cell() {
+        let hive_vaddr: u64 = 0x0030_0000;
+        let hive_paddr: u64 = 0x0030_0000;
+        let base_block: u64 = 0x0031_0000;
+        let base_block_paddr: u64 = 0x0031_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        // root_cell_off = 0 → early return
+        bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let isf = make_cachedump_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Hive mapped; base_block valid; root_cell u32::MAX sentinel → early return.
+    #[test]
+    fn walk_cached_creds_root_cell_sentinel() {
+        let hive_vaddr: u64 = 0x0040_0000;
+        let hive_paddr: u64 = 0x0040_0000;
+        let base_block: u64 = 0x0041_0000;
+        let base_block_paddr: u64 = 0x0041_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let isf = make_cachedump_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "u32::MAX root_cell → sentinel, empty Vec");
+    }
+
+    /// Hive mapped; base_block and root_cell valid; flat_base derived via
+    /// Storage=0 fallback; hbin area not mapped → read_cell_addr returns 0
+    /// → Cache key not found → empty Vec.
+    #[test]
+    fn walk_cached_creds_cache_key_not_found() {
+        let hive_vaddr: u64 = 0x0050_0000;
+        let hive_paddr: u64 = 0x0050_0000;
+        let base_block: u64 = 0x0051_0000;
+        let base_block_paddr: u64 = 0x0051_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        // Storage = 0 → flat_base = base_block + 0x1000 (not mapped)
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&0x20u32.to_le_bytes());
+
+        let isf = make_cachedump_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "hbin not mapped → Cache key not found → empty Vec");
+    }
 }

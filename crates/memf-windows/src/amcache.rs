@@ -897,4 +897,151 @@ mod tests {
         assert!(MAX_AMCACHE_ENTRIES > 0);
         assert!(MAX_AMCACHE_ENTRIES <= 100_000);
     }
+
+    // ── walk_amcache body coverage ────────────────────────────────────
+    //
+    // walk_amcache reads:
+    //   1. _HHIVE.BaseBlock pointer (via read_field or fallback at +0x10)
+    //   2. root_cell from _HBASE_BLOCK + 0x24
+    //   3. root nk cell (must have NK_SIGNATURE)
+    //   4. subkey navigation: InventoryApplicationFile / Root
+    //
+    // We provide synthetic physical memory for the first few reads so
+    // the walker body is exercised beyond the hive_addr=0 guard.
+
+    use memf_core::test_builders::flags;
+
+    fn make_amcache_isf() -> serde_json::Value {
+        // _HHIVE with BaseBlock field at 0x10 so read_field succeeds.
+        IsfBuilder::new()
+            .add_struct("_HHIVE", 0x200)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .build_json()
+    }
+
+    /// Mapped hive; BaseBlock ptr is valid but root_cell = 0 → early return.
+    #[test]
+    fn walk_amcache_mapped_hive_zero_root_cell() {
+        let hive_vaddr: u64 = 0x0020_0000;
+        let hive_paddr: u64 = 0x0020_0000;
+        let base_block: u64 = 0x0021_0000;
+        let base_block_paddr: u64 = 0x0021_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        // At offset 0x10: BaseBlock pointer
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        // root_cell at HBASE_BLOCK_ROOT_CELL_OFFSET (0x24) = 0
+        bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "zero root_cell → empty Vec");
+    }
+
+    /// Mapped hive; BaseBlock ptr valid; root_cell non-zero but cell data
+    /// does not carry NK_SIGNATURE → walk returns empty Vec.
+    #[test]
+    fn walk_amcache_mapped_hive_bad_nk_signature() {
+        let hive_vaddr: u64 = 0x0030_0000;
+        let hive_paddr: u64 = 0x0030_0000;
+        let base_block: u64 = 0x0031_0000;
+        let base_block_paddr: u64 = 0x0031_0000;
+
+        // root_cell = 0x20; cell lives at hive_base + HBIN_START_OFFSET + 0x20
+        // = base_block + 0x1000 + 0x20 = 0x0032_0020
+        let root_cell_index: u32 = 0x20;
+        let cell_vaddr: u64 = base_block + HBIN_START_OFFSET + root_cell_index as u64;
+        let cell_paddr: u64 = cell_vaddr; // identity map
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        // Build the cell at cell_vaddr: i32 size + data (without NK_SIGNATURE)
+        // size = -16 (allocated cell of 16 bytes)
+        let mut cell_page = vec![0u8; 0x1000];
+        let cell_offset = (root_cell_index as usize) % 0x1000;
+        let raw_size: i32 = -16i32;
+        cell_page[cell_offset..cell_offset + 4].copy_from_slice(&raw_size.to_le_bytes());
+        // data (12 bytes): all zeros → sig = 0x0000, not NK_SIGNATURE
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(cell_vaddr & !0xFFF, cell_paddr & !0xFFF, flags::WRITABLE)
+            .write_phys(cell_paddr & !0xFFF, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "bad NK_SIGNATURE → empty Vec");
+    }
+
+    /// Mapped hive; root cell has NK_SIGNATURE but no InventoryApplicationFile
+    /// or Root subkey → walk returns empty Vec.
+    #[test]
+    fn walk_amcache_mapped_hive_nk_no_subkeys() {
+        let hive_vaddr: u64 = 0x0040_0000;
+        let hive_paddr: u64 = 0x0040_0000;
+        let base_block: u64 = 0x0041_0000;
+        let base_block_paddr: u64 = 0x0041_0000;
+
+        let root_cell_index: u32 = 0x20;
+        let cell_page_base: u64 = base_block + HBIN_START_OFFSET; // 0x0042_0000
+        let cell_page_paddr: u64 = cell_page_base;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        // Build NK cell at offset root_cell_index within the HBIN page.
+        // Cell layout: [i32 size (negative)] [nk data...]
+        // nk data: NK_SIGNATURE at [0..2], stable_subkey_count=0 at [0x14..0x18]
+        let mut hbin_page = vec![0u8; 0x1000];
+        let cell_off = root_cell_index as usize;
+        let raw_size: i32 = -0x80i32; // 128-byte allocated cell
+        hbin_page[cell_off..cell_off + 4].copy_from_slice(&raw_size.to_le_bytes());
+        let nk_data_off = cell_off + 4;
+        // NK_SIGNATURE = 0x6B6E
+        hbin_page[nk_data_off..nk_data_off + 2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // stable_subkey_count = 0 at nk_data[0x14..0x18] → find_subkey returns None
+        // (already zero from vec initialisation)
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(cell_page_base, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &hbin_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "nk with no subkeys → empty Vec");
+    }
 }
