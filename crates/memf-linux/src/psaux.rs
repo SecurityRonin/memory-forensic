@@ -603,6 +603,176 @@ mod tests {
         assert!(result[0].tty.is_empty(), "signal=null → tty defaults to empty");
     }
 
+    // --- walk_psaux: two tasks, non-null cred/mm/signal/tty chain ---
+    // Exercises the psaux loop body (lines 137-146) with a second task AND
+    // read_cred_ids with non-null cred (lines 234-241),
+    // read_mm_stats with non-null mm (lines 248-259),
+    // read_tty_name with non-null signal+tty (lines 266-281).
+    #[test]
+    fn walk_psaux_with_two_tasks_and_full_chains() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Memory layout (all physical addresses < 16 MB):
+        //   init_task  @ init_vaddr  / init_paddr
+        //   task2      @ t2_vaddr    / t2_paddr
+        //   cred       @ cred_vaddr  / cred_paddr
+        //   mm_struct  @ mm_vaddr    / mm_paddr
+        //   signal     @ sig_vaddr   / sig_paddr
+        //   tty        @ tty_vaddr   / tty_paddr
+
+        let tasks_offset:    u64 = 0x10;
+        let pid_offset:      u64 = 0x00;
+        let comm_offset:     u64 = 0x20;
+        let state_offset:    u64 = 0x08;
+        let real_parent_off: u64 = 0x40;
+        let cred_offset:     u64 = 0x48;
+        let mm_offset:       u64 = 0x50;
+        let signal_offset:   u64 = 0x58;
+        let static_prio_off: u64 = 0x60;
+        let flags_offset:    u64 = 0x64;
+
+        let cred_uid_off:    u64 = 0x04;
+        let cred_gid_off:    u64 = 0x08;
+        let total_vm_off:    u64 = 0x00;
+        let rss_stat_off:    u64 = 0x08;
+        let sig_tty_off:     u64 = 0x00;
+        let tty_name_off:    u64 = 0x00;
+
+        let init_vaddr: u64 = 0xFFFF_8800_00E0_0000;
+        let init_paddr: u64 = 0x00E0_0000;
+        let t2_vaddr:   u64 = 0xFFFF_8800_00E1_0000;
+        let t2_paddr:   u64 = 0x00E1_0000;
+        let cred_vaddr: u64 = 0xFFFF_8800_00E2_0000;
+        let cred_paddr: u64 = 0x00E2_0000;
+        let mm_vaddr:   u64 = 0xFFFF_8800_00E3_0000;
+        let mm_paddr:   u64 = 0x00E3_0000;
+        let sig_vaddr:  u64 = 0xFFFF_8800_00E4_0000;
+        let sig_paddr:  u64 = 0x00E4_0000;
+        let tty_vaddr:  u64 = 0xFFFF_8800_00E5_0000;
+        let tty_paddr:  u64 = 0x00E5_0000;
+
+        // init_task page: pid=0, tasks.next → t2_list_node
+        let mut init_page = [0u8; 4096];
+        let t2_list_node = t2_vaddr + tasks_offset;
+        init_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&t2_list_node.to_le_bytes());
+        init_page[comm_offset as usize..comm_offset as usize + 7]
+            .copy_from_slice(b"swapper");
+        // cred=0, mm=0, signal=0 for init
+
+        // task2 page: pid=42, tasks.next → init list node (wraps back)
+        let mut t2_page = [0u8; 4096];
+        t2_page[pid_offset as usize..pid_offset as usize + 4]
+            .copy_from_slice(&42u32.to_le_bytes());
+        t2_page[state_offset as usize..state_offset as usize + 4]
+            .copy_from_slice(&1u32.to_le_bytes()); // Sleeping
+        let init_list_node = init_vaddr + tasks_offset;
+        t2_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&init_list_node.to_le_bytes());
+        t2_page[comm_offset as usize..comm_offset as usize + 4]
+            .copy_from_slice(b"bash");
+        // real_parent = init_vaddr (so ppid reads init's pid=0)
+        t2_page[real_parent_off as usize..real_parent_off as usize + 8]
+            .copy_from_slice(&init_vaddr.to_le_bytes());
+        // cred → cred_vaddr
+        t2_page[cred_offset as usize..cred_offset as usize + 8]
+            .copy_from_slice(&cred_vaddr.to_le_bytes());
+        // mm → mm_vaddr
+        t2_page[mm_offset as usize..mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+        // signal → sig_vaddr
+        t2_page[signal_offset as usize..signal_offset as usize + 8]
+            .copy_from_slice(&sig_vaddr.to_le_bytes());
+        // static_prio = 120 → nice = 0
+        t2_page[static_prio_off as usize..static_prio_off as usize + 4]
+            .copy_from_slice(&120i32.to_le_bytes());
+
+        // cred page: uid=1000, gid=2000
+        let mut cred_page = [0u8; 4096];
+        cred_page[cred_uid_off as usize..cred_uid_off as usize + 4]
+            .copy_from_slice(&1000u32.to_le_bytes());
+        cred_page[cred_gid_off as usize..cred_gid_off as usize + 4]
+            .copy_from_slice(&2000u32.to_le_bytes());
+
+        // mm_struct page: total_vm=256, rss_stat=128
+        let mut mm_page = [0u8; 4096];
+        mm_page[total_vm_off as usize..total_vm_off as usize + 8]
+            .copy_from_slice(&256u64.to_le_bytes());
+        mm_page[rss_stat_off as usize..rss_stat_off as usize + 8]
+            .copy_from_slice(&128u64.to_le_bytes());
+
+        // signal_struct page: tty @ 0 = tty_vaddr
+        let mut sig_page = [0u8; 4096];
+        sig_page[sig_tty_off as usize..sig_tty_off as usize + 8]
+            .copy_from_slice(&tty_vaddr.to_le_bytes());
+
+        // tty_struct page: name = "pts/0\0"
+        let mut tty_page = [0u8; 4096];
+        tty_page[tty_name_off as usize..tty_name_off as usize + 6]
+            .copy_from_slice(b"pts/0\0");
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", init_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", pid_offset, "unsigned int")
+            .add_field("task_struct", "comm", comm_offset, "char")
+            .add_field("task_struct", "state", state_offset, "int")
+            .add_field("task_struct", "real_parent", real_parent_off, "pointer")
+            .add_field("task_struct", "cred", cred_offset, "pointer")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_field("task_struct", "signal", signal_offset, "pointer")
+            .add_field("task_struct", "static_prio", static_prio_off, "int")
+            .add_field("task_struct", "flags", flags_offset, "unsigned int")
+            .add_struct("cred", 0x80)
+            .add_field("cred", "uid", cred_uid_off, "unsigned int")
+            .add_field("cred", "gid", cred_gid_off, "unsigned int")
+            .add_struct("mm_struct", 0x200)
+            .add_field("mm_struct", "total_vm", total_vm_off, "unsigned long")
+            .add_field("mm_struct", "rss_stat", rss_stat_off, "unsigned long")
+            .add_struct("signal_struct", 0x200)
+            .add_field("signal_struct", "tty", sig_tty_off, "pointer")
+            .add_struct("tty_struct", 0x200)
+            .add_field("tty_struct", "name", tty_name_off, "char")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, ptf::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .map_4k(t2_vaddr, t2_paddr, ptf::WRITABLE)
+            .write_phys(t2_paddr, &t2_page)
+            .map_4k(cred_vaddr, cred_paddr, ptf::WRITABLE)
+            .write_phys(cred_paddr, &cred_page)
+            .map_4k(mm_vaddr, mm_paddr, ptf::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(sig_vaddr, sig_paddr, ptf::WRITABLE)
+            .write_phys(sig_paddr, &sig_page)
+            .map_4k(tty_vaddr, tty_paddr, ptf::WRITABLE)
+            .write_phys(tty_paddr, &tty_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_psaux(&reader).unwrap();
+        // Should find both init_task (pid=0) and task2 (pid=42), sorted by pid
+        assert_eq!(result.len(), 2, "both tasks should appear");
+        let t2 = result.iter().find(|p| p.pid == 42).expect("task2 missing");
+        assert_eq!(t2.uid, 1000);
+        assert_eq!(t2.gid, 2000);
+        assert_eq!(t2.vsize, 256 * 4096, "vsize = total_vm * PAGE_SIZE");
+        assert_eq!(t2.rss, 128);
+        assert_eq!(t2.tty, "pts/0");
+        assert_eq!(t2.state, "Sleeping");
+        assert_eq!(t2.nice, 0); // 120 - 120 = 0
+    }
+
     // --- walk_psaux: symbol present, self-pointing tasks list → exercises loop body ---
     // Walks the tasks list (finding no additional tasks) and reads init_task itself.
     #[test]

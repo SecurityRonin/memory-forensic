@@ -460,6 +460,117 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // walk_check_creds: TWO tasks with same cred pointer but different TGIDs
+    // Exercises the cred-sharing detection logic (lines 121-185):
+    //   - by_tgid.len() >= 2 → cross-tgid sharing detected → uid read → results pushed
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_check_creds_two_tasks_share_cred_different_tgids_flagged() {
+        // Memory layout:
+        //   init_task  @ init_vaddr / init_paddr
+        //     pid=100, tgid=100, cred=cred_vaddr, tasks.next → t2 list node
+        //   task2      @ t2_vaddr   / t2_paddr
+        //     pid=200, tgid=200, cred=cred_vaddr  (SAME cred, different tgid → suspicious)
+        //     tasks.next → init_vaddr + tasks_offset  (wraps back)
+        //   cred       @ cred_vaddr / cred_paddr
+        //     uid=1000  (non-zero, so sharing is suspicious)
+
+        let tasks_offset: u64 = 0x10;
+        let pid_offset:   u64 = 0x00;
+        let tgid_offset:  u64 = 0x04;
+        let comm_offset:  u64 = 0x20;
+        let cred_offset:  u64 = 0x60;
+        let uid_cred_off: u64 = 0x04;
+
+        let init_vaddr: u64 = 0xFFFF_8800_0090_0000;
+        let init_paddr: u64 = 0x0090_0000;
+        let t2_vaddr:   u64 = 0xFFFF_8800_0091_0000;
+        let t2_paddr:   u64 = 0x0091_0000;
+        let cred_vaddr: u64 = 0xFFFF_8800_0092_0000;
+        let cred_paddr: u64 = 0x0092_0000;
+
+        // init_task page
+        let mut init_page = [0u8; 4096];
+        init_page[pid_offset as usize..pid_offset as usize + 4]
+            .copy_from_slice(&100u32.to_le_bytes());
+        init_page[tgid_offset as usize..tgid_offset as usize + 4]
+            .copy_from_slice(&100u32.to_le_bytes());
+        let t2_list_node = t2_vaddr + tasks_offset;
+        init_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&t2_list_node.to_le_bytes());
+        init_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&t2_list_node.to_le_bytes()); // prev
+        init_page[comm_offset as usize..comm_offset as usize + 5]
+            .copy_from_slice(b"evil1");
+        init_page[cred_offset as usize..cred_offset as usize + 8]
+            .copy_from_slice(&cred_vaddr.to_le_bytes());
+
+        // task2 page
+        let mut t2_page = [0u8; 4096];
+        t2_page[pid_offset as usize..pid_offset as usize + 4]
+            .copy_from_slice(&200u32.to_le_bytes());
+        t2_page[tgid_offset as usize..tgid_offset as usize + 4]
+            .copy_from_slice(&200u32.to_le_bytes()); // different tgid
+        let init_list_node = init_vaddr + tasks_offset;
+        t2_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&init_list_node.to_le_bytes()); // wraps back to init
+        t2_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&init_list_node.to_le_bytes());
+        t2_page[comm_offset as usize..comm_offset as usize + 5]
+            .copy_from_slice(b"evil2");
+        t2_page[cred_offset as usize..cred_offset as usize + 8]
+            .copy_from_slice(&cred_vaddr.to_le_bytes()); // SAME cred pointer
+
+        // cred page: uid=1000 at uid_cred_off
+        let mut cred_page = [0u8; 4096];
+        cred_page[uid_cred_off as usize..uid_cred_off as usize + 4]
+            .copy_from_slice(&1000u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", init_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_field("list_head", "prev", 0x08u64, "pointer")
+            .add_struct("task_struct", 0x200)
+            .add_field("task_struct", "pid", pid_offset, "unsigned int")
+            .add_field("task_struct", "tgid", tgid_offset, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "comm", comm_offset, "char")
+            .add_field("task_struct", "cred", cred_offset, "pointer")
+            .add_struct("cred", 0x80)
+            .add_field("cred", "uid", uid_cred_off, "unsigned int")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .map_4k(t2_vaddr, t2_paddr, flags::WRITABLE)
+            .write_phys(t2_paddr, &t2_page)
+            .map_4k(cred_vaddr, cred_paddr, flags::WRITABLE)
+            .write_phys(cred_paddr, &cred_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_check_creds(&reader).unwrap();
+        // Both tasks share the same cred across different TGIDs with uid=1000 → suspicious
+        assert!(
+            !result.is_empty(),
+            "cross-tgid cred sharing should produce suspicious entries"
+        );
+        // Both tasks should appear (each is suspicious since uid=1000, non-kernel-thread)
+        assert_eq!(result.len(), 2, "both tasks should be flagged");
+        for entry in &result {
+            assert!(entry.is_suspicious);
+            assert_eq!(entry.cred_address, cred_vaddr);
+            assert_eq!(entry.uid, 1000);
+        }
+    }
+
+    // ---------------------------------------------------------------
     // walk_check_creds: missing tasks field → empty Vec (graceful degradation)
     // ---------------------------------------------------------------
 

@@ -812,6 +812,144 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // walk_cgroups: full chain with non-zero kn_ptr → build_kernfs_path called
+    // Exercises build_kernfs_path body (lines 205-253): name pointer readable,
+    // parent pointer readable, loop walks one node then hits a null parent.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_cgroups_kn_ptr_nonzero_builds_path() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags as ptflags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Memory layout (all physical addrs < 16 MB):
+        //   task        @ task_vaddr  / task_paddr
+        //   css_set     @ cssset_vaddr / cssset_paddr
+        //   css         @ css_vaddr   / css_paddr
+        //   cgroup_node @ cgroup_vaddr / cgroup_paddr
+        //   kn_node     @ kn_vaddr    / kn_paddr        (kernfs_node)
+        //   name_str    @ name_vaddr  / name_paddr       ("docker\0")
+        //
+        // Offsets (all using defaults / ISF-specified):
+        //   task.cgroups       @ 64
+        //   css_set.subsys     @ 0x10
+        //   cgroup_ss.cgroup   @ 0x08
+        //   cgroup.kn          @ 0x48
+        //   kernfs_node.name   @ 0x48  (pointer to name string)
+        //   kernfs_node.parent @ 0x10  (pointer to parent node, null = root)
+
+        let task_vaddr:   u64 = 0xFFFF_8800_0079_0000;
+        let task_paddr:   u64 = 0x0079_0000;
+        let cssset_vaddr: u64 = 0xFFFF_8800_007A_0000;
+        let cssset_paddr: u64 = 0x007A_0000;
+        let css_vaddr:    u64 = 0xFFFF_8800_007B_0000;
+        let css_paddr:    u64 = 0x007B_0000;
+        let cgroup_vaddr: u64 = 0xFFFF_8800_007C_0000;
+        let cgroup_paddr: u64 = 0x007C_0000;
+        let kn_vaddr:     u64 = 0xFFFF_8800_007D_0000;
+        let kn_paddr:     u64 = 0x007D_0000;
+        let name_vaddr:   u64 = 0xFFFF_8800_007E_0000;
+        let name_paddr:   u64 = 0x007E_0000;
+
+        let cgroups_offset:    u64 = 64;
+        let subsys_offset:     u64 = 0x10;
+        let css_cgroup_offset: u64 = 0x08;
+        let cgroup_kn_offset:  u64 = 0x48;
+        let kn_name_offset:    u64 = 0x48;
+        let kn_parent_offset:  u64 = 0x10;
+
+        // task page
+        let mut task_page = [0u8; 4096];
+        task_page[cgroups_offset as usize..cgroups_offset as usize + 8]
+            .copy_from_slice(&cssset_vaddr.to_le_bytes());
+
+        // css_set page
+        let mut cssset_page = [0u8; 4096];
+        cssset_page[subsys_offset as usize..subsys_offset as usize + 8]
+            .copy_from_slice(&css_vaddr.to_le_bytes());
+
+        // css (cgroup_subsys_state) page
+        let mut css_page = [0u8; 4096];
+        css_page[css_cgroup_offset as usize..css_cgroup_offset as usize + 8]
+            .copy_from_slice(&cgroup_vaddr.to_le_bytes());
+
+        // cgroup page: kn @ 0x48 = kn_vaddr (non-zero)
+        let mut cgroup_page = [0u8; 4096];
+        cgroup_page[cgroup_kn_offset as usize..cgroup_kn_offset as usize + 8]
+            .copy_from_slice(&kn_vaddr.to_le_bytes());
+
+        // kernfs_node page:
+        //   name   @ kn_name_offset   = name_vaddr (pointer to name string)
+        //   parent @ kn_parent_offset = 0          (null = root, stops walk)
+        let mut kn_page = [0u8; 4096];
+        kn_page[kn_name_offset as usize..kn_name_offset as usize + 8]
+            .copy_from_slice(&name_vaddr.to_le_bytes());
+        // parent already 0
+
+        // name string page: "docker\0"
+        let mut name_page = [0u8; 4096];
+        name_page[..7].copy_from_slice(b"docker\0");
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "cgroups", 64u64, "pointer")
+            .add_struct("css_set", 256)
+            .add_field("css_set", "subsys", 0x10u64, "pointer")
+            .add_struct("cgroup_subsys_state", 256)
+            .add_field("cgroup_subsys_state", "cgroup", 0x08u64, "pointer")
+            .add_struct("cgroup", 512)
+            .add_field("cgroup", "kn", 0x48u64, "pointer")
+            .add_struct("kernfs_node", 512)
+            .add_field("kernfs_node", "name", 0x48u64, "pointer")
+            .add_field("kernfs_node", "parent", 0x10u64, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr,   task_paddr,   ptflags::WRITABLE)
+            .write_phys(task_paddr,   &task_page)
+            .map_4k(cssset_vaddr, cssset_paddr, ptflags::WRITABLE)
+            .write_phys(cssset_paddr, &cssset_page)
+            .map_4k(css_vaddr,    css_paddr,    ptflags::WRITABLE)
+            .write_phys(css_paddr,    &css_page)
+            .map_4k(cgroup_vaddr, cgroup_paddr, ptflags::WRITABLE)
+            .write_phys(cgroup_paddr, &cgroup_page)
+            .map_4k(kn_vaddr,     kn_paddr,     ptflags::WRITABLE)
+            .write_phys(kn_paddr,     &kn_page)
+            .map_4k(name_vaddr,   name_paddr,   ptflags::WRITABLE)
+            .write_phys(name_paddr,   &name_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let processes = vec![crate::ProcessInfo {
+            pid: 99,
+            ppid: 1,
+            comm: "nginx".to_string(),
+            state: crate::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        }];
+
+        let result = walk_cgroups(&reader, &processes).unwrap();
+        assert_eq!(result.len(), 1, "full chain should produce one CgroupInfo");
+        // build_kernfs_path reads "docker" as the leaf segment, parent=null → stops
+        // segments = ["docker"], reversed = ["docker"] → path = "/docker"
+        assert_eq!(result[0].cgroup_path, "/docker");
+        assert_eq!(result[0].pid, 99);
+        // /docker is not containerized (no container ID extracted this way) but
+        // classify_cgroup("/docker") → matches /docker/ prefix only if there's more after,
+        // actually "/docker" does not match "/docker/" since there's no trailing /id
+        // so is_containerized = false, is_suspicious = false (path != "/" and no "privileged")
+        assert!(!result[0].is_suspicious);
+    }
+
+    // -----------------------------------------------------------------------
     // CgroupInfo: Debug + Clone
     // -----------------------------------------------------------------------
 

@@ -385,6 +385,121 @@ mod tests {
         assert!(result.is_empty(), "failed walk_list → Err → continue → empty result");
     }
 
+    // -----------------------------------------------------------------------
+    // walk_kernel_timers: full path — non-zero vector_head + walk_list succeeds
+    // Exercises the loop body (lines 99-120): reads expires, function, classifies.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_kernel_timers_with_one_timer_in_vector() {
+        // Layout (all physical addresses < 16 MB):
+        //
+        //   bases_vaddr  / bases_paddr   — timer_base struct; vectors.0 @ offset 0
+        //   list_head_vaddr / list_head_paddr — the list_head sentinel (inode_list_head style)
+        //   timer_vaddr  / timer_paddr   — the timer_list struct
+        //
+        // vector_head = bases_vaddr read via read_pointer(bases_addr, "timer_base", "vectors.0")
+        // walk_list(vector_head, "timer_list", "entry") needs:
+        //   list_head.next offset (list_head struct)
+        //   timer_list.entry offset
+        //
+        // We use a simple one-timer linked list:
+        //   list_head sentinel @ list_head_vaddr: next → timer_vaddr + entry_offset
+        //   timer_list @ timer_vaddr:
+        //     entry (list_head) @ entry_offset: next → list_head_vaddr (wraps back)
+        //     expires @ expires_offset = 9999
+        //     function @ function_offset = some addr OUTSIDE kernel text → suspicious
+
+        let bases_vaddr: u64     = 0xFFFF_8800_00D0_0000;
+        let bases_paddr: u64     = 0x00D0_0000;
+        let listhead_vaddr: u64  = 0xFFFF_8800_00D1_0000;
+        let listhead_paddr: u64  = 0x00D1_0000;
+        let timer_vaddr: u64     = 0xFFFF_8800_00D2_0000;
+        let timer_paddr: u64     = 0x00D2_0000;
+
+        let entry_offset:    u64 = 0x00; // timer_list.entry (list_head embedded at start)
+        let expires_offset:  u64 = 0x10;
+        let function_offset: u64 = 0x18;
+
+        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
+        let kernel_end:   u64 = 0xFFFF_8000_00FF_FFFF;
+        // A function outside kernel text (module space) → suspicious
+        let suspicious_fn: u64 = 0xFFFF_C900_DEAD_BEEFu64;
+
+        // bases page: vectors.0 at offset 0 = listhead_vaddr
+        let mut bases_page = [0u8; 4096];
+        bases_page[0..8].copy_from_slice(&listhead_vaddr.to_le_bytes());
+
+        // list head sentinel page:
+        //   next @ 0 (list_head.next offset=0) → timer_vaddr + entry_offset
+        let timer_entry_node = timer_vaddr + entry_offset;
+        let mut listhead_page = [0u8; 4096];
+        listhead_page[0..8].copy_from_slice(&timer_entry_node.to_le_bytes());
+
+        // timer_list page:
+        //   entry.next @ 0 → listhead_vaddr   (next iteration hits head → walk ends)
+        //   expires    @ expires_offset = 9999
+        //   function   @ function_offset = suspicious_fn
+        let mut timer_page = [0u8; 4096];
+        timer_page[entry_offset as usize..entry_offset as usize + 8]
+            .copy_from_slice(&listhead_vaddr.to_le_bytes());
+        timer_page[expires_offset as usize..expires_offset as usize + 8]
+            .copy_from_slice(&9999u64.to_le_bytes());
+        timer_page[function_offset as usize..function_offset as usize + 8]
+            .copy_from_slice(&suspicious_fn.to_le_bytes());
+
+        let mut isf_builder = IsfBuilder::new()
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_struct("timer_base", 512)
+            .add_struct("timer_list", 64)
+            .add_field("timer_list", "entry", entry_offset, "pointer")
+            .add_field("timer_list", "expires", expires_offset, "unsigned long")
+            .add_field("timer_list", "function", function_offset, "pointer")
+            .add_symbol("timer_bases", bases_vaddr)
+            .add_symbol("_stext", kernel_start)
+            .add_symbol("_etext", kernel_end);
+
+        for i in 0..TIMER_WHEEL_GROUPS {
+            // All vectors point to offset 0 of bases_page (listhead_vaddr).
+            // That means every group finds the same single timer, but walk_list
+            // will succeed for all groups. For simplicity, only vectors.0 at offset 0
+            // actually has a non-zero value; the rest are at offset 0 too but that's fine —
+            // they'll all point to listhead_vaddr and each find the one timer.
+            // To avoid inflating the assertion, let's only wire vectors.0 to listhead_vaddr
+            // and place the remaining vector fields at a different offset (so they read 0).
+            let field_offset: u64 = if i == 0 { 0 } else { 8 + i as u64 * 8 };
+            isf_builder = isf_builder.add_field(
+                "timer_base",
+                &format!("vectors.{i}"),
+                field_offset,
+                "pointer",
+            );
+        }
+        let isf = isf_builder.build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bases_vaddr,    bases_paddr,    flags::WRITABLE)
+            .write_phys(bases_paddr,    &bases_page)
+            .map_4k(listhead_vaddr, listhead_paddr, flags::WRITABLE)
+            .write_phys(listhead_paddr, &listhead_page)
+            .map_4k(timer_vaddr,    timer_paddr,    flags::WRITABLE)
+            .write_phys(timer_paddr,    &timer_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_kernel_timers(&reader).unwrap();
+        // vectors.0 yields one timer; remaining vector offsets read 0 → skipped
+        assert!(!result.is_empty(), "should find at least one timer");
+        let timer = &result[0];
+        assert_eq!(timer.expires, 9999);
+        assert_eq!(timer.function, suspicious_fn);
+        assert!(timer.is_suspicious, "function outside kernel text must be suspicious");
+    }
+
     #[test]
     fn classify_kernel_timer_just_below_kernel_start_is_suspicious() {
         let kernel_start = 0xFFFF_8000_0000_0000u64;

@@ -779,6 +779,165 @@ mod tests {
         assert!(result.is_empty(), "null name_ptr → is_tmpfs false → no entries");
     }
 
+    // --- walk_tmpfs_files: full path — tmpfs sb with one real inode in the list ---
+    // Exercises the inode walk body (lines 165-207): reads i_ino, i_size, i_uid,
+    // i_gid, i_mode, timestamps, classifies the file, and pushes a TmpfsFileInfo.
+    #[test]
+    fn walk_tmpfs_tmpfs_sb_with_one_inode_produces_result() {
+        use memf_core::test_builders::flags as ptf;
+
+        // Memory layout (all physical addresses < 16 MB):
+        //   sym_vaddr         — super_blocks list head
+        //   sb_entry_vaddr    — the super_block
+        //   fs_type_vaddr     — file_system_type struct
+        //   name_str_vaddr    — "tmpfs\0"
+        //   inode_head_vaddr  — s_inodes list head (embedded in super_block at s_inodes_offset)
+        //   inode_vaddr       — the inode struct
+        //
+        // Note: s_inodes is embedded inside sb_entry_vaddr (same page), so inode_head_vaddr
+        // is actually sb_entry_vaddr + s_inodes_offset.
+        //
+        // The inode list is singly traversed via i_sb_list embedded in the inode:
+        //   inode_head (= sb_entry_vaddr + s_inodes_offset):
+        //     first 8 bytes (next ptr) = inode_vaddr + i_sb_list_offset
+        //   inode.i_sb_list (= inode_vaddr + i_sb_list_offset):
+        //     first 8 bytes (next ptr) = inode_head (wraps back → loop ends)
+
+        let sym_vaddr:    u64 = 0xFFFF_8800_0057_0000;
+        let sym_paddr:    u64 = 0x0057_0000;
+        let sb_vaddr:     u64 = 0xFFFF_8800_0058_0000;
+        let sb_paddr:     u64 = 0x0058_0000;
+        let fstype_vaddr: u64 = 0xFFFF_8800_0059_0000;
+        let fstype_paddr: u64 = 0x0059_0000;
+        let name_vaddr:   u64 = 0xFFFF_8800_005A_0000;
+        let name_paddr:   u64 = 0x005A_0000;
+        let inode_vaddr:  u64 = 0xFFFF_8800_005B_0000;
+        let inode_paddr:  u64 = 0x005B_0000;
+
+        // super_block field offsets:
+        let s_list_offset:   u64 = 0x00;
+        let s_type_offset:   u64 = 0x08;
+        let s_inodes_offset: u64 = 0x20;
+
+        // inode field offsets:
+        let i_sb_list_offset: u64 = 0x08;
+        let i_ino_offset:     u64 = 0x10;
+        let i_size_offset:    u64 = 0x18;
+        let i_uid_offset:     u64 = 0x20;
+        let i_gid_offset:     u64 = 0x24;
+        let i_mode_offset:    u64 = 0x28;
+        let i_atime_offset:   u64 = 0x30;
+        let i_mtime_offset:   u64 = 0x38;
+        let i_ctime_offset:   u64 = 0x40;
+
+        // The inode list head is embedded in the super_block at s_inodes_offset.
+        let inode_list_head = sb_vaddr + s_inodes_offset;
+        // The inode's i_sb_list node is at inode_vaddr + i_sb_list_offset.
+        let inode_list_node = inode_vaddr + i_sb_list_offset;
+
+        // super_blocks list head page: first 8 bytes = sb_entry's s_list
+        let mut sym_page = [0u8; 4096];
+        sym_page[0..8].copy_from_slice(&sb_vaddr.to_le_bytes());
+
+        // super_block page:
+        //   s_list.next    @ 0x00 = sym_vaddr  (wraps back → outer loop ends after this sb)
+        //   s_type         @ 0x08 = fstype_vaddr
+        //   s_inodes.next  @ 0x20 = inode_list_node  (points into inode)
+        let mut sb_page = [0u8; 4096];
+        sb_page[s_list_offset as usize..s_list_offset as usize + 8]
+            .copy_from_slice(&sym_vaddr.to_le_bytes());
+        sb_page[s_type_offset as usize..s_type_offset as usize + 8]
+            .copy_from_slice(&fstype_vaddr.to_le_bytes());
+        sb_page[s_inodes_offset as usize..s_inodes_offset as usize + 8]
+            .copy_from_slice(&inode_list_node.to_le_bytes());
+
+        // file_system_type page: first 8 bytes = name_vaddr
+        let mut fstype_page = [0u8; 4096];
+        fstype_page[0..8].copy_from_slice(&name_vaddr.to_le_bytes());
+
+        // name string page: "tmpfs\0"
+        let mut name_page = [0u8; 4096];
+        name_page[..6].copy_from_slice(b"tmpfs\0");
+
+        // inode page:
+        //   i_sb_list.next @ i_sb_list_offset = inode_list_head  (wraps back → loop ends)
+        //   i_ino          @ i_ino_offset    = 1234
+        //   i_size         @ i_size_offset   = 4096
+        //   i_uid          @ i_uid_offset    = 500
+        //   i_gid          @ i_gid_offset    = 501
+        //   i_mode         @ i_mode_offset   = 0o100755  (S_IFREG | rwxr-xr-x → executable → suspicious)
+        //   i_atime        @ i_atime_offset  = 1000
+        //   i_mtime        @ i_mtime_offset  = 2000
+        //   i_ctime        @ i_ctime_offset  = 3000
+        let mut inode_page = [0u8; 4096];
+        inode_page[i_sb_list_offset as usize..i_sb_list_offset as usize + 8]
+            .copy_from_slice(&inode_list_head.to_le_bytes());
+        inode_page[i_ino_offset as usize..i_ino_offset as usize + 8]
+            .copy_from_slice(&1234u64.to_le_bytes());
+        inode_page[i_size_offset as usize..i_size_offset as usize + 8]
+            .copy_from_slice(&4096u64.to_le_bytes());
+        inode_page[i_uid_offset as usize..i_uid_offset as usize + 4]
+            .copy_from_slice(&500u32.to_le_bytes());
+        inode_page[i_gid_offset as usize..i_gid_offset as usize + 4]
+            .copy_from_slice(&501u32.to_le_bytes());
+        inode_page[i_mode_offset as usize..i_mode_offset as usize + 4]
+            .copy_from_slice(&0o100_755u32.to_le_bytes());
+        inode_page[i_atime_offset as usize..i_atime_offset as usize + 8]
+            .copy_from_slice(&1000u64.to_le_bytes());
+        inode_page[i_mtime_offset as usize..i_mtime_offset as usize + 8]
+            .copy_from_slice(&2000u64.to_le_bytes());
+        inode_page[i_ctime_offset as usize..i_ctime_offset as usize + 8]
+            .copy_from_slice(&3000u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("super_blocks", sym_vaddr)
+            .add_struct("super_block", 0x400)
+            .add_field("super_block", "s_list", s_list_offset, "pointer")
+            .add_field("super_block", "s_type", s_type_offset, "pointer")
+            .add_field("super_block", "s_inodes", s_inodes_offset, "pointer")
+            .add_struct("inode", 0x200)
+            .add_field("inode", "i_sb_list", i_sb_list_offset, "pointer")
+            .add_field("inode", "i_ino", i_ino_offset, "unsigned long")
+            .add_field("inode", "i_size", i_size_offset, "long long")
+            .add_field("inode", "i_uid", i_uid_offset, "unsigned int")
+            .add_field("inode", "i_gid", i_gid_offset, "unsigned int")
+            .add_field("inode", "i_mode", i_mode_offset, "unsigned int")
+            .add_field("inode", "i_atime", i_atime_offset, "long long")
+            .add_field("inode", "i_mtime", i_mtime_offset, "long long")
+            .add_field("inode", "i_ctime", i_ctime_offset, "long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr,    sym_paddr,    ptf::WRITABLE)
+            .write_phys(sym_paddr,    &sym_page)
+            .map_4k(sb_vaddr,     sb_paddr,     ptf::WRITABLE)
+            .write_phys(sb_paddr,     &sb_page)
+            .map_4k(fstype_vaddr, fstype_paddr, ptf::WRITABLE)
+            .write_phys(fstype_paddr, &fstype_page)
+            .map_4k(name_vaddr,   name_paddr,   ptf::WRITABLE)
+            .write_phys(name_paddr,   &name_page)
+            .map_4k(inode_vaddr,  inode_paddr,  ptf::WRITABLE)
+            .write_phys(inode_paddr,  &inode_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tmpfs_files(&reader).unwrap();
+        assert_eq!(result.len(), 1, "should find exactly one inode");
+        let fi = &result[0];
+        assert_eq!(fi.inode_number, 1234);
+        assert_eq!(fi.file_size, 4096);
+        assert_eq!(fi.uid, 500);
+        assert_eq!(fi.gid, 501);
+        assert_eq!(fi.mode, 0o100_755);
+        assert_eq!(fi.atime_sec, 1000);
+        assert_eq!(fi.mtime_sec, 2000);
+        assert_eq!(fi.ctime_sec, 3000);
+        assert!(fi.is_suspicious, "executable regular file must be suspicious");
+    }
+
     // --- classify_tmpfs_file: TmpfsFileInfo struct coverage ---
     #[test]
     fn tmpfs_file_info_clone_debug_serialize() {

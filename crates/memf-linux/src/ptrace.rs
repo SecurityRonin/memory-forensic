@@ -442,6 +442,88 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // scan_ptrace_relationships: ptrace flags != 0, parent != real_parent,
+    // parent != 0 → reparenting detected → PtraceRelationship produced.
+    // Exercises lines 141-156 in read_ptrace_info.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scan_ptrace_detects_reparented_tracer() {
+        use memf_core::test_builders::flags as ptf;
+
+        // Two pages:
+        //   tracee task @ tracee_vaddr / tracee_paddr
+        //   tracer task @ tracer_vaddr / tracer_paddr
+        //
+        // tracee.ptrace     = 1   (being traced)
+        // tracee.parent     = tracer_vaddr   (reparented to tracer)
+        // tracee.real_parent = some other addr (different from parent)
+        //
+        // tracer.pid  = 777
+        // tracer.comm = "injector\0"
+
+        let tracee_vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let tracee_paddr: u64 = 0x00C0_0000;
+        let tracer_vaddr: u64 = 0xFFFF_8000_0061_0000;
+        let tracer_paddr: u64 = 0x00C1_0000;
+        // real_parent points somewhere different (we pick a dummy value; it won't be dereferenced)
+        let real_parent_vaddr: u64 = 0xFFFF_8000_0062_0000;
+
+        // Field offsets (matching ISF below):
+        //   pid          @ 0
+        //   ptrace       @ 8   (u32)
+        //   parent       @ 16  (u64 pointer)
+        //   real_parent  @ 24  (u64 pointer)
+        //   comm         @ 32  (char[16])
+
+        let mut tracee_data = vec![0u8; 512];
+        // pid = 555
+        tracee_data[0..4].copy_from_slice(&555u64.to_le_bytes()[..4]);
+        // ptrace = 1
+        tracee_data[8..12].copy_from_slice(&1u32.to_le_bytes());
+        // parent = tracer_vaddr
+        tracee_data[16..24].copy_from_slice(&tracer_vaddr.to_le_bytes());
+        // real_parent = real_parent_vaddr (different from parent)
+        tracee_data[24..32].copy_from_slice(&real_parent_vaddr.to_le_bytes());
+        // comm = "sshd\0"
+        tracee_data[32..36].copy_from_slice(b"sshd");
+
+        let mut tracer_data = vec![0u8; 512];
+        // pid = 777
+        tracer_data[0..8].copy_from_slice(&777u64.to_le_bytes());
+        // comm = "injector\0"
+        tracer_data[32..40].copy_from_slice(b"injector");
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "long")
+            .add_field("task_struct", "ptrace", 8, "unsigned int")
+            .add_field("task_struct", "parent", 16, "pointer")
+            .add_field("task_struct", "real_parent", 24, "pointer")
+            .add_field("task_struct", "comm", 32, "char");
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(tracee_vaddr, tracee_paddr, ptf::WRITABLE)
+            .write_phys(tracee_paddr, &tracee_data)
+            .map_4k(tracer_vaddr, tracer_paddr, ptf::WRITABLE)
+            .write_phys(tracer_paddr, &tracer_data);
+
+        let reader = make_reader(&isf, ptb);
+
+        let proc = fake_process(555, "sshd", tracee_vaddr);
+        let result = scan_ptrace_relationships(&reader, &[proc]).unwrap();
+
+        assert_eq!(result.len(), 1, "reparenting detected → one relationship");
+        let rel = &result[0];
+        assert_eq!(rel.tracer_pid, 777);
+        assert_eq!(rel.tracer_name, "injector");
+        assert_eq!(rel.tracee_pid, 555);
+        assert_eq!(rel.tracee_name, "sshd");
+        // "injector" tracing "sshd" (high-value target) → suspicious
+        assert!(rel.is_suspicious);
+    }
+
     #[test]
     fn ptrace_relationship_serializes() {
         let rel = PtraceRelationship {

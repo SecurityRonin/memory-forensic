@@ -479,6 +479,180 @@ mod tests {
         assert!(result.is_empty(), "xa_head==0 with in_use>0 should yield empty shm list");
     }
 
+    // -----------------------------------------------------------------------
+    // walk_semaphores: sem_ids present, in_use > 0, xa_head != 0 → loop body runs
+    // Exercises lines 183-219: reads kern_ipc_perm.key/id/mode, sem_nsems, owner_pid.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_semaphores_single_semaphore_set() {
+        let vaddr: u64 = 0xFFFF_8800_00F0_0000;
+        let paddr: u64 = 0x00F0_0000;
+        let mut data = vec![0u8; 4096];
+
+        // ipc_ids layout (sem_ids at vaddr):
+        //   in_use  (u32 at offset 0)     = 1
+        //   ipcs_idr (at offset 8): idr struct
+        //     idr_rt (at offset 0 within idr = offset 8 overall): radix_tree_root
+        //       xa_head (pointer at offset 0 within rtr = offset 8 overall)
+        //         = vaddr + 0x200  → sem_array at offset 0x200 in same page
+
+        data[0..4].copy_from_slice(&1u32.to_le_bytes()); // in_use = 1
+
+        let sem_array_addr = vaddr + 0x200;
+        data[8..16].copy_from_slice(&sem_array_addr.to_le_bytes()); // xa_head → sem_array
+
+        // sem_array at offset 0x200:
+        //   sem_perm.key    (u32 at +0) = 0xBEEF
+        //   sem_perm.id     (u32 at +4) = 77
+        //   sem_perm.mode   (u32 at +8) = 0o600
+        //   sem_nsems       (u32 at +64) = 5
+        //   sem_otime_high  (u32 at +68) = 999
+        let base = 0x200usize;
+        data[base..base + 4].copy_from_slice(&0xBEEFu32.to_le_bytes());
+        data[base + 4..base + 8].copy_from_slice(&77u32.to_le_bytes());
+        data[base + 8..base + 12].copy_from_slice(&0o600u32.to_le_bytes());
+        data[base + 64..base + 68].copy_from_slice(&5u32.to_le_bytes());
+        data[base + 68..base + 72].copy_from_slice(&999u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            .add_field("ipc_ids", "in_use", 0, "unsigned int")
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_struct("idr", 32)
+            .add_field("idr", "idr_rt", 0, "radix_tree_root")
+            .add_struct("radix_tree_root", 16)
+            .add_field("radix_tree_root", "xa_head", 0, "pointer")
+            .add_struct("kern_ipc_perm", 64)
+            .add_field("kern_ipc_perm", "key", 0, "unsigned int")
+            .add_field("kern_ipc_perm", "id", 4, "unsigned int")
+            .add_field("kern_ipc_perm", "mode", 8, "unsigned int")
+            .add_struct("sem_array", 128)
+            .add_field("sem_array", "sem_perm", 0, "kern_ipc_perm")
+            .add_field("sem_array", "sem_nsems", 64, "unsigned int")
+            .add_field("sem_array", "sem_otime_high", 68, "unsigned int")
+            .add_symbol("sem_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_semaphores(&reader).unwrap();
+        assert_eq!(result.len(), 1, "should find one semaphore set");
+        assert_eq!(result[0].key, 0xBEEF);
+        assert_eq!(result[0].semid, 77);
+        assert_eq!(result[0].num_sems, 5);
+        assert_eq!(result[0].owner_pid, 999);
+        assert_eq!(result[0].permissions, 0o600);
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_shm_segments: in_use read fails (ipc_ids.in_use field absent) → empty
+    // Exercises the Err branch at line 64 in walk_shm_segments.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_shm_in_use_read_fails_returns_empty() {
+        // shm_ids symbol present but ipc_ids.in_use field NOT in ISF →
+        // read_field(shm_ids_addr, "ipc_ids", "in_use") returns Err → Ok(Vec::new())
+        let vaddr: u64 = 0xFFFF_8800_00F1_0000;
+        let paddr: u64 = 0x00F1_0000;
+        let data = vec![1u8; 4096]; // all non-zero but field lookup will fail
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            // deliberately omit "in_use" field → read_field returns Err
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_symbol("shm_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_shm_segments(&reader).unwrap();
+        assert!(result.is_empty(), "missing in_use field → Err → empty vec");
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_semaphores: in_use read fails (ipc_ids.in_use field absent) → empty
+    // Exercises the Err branch at line 152 in walk_semaphores.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_sem_in_use_read_fails_returns_empty() {
+        let vaddr: u64 = 0xFFFF_8800_00F2_0000;
+        let paddr: u64 = 0x00F2_0000;
+        let data = vec![1u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            // deliberately omit "in_use" field
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_symbol("sem_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_semaphores(&reader).unwrap();
+        assert!(result.is_empty(), "missing in_use field → Err → empty vec");
+    }
+
+    // -----------------------------------------------------------------------
+    // IpcShmInfo / IpcSemInfo: Clone + Debug + Serialize
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ipc_shm_info_clone_debug_serialize() {
+        let info = IpcShmInfo {
+            key: 0xDEAD,
+            shmid: 42,
+            size: 65536,
+            owner_pid: 100,
+            creator_pid: 200,
+            permissions: 0o644,
+            num_attaches: 3,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.key, 0xDEAD);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("shmid"));
+        let json = serde_json::to_string(&cloned).unwrap();
+        assert!(json.contains("\"key\":57005"));
+    }
+
+    #[test]
+    fn ipc_sem_info_clone_debug_serialize() {
+        let info = IpcSemInfo {
+            key: 0xCAFE,
+            semid: 7,
+            num_sems: 4,
+            owner_pid: 99,
+            permissions: 0o755,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.semid, 7);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("num_sems"));
+        let json = serde_json::to_string(&cloned).unwrap();
+        assert!(json.contains("\"semid\":7"));
+    }
+
     #[test]
     fn walk_shm_single_segment() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
