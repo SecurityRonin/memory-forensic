@@ -134,4 +134,66 @@ mod tests {
         let result = check_hidden_modules(&reader);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn missing_module_list_field_returns_error() {
+        // modules symbol present but module.list field absent → Error
+        let isf = IsfBuilder::new()
+            .add_struct("module", 64)
+            .add_field("module", "name", 0, "char")
+            // list field intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("modules", 0xFFFF_8000_0010_0800)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_hidden_modules(&reader);
+        assert!(result.is_err(), "missing module.list field should return error");
+    }
+
+    #[test]
+    fn single_module_in_list() {
+        // Set up a modules list with one real module entry
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // modules list_head (sentinel) at +0x800
+        // It points to the module at +0x000 (our only module)
+        // The module.list field is at offset 56 within module struct
+        let module_list_vaddr = vaddr; // module is at the page start
+        let module_list_field_vaddr = module_list_vaddr + 56; // list field at offset 56
+
+        // modules sentinel at +0x800 points to module_list_field_vaddr as next
+        let modules_head = vaddr + 0x800;
+        data[0x800..0x808].copy_from_slice(&module_list_field_vaddr.to_le_bytes()); // next → module
+        data[0x808..0x810].copy_from_slice(&modules_head.to_le_bytes()); // prev → self
+
+        // module.name at offset 0: "rootkit\0"
+        data[0..8].copy_from_slice(b"rootkit\0");
+        // module.list at offset 56: next=modules_head (end of list), prev=modules_head
+        data[56..64].copy_from_slice(&modules_head.to_le_bytes());
+        data[64..72].copy_from_slice(&modules_head.to_le_bytes());
+        // module.module_core at offset 128: base address 0xFFFF_C000_0000_0000
+        let base: u64 = 0xFFFF_C000_0000_0000;
+        data[128..136].copy_from_slice(&base.to_le_bytes());
+        // module.core_size at offset 136: 4096
+        data[136..140].copy_from_slice(&4096u32.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let results = check_hidden_modules(&reader).unwrap();
+
+        assert_eq!(results.len(), 1, "should find one module");
+        assert!(results[0].name.starts_with("rootkit"), "name should match: {}", results[0].name);
+        assert_eq!(results[0].base_addr, base);
+        assert_eq!(results[0].size, 4096);
+        assert!(results[0].in_modules_list);
+        assert!(results[0].in_sysfs);
+    }
 }

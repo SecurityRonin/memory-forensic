@@ -38,15 +38,13 @@ pub fn classify_mount(fs_type: &str, dev_name: &str, mnt_root: &str) -> bool {
         "tmpfs" | "ramfs" => {
             !matches!(
                 mnt_root,
-                "/tmp" | "/run" | "/dev/shm" | "/run/lock" | "/run/user"
-                    | "/" // rootfs tmpfs is normal in containers
+                "/tmp" | "/run" | "/dev/shm" | "/run/lock" | "/run/user" | "/" // rootfs tmpfs is normal in containers
             ) && !mnt_root.starts_with("/run/")
                 && !mnt_root.starts_with("/tmp/")
                 && !mnt_root.starts_with("/dev/")
         }
         "overlay" | "overlayfs" => {
-            !mnt_root.starts_with("/var/lib/docker")
-                && !mnt_root.starts_with("/var/lib/containerd")
+            !mnt_root.starts_with("/var/lib/docker") && !mnt_root.starts_with("/var/lib/containerd")
         }
         _ => false,
     }
@@ -55,9 +53,7 @@ pub fn classify_mount(fs_type: &str, dev_name: &str, mnt_root: &str) -> bool {
 /// Walk mount list and return all mounted filesystems.
 ///
 /// Returns `Ok(Vec::new())` when `init_task` symbol is absent.
-pub fn walk_mounts<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-) -> Result<Vec<MountInfo>> {
+pub fn walk_mounts<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<MountInfo>> {
     let _ = reader;
     Ok(Vec::new())
 }
@@ -143,7 +139,11 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(init_task_vaddr, init_task_paddr, flags::PRESENT | flags::WRITABLE)
+            .map_4k(
+                init_task_vaddr,
+                init_task_paddr,
+                flags::PRESENT | flags::WRITABLE,
+            )
             .build();
 
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);

@@ -13,46 +13,40 @@ use crate::Result;
 
 /// BPF map type strings indexed by their kernel enum value.
 const BPF_MAP_TYPES: &[&str] = &[
-    "hash",             // 0
-    "array",            // 1
-    "prog_array",       // 2
-    "perf_event_array", // 3
-    "percpu_hash",      // 4
-    "percpu_array",     // 5
-    "stack_trace",      // 6
-    "cgroup_array",     // 7
-    "lru_hash",         // 8
-    "lru_percpu_hash",  // 9
-    "lpm_trie",         // 10
-    "array_of_maps",    // 11
-    "hash_of_maps",     // 12
-    "devmap",           // 13
-    "sockmap",          // 14
-    "cpumap",           // 15
-    "xskmap",           // 16
-    "sockhash",         // 17
-    "cgroup_storage",   // 18
-    "reuseport_sockarray", // 19
+    "hash",                  // 0
+    "array",                 // 1
+    "prog_array",            // 2
+    "perf_event_array",      // 3
+    "percpu_hash",           // 4
+    "percpu_array",          // 5
+    "stack_trace",           // 6
+    "cgroup_array",          // 7
+    "lru_hash",              // 8
+    "lru_percpu_hash",       // 9
+    "lpm_trie",              // 10
+    "array_of_maps",         // 11
+    "hash_of_maps",          // 12
+    "devmap",                // 13
+    "sockmap",               // 14
+    "cpumap",                // 15
+    "xskmap",                // 16
+    "sockhash",              // 17
+    "cgroup_storage",        // 18
+    "reuseport_sockarray",   // 19
     "percpu_cgroup_storage", // 20
-    "queue",            // 21
-    "stack",            // 22
-    "sk_storage",       // 23
-    "devmap_hash",      // 24
-    "struct_ops",       // 25
-    "ringbuf",          // 26
-    "inode_storage",    // 27
-    "task_storage",     // 28
+    "queue",                 // 21
+    "stack",                 // 22
+    "sk_storage",            // 23
+    "devmap_hash",           // 24
+    "struct_ops",            // 25
+    "ringbuf",               // 26
+    "inode_storage",         // 27
+    "task_storage",          // 28
 ];
 
 /// Known suspicious eBPF map names used by rootkits/implants.
-const SUSPICIOUS_MAP_NAMES: &[&str] = &[
-    "rootkit",
-    "hide_",
-    "intercept",
-    "keylog",
-    "exfil",
-    "covert",
-];
+const SUSPICIOUS_MAP_NAMES: &[&str] =
+    &["rootkit", "hide_", "intercept", "keylog", "exfil", "covert"];
 
 /// Convert a raw map type integer to its string name.
 pub fn map_type_name(raw: u32) -> String {
@@ -90,9 +84,7 @@ pub struct EbpfMapInfo {
 pub fn classify_ebpf_map(map_type: u32, name: &str, value_size: u32) -> bool {
     let _ = value_size;
     let name_lower = name.to_lowercase();
-    let suspicious_name = SUSPICIOUS_MAP_NAMES
-        .iter()
-        .any(|p| name_lower.contains(p));
+    let suspicious_name = SUSPICIOUS_MAP_NAMES.iter().any(|p| name_lower.contains(p));
 
     // perf_event_array (3) and ringbuf (26) are high-risk exfiltration channels
     let high_risk_type = matches!(map_type, 3 | 26);
@@ -161,6 +153,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn map_type_name_all_known() {
+        // Verify every known type string for indices 0–28
+        assert_eq!(map_type_name(0), "hash");
+        assert_eq!(map_type_name(1), "array");
+        assert_eq!(map_type_name(2), "prog_array");
+        assert_eq!(map_type_name(3), "perf_event_array");
+        assert_eq!(map_type_name(4), "percpu_hash");
+        assert_eq!(map_type_name(5), "percpu_array");
+        assert_eq!(map_type_name(6), "stack_trace");
+        assert_eq!(map_type_name(7), "cgroup_array");
+        assert_eq!(map_type_name(8), "lru_hash");
+        assert_eq!(map_type_name(9), "lru_percpu_hash");
+        assert_eq!(map_type_name(10), "lpm_trie");
+        assert_eq!(map_type_name(11), "array_of_maps");
+        assert_eq!(map_type_name(12), "hash_of_maps");
+        assert_eq!(map_type_name(13), "devmap");
+        assert_eq!(map_type_name(14), "sockmap");
+        assert_eq!(map_type_name(15), "cpumap");
+        assert_eq!(map_type_name(16), "xskmap");
+        assert_eq!(map_type_name(17), "sockhash");
+        assert_eq!(map_type_name(18), "cgroup_storage");
+        assert_eq!(map_type_name(19), "reuseport_sockarray");
+        assert_eq!(map_type_name(20), "percpu_cgroup_storage");
+        assert_eq!(map_type_name(21), "queue");
+        assert_eq!(map_type_name(22), "stack");
+        assert_eq!(map_type_name(23), "sk_storage");
+        assert_eq!(map_type_name(24), "devmap_hash");
+        assert_eq!(map_type_name(25), "struct_ops");
+        assert_eq!(map_type_name(26), "ringbuf");
+        assert_eq!(map_type_name(27), "inode_storage");
+        assert_eq!(map_type_name(28), "task_storage");
+    }
+
+    #[test]
+    fn map_type_name_unknown_index() {
+        // Index beyond the known range → "unknown(N)"
+        let name = map_type_name(999);
+        assert!(
+            name.starts_with("unknown("),
+            "out-of-range index should produce unknown(...): {name}"
+        );
+    }
+
+    #[test]
+    fn classify_ebpf_map_suspicious_name_patterns() {
+        // All SUSPICIOUS_MAP_NAMES patterns should flag any map type
+        for pattern in &["rootkit", "hide_", "intercept", "keylog", "exfil", "covert"] {
+            let name = format!("{pattern}data");
+            assert!(
+                classify_ebpf_map(0, &name, 8),
+                "pattern '{pattern}' in name should be suspicious"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_ebpf_map_case_insensitive_name() {
+        // Names are lowercased before matching
+        assert!(classify_ebpf_map(0, "ROOTKIT_MAP", 8));
+        assert!(classify_ebpf_map(0, "KeyLog_events", 8));
+    }
+
+    #[test]
+    fn classify_ebpf_map_benign_high_risk_type_with_benign_name() {
+        // perf_event_array (3) is always suspicious regardless of name
+        assert!(classify_ebpf_map(3, "benign_map", 64));
+        // ringbuf (26) is always suspicious
+        assert!(classify_ebpf_map(26, "my_output", 0));
+    }
+
     // RED test: walk_ebpf_maps with a symbol returns EbpfMapInfo entries.
     #[test]
     fn walk_ebpf_maps_with_symbol_returns_entries() {
@@ -180,7 +243,11 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(map_idr_vaddr, map_idr_paddr, flags::PRESENT | flags::WRITABLE)
+            .map_4k(
+                map_idr_vaddr,
+                map_idr_paddr,
+                flags::PRESENT | flags::WRITABLE,
+            )
             .build();
 
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);

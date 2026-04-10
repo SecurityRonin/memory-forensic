@@ -42,7 +42,10 @@ pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
     };
 
     let stext = reader.symbols().symbol_address("_stext").unwrap_or(0);
-    let etext = reader.symbols().symbol_address("_etext").unwrap_or(u64::MAX);
+    let etext = reader
+        .symbols()
+        .symbol_address("_etext")
+        .unwrap_or(u64::MAX);
 
     // ftrace_ops.list is a list_head at offset 8.
     // Walk the list: list_head.next points to ftrace_ops.list (i.e. ops+8).
@@ -229,7 +232,11 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mut mem) = PageTableBuilder::new()
-            .map_4k(list_head_vaddr, list_head_paddr, flags::PRESENT | flags::WRITABLE)
+            .map_4k(
+                list_head_vaddr,
+                list_head_paddr,
+                flags::PRESENT | flags::WRITABLE,
+            )
             .map_4k(ops_vaddr, ops_paddr, flags::PRESENT | flags::WRITABLE)
             .build();
         mem.write_bytes(list_head_paddr, &list_head_data);

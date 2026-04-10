@@ -145,11 +145,23 @@ mod tests {
         let kernel_end = 0xFFFF_8000_00FF_FFFFu64;
 
         // Address in module space, well outside kernel text
-        assert!(classify_afinfo_hook(0xFFFF_C900_DEAD_BEEF, kernel_start, kernel_end));
+        assert!(classify_afinfo_hook(
+            0xFFFF_C900_DEAD_BEEF,
+            kernel_start,
+            kernel_end
+        ));
         // Address just below kernel start
-        assert!(classify_afinfo_hook(kernel_start - 1, kernel_start, kernel_end));
+        assert!(classify_afinfo_hook(
+            kernel_start - 1,
+            kernel_start,
+            kernel_end
+        ));
         // Address just above kernel end
-        assert!(classify_afinfo_hook(kernel_end + 1, kernel_start, kernel_end));
+        assert!(classify_afinfo_hook(
+            kernel_end + 1,
+            kernel_start,
+            kernel_end
+        ));
     }
 
     #[test]
@@ -158,9 +170,17 @@ mod tests {
         let kernel_end = 0xFFFF_8000_00FF_FFFFu64;
 
         // Exactly at start
-        assert!(!classify_afinfo_hook(kernel_start, kernel_start, kernel_end));
+        assert!(!classify_afinfo_hook(
+            kernel_start,
+            kernel_start,
+            kernel_end
+        ));
         // In the middle
-        assert!(!classify_afinfo_hook(kernel_start + 0x1000, kernel_start, kernel_end));
+        assert!(!classify_afinfo_hook(
+            kernel_start + 0x1000,
+            kernel_start,
+            kernel_end
+        ));
         // Exactly at end
         assert!(!classify_afinfo_hook(kernel_end, kernel_start, kernel_end));
     }
@@ -189,7 +209,11 @@ mod tests {
         // tcp6 show → null (benign)
         assert!(!classify_afinfo_hook(0, kernel_start, kernel_end));
         // raw show → just past kernel end (hooked)
-        assert!(classify_afinfo_hook(kernel_end + 0x100, kernel_start, kernel_end));
+        assert!(classify_afinfo_hook(
+            kernel_end + 0x100,
+            kernel_start,
+            kernel_end
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -235,7 +259,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_check_afinfo(&reader).unwrap();
-        assert!(results.is_empty(), "expected empty results when no afinfo symbols exist");
+        assert!(
+            results.is_empty(),
+            "expected empty results when no afinfo symbols exist"
+        );
     }
 
     #[test]

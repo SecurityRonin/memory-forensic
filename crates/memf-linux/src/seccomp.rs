@@ -54,10 +54,7 @@ pub fn walk_seccomp_profiles<P: PhysicalMemoryProvider>(
 
     // Verify the required struct fields exist in the symbol table.
     // If seccomp fields are absent, the kernel may not have seccomp support.
-    let seccomp_offset = match reader
-        .symbols()
-        .field_offset("task_struct", "seccomp")
-    {
+    let seccomp_offset = match reader.symbols().field_offset("task_struct", "seccomp") {
         Some(off) => off,
         None => return Ok(Vec::new()),
     };
@@ -84,9 +81,7 @@ pub fn walk_seccomp_profiles<P: PhysicalMemoryProvider>(
 
         // Count filters in the chain if mode == 2 (filter) and symbols exist.
         let filter_count = if seccomp_mode == 2 {
-            if let (Some(_filter_off), Some(prev_off)) =
-                (filter_field_offset, prev_field_offset)
-            {
+            if let (Some(_filter_off), Some(prev_off)) = (filter_field_offset, prev_field_offset) {
                 let filter_ptr: u64 = reader
                     .read_field(seccomp_base, "seccomp", "filter")
                     .unwrap_or(0);
@@ -183,7 +178,10 @@ mod tests {
         let reader = make_reader(&isf, ptb);
 
         let result = walk_seccomp_profiles(&reader, &[]).unwrap();
-        assert!(result.is_empty(), "expected empty vec for empty process list");
+        assert!(
+            result.is_empty(),
+            "expected empty vec for empty process list"
+        );
     }
 
     #[test]

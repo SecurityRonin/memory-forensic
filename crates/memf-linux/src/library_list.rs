@@ -405,7 +405,7 @@ mod tests {
         data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes()); // vm_start
         data[0x308..0x310].copy_from_slice(&0x7F01_0000u64.to_le_bytes()); // vm_end
         data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
-        // vm_file at offset 40 → file struct at +0x400
+                                                                 // vm_file at offset 40 → file struct at +0x400
         let file_addr = vaddr + 0x400;
         data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes()); // vm_file
 
@@ -516,7 +516,10 @@ mod tests {
         let reader = make_test_reader(&data, vaddr, paddr);
         let libs = walk_library_list(&reader, vaddr, 1, "test").unwrap();
 
-        assert!(libs.is_empty(), "anonymous VMA should not produce library entries");
+        assert!(
+            libs.is_empty(),
+            "anonymous VMA should not produce library entries"
+        );
     }
 
     #[test]

@@ -132,11 +132,7 @@ pub fn parse_ipt_entries<P: PhysicalMemoryProvider>(
         }
 
         let src_ip = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap_or([0; 4]));
-        let dst_ip = u32::from_le_bytes(
-            data[offset + 4..offset + 8]
-                .try_into()
-                .unwrap_or([0; 4]),
-        );
+        let dst_ip = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
         let proto = u16::from_le_bytes(
             data[offset + 0x10..offset + 0x12]
                 .try_into()
@@ -321,5 +317,92 @@ mod tests {
         let rule = &rules[0];
         assert_eq!(rule.target, "DROP");
         assert_eq!(rule.protocol, "all");
+    }
+
+    #[test]
+    fn parse_ipt_entries_empty_data_returns_empty() {
+        // data_len = 0 → read_bytes will return empty, parse returns Ok([])
+        let entry_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let entry_paddr: u64 = 0x00A0_0000;
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, 0, "filter").unwrap();
+        assert!(rules.is_empty(), "zero data_len should produce no rules");
+    }
+
+    #[test]
+    fn parse_ipt_entries_icmp_protocol() {
+        // icmp protocol (1)
+        let data = make_ipt_entry_data(0, 0, 1, "ACCEPT");
+        let entry_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let entry_paddr: u64 = 0x00B0_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].protocol, "icmp");
+    }
+
+    #[test]
+    fn parse_ipt_entries_udp_protocol() {
+        // udp protocol (17)
+        let data = make_ipt_entry_data(0, 0, 17, "ACCEPT");
+        let entry_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let entry_paddr: u64 = 0x00C0_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "mangle").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].protocol, "udp");
+    }
+
+    #[test]
+    fn parse_ipt_entries_unknown_protocol() {
+        // Unknown protocol number 47 (GRE)
+        let data = make_ipt_entry_data(0, 0, 47, "ACCEPT");
+        let entry_vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let entry_paddr: u64 = 0x00D0_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].protocol, "proto:47");
+    }
+
+    #[test]
+    fn walk_netfilter_rules_missing_init_net_returns_error() {
+        // init_net symbol absent → Error returned
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_netfilter_rules(&reader);
+        assert!(result.is_err(), "missing init_net should return an error");
+    }
+
+    #[test]
+    fn format_ipv4_correct() {
+        // 192.168.1.1 stored as little-endian u32: 0xC0A80101
+        // bytes: [0x01, 0x01, 0xA8, 0xC0] → "1.1.168.192"
+        // Actually: to_le_bytes of 0xC0A80101 = [0x01, 0x01, 0xA8, 0xC0]
+        // format_ipv4 formats b[0].b[1].b[2].b[3]
+        // We test through parse_ipt_entries with a known src_ip
+        let src_ip: u32 = u32::from_le_bytes([1, 2, 3, 4]); // stored as-is
+        let data = make_ipt_entry_data(src_ip, 0, 6, "ACCEPT");
+        let entry_vaddr: u64 = 0xFFFF_8000_0070_0000;
+        let entry_paddr: u64 = 0x00E0_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
+        assert_eq!(rules.len(), 1);
+        // source should be Some with dotted notation
+        let src = rules[0].source.as_deref().unwrap_or("");
+        assert!(src.contains('.'), "source IP should be dotted notation: {src}");
     }
 }

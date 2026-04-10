@@ -73,10 +73,7 @@ pub fn walk_shm_segments<P: PhysicalMemoryProvider>(
         .symbols()
         .field_offset("ipc_ids", "ipcs_idr")
         .unwrap_or(0);
-    let idr_rt_offset = reader
-        .symbols()
-        .field_offset("idr", "idr_rt")
-        .unwrap_or(0);
+    let idr_rt_offset = reader.symbols().field_offset("idr", "idr_rt").unwrap_or(0);
     let xa_head_offset = reader
         .symbols()
         .field_offset("radix_tree_root", "xa_head")
@@ -131,10 +128,7 @@ pub fn walk_shm_segments<P: PhysicalMemoryProvider>(
 
         // In a real radix tree walk we'd advance to the next slot; for
         // the simplified model each entry is contiguous after the struct.
-        let entry_size = reader
-            .symbols()
-            .struct_size("shmid_kernel")
-            .unwrap_or(128);
+        let entry_size = reader.symbols().struct_size("shmid_kernel").unwrap_or(128);
         addr += entry_size;
     }
 
@@ -167,10 +161,7 @@ pub fn walk_semaphores<P: PhysicalMemoryProvider>(
         .symbols()
         .field_offset("ipc_ids", "ipcs_idr")
         .unwrap_or(0);
-    let idr_rt_offset = reader
-        .symbols()
-        .field_offset("idr", "idr_rt")
-        .unwrap_or(0);
+    let idr_rt_offset = reader.symbols().field_offset("idr", "idr_rt").unwrap_or(0);
     let xa_head_offset = reader
         .symbols()
         .field_offset("radix_tree_root", "xa_head")
@@ -254,11 +245,7 @@ mod tests {
 
     /// Build an ObjectReader with IPC struct definitions and a single shared
     /// memory segment laid out in synthetic memory.
-    fn make_shm_reader(
-        data: &[u8],
-        vaddr: u64,
-        paddr: u64,
-    ) -> ObjectReader<SyntheticPhysMem> {
+    fn make_shm_reader(data: &[u8], vaddr: u64, paddr: u64) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::new()
             // ipc_ids: the top-level container for an IPC namespace
             .add_struct("ipc_ids", 64)
@@ -299,14 +286,100 @@ mod tests {
     fn walk_shm_no_symbol() {
         let reader = make_empty_reader();
         let result = walk_shm_segments(&reader).unwrap();
-        assert!(result.is_empty(), "no shm_ids symbol should yield empty vec");
+        assert!(
+            result.is_empty(),
+            "no shm_ids symbol should yield empty vec"
+        );
     }
 
     #[test]
     fn walk_sem_no_symbol() {
         let reader = make_empty_reader();
         let result = walk_semaphores(&reader).unwrap();
-        assert!(result.is_empty(), "no sem_ids symbol should yield empty vec");
+        assert!(
+            result.is_empty(),
+            "no sem_ids symbol should yield empty vec"
+        );
+    }
+
+    #[test]
+    fn walk_shm_in_use_zero_returns_empty() {
+        // shm_ids present but in_use == 0 → return empty immediately
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+        // in_use at offset 0 = 0 (already zeroed)
+        let _ = data[0]; // keep lint happy
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            .add_field("ipc_ids", "in_use", 0, "unsigned int")
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_struct("idr", 32)
+            .add_field("idr", "idr_rt", 0, "radix_tree_root")
+            .add_struct("radix_tree_root", 16)
+            .add_field("radix_tree_root", "xa_head", 0, "pointer")
+            .add_struct("kern_ipc_perm", 64)
+            .add_field("kern_ipc_perm", "key", 0, "unsigned int")
+            .add_field("kern_ipc_perm", "id", 4, "unsigned int")
+            .add_field("kern_ipc_perm", "mode", 8, "unsigned int")
+            .add_struct("shmid_kernel", 128)
+            .add_field("shmid_kernel", "shm_perm", 0, "kern_ipc_perm")
+            .add_field("shmid_kernel", "shm_segsz", 64, "unsigned long")
+            .add_field("shmid_kernel", "shm_cprid", 72, "unsigned int")
+            .add_field("shmid_kernel", "shm_lprid", 76, "unsigned int")
+            .add_field("shmid_kernel", "shm_nattch", 80, "unsigned int")
+            .add_symbol("shm_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_shm_segments(&reader).unwrap();
+        assert!(result.is_empty(), "in_use == 0 should yield empty vec");
+    }
+
+    #[test]
+    fn walk_sem_in_use_zero_returns_empty() {
+        // sem_ids present but in_use == 0 → return empty immediately
+        let vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let paddr: u64 = 0x0090_0000;
+        let data = vec![0u8; 4096]; // in_use at offset 0 = 0
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            .add_field("ipc_ids", "in_use", 0, "unsigned int")
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_struct("idr", 32)
+            .add_field("idr", "idr_rt", 0, "radix_tree_root")
+            .add_struct("radix_tree_root", 16)
+            .add_field("radix_tree_root", "xa_head", 0, "pointer")
+            .add_struct("kern_ipc_perm", 64)
+            .add_field("kern_ipc_perm", "key", 0, "unsigned int")
+            .add_field("kern_ipc_perm", "id", 4, "unsigned int")
+            .add_field("kern_ipc_perm", "mode", 8, "unsigned int")
+            .add_struct("sem_array", 128)
+            .add_field("sem_array", "sem_perm", 0, "kern_ipc_perm")
+            .add_field("sem_array", "sem_nsems", 64, "unsigned int")
+            .add_field("sem_array", "sem_otime_high", 68, "unsigned int")
+            .add_symbol("sem_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_semaphores(&reader).unwrap();
+        assert!(result.is_empty(), "in_use == 0 should yield empty vec for semaphores");
     }
 
     #[test]

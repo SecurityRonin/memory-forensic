@@ -42,7 +42,10 @@ pub fn walk_keyboard_notifiers<P: PhysicalMemoryProvider>(
     };
 
     let stext = reader.symbols().symbol_address("_stext").unwrap_or(0);
-    let etext = reader.symbols().symbol_address("_etext").unwrap_or(u64::MAX);
+    let etext = reader
+        .symbols()
+        .symbol_address("_etext")
+        .unwrap_or(u64::MAX);
 
     // Read raw_notifier_head.head pointer (offset 0).
     let first_nb = match reader.read_bytes(head_addr, 8) {
@@ -117,7 +120,10 @@ mod tests {
     fn no_symbol_returns_empty() {
         let reader = make_no_symbol_reader();
         let result = walk_keyboard_notifiers(&reader).unwrap();
-        assert!(result.is_empty(), "no keyboard_notifier_list symbol → empty vec");
+        assert!(
+            result.is_empty(),
+            "no keyboard_notifier_list symbol → empty vec"
+        );
     }
 
     #[test]
@@ -198,6 +204,9 @@ mod tests {
         assert_eq!(notifiers.len(), 1, "should find one notifier_block");
         assert_eq!(notifiers[0].notifier_call, notifier_call);
         assert_eq!(notifiers[0].priority, priority);
-        assert!(!notifiers[0].is_suspicious, "in-kernel call should be benign");
+        assert!(
+            !notifiers[0].is_suspicious,
+            "in-kernel call should be benign"
+        );
     }
 }

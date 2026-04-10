@@ -21,11 +21,7 @@ pub const IORING_OP_READ: u8 = 22;
 pub const IORING_OP_WRITE: u8 = 23;
 
 /// Sensitive opcode set — network or file operations that bypass seccomp.
-const SENSITIVE_OPCODES: &[u8] = &[
-    IORING_OP_SENDMSG,
-    IORING_OP_RECVMSG,
-    IORING_OP_CONNECT,
-];
+const SENSITIVE_OPCODES: &[u8] = &[IORING_OP_SENDMSG, IORING_OP_RECVMSG, IORING_OP_CONNECT];
 
 /// Information about an io_uring context attached to a process.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -71,7 +67,11 @@ pub fn walk_io_uring<P: PhysicalMemoryProvider>(
 ) -> Result<Vec<IoUringEntry>> {
     // Check whether the ISF defines the io_uring symbol we need.
     // If the symbol is absent (older kernels or stripped ISF), return empty.
-    if reader.symbols().symbol_address("io_uring_task_work").is_none() {
+    if reader
+        .symbols()
+        .symbol_address("io_uring_task_work")
+        .is_none()
+    {
         return Ok(vec![]);
     }
 
@@ -86,10 +86,10 @@ pub fn walk_io_uring<P: PhysicalMemoryProvider>(
 mod tests {
     use super::*;
     use memf_core::{
-        vas::VirtualAddressSpace,
-        vas::TranslationMode,
-        test_builders::{PageTableBuilder, SyntheticPhysMem},
         object_reader::ObjectReader,
+        test_builders::{PageTableBuilder, SyntheticPhysMem},
+        vas::TranslationMode,
+        vas::VirtualAddressSpace,
     };
     use memf_symbols::{isf::IsfResolver, test_builders::IsfBuilder};
 
@@ -136,5 +136,89 @@ mod tests {
             result.is_empty(),
             "missing io_uring symbols must yield empty vec"
         );
+    }
+
+    #[test]
+    fn classify_connect_opcode_with_seccomp_strict_suspicious() {
+        // CONNECT (16) under seccomp STRICT (mode=1) → suspicious
+        assert!(
+            classify_io_uring(&[IORING_OP_CONNECT], 1),
+            "CONNECT under SECCOMP_MODE_STRICT must be flagged"
+        );
+    }
+
+    #[test]
+    fn classify_recvmsg_opcode_with_seccomp_filter_suspicious() {
+        // RECVMSG (10) under seccomp FILTER (mode=2) → suspicious
+        assert!(
+            classify_io_uring(&[IORING_OP_RECVMSG], 2),
+            "RECVMSG under SECCOMP_MODE_FILTER must be flagged"
+        );
+    }
+
+    #[test]
+    fn classify_recvmsg_opcode_without_seccomp_not_suspicious() {
+        // RECVMSG without seccomp → not suspicious
+        assert!(
+            !classify_io_uring(&[IORING_OP_RECVMSG], 0),
+            "RECVMSG without seccomp must not be flagged"
+        );
+    }
+
+    #[test]
+    fn classify_connect_opcode_without_seccomp_not_suspicious() {
+        // CONNECT without seccomp → not suspicious
+        assert!(
+            !classify_io_uring(&[IORING_OP_CONNECT], 0),
+            "CONNECT without seccomp must not be flagged"
+        );
+    }
+
+    #[test]
+    fn classify_empty_opcodes_with_seccomp_not_suspicious() {
+        // No opcodes at all, even with seccomp → not suspicious
+        assert!(
+            !classify_io_uring(&[], 2),
+            "empty opcode list must not be flagged even with seccomp"
+        );
+    }
+
+    #[test]
+    fn classify_openat_opcode_with_seccomp_not_suspicious() {
+        // OPENAT (18) is not a SENSITIVE_OPCODE → not suspicious
+        assert!(
+            !classify_io_uring(&[IORING_OP_OPENAT], 2),
+            "OPENAT is not a sensitive opcode and must not be flagged"
+        );
+    }
+
+    #[test]
+    fn classify_all_sensitive_opcodes_individually() {
+        // Each of the three sensitive opcodes should be flagged under any seccomp mode
+        for &op in &[IORING_OP_SENDMSG, IORING_OP_RECVMSG, IORING_OP_CONNECT] {
+            assert!(
+                classify_io_uring(&[op], 1),
+                "opcode {op} must be flagged under seccomp_mode=1"
+            );
+            assert!(
+                classify_io_uring(&[op], 2),
+                "opcode {op} must be flagged under seccomp_mode=2"
+            );
+        }
+    }
+
+    #[test]
+    fn walk_io_uring_with_symbol_returns_ok() {
+        // io_uring_task_work symbol present → walk should return Ok (empty stub)
+        let isf = IsfBuilder::new()
+            .add_symbol("io_uring_task_work", 0xFFFF_8000_0010_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_io_uring(&reader);
+        assert!(result.is_ok(), "walk_io_uring must not error when symbol is present");
     }
 }

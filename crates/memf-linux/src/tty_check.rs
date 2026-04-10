@@ -163,4 +163,76 @@ mod tests {
         let result = check_tty_hooks(&reader);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn missing_stext_symbol_returns_error() {
+        // tty_drivers present but _stext absent → Error
+        let isf = IsfBuilder::new()
+            .add_struct("tty_driver", 64)
+            .add_field("tty_driver", "name", 0, "pointer")
+            .add_field("tty_driver", "tty_drivers", 8, "list_head")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("tty_drivers", 0xFFFF_8000_0010_0000)
+            // _stext intentionally omitted
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_tty_hooks(&reader);
+        assert!(result.is_err(), "missing _stext should return an error");
+    }
+
+    #[test]
+    fn missing_etext_symbol_returns_error() {
+        // tty_drivers + _stext present but _etext absent → Error
+        let isf = IsfBuilder::new()
+            .add_struct("tty_driver", 64)
+            .add_field("tty_driver", "name", 0, "pointer")
+            .add_field("tty_driver", "tty_drivers", 8, "list_head")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("tty_drivers", 0xFFFF_8000_0010_0000)
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
+            // _etext intentionally omitted
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_tty_hooks(&reader);
+        assert!(result.is_err(), "missing _etext should return an error");
+    }
+
+    #[test]
+    fn missing_tty_drivers_field_offset_returns_error() {
+        // tty_drivers symbol present but tty_driver.tty_drivers field absent → Error
+        let isf = IsfBuilder::new()
+            .add_struct("tty_driver", 64)
+            .add_field("tty_driver", "name", 0, "pointer")
+            // tty_drivers field intentionally omitted from tty_driver struct
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("tty_drivers", 0xFFFF_8000_0010_0000)
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_tty_hooks(&reader);
+        assert!(result.is_err(), "missing tty_driver.tty_drivers field should error");
+    }
 }

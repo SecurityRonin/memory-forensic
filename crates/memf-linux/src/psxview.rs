@@ -159,4 +159,50 @@ mod tests {
         let result = walk_psxview(&reader);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn missing_tasks_field_returns_error() {
+        // init_task present but task_struct.tasks field absent → Error
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks field intentionally omitted
+            .add_field("task_struct", "comm", 32, "char")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_psxview(&reader);
+        assert!(result.is_err(), "missing task_struct.tasks field should return error");
+    }
+
+    #[test]
+    fn psxview_entries_have_correct_visibility_flags() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // init_task: pid=1, comm="swapper"
+        data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let tasks_addr = vaddr + 16; // self-referential = empty list
+        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[32..39].copy_from_slice(b"swapper");
+
+        let reader = make_test_reader(&data, vaddr, paddr, &[]);
+        let results = walk_psxview(&reader).unwrap();
+
+        assert!(!results.is_empty(), "should find at least init_task");
+        let init = &results[0];
+        assert!(init.in_task_list, "init_task must be in_task_list");
+        assert!(init.in_pid_hash, "init_task must be in_pid_hash");
+        assert_eq!(init.pid, 1);
+    }
 }

@@ -45,9 +45,7 @@ pub fn classify_kmsg(text: &str) -> bool {
 /// Walk the kernel log ring buffer and return parsed entries.
 ///
 /// Returns `Ok(Vec::new())` when `__log_buf` symbol is absent.
-pub fn walk_kmsg<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-) -> Result<Vec<KmsgEntry>> {
+pub fn walk_kmsg<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<KmsgEntry>> {
     let Some(buf_addr) = reader.symbols().symbol_address("__log_buf") else {
         return Ok(Vec::new());
     };
@@ -57,7 +55,11 @@ pub fn walk_kmsg<P: PhysicalMemoryProvider>(
         match reader.read_bytes(len_addr, 4) {
             Ok(b) if b.len() == 4 => {
                 let v = u32::from_le_bytes(b.try_into().unwrap()) as usize;
-                if v == 0 { 4096 } else { v.min(1024 * 1024) }
+                if v == 0 {
+                    4096
+                } else {
+                    v.min(1024 * 1024)
+                }
             }
             _ => 4096,
         }
@@ -126,7 +128,13 @@ pub fn parse_printk_record(data: &[u8], offset: usize) -> Option<(KmsgEntry, usi
     let is_suspicious = classify_kmsg(&text);
 
     Some((
-        KmsgEntry { sequence: seq, timestamp_ns: ts_nsec, level, text, is_suspicious },
+        KmsgEntry {
+            sequence: seq,
+            timestamp_ns: ts_nsec,
+            level,
+            text,
+            is_suspicious,
+        },
         len,
     ))
 }
@@ -250,6 +258,9 @@ mod tests {
 
         let entries = walk_kmsg(&reader).unwrap();
         assert!(!entries.is_empty(), "should return at least one kmsg entry");
-        assert!(entries[0].is_suspicious, "rootkit message should be flagged");
+        assert!(
+            entries[0].is_suspicious,
+            "rootkit message should be flagged"
+        );
     }
 }

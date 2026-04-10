@@ -145,8 +145,7 @@ pub fn scan_proc_fops<P: PhysicalMemoryProvider>(
             .unwrap_or(0);
 
         if fops_addr != 0 {
-            let hooked_functions =
-                check_fops_entry(reader, fops_addr, kernel_start, kernel_end);
+            let hooked_functions = check_fops_entry(reader, fops_addr, kernel_start, kernel_end);
             let is_suspicious = hooked_functions.iter().any(|f| !f.is_in_kernel_text);
 
             results.push(FopsHookInfo {
@@ -269,13 +268,7 @@ mod tests {
             fops_data[offset..offset + 8].copy_from_slice(&kernel_func.to_le_bytes());
         }
 
-        let reader = make_fops_reader(
-            &fops_data,
-            fops_vaddr,
-            fops_paddr,
-            kernel_start,
-            kernel_end,
-        );
+        let reader = make_fops_reader(&fops_data, fops_vaddr, fops_paddr, kernel_start, kernel_end);
 
         let results = check_fops_entry(&reader, fops_vaddr, kernel_start, kernel_end);
 
@@ -285,8 +278,7 @@ mod tests {
             assert!(
                 fop.is_in_kernel_text,
                 "function {} at {:#x} should be in kernel text",
-                fop.function_name,
-                fop.target_address,
+                fop.function_name, fop.target_address,
             );
         }
     }
@@ -311,13 +303,7 @@ mod tests {
             fops_data[offset..offset + 8].copy_from_slice(&kernel_func.to_le_bytes());
         }
 
-        let reader = make_fops_reader(
-            &fops_data,
-            fops_vaddr,
-            fops_paddr,
-            kernel_start,
-            kernel_end,
-        );
+        let reader = make_fops_reader(&fops_data, fops_vaddr, fops_paddr, kernel_start, kernel_end);
 
         let results = check_fops_entry(&reader, fops_vaddr, kernel_start, kernel_end);
 
@@ -355,5 +341,65 @@ mod tests {
 
         let results = scan_proc_fops(&reader).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn scan_proc_fops_missing_stext_returns_empty() {
+        // proc_root present but _stext absent → graceful empty
+        let isf = IsfBuilder::new()
+            .add_struct("file_operations", 256)
+            .add_field("file_operations", "read", 0, "pointer")
+            .add_symbol("proc_root", 0xFFFF_8000_0010_0000)
+            // _stext intentionally omitted
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = scan_proc_fops(&reader).unwrap();
+        assert!(results.is_empty(), "missing _stext should yield empty vec");
+    }
+
+    #[test]
+    fn scan_proc_fops_missing_etext_returns_empty() {
+        // proc_root + _stext present but _etext absent → graceful empty
+        let isf = IsfBuilder::new()
+            .add_struct("file_operations", 256)
+            .add_field("file_operations", "read", 0, "pointer")
+            .add_symbol("proc_root", 0xFFFF_8000_0010_0000)
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
+            // _etext intentionally omitted
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = scan_proc_fops(&reader).unwrap();
+        assert!(results.is_empty(), "missing _etext should yield empty vec");
+    }
+
+    #[test]
+    fn check_fops_entry_null_pointer_skipped() {
+        // file_operations struct where all pointers are NULL → no results
+        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
+        let fops_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let fops_paddr: u64 = 0x0080_0000;
+
+        // All zeros (null pointers) in the fops struct
+        let fops_data = vec![0u8; 4096];
+
+        let reader = make_fops_reader(&fops_data, fops_vaddr, fops_paddr, kernel_start, kernel_end);
+        let results = check_fops_entry(&reader, fops_vaddr, kernel_start, kernel_end);
+
+        assert!(
+            results.is_empty(),
+            "all-null fops struct should produce no HookedFop entries"
+        );
     }
 }

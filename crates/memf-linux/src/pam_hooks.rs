@@ -281,4 +281,56 @@ mod tests {
         let result = walk_pam_hooks(&reader).unwrap();
         assert!(result.is_empty());
     }
+
+    // ---------------------------------------------------------------------------
+    // Additional classify_pam_hook edge cases
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn classify_pam_hook_no_pam_in_path_not_suspicious() {
+        // Path that is not a system path but also doesn't contain "pam"
+        assert!(!classify_pam_hook("/tmp/libssl.so"));
+        assert!(!classify_pam_hook("/home/user/.local/libfoo.so"));
+    }
+
+    #[test]
+    fn classify_pam_hook_uppercase_pam_suspicious() {
+        // Classification is case-insensitive; "PAM" should be detected
+        assert!(classify_pam_hook("/tmp/libPAM_evil.so"));
+    }
+
+    #[test]
+    fn classify_pam_hook_mixed_case_pam_suspicious() {
+        assert!(classify_pam_hook("/opt/libPam.so"));
+    }
+
+    #[test]
+    fn classify_pam_hook_system_lib64_not_suspicious() {
+        // /usr/lib64 prefix — must not be flagged
+        assert!(!classify_pam_hook("/usr/lib64/security/libpam_unix.so"));
+    }
+
+    #[test]
+    fn walk_pam_hooks_missing_tasks_field_returns_empty() {
+        // init_task is present but "tasks" field offset is absent.
+        // walk_list will not find the list offset so we expect graceful return.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks field intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Missing tasks offset → Ok(empty) per graceful degradation
+        let result = walk_pam_hooks(&reader).unwrap();
+        assert!(result.is_empty());
+    }
 }

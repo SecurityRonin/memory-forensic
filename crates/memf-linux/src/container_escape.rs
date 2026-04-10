@@ -25,13 +25,7 @@ pub struct ContainerEscapeInfo {
 }
 
 /// Kernel thread comm prefixes that are never suspicious.
-const KERNEL_THREAD_COMMS: &[&str] = &[
-    "kthread",
-    "kworker",
-    "migration",
-    "ksoftirqd",
-    "rcu_",
-];
+const KERNEL_THREAD_COMMS: &[&str] = &["kthread", "kworker", "migration", "ksoftirqd", "rcu_"];
 
 /// Classify whether a process's indicator is suspicious.
 ///
@@ -108,9 +102,7 @@ fn check_task_namespace<P: PhysicalMemoryProvider>(
         return None;
     }
 
-    let mnt_ns: u64 = reader
-        .read_field(nsproxy, "nsproxy", "mnt_ns")
-        .unwrap_or(0);
+    let mnt_ns: u64 = reader.read_field(nsproxy, "nsproxy", "mnt_ns").unwrap_or(0);
 
     // Processes in a different mount namespace from init are in a container.
     if mnt_ns != init_mnt_ns && mnt_ns != 0 {

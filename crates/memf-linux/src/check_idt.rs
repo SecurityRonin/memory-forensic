@@ -119,9 +119,8 @@ pub fn walk_check_idt<P: PhysicalMemoryProvider>(
         let offset_mid = u16::from_le_bytes([raw[6], raw[7]]);
         let offset_high = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
 
-        let handler_addr = (offset_high as u64) << 32
-            | (offset_mid as u64) << 16
-            | offset_low as u64;
+        let handler_addr =
+            (offset_high as u64) << 32 | (offset_mid as u64) << 16 | offset_low as u64;
 
         // Skip unused entries (handler == 0).
         if handler_addr == 0 {
@@ -161,9 +160,17 @@ mod tests {
         let kernel_end = 0xFFFF_8000_00FF_FFFFu64;
 
         // Address in module space, well outside kernel text
-        assert!(classify_idt_entry(0xFFFF_C900_DEAD_BEEF, kernel_start, kernel_end));
+        assert!(classify_idt_entry(
+            0xFFFF_C900_DEAD_BEEF,
+            kernel_start,
+            kernel_end
+        ));
         // Address just below kernel start
-        assert!(classify_idt_entry(kernel_start - 1, kernel_start, kernel_end));
+        assert!(classify_idt_entry(
+            kernel_start - 1,
+            kernel_start,
+            kernel_end
+        ));
         // Address just above kernel end
         assert!(classify_idt_entry(kernel_end + 1, kernel_start, kernel_end));
     }
@@ -176,7 +183,11 @@ mod tests {
         // Exactly at start
         assert!(!classify_idt_entry(kernel_start, kernel_start, kernel_end));
         // In the middle
-        assert!(!classify_idt_entry(kernel_start + 0x1000, kernel_start, kernel_end));
+        assert!(!classify_idt_entry(
+            kernel_start + 0x1000,
+            kernel_start,
+            kernel_end
+        ));
         // Exactly at end
         assert!(!classify_idt_entry(kernel_end, kernel_start, kernel_end));
     }
@@ -227,6 +238,72 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_check_idt(&reader).unwrap();
-        assert!(results.is_empty(), "expected empty results when idt_table symbol is missing");
+        assert!(
+            results.is_empty(),
+            "expected empty results when idt_table symbol is missing"
+        );
+    }
+
+    #[test]
+    fn walk_missing_stext_returns_empty() {
+        // _stext absent → graceful empty
+        let isf = IsfBuilder::new()
+            // _stext intentionally omitted
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
+            .add_symbol("idt_table", 0xFFFF_8000_0020_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_check_idt(&reader).unwrap();
+        assert!(results.is_empty(), "missing _stext should yield empty vec");
+    }
+
+    #[test]
+    fn walk_missing_etext_returns_empty() {
+        // _etext absent → graceful empty
+        let isf = IsfBuilder::new()
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
+            // _etext intentionally omitted
+            .add_symbol("idt_table", 0xFFFF_8000_0020_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_check_idt(&reader).unwrap();
+        assert!(results.is_empty(), "missing _etext should yield empty vec");
+    }
+
+    #[test]
+    fn gate_type_all_nibbles_covered() {
+        // Verify every nibble value yields a consistent string
+        for nibble in 0u8..=0x0F {
+            let name = gate_type_name(nibble);
+            match nibble {
+                0xE => assert_eq!(name, "Interrupt Gate"),
+                0xF => assert_eq!(name, "Trap Gate"),
+                _ => assert!(name.starts_with("Unknown("), "nibble {nibble:#x}: {name}"),
+            }
+        }
+    }
+
+    #[test]
+    fn classify_idt_entry_at_boundaries() {
+        let ks: u64 = 0xFFFF_8000_0000_0000;
+        let ke: u64 = 0xFFFF_8000_00FF_FFFF;
+        // Exactly at start — benign
+        assert!(!classify_idt_entry(ks, ks, ke));
+        // Exactly at end — benign
+        assert!(!classify_idt_entry(ke, ks, ke));
+        // One below start — suspicious
+        assert!(classify_idt_entry(ks - 1, ks, ke));
+        // One above end — suspicious
+        assert!(classify_idt_entry(ke + 1, ks, ke));
     }
 }

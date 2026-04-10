@@ -231,7 +231,10 @@ mod tests {
         // Non-root (uid=1000) with CAP_SYS_ADMIN should be flagged.
         let effective = CAP_SYS_ADMIN | CAP_NET_RAW;
         let (suspicious, caps) = classify_capabilities(effective, 1000);
-        assert!(suspicious, "non-root with CAP_SYS_ADMIN should be suspicious");
+        assert!(
+            suspicious,
+            "non-root with CAP_SYS_ADMIN should be suspicious"
+        );
         assert!(caps.contains(&"CAP_SYS_ADMIN".to_string()));
         assert!(caps.contains(&"CAP_NET_RAW".to_string()));
     }
@@ -256,7 +259,10 @@ mod tests {
         let reader = make_reader(&isf, ptb);
 
         let result = walk_capabilities(&reader, &[]).unwrap();
-        assert!(result.is_empty(), "expected empty vec for empty process list");
+        assert!(
+            result.is_empty(),
+            "expected empty vec for empty process list"
+        );
     }
 
     #[test]
@@ -271,7 +277,7 @@ mod tests {
         let cred_offset: u64 = 1608; // task_struct.cred
 
         // Offsets within cred struct
-        let uid_offset: u64 = 4;           // cred.uid
+        let uid_offset: u64 = 4; // cred.uid
         let cap_effective_offset: u64 = 40; // cred.cap_effective
         let cap_permitted_offset: u64 = 48; // cred.cap_permitted
         let cap_inheritable_offset: u64 = 56; // cred.cap_inheritable
@@ -281,9 +287,24 @@ mod tests {
             .add_field("task_struct", "cred", cred_offset, "pointer")
             .add_struct("cred", 176)
             .add_field("cred", "uid", uid_offset, "unsigned int")
-            .add_field("cred", "cap_effective", cap_effective_offset, "unsigned long")
-            .add_field("cred", "cap_permitted", cap_permitted_offset, "unsigned long")
-            .add_field("cred", "cap_inheritable", cap_inheritable_offset, "unsigned long");
+            .add_field(
+                "cred",
+                "cap_effective",
+                cap_effective_offset,
+                "unsigned long",
+            )
+            .add_field(
+                "cred",
+                "cap_permitted",
+                cap_permitted_offset,
+                "unsigned long",
+            )
+            .add_field(
+                "cred",
+                "cap_inheritable",
+                cap_inheritable_offset,
+                "unsigned long",
+            );
 
         // uid=1000 (non-root), effective has CAP_SYS_ADMIN
         let effective_caps: u64 = CAP_SYS_ADMIN | CAP_DAC_OVERRIDE;
@@ -314,7 +335,10 @@ mod tests {
         assert_eq!(cap.effective, effective_caps);
         assert_eq!(cap.permitted, permitted_caps);
         assert_eq!(cap.inheritable, inheritable_caps);
-        assert!(cap.is_suspicious, "non-root with CAP_SYS_ADMIN should be suspicious");
+        assert!(
+            cap.is_suspicious,
+            "non-root with CAP_SYS_ADMIN should be suspicious"
+        );
         assert!(cap.suspicious_caps.contains(&"CAP_SYS_ADMIN".to_string()));
     }
 
@@ -337,9 +361,24 @@ mod tests {
             .add_field("task_struct", "cred", cred_offset, "pointer")
             .add_struct("cred", 176)
             .add_field("cred", "uid", uid_offset, "unsigned int")
-            .add_field("cred", "cap_effective", cap_effective_offset, "unsigned long")
-            .add_field("cred", "cap_permitted", cap_permitted_offset, "unsigned long")
-            .add_field("cred", "cap_inheritable", cap_inheritable_offset, "unsigned long");
+            .add_field(
+                "cred",
+                "cap_effective",
+                cap_effective_offset,
+                "unsigned long",
+            )
+            .add_field(
+                "cred",
+                "cap_permitted",
+                cap_permitted_offset,
+                "unsigned long",
+            )
+            .add_field(
+                "cred",
+                "cap_inheritable",
+                cap_inheritable_offset,
+                "unsigned long",
+            );
 
         let ptb = PageTableBuilder::new()
             .map_4k(task_vaddr, task_paddr, flags::WRITABLE)
@@ -356,7 +395,10 @@ mod tests {
 
         let result = walk_capabilities(&reader, &procs).unwrap();
         assert_eq!(result.len(), 1);
-        assert!(!result[0].is_suspicious, "root process should not be flagged");
+        assert!(
+            !result[0].is_suspicious,
+            "root process should not be flagged"
+        );
         assert!(result[0].suspicious_caps.is_empty());
     }
 }

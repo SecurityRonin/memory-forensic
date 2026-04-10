@@ -88,18 +88,11 @@ pub fn extract_dmesg<P: PhysicalMemoryProvider>(
 
     while offset + PRINTK_HEADER_SIZE <= buf_len && entries.len() < MAX_ENTRIES {
         // Parse header fields (all little-endian).
-        let ts_nsec = u64::from_le_bytes(
-            ring[offset..offset + 8].try_into().unwrap(),
-        );
-        let len = u16::from_le_bytes(
-            ring[offset + 8..offset + 10].try_into().unwrap(),
-        ) as usize;
-        let text_len = u16::from_le_bytes(
-            ring[offset + 10..offset + 12].try_into().unwrap(),
-        ) as usize;
-        let _dict_len = u16::from_le_bytes(
-            ring[offset + 12..offset + 14].try_into().unwrap(),
-        );
+        let ts_nsec = u64::from_le_bytes(ring[offset..offset + 8].try_into().unwrap());
+        let len = u16::from_le_bytes(ring[offset + 8..offset + 10].try_into().unwrap()) as usize;
+        let text_len =
+            u16::from_le_bytes(ring[offset + 10..offset + 12].try_into().unwrap()) as usize;
+        let _dict_len = u16::from_le_bytes(ring[offset + 12..offset + 14].try_into().unwrap());
         let facility = ring[offset + 14];
         let level = ring[offset + 15];
 
@@ -141,10 +134,7 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     /// Helper: build an ObjectReader from ISF and page table builders.
-    fn make_reader(
-        isf: &IsfBuilder,
-        ptb: PageTableBuilder,
-    ) -> ObjectReader<SyntheticPhysMem> {
+    fn make_reader(isf: &IsfBuilder, ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
         let json = isf.build_json();
         let resolver = IsfResolver::from_value(&json).unwrap();
         let (cr3, mem) = ptb.build();
@@ -155,13 +145,15 @@ mod tests {
     /// No `log_buf` symbol present -> returns empty Vec (not an error).
     #[test]
     fn extract_dmesg_no_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("printk_log", 16);
+        let isf = IsfBuilder::new().add_struct("printk_log", 16);
         let ptb = PageTableBuilder::new();
         let reader = make_reader(&isf, ptb);
 
         let entries = extract_dmesg(&reader).unwrap();
-        assert!(entries.is_empty(), "expected empty Vec when log_buf symbol is missing");
+        assert!(
+            entries.is_empty(),
+            "expected empty Vec when log_buf symbol is missing"
+        );
     }
 
     /// `log_buf` symbol exists and points to a zero-filled buffer -> empty Vec.
@@ -188,7 +180,11 @@ mod tests {
         let ptb = PageTableBuilder::new()
             // Map the symbol locations
             .map_4k(log_buf_sym_vaddr, log_buf_sym_paddr, flags::WRITABLE)
-            .map_4k(log_buf_len_sym_vaddr, log_buf_len_sym_paddr, flags::WRITABLE)
+            .map_4k(
+                log_buf_len_sym_vaddr,
+                log_buf_len_sym_paddr,
+                flags::WRITABLE,
+            )
             // Map the buffer itself (one 4k page, zero-filled by default)
             .map_4k(buf_vaddr, buf_paddr, flags::WRITABLE)
             // Write the pointer value at log_buf symbol location
@@ -198,7 +194,10 @@ mod tests {
 
         let reader = make_reader(&isf, ptb);
         let entries = extract_dmesg(&reader).unwrap();
-        assert!(entries.is_empty(), "expected empty Vec for zero-filled buffer");
+        assert!(
+            entries.is_empty(),
+            "expected empty Vec for zero-filled buffer"
+        );
     }
 
     /// Single valid printk_log record in the buffer -> one DmesgEntry.
@@ -248,7 +247,11 @@ mod tests {
 
         let ptb = PageTableBuilder::new()
             .map_4k(log_buf_sym_vaddr, log_buf_sym_paddr, flags::WRITABLE)
-            .map_4k(log_buf_len_sym_vaddr, log_buf_len_sym_paddr, flags::WRITABLE)
+            .map_4k(
+                log_buf_len_sym_vaddr,
+                log_buf_len_sym_paddr,
+                flags::WRITABLE,
+            )
             .map_4k(buf_vaddr, buf_paddr, flags::WRITABLE)
             // log_buf pointer
             .write_phys_u64(log_buf_sym_paddr, buf_vaddr)

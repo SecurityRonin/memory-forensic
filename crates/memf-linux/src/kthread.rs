@@ -217,7 +217,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_kernel_threads(&reader, &[]).unwrap();
-        assert!(result.is_empty(), "empty process list should give empty kthread list");
+        assert!(
+            result.is_empty(),
+            "empty process list should give empty kthread list"
+        );
     }
 
     #[test]
@@ -253,7 +256,10 @@ mod tests {
         }];
 
         let result = walk_kernel_threads(&reader, &processes).unwrap();
-        assert!(result.is_empty(), "userspace process should not appear in kthread list");
+        assert!(
+            result.is_empty(),
+            "userspace process should not appear in kthread list"
+        );
     }
 
     #[test]
@@ -292,7 +298,10 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].pid, 2);
         assert_eq!(result[0].name, "kthreadd");
-        assert!(!result[0].is_suspicious, "kthreadd should not be suspicious");
+        assert!(
+            !result[0].is_suspicious,
+            "kthreadd should not be suspicious"
+        );
     }
 
     // ---------------------------------------------------------------

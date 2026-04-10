@@ -80,14 +80,11 @@ pub fn walk_kernel_timers<P: PhysicalMemoryProvider>(
 
     // Walk timer wheel groups (vectors array within each timer_base)
     for group in 0..TIMER_WHEEL_GROUPS {
-        let vector_head = match reader.read_pointer(
-            bases_addr,
-            "timer_base",
-            &format!("vectors.{group}"),
-        ) {
-            Ok(addr) => addr,
-            Err(_) => continue,
-        };
+        let vector_head =
+            match reader.read_pointer(bases_addr, "timer_base", &format!("vectors.{group}")) {
+                Ok(addr) => addr,
+                Err(_) => continue,
+            };
 
         if vector_head == 0 {
             continue;
@@ -222,5 +219,72 @@ mod tests {
 
         let results = walk_kernel_timers(&reader).unwrap();
         assert!(results.is_empty(), "missing symbol should yield empty vec");
+    }
+
+    #[test]
+    fn walk_kernel_timers_missing_stext_returns_empty() {
+        // timer_bases present but _stext missing → graceful empty
+        let isf = IsfBuilder::new()
+            .add_struct("timer_list", 64)
+            .add_field("timer_list", "entry", 0, "list_head")
+            .add_field("timer_list", "expires", 16, "unsigned long")
+            .add_field("timer_list", "function", 24, "pointer")
+            .add_symbol("timer_bases", 0xFFFF_8000_0010_0000)
+            // _stext intentionally omitted
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_kernel_timers(&reader).unwrap();
+        assert!(results.is_empty(), "missing _stext should yield empty vec");
+    }
+
+    #[test]
+    fn walk_kernel_timers_missing_etext_returns_empty() {
+        // timer_bases + _stext present but _etext missing → graceful empty
+        let isf = IsfBuilder::new()
+            .add_struct("timer_list", 64)
+            .add_field("timer_list", "entry", 0, "list_head")
+            .add_field("timer_list", "expires", 16, "unsigned long")
+            .add_field("timer_list", "function", 24, "pointer")
+            .add_symbol("timer_bases", 0xFFFF_8000_0010_0000)
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
+            // _etext intentionally omitted
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_kernel_timers(&reader).unwrap();
+        assert!(results.is_empty(), "missing _etext should yield empty vec");
+    }
+
+    #[test]
+    fn classify_kernel_timer_just_below_kernel_start_is_suspicious() {
+        let kernel_start = 0xFFFF_8000_0000_0000u64;
+        let kernel_end = 0xFFFF_8000_00FF_FFFFu64;
+        // One below kernel_start but non-zero
+        let function = kernel_start - 1;
+        assert!(
+            classify_kernel_timer(function, kernel_start, kernel_end),
+            "function just below kernel_start should be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_kernel_timer_just_above_kernel_end_is_suspicious() {
+        let kernel_start = 0xFFFF_8000_0000_0000u64;
+        let kernel_end = 0xFFFF_8000_00FF_FFFFu64;
+        let function = kernel_end + 1;
+        assert!(
+            classify_kernel_timer(function, kernel_start, kernel_end),
+            "function just above kernel_end should be suspicious"
+        );
     }
 }

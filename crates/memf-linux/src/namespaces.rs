@@ -107,8 +107,7 @@ fn read_namespace_info<P: PhysicalMemoryProvider>(
     let uts_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "uts_ns")?;
     let ipc_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "ipc_ns")?;
     let mnt_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "mnt_ns")?;
-    let pid_ns_addr: u64 =
-        reader.read_pointer(nsproxy_ptr, "nsproxy", "pid_ns_for_children")?;
+    let pid_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "pid_ns_for_children")?;
     let net_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "net_ns")?;
     let cgroup_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "cgroup_ns")?;
 
@@ -175,7 +174,12 @@ mod tests {
             .add_field("nsproxy", "uts_ns", NSPROXY_UTS_OFF as u64, "pointer")
             .add_field("nsproxy", "ipc_ns", NSPROXY_IPC_OFF as u64, "pointer")
             .add_field("nsproxy", "mnt_ns", NSPROXY_MNT_OFF as u64, "pointer")
-            .add_field("nsproxy", "pid_ns_for_children", NSPROXY_PID_OFF as u64, "pointer")
+            .add_field(
+                "nsproxy",
+                "pid_ns_for_children",
+                NSPROXY_PID_OFF as u64,
+                "pointer",
+            )
             .add_field("nsproxy", "net_ns", NSPROXY_NET_OFF as u64, "pointer")
             .add_field("nsproxy", "cgroup_ns", NSPROXY_CGROUP_OFF as u64, "pointer")
             .build_json()
@@ -198,8 +202,7 @@ mod tests {
         data[TASK_COMM_OFF..TASK_COMM_OFF + len].copy_from_slice(&comm_bytes[..len]);
         data[TASK_COMM_OFF + len] = 0; // null terminator
 
-        data[TASK_NSPROXY_OFF..TASK_NSPROXY_OFF + 8]
-            .copy_from_slice(&nsproxy_vaddr.to_le_bytes());
+        data[TASK_NSPROXY_OFF..TASK_NSPROXY_OFF + 8].copy_from_slice(&nsproxy_vaddr.to_le_bytes());
 
         ptb.map_4k(vaddr, paddr, flags::WRITABLE)
             .write_phys(paddr, &data)
