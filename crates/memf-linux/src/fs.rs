@@ -306,4 +306,150 @@ mod tests {
         let result = walk_filesystems(&reader);
         assert!(result.is_err());
     }
+
+    // walk_filesystems: mnt_ns_ptr == 0 → Err (exercises line 31-33).
+    #[test]
+    fn walk_filesystems_null_mnt_ns_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // nsproxy at +0x100
+        let nsproxy_addr = vaddr + 0x100;
+        data[64..72].copy_from_slice(&nsproxy_addr.to_le_bytes());
+        // nsproxy.mnt_ns at offset 16 = 0 (null)
+        data[0x110..0x118].copy_from_slice(&0u64.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let result = walk_filesystems(&reader);
+        assert!(result.is_err(), "null mnt_ns must return Err");
+    }
+
+    // walk_filesystems: mount with devname_ptr=0 and mountpoint_ptr=0 and sb_ptr=0
+    // → dev_name="", mount_point="", fs_type="" (exercises null-ptr branches in loop body).
+    #[test]
+    fn walk_filesystems_all_null_ptrs_in_mount() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // init_task: nsproxy at +0x100
+        let nsproxy_addr = vaddr + 0x100;
+        data[64..72].copy_from_slice(&nsproxy_addr.to_le_bytes());
+
+        // nsproxy: mnt_ns at offset 16 → mnt_ns at +0x180
+        let mnt_ns_addr = vaddr + 0x180;
+        data[0x110..0x118].copy_from_slice(&mnt_ns_addr.to_le_bytes());
+
+        // mnt_namespace: list at offset 0 → head
+        // list.next → mount1, list.prev → mount1
+        let ns_list_addr = vaddr + 0x180;
+        let mount1_addr = vaddr + 0x200;
+        data[0x180..0x188].copy_from_slice(&mount1_addr.to_le_bytes()); // list.next
+        data[0x188..0x190].copy_from_slice(&mount1_addr.to_le_bytes()); // list.prev
+
+        // mount1: mnt_list.next → ns_head, mnt_list.prev → ns_head (single-entry loop)
+        data[0x200..0x208].copy_from_slice(&ns_list_addr.to_le_bytes()); // mnt_list.next
+        data[0x208..0x210].copy_from_slice(&ns_list_addr.to_le_bytes()); // mnt_list.prev
+        // mnt_devname at offset 16 = 0 (null)
+        data[0x210..0x218].copy_from_slice(&0u64.to_le_bytes());
+        // mnt_mountpoint at offset 24 = 0 (null)
+        data[0x218..0x220].copy_from_slice(&0u64.to_le_bytes());
+        // mnt.mnt_sb at offset 32 (= mount.mnt at offset 32 + vfsmount.mnt_sb at offset 0) = 0
+        data[0x220..0x228].copy_from_slice(&0u64.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let mounts = walk_filesystems(&reader).unwrap();
+
+        assert_eq!(mounts.len(), 1, "one mount entry expected");
+        assert_eq!(mounts[0].dev_name, "", "null devname_ptr → empty string");
+        assert_eq!(mounts[0].mount_point, "", "null mountpoint_ptr → empty string");
+        assert_eq!(mounts[0].fs_type, "", "null sb_ptr → empty string");
+    }
+
+    // read_fs_type_name: s_type_ptr == 0 → fs_type = "" (exercises line 114-115).
+    #[test]
+    fn walk_filesystems_null_s_type_gives_empty_fs_type() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        let nsproxy_addr = vaddr + 0x100;
+        data[64..72].copy_from_slice(&nsproxy_addr.to_le_bytes());
+
+        let mnt_ns_addr = vaddr + 0x180;
+        data[0x110..0x118].copy_from_slice(&mnt_ns_addr.to_le_bytes());
+
+        let ns_list_addr = vaddr + 0x180;
+        let mount1_addr = vaddr + 0x200;
+        data[0x180..0x188].copy_from_slice(&mount1_addr.to_le_bytes());
+        data[0x188..0x190].copy_from_slice(&mount1_addr.to_le_bytes());
+
+        data[0x200..0x208].copy_from_slice(&ns_list_addr.to_le_bytes());
+        data[0x208..0x210].copy_from_slice(&ns_list_addr.to_le_bytes());
+        // devname_ptr = 0, mountpoint_ptr = 0
+        data[0x210..0x218].copy_from_slice(&0u64.to_le_bytes());
+        data[0x218..0x220].copy_from_slice(&0u64.to_le_bytes());
+        // mnt_sb points to a super_block at +0x380; super_block.s_type = 0
+        let sb_addr = vaddr + 0x380;
+        data[0x220..0x228].copy_from_slice(&sb_addr.to_le_bytes());
+        // super_block.s_type at offset 0 = 0 (null)
+        data[0x380..0x388].copy_from_slice(&0u64.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let mounts = walk_filesystems(&reader).unwrap();
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].fs_type, "", "null s_type_ptr → empty fs_type");
+    }
+
+    // read_fs_type_name: name_ptr == 0 → fs_type = "" (exercises line 117-119).
+    #[test]
+    fn walk_filesystems_null_name_ptr_gives_empty_fs_type() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        let nsproxy_addr = vaddr + 0x100;
+        data[64..72].copy_from_slice(&nsproxy_addr.to_le_bytes());
+
+        let mnt_ns_addr = vaddr + 0x180;
+        data[0x110..0x118].copy_from_slice(&mnt_ns_addr.to_le_bytes());
+
+        let ns_list_addr = vaddr + 0x180;
+        let mount1_addr = vaddr + 0x200;
+        data[0x180..0x188].copy_from_slice(&mount1_addr.to_le_bytes());
+        data[0x188..0x190].copy_from_slice(&mount1_addr.to_le_bytes());
+
+        data[0x200..0x208].copy_from_slice(&ns_list_addr.to_le_bytes());
+        data[0x208..0x210].copy_from_slice(&ns_list_addr.to_le_bytes());
+        data[0x210..0x218].copy_from_slice(&0u64.to_le_bytes()); // devname = null
+        data[0x218..0x220].copy_from_slice(&0u64.to_le_bytes()); // mountpoint = null
+        // sb at +0x380 with valid s_type ptr → file_system_type at +0x3C0 with name_ptr = 0
+        let sb_addr = vaddr + 0x380;
+        data[0x220..0x228].copy_from_slice(&sb_addr.to_le_bytes());
+        let fstype_addr = vaddr + 0x3C0;
+        data[0x380..0x388].copy_from_slice(&fstype_addr.to_le_bytes()); // s_type
+        // file_system_type.name at offset 0 = 0 (null)
+        data[0x3C0..0x3C8].copy_from_slice(&0u64.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let mounts = walk_filesystems(&reader).unwrap();
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].fs_type, "", "null name_ptr in file_system_type → empty fs_type");
+    }
+
+    // MountInfo struct: Debug + Clone.
+    #[test]
+    fn mount_info_debug_clone() {
+        let m = MountInfo {
+            dev_name: "/dev/sda".to_string(),
+            mount_point: "/".to_string(),
+            fs_type: "ext4".to_string(),
+        };
+        let cloned = m.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("ext4"));
+    }
 }

@@ -151,6 +151,43 @@ mod tests {
         assert!(!classify_mount("sysfs", "sysfs", "/sys"), "sysfs must not be suspicious");
     }
 
+    // MountInfo struct: instantiation, Clone, Debug, Serialize coverage.
+    #[test]
+    fn mount_info_struct_clone_debug_serialize() {
+        let info = MountInfo {
+            mnt_id: 1,
+            parent_id: 0,
+            dev_name: "/dev/sda1".to_string(),
+            mnt_root: "/".to_string(),
+            mnt_flags: 0x1000,
+            fs_type: "ext4".to_string(),
+            is_suspicious: false,
+        };
+        let cloned = info.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("ext4"));
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"mnt_id\":1"));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("ext4"));
+    }
+
+    #[test]
+    fn mount_info_suspicious_struct() {
+        let info = MountInfo {
+            mnt_id: 42,
+            parent_id: 1,
+            dev_name: "none".to_string(),
+            mnt_root: "/hidden".to_string(),
+            mnt_flags: 0,
+            fs_type: "tmpfs".to_string(),
+            is_suspicious: true,
+        };
+        assert!(info.is_suspicious);
+        assert_eq!(info.mnt_id, 42);
+        assert_eq!(info.fs_type, "tmpfs");
+    }
+
     // RED test: walk_mounts with symbol returns MountInfo entries.
     #[test]
     fn walk_mounts_with_symbol_returns_entries() {

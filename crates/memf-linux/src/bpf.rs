@@ -660,6 +660,92 @@ mod tests {
         );
     }
 
+    // --- walk_bpf_programs: xa_node with a non-zero retry-tagged slot (low bits 0x1) ---
+    // Exercises walk_idr_entries recursion: xa_node slot has value with low bits 0x1
+    // (retry / reserved). This is neither a node (0x2) nor a clean leaf (0x0), so
+    // it hits the else-if condition `node_ptr & 0x3 == 0` which is false → silently skipped.
+    #[test]
+    fn walk_bpf_programs_xa_node_retry_slot_skipped() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+
+        let idr_vaddr: u64     = 0xFFFF_8800_0063_0000;
+        let idr_paddr: u64     = 0x0063_0000;
+        let xa_node_paddr: u64 = 0x0064_0000;
+        let xa_node_vaddr: u64 = 0xFFFF_8800_0064_0000;
+
+        // xa_head is a tagged node pointer (low bits 0x2)
+        let xa_head_tagged: u64 = xa_node_vaddr | 0x2;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("bpf_prog_idr", idr_vaddr)
+            .add_struct("idr", 0x20)
+            .add_field("idr", "idr_rt", 0x00u64, "pointer")
+            .add_struct("xa_node", 0x400)
+            .add_field("xa_node", "slots", 0x10u64, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut idr_page = [0u8; 4096];
+        idr_page[0..8].copy_from_slice(&xa_head_tagged.to_le_bytes());
+
+        // xa_node: slot 0 = 0x1 (retry/reserved, low bits 0x1 → skipped), rest = 0
+        let mut xa_node_page = [0u8; 4096];
+        let retry_val: u64 = 0x0001u64; // low bits 0x1 → skipped
+        // slots at offset 0x10
+        xa_node_page[0x10..0x18].copy_from_slice(&retry_val.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(idr_vaddr, idr_paddr, ptf::WRITABLE)
+            .write_phys(idr_paddr, &idr_page)
+            .map_4k(xa_node_vaddr, xa_node_paddr, ptf::WRITABLE)
+            .write_phys(xa_node_paddr, &xa_node_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bpf_programs(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "retry-tagged slot in xa_node must be skipped → empty result"
+        );
+    }
+
+    // --- walk_bpf_programs: idr.idr_rt fails, idr.top succeeds (or_else branch) ---
+    // Exercises the or_else fallback in walk_bpf_programs (lines 92-97).
+    // idr_rt field absent → or_else reads idr.top → also fails (unmapped) → xa_head = 0 → empty.
+    #[test]
+    fn walk_bpf_programs_idr_top_fallback_zero_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+
+        let idr_vaddr: u64 = 0xFFFF_8800_0065_0000;
+        let idr_paddr: u64 = 0x0065_0000;
+
+        // Only define idr.top (not idr_rt) at offset 0 = 0 → xa_head = 0 → empty.
+        let isf = IsfBuilder::new()
+            .add_symbol("bpf_prog_idr", idr_vaddr)
+            .add_struct("idr", 0x20)
+            .add_field("idr", "top", 0x00u64, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let idr_page = [0u8; 4096]; // top = 0 → xa_head = 0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(idr_vaddr, idr_paddr, ptf::WRITABLE)
+            .write_phys(idr_paddr, &idr_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bpf_programs(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "idr.top fallback with xa_head=0 → empty result"
+        );
+    }
+
     // --- prog_type_name: in-bounds entries (exercises all named branches) ---
     // These call the private prog_type_name via walk_bpf; here we test the
     // outer public interface that composes prog_type_name + classify.

@@ -226,4 +226,47 @@ mod tests {
         let result = walk_io_uring(&reader);
         assert!(result.is_ok(), "walk_io_uring must not error when symbol is present");
     }
+
+    // IoUringEntry struct: Debug, Clone, Serialize coverage.
+    #[test]
+    fn io_uring_entry_debug_clone_serialize() {
+        let entry = IoUringEntry {
+            pid: 1234,
+            comm: "curing".to_string(),
+            ctx_addr: 0xFFFF_8800_0001_0000,
+            sq_entries: 128,
+            cq_entries: 256,
+            pending_opcodes: vec![IORING_OP_SENDMSG, IORING_OP_CONNECT],
+            bypasses_seccomp: true,
+            seccomp_active: true,
+        };
+        let cloned = entry.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("curing"));
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"pid\":1234"));
+        assert!(json.contains("\"bypasses_seccomp\":true"));
+        assert!(json.contains("\"sq_entries\":128"));
+    }
+
+    // classify_io_uring: mixed sensitive and non-sensitive opcodes — sensitive wins.
+    #[test]
+    fn classify_io_uring_mixed_opcodes_sensitive_wins() {
+        // READ (non-sensitive) + SENDMSG (sensitive) under seccomp → suspicious
+        assert!(
+            classify_io_uring(&[IORING_OP_READ, IORING_OP_SENDMSG], 2),
+            "mix of sensitive + non-sensitive under seccomp must be flagged"
+        );
+    }
+
+    // Constants have expected values (covers the const declarations at lines 16-26).
+    #[test]
+    fn io_uring_opcode_constants_correct_values() {
+        assert_eq!(IORING_OP_SENDMSG, 9u8);
+        assert_eq!(IORING_OP_RECVMSG, 10u8);
+        assert_eq!(IORING_OP_CONNECT, 16u8);
+        assert_eq!(IORING_OP_OPENAT, 18u8);
+        assert_eq!(IORING_OP_READ, 22u8);
+        assert_eq!(IORING_OP_WRITE, 23u8);
+    }
 }
