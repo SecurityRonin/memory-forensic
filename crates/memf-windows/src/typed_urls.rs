@@ -1882,6 +1882,215 @@ mod tests {
         assert!(result[0].is_suspicious, "mega.nz URL should be flagged suspicious");
     }
 
+    // ── walk_typed_urls with TypedURLsTime timestamp lookup ──────────
+    //
+    // Builds a hive that has BOTH TypedURLs AND TypedURLsTime under
+    // "Internet Explorer" so the timestamp path (lines 436-536) is exercised.
+    //
+    // All cells placed at non-overlapping 0x100-byte-aligned slots in one HBIN page.
+    // Slot layout (each 0x100 bytes = size_header(4) + nk/lf payload):
+    //
+    //   0x010: ROOT nk  (sub=1, lf=0x100)
+    //   0x100: lf1→SW   (lf list pointing to 0x200)
+    //   0x200: SW nk    (sub=1, lf=0x300)
+    //   0x300: lf1→MS   (lf list pointing to 0x400)
+    //   0x400: MS nk    (sub=1, lf=0x500)
+    //   0x500: lf1→IE   (lf list pointing to 0x600)
+    //   0x600: IE nk    (sub=2, lf=0x700)
+    //   0x700: lf2→[TU,TT]   (2-entry lf: 0x800, 0x900)
+    //   0x800: TU nk   "TypedURLs"   (val=1, vlist=0xA00)
+    //   0x900: TT nk   "TypedURLsTime" (val=1, vlist=0xB00)
+    //   0xA00: vlist_TU  [→0xC00]
+    //   0xB00: vlist_TT  [→0xD00]
+    //   0xC00: vk "url1" (URL) → data at 0xE00
+    //   0xD00: vk "url1" (time) → data at 0xF00
+    //   0xE00: URL data UTF-16LE "https://mega.nz/x"
+    //   0xF00: FILETIME data (8 bytes = 132_000_000_000)
+    #[test]
+    fn walk_typed_urls_with_timestamp_from_typed_urls_time() {
+        use memf_core::test_builders::{flags, SyntheticPhysMem};
+
+        let hive_vaddr: u64 = 0x0095_0000;
+        let hive_paddr: u64 = 0x0095_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = 0x0096_0000;
+
+        // Cell index constants (offsets within HBIN page).
+        // ROOT must be non-zero since walk_typed_urls uses it as cell_address input.
+        const ROOT_IDX:   u32 = 0x010;
+        const LF_SW:      u32 = 0x100;
+        const SW_IDX:     u32 = 0x200;
+        const LF_MS:      u32 = 0x300;
+        const MS_IDX:     u32 = 0x400;
+        const LF_IE:      u32 = 0x500;
+        const IE_IDX:     u32 = 0x600;
+        const LF_TU_TT:   u32 = 0x700;  // 2-entry lf → TU and TT
+        const TU_IDX:     u32 = 0x800;  // TypedURLs nk
+        const TT_IDX:     u32 = 0x900;  // TypedURLsTime nk
+        const VLIST_TU:   u32 = 0xA00;
+        const VLIST_TT:   u32 = 0xB00;
+        const VK_URL:     u32 = 0xC00;  // vk "url1" → URL
+        const VK_TIME:    u32 = 0xD00;  // vk "url1" → FILETIME
+        const DC_URL:     u32 = 0xE00;  // URL data
+        const DC_TIME:    u32 = 0xF00;  // FILETIME data
+
+        let mut p = vec![0u8; 0x1000];
+
+        // write_cell: write size header then payload at buf[off..].
+        fn wc(buf: &mut Vec<u8>, off: usize, payload: &[u8]) {
+            let abs = (payload.len() + 4) as i32;
+            buf[off..off + 4].copy_from_slice(&(-abs).to_le_bytes());
+            buf[off + 4..off + 4 + payload.len()].copy_from_slice(payload);
+        }
+
+        // build_nk_sub: named nk with subkey list.
+        fn build_nk_sub(name: &[u8], subkey_count: u32, lf_cell: u32) -> Vec<u8> {
+            let need = NK_NAME_OFFSET + name.len();
+            let mut d = vec![0u8; need];
+            d[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+            d[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+                .copy_from_slice(&subkey_count.to_le_bytes());
+            d[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+                .copy_from_slice(&lf_cell.to_le_bytes());
+            d[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&(name.len() as u16).to_le_bytes());
+            d[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+            d
+        }
+
+        // build_nk_val: named nk with value list.
+        fn build_nk_val(name: &[u8], value_count: u32, vlist_cell: u32) -> Vec<u8> {
+            let need = NK_NAME_OFFSET + name.len();
+            let mut d = vec![0u8; need];
+            d[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+            d[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+                .copy_from_slice(&value_count.to_le_bytes());
+            d[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+                .copy_from_slice(&vlist_cell.to_le_bytes());
+            d[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&(name.len() as u16).to_le_bytes());
+            d[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+            d
+        }
+
+        // build_lf1: 1-entry lf list.
+        fn build_lf1(child: u32) -> Vec<u8> {
+            let mut d = vec![0u8; 12]; // sig(2)+count(2)+entry(4+4)
+            d[0..2].copy_from_slice(&0x666Cu16.to_le_bytes());
+            d[2..4].copy_from_slice(&1u16.to_le_bytes());
+            d[4..8].copy_from_slice(&child.to_le_bytes());
+            d
+        }
+
+        // build_lf2: 2-entry lf list.
+        fn build_lf2(c1: u32, c2: u32) -> Vec<u8> {
+            let mut d = vec![0u8; 20]; // sig(2)+count(2)+entry1(8)+entry2(8)
+            d[0..2].copy_from_slice(&0x666Cu16.to_le_bytes());
+            d[2..4].copy_from_slice(&2u16.to_le_bytes());
+            d[4..8].copy_from_slice(&c1.to_le_bytes());
+            // [8..12] = hash1 = 0
+            d[12..16].copy_from_slice(&c2.to_le_bytes());
+            // [16..20] = hash2 = 0
+            d
+        }
+
+        // Build hive cells.
+        wc(&mut p, ROOT_IDX as usize,  &build_nk_sub(b"$ROOT",            1, LF_SW));
+        wc(&mut p, LF_SW as usize,     &build_lf1(SW_IDX));
+        wc(&mut p, SW_IDX as usize,    &build_nk_sub(b"Software",         1, LF_MS));
+        wc(&mut p, LF_MS as usize,     &build_lf1(MS_IDX));
+        wc(&mut p, MS_IDX as usize,    &build_nk_sub(b"Microsoft",        1, LF_IE));
+        wc(&mut p, LF_IE as usize,     &build_lf1(IE_IDX));
+        wc(&mut p, IE_IDX as usize,    &build_nk_sub(b"Internet Explorer", 2, LF_TU_TT));
+        wc(&mut p, LF_TU_TT as usize,  &build_lf2(TU_IDX, TT_IDX));
+        wc(&mut p, TU_IDX as usize,    &build_nk_val(b"TypedURLs",        1, VLIST_TU));
+        wc(&mut p, TT_IDX as usize,    &build_nk_val(b"TypedURLsTime",    1, VLIST_TT));
+
+        // Values lists: each a 4-byte cell index (data_len=4, so read_cell_data returns 4 bytes).
+        {
+            let mut vl = vec![0u8; 4];
+            vl[..4].copy_from_slice(&VK_URL.to_le_bytes());
+            wc(&mut p, VLIST_TU as usize, &vl);
+        }
+        {
+            let mut vl = vec![0u8; 4];
+            vl[..4].copy_from_slice(&VK_TIME.to_le_bytes());
+            wc(&mut p, VLIST_TT as usize, &vl);
+        }
+
+        // URL vk: name="url1", data_len=34 (17 UTF-16 chars), data_cell=DC_URL.
+        {
+            let mut vk = vec![0u8; 0x20];
+            vk[0..2].copy_from_slice(&VK_SIGNATURE.to_le_bytes());
+            vk[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&4u16.to_le_bytes());
+            vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+                .copy_from_slice(&34u32.to_le_bytes()); // 17 UTF-16 chars × 2 bytes
+            vk[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+                .copy_from_slice(&DC_URL.to_le_bytes());
+            vk[VK_NAME_OFFSET..VK_NAME_OFFSET + 4].copy_from_slice(b"url1");
+            wc(&mut p, VK_URL as usize, &vk);
+        }
+
+        // FILETIME vk: name="url1", data_len=8, data_cell=DC_TIME.
+        {
+            let mut vk = vec![0u8; 0x20];
+            vk[0..2].copy_from_slice(&VK_SIGNATURE.to_le_bytes());
+            vk[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&4u16.to_le_bytes());
+            vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+                .copy_from_slice(&8u32.to_le_bytes());
+            vk[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+                .copy_from_slice(&DC_TIME.to_le_bytes());
+            vk[VK_NAME_OFFSET..VK_NAME_OFFSET + 4].copy_from_slice(b"url1");
+            wc(&mut p, VK_TIME as usize, &vk);
+        }
+
+        // URL data: UTF-16LE "https://mega.nz/x" (17 chars = 34 bytes).
+        {
+            let url = "https://mega.nz/x";
+            let utf16: Vec<u8> = url.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            wc(&mut p, DC_URL as usize, &utf16);
+        }
+
+        // FILETIME data: 132_000_000_000 as u64 LE.
+        {
+            let ft: u64 = 132_000_000_000u64;
+            wc(&mut p, DC_TIME as usize, &ft.to_le_bytes());
+        }
+
+        // Hive block: RootCell = ROOT_IDX at offset 0x24.
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&ROOT_IDX.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hbin_paddr, &p)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "testuser").unwrap();
+        assert!(!result.is_empty(), "should find at least one typed URL");
+        let entry = &result[0];
+        assert_eq!(entry.username, "testuser");
+        assert!(
+            entry.url.starts_with("https://mega.nz"),
+            "URL should start with https://mega.nz: got '{}'",
+            entry.url
+        );
+        assert!(entry.is_suspicious, "mega.nz URL should be suspicious");
+        // TypedURLsTime path exercised — timestamp must match the FILETIME we wrote.
+        assert_eq!(
+            entry.timestamp, 132_000_000_000u64,
+            "timestamp should come from TypedURLsTime"
+        );
+    }
+
     /// hive root cell has wrong signature → empty.
     #[test]
     fn walk_typed_urls_wrong_root_sig_empty() {
