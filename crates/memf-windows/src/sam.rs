@@ -15,8 +15,6 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::unicode::read_unicode_string;
-
 /// Maximum number of SAM user entries to walk (safety limit).
 const MAX_USERS: usize = 4096;
 
@@ -47,8 +45,11 @@ pub struct SamUserInfo {
 
 /// Account flag constants from USER_ACCOUNT_CONTROL.
 pub const UAC_ACCOUNT_DISABLED: u32 = 0x0001;
+/// Account lockout flag (ADS_UF_LOCKOUT).
 pub const UAC_LOCKOUT: u32 = 0x0010;
+/// Password not required flag (ADS_UF_PASSWD_NOTREQD).
 pub const UAC_PASSWORD_NOT_REQUIRED: u32 = 0x0020;
+/// Normal user account flag (ADS_UF_NORMAL_ACCOUNT).
 pub const UAC_NORMAL_ACCOUNT: u32 = 0x0200;
 
 /// Classify a SAM user account as suspicious.

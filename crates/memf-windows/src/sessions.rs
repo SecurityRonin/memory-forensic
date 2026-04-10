@@ -17,6 +17,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 /// Maximum logon sessions to enumerate (safety limit).
+#[allow(dead_code)]
 const MAX_SESSIONS: usize = 4_096;
 
 /// Information about a single Windows logon session.

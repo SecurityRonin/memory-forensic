@@ -625,6 +625,131 @@ mod tests {
         assert_eq!(libs[0].size, 0x4000);
     }
 
+    // --- read_vma_file_path: dentry_ptr == 0 → returns None → VMA skipped ---
+    #[test]
+    fn walk_skips_vma_when_dentry_null() {
+        let vaddr: u64 = 0xFFFF_8000_0070_0000;
+        let paddr: u64 = 0x0085_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct
+        data[0..4].copy_from_slice(&30u32.to_le_bytes()); // pid
+        data[32..36].copy_from_slice(b"null"); // comm
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        // mm_struct at +0x200: mmap → VMA at +0x300
+        let vma_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma_addr.to_le_bytes());
+
+        // VMA at +0x300: vm_file → file at +0x400
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes()); // vm_start
+        data[0x308..0x310].copy_from_slice(&0x7F00_2000u64.to_le_bytes()); // vm_end
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
+        let file_addr = vaddr + 0x400;
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes());
+
+        // file at +0x400: f_path.dentry = 0 (null dentry)
+        // f_path at offset 0; dentry pointer at f_path_offset + dentry_in_path_offset = 0 + 8 = 8
+        data[0x408..0x410].copy_from_slice(&0u64.to_le_bytes()); // dentry = NULL
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 30, "null").unwrap();
+        assert!(libs.is_empty(), "null dentry_ptr → read_vma_file_path returns None → no library");
+    }
+
+    // --- read_vma_file_path: name_ptr == 0 → returns None → VMA skipped ---
+    #[test]
+    fn walk_skips_vma_when_name_ptr_null() {
+        let vaddr: u64 = 0xFFFF_8000_0078_0000;
+        let paddr: u64 = 0x0086_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct
+        data[0..4].copy_from_slice(&31u32.to_le_bytes());
+        data[32..36].copy_from_slice(b"npnl");
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        // mm_struct at +0x200
+        let vma_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma_addr.to_le_bytes());
+
+        // VMA
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes());
+        data[0x308..0x310].copy_from_slice(&0x7F00_2000u64.to_le_bytes());
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
+        let file_addr = vaddr + 0x400;
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes());
+
+        // file: f_path.dentry → dentry at +0x500
+        let dentry_addr = vaddr + 0x500;
+        data[0x408..0x410].copy_from_slice(&dentry_addr.to_le_bytes());
+
+        // dentry at +0x500: d_name (qstr) at offset 0; qstr.name at offset 8 → NULL
+        data[0x508..0x510].copy_from_slice(&0u64.to_le_bytes()); // name_ptr = NULL
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 31, "npnl").unwrap();
+        assert!(libs.is_empty(), "name_ptr == 0 → read_vma_file_path returns None → no library");
+    }
+
+    // --- read_vma_file_path: name is empty string → returns None → VMA skipped ---
+    #[test]
+    fn walk_skips_vma_when_name_empty() {
+        let vaddr: u64 = 0xFFFF_8000_0079_0000;
+        let paddr: u64 = 0x0087_0000;
+        let mut data = vec![0u8; 4096];
+
+        data[0..4].copy_from_slice(&32u32.to_le_bytes());
+        data[32..36].copy_from_slice(b"empt");
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        let vma_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma_addr.to_le_bytes());
+
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes());
+        data[0x308..0x310].copy_from_slice(&0x7F00_2000u64.to_le_bytes());
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes());
+        let file_addr = vaddr + 0x400;
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes());
+
+        // file → dentry at +0x500
+        let dentry_addr = vaddr + 0x500;
+        data[0x408..0x410].copy_from_slice(&dentry_addr.to_le_bytes());
+
+        // dentry: qstr.name at 0x508 → name_str at +0x600 (which is \0)
+        let name_str_addr = vaddr + 0x600;
+        data[0x508..0x510].copy_from_slice(&name_str_addr.to_le_bytes());
+        // name_str_addr points to a null byte → empty string
+        data[0x600] = 0u8;
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 32, "empt").unwrap();
+        // Empty name from read_string → read_vma_file_path returns None → no library
+        assert!(libs.is_empty(), "empty name → read_vma_file_path returns None");
+    }
+
+    // --- SharedLibraryInfo: Debug, Clone, Serialize ---
+    #[test]
+    fn shared_library_info_debug_clone_serialize() {
+        let info = SharedLibraryInfo {
+            pid: 1,
+            process_name: "test".to_string(),
+            lib_path: "/usr/lib/libfoo.so".to_string(),
+            base_addr: 0x7F00_0000,
+            size: 0x1000,
+            is_suspicious: false,
+        };
+        let cloned = info.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("libfoo"));
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":1"));
+        assert!(json.contains("is_suspicious"));
+    }
+
     #[test]
     fn walk_classifies_suspicious_library() {
         // A library from /tmp should be flagged as suspicious.

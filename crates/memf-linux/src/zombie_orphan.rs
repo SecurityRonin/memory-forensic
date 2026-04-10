@@ -10,7 +10,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, ProcessState, Result};
+use crate::{ProcessState, Result};
 
 /// Common daemon-like process names that are suspicious when found as
 /// orphans reparented to init. Legitimate daemons are started by init

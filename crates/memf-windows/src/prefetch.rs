@@ -55,6 +55,7 @@ const SCAN_ALIGNMENT: u64 = 0x1000;
 
 /// Minimum size needed to parse a Prefetch v30 header.
 /// We need at least through the run count and last-run-time fields.
+#[allow(dead_code)]
 const MIN_HEADER_SIZE: usize = 0xA0;
 
 /// Maximum number of Prefetch entries to recover (safety limit).

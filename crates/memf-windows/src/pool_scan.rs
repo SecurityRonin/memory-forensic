@@ -62,6 +62,7 @@ const KNOWN_TAGS: &[(&str, &str)] = &[
 ];
 
 /// Convert a pool type byte to a human-readable string.
+#[allow(dead_code)]
 fn pool_type_name(pool_type: u8) -> &'static str {
     match pool_type & 0x0F {
         0 => "NonPagedPool",
@@ -75,6 +76,7 @@ fn pool_type_name(pool_type: u8) -> &'static str {
 }
 
 /// Infer the struct type associated with a pool tag.
+#[allow(dead_code)]
 fn infer_struct_type(tag: &str) -> &'static str {
     for (known_tag, struct_type) in KNOWN_TAGS {
         if tag == *known_tag {

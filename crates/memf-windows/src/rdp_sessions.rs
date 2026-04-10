@@ -14,9 +14,8 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::unicode::read_unicode_string;
-
 /// Maximum number of RDP sessions to enumerate (safety limit).
+#[allow(dead_code)]
 const MAX_SESSIONS: usize = 256;
 
 /// Information about an RDP session recovered from kernel memory.
@@ -228,6 +227,141 @@ mod tests {
     // ---------------------------------------------------------------
     // walk_rdp_sessions tests
     // ---------------------------------------------------------------
+
+    // ---------------------------------------------------------------
+    // session_state_name: remaining variants
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn state_name_all_variants() {
+        assert_eq!(session_state_name(0), "Active");
+        assert_eq!(session_state_name(1), "Connected");
+        assert_eq!(session_state_name(2), "ConnectQuery");
+        assert_eq!(session_state_name(3), "Shadow");
+        assert_eq!(session_state_name(4), "Disconnected");
+        assert_eq!(session_state_name(5), "Idle");
+        assert_eq!(session_state_name(6), "Listen");
+        assert_eq!(session_state_name(7), "Reset");
+        assert_eq!(session_state_name(8), "Down");
+        assert_eq!(session_state_name(9), "Init");
+        assert_eq!(session_state_name(10), "Unknown");
+        assert_eq!(session_state_name(100), "Unknown");
+    }
+
+    // ---------------------------------------------------------------
+    // is_cross_network_private_ip coverage
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn cross_network_private_ip_172_range() {
+        // 172.16-31 is cross-network
+        for oct in 16u8..=31 {
+            assert!(
+                is_cross_network_private_ip(&format!("172.{}.1.1", oct)),
+                "172.{} should be cross-network",
+                oct
+            );
+        }
+        // 172.15 and 172.32 are not
+        assert!(!is_cross_network_private_ip("172.15.0.1"));
+        assert!(!is_cross_network_private_ip("172.32.0.1"));
+        // 172.xyz non-numeric
+        assert!(!is_cross_network_private_ip("172.abc.0.1"));
+    }
+
+    #[test]
+    fn cross_network_private_ip_192_168() {
+        assert!(is_cross_network_private_ip("192.168.0.1"));
+        assert!(is_cross_network_private_ip("192.168.255.255"));
+        assert!(!is_cross_network_private_ip("192.169.0.1"));
+        assert!(!is_cross_network_private_ip("10.0.0.1")); // 10.x not flagged
+        assert!(!is_cross_network_private_ip(""));
+        assert!(!is_cross_network_private_ip("8.8.8.8")); // public
+    }
+
+    // ---------------------------------------------------------------
+    // classify_rdp_session: remaining coverage
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn classify_guest_account_suspicious() {
+        assert!(classify_rdp_session("GUEST", "10.0.0.1", 0));
+        assert!(classify_rdp_session("guest", "10.0.0.1", 0)); // case-insensitive
+    }
+
+    #[test]
+    fn classify_defaultaccount_suspicious() {
+        assert!(classify_rdp_session("DefaultAccount", "10.0.0.1", 1));
+        assert!(classify_rdp_session("DEFAULTUSER", "10.0.0.1", 4));
+    }
+
+    #[test]
+    fn classify_normal_disconnected_benign() {
+        // Disconnected session (state 4) with normal user and local IP is benign.
+        assert!(!classify_rdp_session("jdoe", "10.0.0.5", 4));
+    }
+
+    #[test]
+    fn classify_active_non_empty_username_local_ip_benign() {
+        assert!(!classify_rdp_session("administrator", "10.1.2.3", 0));
+    }
+
+    #[test]
+    fn classify_rdp_session_empty_address_benign() {
+        // Empty client address — cross-network check is skipped.
+        assert!(!classify_rdp_session("alice", "", 0));
+    }
+
+    /// RdpSessionInfo struct and serialization.
+    #[test]
+    fn rdp_session_info_serializes() {
+        let info = RdpSessionInfo {
+            session_id: 2,
+            username: "SYSTEM".to_string(),
+            domain: "NT AUTHORITY".to_string(),
+            client_name: "DC01".to_string(),
+            client_address: "10.0.0.1".to_string(),
+            connect_time: 132_500_000_000_000_000,
+            disconnect_time: 0,
+            logon_time: 132_500_000_000_000_000,
+            state: "Active".to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"session_id\":2"));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("SYSTEM"));
+    }
+
+    /// walk_rdp_sessions with MiSessionWsList present returns empty (stub).
+    #[test]
+    fn walk_rdp_sessions_with_symbol_returns_empty() {
+        let isf = IsfBuilder::new()
+            .add_symbol("MiSessionWsList", 0xFFFF_8000_0010_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let sessions = walk_rdp_sessions(&reader).unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    /// walk_rdp_sessions with MmSessionSpace present returns empty (stub).
+    #[test]
+    fn walk_rdp_sessions_mmsessionspace_symbol_returns_empty() {
+        let isf = IsfBuilder::new()
+            .add_symbol("MmSessionSpace", 0xFFFF_8000_0020_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let sessions = walk_rdp_sessions(&reader).unwrap();
+        assert!(sessions.is_empty());
+    }
 
     /// When no session symbols are present, walker returns an empty Vec.
     #[test]

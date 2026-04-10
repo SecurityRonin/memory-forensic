@@ -54,6 +54,10 @@ const TIMER_WHEEL_GROUPS: usize = 9;
 /// Maximum number of timers to enumerate per vector (cycle protection).
 const MAX_TIMERS_PER_VECTOR: usize = 4096;
 
+/// Walk the kernel timer wheel and return all active timer entries.
+///
+/// Returns `Ok(Vec::new())` if `timer_bases`, `_stext`, or `_etext` symbols
+/// are absent (graceful degradation for older kernels or incomplete ISF).
 pub fn walk_kernel_timers<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<KernelTimerInfo>> {

@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// Information about a process exhibiting container escape indicators.
 #[derive(Debug, Clone)]

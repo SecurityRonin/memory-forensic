@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// Information about a process whose `struct cred` is shared with other
 /// unrelated processes.

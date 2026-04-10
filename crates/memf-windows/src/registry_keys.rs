@@ -19,8 +19,6 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::Result;
-
 // ── _HBASE_BLOCK offsets ─────────────────────────────────────────────
 
 /// Offset of `RootCell` (u32) within `_HBASE_BLOCK`.
@@ -63,6 +61,7 @@ const NK_LAST_WRITE_TIME_OFFSET: usize = 4;
 ///   0x48: NameLength (u16)
 ///   0x4A: ClassLength (u16)
 ///   0x4C: Name (variable, ASCII or UTF-16)
+#[allow(dead_code)]
 const NK_PARENT_OFFSET: usize = 0x10;
 const NK_STABLE_SUBKEY_COUNT_OFFSET: usize = 0x14;
 const NK_STABLE_SUBKEYS_LIST_OFFSET: usize = 0x1C;

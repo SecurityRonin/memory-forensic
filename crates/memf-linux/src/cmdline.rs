@@ -287,4 +287,85 @@ mod tests {
         let result = parse_arg_region(b"");
         assert_eq!(result, "");
     }
+
+    /// walk_cmdlines: missing tasks field → Err.
+    #[test]
+    fn walk_cmdlines_missing_tasks_field_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let data = vec![0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks intentionally absent
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "pgd", 0, "pointer")
+            .add_field("mm_struct", "arg_start", 64, "unsigned long")
+            .add_field("mm_struct", "arg_end", 72, "unsigned long")
+            .add_symbol("init_task", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cmdlines(&reader);
+        assert!(result.is_err(), "missing tasks field must produce an error");
+    }
+
+    /// walk_process_cmdline: arg_end <= arg_start → empty cmdline.
+    #[test]
+    fn walk_process_cmdline_arg_end_before_arg_start_returns_empty() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        data[0..4].copy_from_slice(&77u32.to_le_bytes()); // pid = 77
+        let tasks_addr = vaddr + 16;
+        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[32..37].copy_from_slice(b"proc\0");
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        // mm_struct: arg_start = 0x5000, arg_end = 0x4000 (end < start → empty)
+        data[0x200..0x208].copy_from_slice(&0x1000u64.to_le_bytes()); // pgd
+        data[0x240..0x248].copy_from_slice(&0x5000u64.to_le_bytes()); // arg_start
+        data[0x248..0x250].copy_from_slice(&0x4000u64.to_le_bytes()); // arg_end (< arg_start)
+
+        let reader = make_test_reader(&data, vaddr, paddr, &[]);
+        let result = walk_process_cmdline(&reader, vaddr).unwrap();
+        assert_eq!(result.pid, 77);
+        assert_eq!(result.cmdline, "", "arg_end <= arg_start must produce empty cmdline");
+    }
+
+    /// parse_arg_region: consecutive nulls (empty chunks) are filtered out.
+    #[test]
+    fn parse_arg_region_consecutive_nulls_filtered() {
+        // Two consecutive null bytes between args → empty chunk filtered → correct join.
+        let result = parse_arg_region(b"arg0\0\0arg2\0");
+        assert_eq!(result, "arg0 arg2");
+    }
+
+    /// CmdlineInfo: Debug, Clone, PartialEq.
+    #[test]
+    fn cmdline_info_clone_eq() {
+        let a = CmdlineInfo {
+            pid: 1,
+            comm: "bash".to_string(),
+            cmdline: "bash -c true".to_string(),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+        let dbg = format!("{:?}", a);
+        assert!(dbg.contains("bash"));
+    }
 }

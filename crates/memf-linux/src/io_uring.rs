@@ -10,14 +10,19 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::Result;
 
-/// io_uring opcode constants (from include/uapi/linux/io_uring.h).
+/// io_uring opcode for sending a message (IORING_OP_SENDMSG, from include/uapi/linux/io_uring.h).
 pub const IORING_OP_SENDMSG: u8 = 9;
+/// io_uring opcode for receiving a message (IORING_OP_RECVMSG).
 pub const IORING_OP_RECVMSG: u8 = 10;
+/// io_uring opcode for establishing a connection (IORING_OP_CONNECT).
 pub const IORING_OP_CONNECT: u8 = 16;
+/// io_uring opcode for opening a file (IORING_OP_OPENAT).
 pub const IORING_OP_OPENAT: u8 = 18;
+/// io_uring opcode for reading from a file descriptor (IORING_OP_READ).
 pub const IORING_OP_READ: u8 = 22;
+/// io_uring opcode for writing to a file descriptor (IORING_OP_WRITE).
 pub const IORING_OP_WRITE: u8 = 23;
 
 /// Sensitive opcode set — network or file operations that bypass seccomp.

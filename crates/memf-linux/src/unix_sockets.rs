@@ -10,7 +10,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// Information about a Unix domain socket extracted from kernel memory.
 #[derive(Debug, Clone, serde::Serialize)]

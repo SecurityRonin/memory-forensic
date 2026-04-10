@@ -117,6 +117,107 @@ mod tests {
         ));
     }
 
+    /// impersonation_level_name covers all branches.
+    #[test]
+    fn impersonation_level_name_all_variants() {
+        assert_eq!(impersonation_level_name(0), "Anonymous");
+        assert_eq!(impersonation_level_name(1), "Identification");
+        assert_eq!(impersonation_level_name(2), "Impersonation");
+        assert_eq!(impersonation_level_name(3), "Delegation");
+        assert_eq!(impersonation_level_name(4), "Unknown");
+        assert_eq!(impersonation_level_name(99), "Unknown");
+        assert_eq!(impersonation_level_name(u32::MAX), "Unknown");
+    }
+
+    /// classify_token_impersonation at level 1 (Identification) is NOT suspicious.
+    #[test]
+    fn classify_identification_level_not_suspicious() {
+        assert!(!classify_token_impersonation(
+            "S-1-5-21-1234567890-1234567890-1234567890-1001",
+            "S-1-5-18",
+            1, // Identification — not >= 2
+        ));
+    }
+
+    /// classify_token_impersonation at level 0 (Anonymous) is NOT suspicious.
+    #[test]
+    fn classify_anonymous_level_not_suspicious() {
+        assert!(!classify_token_impersonation(
+            "S-1-5-21-1234567890-1234567890-1234567890-1001",
+            "S-1-5-18",
+            0, // Anonymous
+        ));
+    }
+
+    /// classify_token_impersonation at Delegation level (3) is suspicious.
+    #[test]
+    fn classify_delegation_level_suspicious() {
+        assert!(classify_token_impersonation(
+            "S-1-5-21-1234567890-1234567890-1234567890-1001",
+            "S-1-5-18",
+            3, // Delegation
+        ));
+    }
+
+    /// classify_token_impersonation: impersonation user is not SYSTEM — benign.
+    #[test]
+    fn classify_non_system_impersonation_benign() {
+        assert!(!classify_token_impersonation(
+            "S-1-5-21-111-222-333-500",
+            "S-1-5-21-111-222-333-1001", // not SYSTEM
+            2,
+        ));
+    }
+
+    /// TokenImpersonationInfo struct and serialization.
+    #[test]
+    fn token_impersonation_info_serializes() {
+        let info = TokenImpersonationInfo {
+            pid: 1234,
+            tid: 5678,
+            process_name: "notepad.exe".to_string(),
+            primary_token_user: "S-1-5-21-111-222-333-1001".to_string(),
+            impersonation_token_user: "S-1-5-18".to_string(),
+            impersonation_level: 2,
+            impersonation_level_name: "Impersonation".to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":1234"));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("notepad.exe"));
+    }
+
+    /// walk_token_impersonation with PsActiveProcessHead present returns empty
+    /// (walker body is a stub pending integration).
+    #[test]
+    fn walk_token_impersonation_with_symbol_returns_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let ps_head_vaddr: u64 = 0xFFFF_8001_0000_0000;
+        let ps_head_paddr: u64 = 0x0090_0000;
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let mut page = vec![0u8; 4096];
+        // Circular empty list: Flink → self
+        page[0..8].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_token_impersonation(&reader).unwrap();
+        assert!(results.is_empty());
+    }
+
     /// Without PsActiveProcessHead symbol, walker returns empty.
     #[test]
     fn walk_token_impersonation_no_symbol_returns_empty() {

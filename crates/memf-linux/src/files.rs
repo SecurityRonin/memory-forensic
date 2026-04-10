@@ -356,4 +356,158 @@ mod tests {
         let result = walk_files(&reader);
         assert!(result.is_err());
     }
+
+    // walk_files: tasks field missing → Err (exercises the tasks_offset error path).
+    #[test]
+    fn walk_files_missing_tasks_field_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let data = vec![0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks field intentionally absent
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_files(&reader);
+        assert!(result.is_err(), "missing tasks field must produce an error");
+    }
+
+    // walk_process_files: f_inode == 0 → inode field is None in result.
+    #[test]
+    fn walk_process_files_null_inode_gives_none() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct: PID 1, "bash"
+        data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let tasks_addr = vaddr + 16;
+        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[32..36].copy_from_slice(b"bash");
+        let files_struct_addr = vaddr + 0x200;
+        data[56..64].copy_from_slice(&files_struct_addr.to_le_bytes());
+
+        // files_struct at +0x200
+        let fdtable_addr = vaddr + 0x300;
+        data[0x200..0x208].copy_from_slice(&fdtable_addr.to_le_bytes());
+
+        // fdtable: max_fds=1, fd array at +0x400
+        data[0x300..0x304].copy_from_slice(&1u32.to_le_bytes());
+        let fd_array_addr = vaddr + 0x400;
+        data[0x308..0x310].copy_from_slice(&fd_array_addr.to_le_bytes());
+
+        // fd array: slot 0 → file at +0x500
+        let file_addr = vaddr + 0x500;
+        data[0x400..0x408].copy_from_slice(&file_addr.to_le_bytes());
+
+        // file at +0x500: f_inode = 0 (null), f_pos = 0, dentry at +0x700
+        let dentry_addr = vaddr + 0x700;
+        data[0x508..0x510].copy_from_slice(&dentry_addr.to_le_bytes()); // f_path.dentry
+        data[0x510..0x518].copy_from_slice(&0u64.to_le_bytes()); // f_inode = NULL
+        data[0x518..0x520].copy_from_slice(&999u64.to_le_bytes()); // f_pos = 999
+
+        // dentry at +0x700: d_name.name at +0x780
+        let name_addr = vaddr + 0x780;
+        data[0x708..0x710].copy_from_slice(&name_addr.to_le_bytes());
+        data[0x780..0x789].copy_from_slice(b"/dev/null");
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let fds = walk_process_files(&reader, vaddr).unwrap();
+
+        assert_eq!(fds.len(), 1);
+        assert_eq!(fds[0].inode, None, "f_inode=0 should yield inode=None");
+        assert_eq!(fds[0].pos, 999);
+        assert_eq!(fds[0].path, "/dev/null");
+    }
+
+    // walk_process_files: dentry_ptr == 0 → path is empty string.
+    #[test]
+    fn walk_process_files_null_dentry_gives_empty_path() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        data[0..4].copy_from_slice(&2u32.to_le_bytes());
+        let tasks_addr = vaddr + 16;
+        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[32..36].copy_from_slice(b"bash");
+        let files_struct_addr = vaddr + 0x200;
+        data[56..64].copy_from_slice(&files_struct_addr.to_le_bytes());
+
+        let fdtable_addr = vaddr + 0x300;
+        data[0x200..0x208].copy_from_slice(&fdtable_addr.to_le_bytes());
+        data[0x300..0x304].copy_from_slice(&1u32.to_le_bytes()); // max_fds
+        let fd_array_addr = vaddr + 0x400;
+        data[0x308..0x310].copy_from_slice(&fd_array_addr.to_le_bytes());
+
+        let file_addr = vaddr + 0x500;
+        data[0x400..0x408].copy_from_slice(&file_addr.to_le_bytes());
+
+        // file: f_path.dentry = 0 (null), f_inode = 0
+        data[0x508..0x510].copy_from_slice(&0u64.to_le_bytes()); // dentry = NULL
+        data[0x510..0x518].copy_from_slice(&0u64.to_le_bytes()); // f_inode = NULL
+        data[0x518..0x520].copy_from_slice(&0u64.to_le_bytes()); // f_pos = 0
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let fds = walk_process_files(&reader, vaddr).unwrap();
+
+        assert_eq!(fds.len(), 1);
+        assert_eq!(fds[0].path, "", "null dentry → empty path");
+    }
+
+    // walk_process_files: name_ptr == 0 → path is empty string.
+    #[test]
+    fn walk_process_files_null_name_ptr_gives_empty_path() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        data[0..4].copy_from_slice(&3u32.to_le_bytes());
+        let tasks_addr = vaddr + 16;
+        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
+        data[32..36].copy_from_slice(b"bash");
+        let files_struct_addr = vaddr + 0x200;
+        data[56..64].copy_from_slice(&files_struct_addr.to_le_bytes());
+
+        let fdtable_addr = vaddr + 0x300;
+        data[0x200..0x208].copy_from_slice(&fdtable_addr.to_le_bytes());
+        data[0x300..0x304].copy_from_slice(&1u32.to_le_bytes());
+        let fd_array_addr = vaddr + 0x400;
+        data[0x308..0x310].copy_from_slice(&fd_array_addr.to_le_bytes());
+
+        let file_addr = vaddr + 0x500;
+        data[0x400..0x408].copy_from_slice(&file_addr.to_le_bytes());
+
+        // file: dentry → at +0x700
+        let dentry_addr = vaddr + 0x700;
+        data[0x508..0x510].copy_from_slice(&dentry_addr.to_le_bytes());
+        data[0x510..0x518].copy_from_slice(&0u64.to_le_bytes()); // f_inode = 0
+        data[0x518..0x520].copy_from_slice(&0u64.to_le_bytes());
+
+        // dentry: qstr.name at 0x708 → 0 (null name_ptr)
+        data[0x708..0x710].copy_from_slice(&0u64.to_le_bytes()); // name_ptr = 0
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let fds = walk_process_files(&reader, vaddr).unwrap();
+
+        assert_eq!(fds.len(), 1);
+        assert_eq!(fds[0].path, "", "null name_ptr → empty path");
+    }
 }

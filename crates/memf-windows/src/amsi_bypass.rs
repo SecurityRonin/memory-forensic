@@ -55,6 +55,7 @@ pub fn classify_amsi_patch(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// Format a byte slice as a space-separated hex string.
+#[allow(dead_code)]
 fn hex_string(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -108,6 +109,103 @@ mod tests {
         // Variant: 33 C0 C3
         let bytes2 = [0x33u8, 0xC0, 0xC3, 0x00, 0x00, 0x00];
         assert_eq!(classify_amsi_patch(&bytes2), Some("xor_eax_ret"));
+    }
+
+    /// Too-short byte slice returns None.
+    #[test]
+    fn classify_amsi_patch_too_short_returns_none() {
+        assert_eq!(classify_amsi_patch(&[]), None);
+        assert_eq!(classify_amsi_patch(&[0x31]), None);
+        assert_eq!(classify_amsi_patch(&[0x31, 0xC0]), None);
+    }
+
+    /// `mov eax, imm32; ret` (B8 xx xx xx xx C3) is a bypass.
+    #[test]
+    fn classify_mov_eax_ret_detected() {
+        // B8 57 00 07 80 C3 — mov eax, E_INVALIDARG (0x80070057); ret
+        let bytes = [0xB8u8, 0x57, 0x00, 0x07, 0x80, 0xC3];
+        assert_eq!(classify_amsi_patch(&bytes), Some("mov_eax_ret"));
+    }
+
+    /// `B8 xx xx` without C3 at index 5 is NOT a bypass.
+    #[test]
+    fn classify_mov_eax_no_ret_not_detected() {
+        // B8 57 00 07 80 00 — no RET at index 5
+        let bytes = [0xB8u8, 0x57, 0x00, 0x07, 0x80, 0x00];
+        assert_eq!(classify_amsi_patch(&bytes), None);
+        // Too short for the C3 check (only 3 bytes)
+        let short = [0xB8u8, 0x57, 0x00];
+        assert_eq!(classify_amsi_patch(&short), None);
+    }
+
+    /// `jmp_stub` (EB xx) is a bypass.
+    #[test]
+    fn classify_jmp_stub_detected() {
+        let bytes = [0xEBu8, 0x0A, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(classify_amsi_patch(&bytes), Some("jmp_stub"));
+    }
+
+    /// `int3_patch` (CC xx xx) is a bypass.
+    #[test]
+    fn classify_int3_patch_detected() {
+        let bytes = [0xCCu8, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(classify_amsi_patch(&bytes), Some("int3_patch"));
+    }
+
+    /// hex_string formats bytes correctly.
+    #[test]
+    fn hex_string_formats_correctly() {
+        assert_eq!(hex_string(&[0x31, 0xC0, 0xC3]), "31 C0 C3");
+        assert_eq!(hex_string(&[0x00, 0xFF, 0x0A]), "00 FF 0A");
+        assert_eq!(hex_string(&[]), "");
+    }
+
+    /// AmsiBypassInfo struct and serialization.
+    #[test]
+    fn amsi_bypass_info_serializes() {
+        let info = AmsiBypassInfo {
+            pid: 1234,
+            process_name: "powershell.exe".to_string(),
+            function_name: "AmsiScanBuffer".to_string(),
+            patch_address: 0x7FFE_0001_2345,
+            original_expected: "48 8B C4".to_string(),
+            found_bytes: "31 C0 C3".to_string(),
+            technique: "xor_eax_ret".to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":1234"));
+        assert!(json.contains("xor_eax_ret"));
+        assert!(json.contains("AmsiScanBuffer"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
+    /// walk_amsi_bypass with PsActiveProcessHead symbol present returns empty (stub).
+    #[test]
+    fn walk_amsi_bypass_with_symbol_returns_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let ps_head_vaddr: u64 = 0xFFFF_8001_0010_0000;
+        let ps_head_paddr: u64 = 0x00A0_0000;
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let mut page = vec![0u8; 4096];
+        page[0..8].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_amsi_bypass(&reader).unwrap();
+        assert!(results.is_empty(), "stub walker should return empty even with symbol");
     }
 
     /// Normal function prologue bytes must not be flagged.

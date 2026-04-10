@@ -12,7 +12,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, ProcessInfo, Result};
+use crate::{ProcessInfo, Result};
 
 /// Maximum environment region size to read (64 KiB safety limit).
 const MAX_ENV_SIZE: u64 = 64 * 1024;

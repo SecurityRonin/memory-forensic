@@ -1262,6 +1262,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// Perform a single DES block encryption (used for RID-based hash decryption).
 /// This is a minimal DES implementation for the specific SAM hash use case.
 /// Windows uses two DES keys derived from the RID to decrypt the 16-byte hash.
+#[allow(dead_code)]
 fn des_ecb_encrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
     // DES Initial Permutation table
     const IP: [u8; 64] = [

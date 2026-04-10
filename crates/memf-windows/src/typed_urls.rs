@@ -64,6 +64,7 @@ const VK_NAME_OFFSET: usize = 0x14;
 const MAX_SUBKEYS: usize = 4096;
 
 /// Maximum values per key (safety limit).
+#[allow(dead_code)]
 const MAX_VALUES: usize = 4096;
 
 /// The path components from the hive root to the TypedURLs key.

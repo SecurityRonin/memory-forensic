@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// Page-sized chunk for VMA scanning.
 const SCAN_CHUNK: usize = 4096;
