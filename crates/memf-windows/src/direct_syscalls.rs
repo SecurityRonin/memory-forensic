@@ -664,6 +664,43 @@ mod tests {
         assert!(result.is_none(), "unmapped ldr → find_ntdll_range returns None");
     }
 
+    /// classify_syscall_technique: exhaustive boundary table.
+    #[test]
+    fn classify_syscall_exhaustive_boundaries() {
+        // direct_syscall inside ntdll → benign
+        assert!(!classify_syscall_technique(true, "direct_syscall"));
+        // direct_syscall outside ntdll → suspicious
+        assert!(classify_syscall_technique(false, "direct_syscall"));
+        // heavens_gate always suspicious
+        assert!(classify_syscall_technique(true, "heavens_gate"));
+        assert!(classify_syscall_technique(false, "heavens_gate"));
+        // indirect_syscall always suspicious
+        assert!(classify_syscall_technique(true, "indirect_syscall"));
+        assert!(classify_syscall_technique(false, "indirect_syscall"));
+        // unknown: in_ntdll=true → benign
+        assert!(!classify_syscall_technique(true, "exotic_technique"));
+        // unknown: in_ntdll=false → suspicious
+        assert!(classify_syscall_technique(false, "exotic_technique"));
+    }
+
+    /// DirectSyscallInfo clone works correctly.
+    #[test]
+    fn direct_syscall_info_clone() {
+        let info = DirectSyscallInfo {
+            pid: 42,
+            process_name: "svchost.exe".to_string(),
+            thread_id: 100,
+            syscall_address: 0x7FF8_0001_2000,
+            syscall_number: 0x05,
+            technique: "indirect_syscall".to_string(),
+            in_ntdll: true,
+            is_suspicious: true,
+        };
+        let c = info.clone();
+        assert_eq!(c.pid, 42);
+        assert_eq!(c.technique, "indirect_syscall");
+    }
+
     /// DirectSyscallInfo serialization includes all expected fields.
     #[test]
     fn direct_syscall_info_serializes() {

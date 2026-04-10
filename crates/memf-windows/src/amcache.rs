@@ -1365,4 +1365,258 @@ mod tests {
         let result = walk_amcache(&reader, hive_vaddr).unwrap();
         assert!(result.is_empty(), "nk with no subkeys → empty Vec");
     }
+
+    // ── read_value_u64: REG_QWORD non-inline path ────────────────────
+
+    /// read_value_u64 with REG_QWORD (11) stored in a separate cell returns u64.
+    #[test]
+    fn read_value_u64_reg_qword_non_inline() {
+        let hive_base: u64 = 0x00B0_0000;
+        let data_cell_index: u32 = 0x100;
+        let data_page_vaddr = hive_base + HBIN_START_OFFSET;
+        let data_page_paddr: u64 = 0x00B1_0000;
+
+        // 8-byte QWORD value = 0x0102030405060708
+        let qword_val: u64 = 0x0102_0304_0506_0708;
+        let qword_bytes = qword_val.to_le_bytes();
+
+        // data cell
+        let mut data_page = vec![0u8; 0x1000];
+        let cell_off = data_cell_index as usize;
+        let cell_size: i32 = -((4 + 8) as i32);
+        data_page[cell_off..cell_off + 4].copy_from_slice(&cell_size.to_le_bytes());
+        data_page[cell_off + 4..cell_off + 12].copy_from_slice(&qword_bytes);
+
+        // Build vk_data: non-inline REG_QWORD
+        let mut vk = vec![0u8; 0x20];
+        // value_type = REG_QWORD (11)
+        vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&11u32.to_le_bytes());
+        // data_length = 8 (not inline, no MSB)
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&8u32.to_le_bytes());
+        // data_cell_index at VK_DATA_OFFSET
+        vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4].copy_from_slice(&data_cell_index.to_le_bytes());
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(data_page_vaddr, data_page_paddr, flags::WRITABLE)
+            .write_phys(data_page_paddr, &data_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_value_u64(&reader, hive_base, &vk);
+        assert_eq!(result, qword_val, "REG_QWORD non-inline should return correct u64");
+    }
+
+    // ── find_value: VK_SIGNATURE mismatch skipped ───────────────────
+
+    /// find_value with a value list cell where the vk cell has bad sig → skipped → None.
+    #[test]
+    fn find_value_bad_vk_sig_skipped_returns_none() {
+        let hive_base: u64 = 0x00C0_0000;
+        let list_cell_index: u32 = 0x100;
+        let vk_cell_index: u32 = 0x200;
+        let hbin_vaddr = hive_base + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = 0x00C1_0000;
+
+        // value list cell: 1 entry = vk_cell_index
+        let mut list_page = vec![0u8; 0x1000];
+        // list cell at offset 0x100
+        let list_off = list_cell_index as usize;
+        let list_size: i32 = -((4 + 4) as i32);
+        list_page[list_off..list_off + 4].copy_from_slice(&list_size.to_le_bytes());
+        list_page[list_off + 4..list_off + 8].copy_from_slice(&vk_cell_index.to_le_bytes());
+
+        // vk cell at offset 0x200 with bad sig
+        let vk_off = vk_cell_index as usize;
+        let vk_size: i32 = -((4 + 0x20) as i32);
+        list_page[vk_off..vk_off + 4].copy_from_slice(&vk_size.to_le_bytes());
+        // sig = 0x0000 (bad), rest zeros
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hbin_paddr, &list_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Build key_data with value_count=1, values_list_index=list_cell_index
+        let mut key_data = vec![0u8; 0x40];
+        key_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        key_data[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell_index.to_le_bytes());
+
+        let result = find_value(&reader, hive_base, &key_data, "TestValue");
+        assert!(result.is_none(), "bad vk sig should be skipped → None");
+    }
+
+    // ── walk_amcache: Root subkey found, IAF not under it → empty ───
+
+    /// walk_amcache finds a "Root" subkey but InventoryApplicationFile is not
+    /// a child of Root → returns empty Vec. Exercises the `root_child` branch.
+    #[test]
+    fn walk_amcache_root_found_iaf_not_found() {
+        // Layout:
+        //   hive_vaddr = 0x00D0_0000
+        //   base_block = 0x00D1_0000
+        //   hive_base = base_block (used for cell addressing)
+        //   cell storage = hive_base + HBIN_START_OFFSET = 0x00D2_0000
+        //
+        // Root nk → has subkey "Root" (no IAF under Root) → returns empty.
+
+        let hive_vaddr: u64 = 0x00D0_0000;
+        let hive_paddr: u64 = 0x00D0_0000;
+        let base_block: u64 = 0x00D1_0000;
+        let base_block_paddr: u64 = 0x00D1_0000;
+        let cell_page_base: u64 = base_block + HBIN_START_OFFSET; // 0x00D2_0000
+        let cell_page_paddr: u64 = cell_page_base;
+
+        // root_cell_index relative to cell_page_base; read_cell_data uses:
+        // hive_base + HBIN_START_OFFSET + cell_index
+        // where hive_base = base_block = 0x00D1_0000
+        // cell_page_base = 0x00D1_0000 + 0x1000 = 0x00D2_0000
+        // cell at index 0x20 → vaddr = 0x00D2_0020
+
+        let root_cell_idx: u32 = 0x20;
+        let root_child_list_idx: u32 = 0x100;
+        let root_child_idx: u32 = 0x180; // the "Root" NK
+
+        // ---- build hive page: BaseBlock pointer at +0x10 ----
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        // ---- build base_block page: root_cell at 0x24 ----
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_idx.to_le_bytes());
+
+        // ---- build cell page ----
+        // All cells are stored here at their index offsets.
+        let mut cell_page = vec![0u8; 0x1000];
+
+        // Helper: write cell = [i32 neg size][data] at offset
+        fn write_cell(page: &mut Vec<u8>, off: usize, data: &[u8]) {
+            let size: i32 = -((4 + data.len()) as i32);
+            page[off..off + 4].copy_from_slice(&size.to_le_bytes());
+            page[off + 4..off + 4 + data.len()].copy_from_slice(data);
+        }
+
+        // Root NK: NK_SIGNATURE, stable_subkey_count=1, subkeys_list=root_child_list_idx
+        let mut root_nk = vec![0u8; 0x60];
+        root_nk[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // stable_subkey_count at NK_STABLE_SUBKEY_COUNT_OFFSET (0x14)
+        root_nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        // subkeys list at NK_STABLE_SUBKEYS_LIST_OFFSET (0x1C)
+        root_nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&root_child_list_idx.to_le_bytes());
+        // name_length at NK_NAME_LENGTH_OFFSET (0x48), name at NK_NAME_OFFSET (0x4C)
+        let root_name = b"root_hive";
+        root_nk[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(root_name.len() as u16).to_le_bytes());
+        // Extend root_nk to hold name
+        root_nk.resize(NK_NAME_OFFSET + root_name.len(), 0);
+        root_nk[NK_NAME_OFFSET..NK_NAME_OFFSET + root_name.len()].copy_from_slice(root_name);
+
+        write_cell(&mut cell_page, root_cell_idx as usize, &root_nk);
+
+        // List cell (lf): sig=0x666C, count=1, entry[child_idx, hash=0]
+        let mut list_data = vec![0u8; 12];
+        list_data[0..2].copy_from_slice(&0x666Cu16.to_le_bytes());
+        list_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        list_data[4..8].copy_from_slice(&root_child_idx.to_le_bytes());
+        write_cell(&mut cell_page, root_child_list_idx as usize, &list_data);
+
+        // "Root" NK: NK_SIGNATURE, no subkeys → find_subkey("IAF") returns None
+        let mut root_child_nk = vec![0u8; NK_NAME_OFFSET + 4];
+        root_child_nk[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // stable_subkey_count = 0 → find_subkey returns None
+        let child_name = b"Root";
+        root_child_nk[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(child_name.len() as u16).to_le_bytes());
+        root_child_nk[NK_NAME_OFFSET..NK_NAME_OFFSET + child_name.len()].copy_from_slice(child_name);
+        write_cell(&mut cell_page, root_child_idx as usize, &root_child_nk);
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(cell_page_base, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "Root found but no IAF → empty Vec");
+    }
+
+    // ── read_value_string: non-inline cell read fails → empty ───────
+
+    /// read_value_string non-inline where cell read fails (unmapped) → empty.
+    #[test]
+    fn read_value_string_non_inline_unmapped_returns_empty() {
+        let reader = make_empty_reader();
+        let mut vk = vec![0u8; 0x20];
+        // data_length = 10 (not inline)
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&10u32.to_le_bytes());
+        // data_cell_index points to unmapped memory
+        vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4].copy_from_slice(&0xDEADu32.to_le_bytes());
+
+        // hive_base = 0 → cell_vaddr = 0 + HBIN_START + 0xDEAD → unmapped
+        let result = read_value_string(&reader, 0, &vk);
+        assert_eq!(result, "");
+    }
+
+    // ── read_value_u64: non-inline cell read fails → 0 ──────────────
+
+    /// read_value_u64 non-inline where cell read fails → 0.
+    #[test]
+    fn read_value_u64_non_inline_unmapped_returns_zero() {
+        let reader = make_empty_reader();
+        let mut vk = vec![0u8; 0x20];
+        // value_type = REG_QWORD
+        vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&11u32.to_le_bytes());
+        // data_length = 8 (not inline)
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&8u32.to_le_bytes());
+        // unmapped cell index
+        vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4].copy_from_slice(&0xDEADu32.to_le_bytes());
+
+        let result = read_value_u64(&reader, 0, &vk);
+        assert_eq!(result, 0);
+    }
+
+    // ── classify_amcache_entry: users_public path ────────────────────
+
+    #[test]
+    fn classify_amcache_users_public_suspicious() {
+        assert!(
+            classify_amcache_entry(r"C:\Users\Public\payload.exe", "UnknownCo"),
+            r"\users\public\ with unknown publisher should be suspicious"
+        );
+    }
+
+    // ── AmcacheEntry: clone works ────────────────────────────────────
+
+    #[test]
+    fn amcache_entry_clone() {
+        let e = AmcacheEntry {
+            file_path: r"C:\Windows\System32\cmd.exe".to_string(),
+            sha1_hash: "abc123".to_string(),
+            file_size: 123,
+            link_timestamp: 456,
+            publisher: "Microsoft".to_string(),
+            product_name: "Windows".to_string(),
+            is_suspicious: false,
+        };
+        let c = e.clone();
+        assert_eq!(c.file_path, e.file_path);
+        assert_eq!(c.sha1_hash, e.sha1_hash);
+    }
 }

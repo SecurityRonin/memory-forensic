@@ -1079,4 +1079,545 @@ mod tests {
         assert_eq!(values[0].data_length, data_len);
         assert_eq!(values[0].data_preview, "Hello");
     }
+
+    // ── walk_registry_keys: li-format subkey list ───────────────────
+
+    /// Root key with one child via an `li` (0x696C) subkey list — exercises
+    /// the `0x696C` branch in `walk_key_recursive`.
+    #[test]
+    fn walk_registry_keys_li_list_child() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let hive_paddr: u64 = 0x0090_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        // Offsets within the HBIN page:
+        let root_cell_index: u32 = 0x20;   // root nk cell
+        let list_cell_index: u32 = 0x100;  // li list cell
+        let child_cell_index: u32 = 0x200; // child nk cell
+
+        // Build root nk: 1 subkey, points to list cell
+        let root_nk = build_nk_cell_data("ROOT", 0, 1, list_cell_index, 0, 0);
+        let root_cell = build_cell(&root_nk);
+
+        // Build li list: sig=0x696C (li), count=1, [child_cell_index]
+        let mut li_data = vec![0u8; 8];
+        li_data[0..2].copy_from_slice(&0x696Cu16.to_le_bytes()); // "li"
+        li_data[2..4].copy_from_slice(&1u16.to_le_bytes());       // count=1
+        li_data[4..8].copy_from_slice(&child_cell_index.to_le_bytes());
+        let li_cell = build_cell(&li_data);
+
+        // Build child nk: no subkeys, no values
+        let child_nk = build_nk_cell_data("ChildKey", 9999, 0, 0, 0, 0);
+        let child_cell = build_cell(&child_nk);
+
+        let mut hbase = vec![0u8; 4096];
+        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
+            .copy_from_slice(&root_cell);
+        hbin[list_cell_index as usize..list_cell_index as usize + li_cell.len()]
+            .copy_from_slice(&li_cell);
+        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
+            .copy_from_slice(&child_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hbase)
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
+
+        // Should get both root and child
+        assert!(keys.len() >= 2, "expected at least 2 keys, got {}", keys.len());
+        let paths: Vec<&str> = keys.iter().map(|k| k.path.as_str()).collect();
+        assert!(paths.iter().any(|p| *p == "ROOT"), "expected ROOT");
+        assert!(paths.iter().any(|p| p.ends_with("ChildKey")), "expected ChildKey");
+    }
+
+    // ── walk_registry_keys: ri-format subkey list ───────────────────
+
+    /// Root key with one child via an `ri` (0x6972) sub-index list.
+    /// The ri cell points to another lf cell which contains the actual child.
+    #[test]
+    fn walk_registry_keys_ri_list_child() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let hive_paddr: u64 = 0x00A0_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let root_cell_index: u32 = 0x20;
+        let ri_cell_index: u32 = 0x100;   // ri index of indices
+        let lf_cell_index: u32 = 0x180;   // lf cell pointed to by ri
+        let child_cell_index: u32 = 0x200;
+
+        // Root nk: 1 subkey pointing at ri cell
+        let root_nk = build_nk_cell_data("RIROOT", 0, 1, ri_cell_index, 0, 0);
+        let root_cell = build_cell(&root_nk);
+
+        // ri cell: sig=0x6972, count=1, [lf_cell_index]
+        let mut ri_data = vec![0u8; 8];
+        ri_data[0..2].copy_from_slice(&0x6972u16.to_le_bytes()); // "ri"
+        ri_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        ri_data[4..8].copy_from_slice(&lf_cell_index.to_le_bytes());
+        let ri_cell = build_cell(&ri_data);
+
+        // lf cell: sig=0x666C, count=1, 8-byte entry [child_cell_index, hash=0]
+        let mut lf_data = vec![0u8; 12];
+        lf_data[0..2].copy_from_slice(&0x666Cu16.to_le_bytes()); // "lf"
+        lf_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        lf_data[4..8].copy_from_slice(&child_cell_index.to_le_bytes());
+        // hash bytes [8..12] = 0
+        let lf_cell = build_cell(&lf_data);
+
+        // child nk
+        let child_nk = build_nk_cell_data("RIChild", 1234, 0, 0, 0, 0);
+        let child_cell = build_cell(&child_nk);
+
+        let mut hbase = vec![0u8; 4096];
+        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
+            .copy_from_slice(&root_cell);
+        hbin[ri_cell_index as usize..ri_cell_index as usize + ri_cell.len()]
+            .copy_from_slice(&ri_cell);
+        hbin[lf_cell_index as usize..lf_cell_index as usize + lf_cell.len()]
+            .copy_from_slice(&lf_cell);
+        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
+            .copy_from_slice(&child_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hbase)
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
+
+        assert!(keys.len() >= 2, "expected root+child, got {}", keys.len());
+        let paths: Vec<&str> = keys.iter().map(|k| k.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.ends_with("RIChild")), "expected RIChild");
+    }
+
+    // ── walk_registry_keys: unknown list type silently skipped ──────
+
+    /// Root key whose subkeys list has an unknown signature — the walker
+    /// should skip it silently and return just the root key.
+    #[test]
+    fn walk_registry_keys_unknown_list_type_skipped() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let hive_paddr: u64 = 0x00B0_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let root_cell_index: u32 = 0x20;
+        let list_cell_index: u32 = 0x100;
+
+        // Root nk: 1 subkey pointing at "unknown" list
+        let root_nk = build_nk_cell_data("UNKROOT", 0, 1, list_cell_index, 0, 0);
+        let root_cell = build_cell(&root_nk);
+
+        // Unknown list: sig = 0xFFFF (unrecognised), count=1
+        let mut unk_data = vec![0u8; 8];
+        unk_data[0..2].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        unk_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        unk_data[4..8].copy_from_slice(&0u32.to_le_bytes());
+        let unk_cell = build_cell(&unk_data);
+
+        let mut hbase = vec![0u8; 4096];
+        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
+            .copy_from_slice(&root_cell);
+        hbin[list_cell_index as usize..list_cell_index as usize + unk_cell.len()]
+            .copy_from_slice(&unk_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hbase)
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
+
+        // Should return just the root key (unknown list skipped silently)
+        assert_eq!(keys.len(), 1, "only root returned when list type unknown");
+        assert_eq!(keys[0].path, "UNKROOT");
+    }
+
+    // ── read_registry_values: bad nk signature returns error ────────
+
+    /// read_registry_values on a cell whose first 2 bytes are not "nk"
+    /// should return an error (invalid signature).
+    #[test]
+    fn read_registry_values_bad_nk_signature_returns_error() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let hive_paddr: u64 = 0x00C0_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let nk_offset: u32 = 0x20;
+
+        // Build a cell with a wrong signature (0xFFFF instead of NK_SIGNATURE)
+        let mut bad_data = vec![0u8; 0x60];
+        bad_data[0..2].copy_from_slice(&0xFFFFu16.to_le_bytes()); // bad sig
+        let bad_cell = build_cell(&bad_data);
+
+        let mut hbase = vec![0u8; 4096];
+        let mut hbin = vec![0u8; 4096];
+        hbin[nk_offset as usize..nk_offset as usize + bad_cell.len()].copy_from_slice(&bad_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hbase)
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let result = read_registry_values(&reader, hive_vaddr, nk_offset);
+        assert!(result.is_err(), "bad nk signature should return error");
+    }
+
+    // ── read_registry_values: value with data_length == 0 ───────────
+
+    /// A value with DataLength = 0 (not inline) produces an empty data_preview
+    /// and data_length 0 (the `else` branch in read_single_value).
+    #[test]
+    fn read_registry_values_zero_data_length() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let hive_paddr: u64 = 0x00D0_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let nk_offset: u32 = 0x20;
+        let vl_offset: u32 = 0x100;
+        let vk_offset: u32 = 0x120;
+
+        let nk_data = build_nk_cell_data("ZeroKey", 0, 0, 0, 1, vl_offset);
+        let nk_cell = build_cell(&nk_data);
+
+        let vl_data = vk_offset.to_le_bytes();
+        let vl_cell = build_cell(&vl_data);
+
+        // vk with DataLength = 0 (not inline, not > 0) → else branch
+        let vk_data = build_vk_cell_data("ZeroVal", 4, 0, 0);
+        let vk_cell = build_cell(&vk_data);
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[nk_offset as usize..nk_offset as usize + nk_cell.len()].copy_from_slice(&nk_cell);
+        hbin[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
+        hbin[vk_offset as usize..vk_offset as usize + vk_cell.len()].copy_from_slice(&vk_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &vec![0u8; 4096])
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].data_length, 0);
+        assert_eq!(values[0].data_preview, "");
+    }
+
+    // ── read_registry_values: vk with bad sig skipped ───────────────
+
+    /// If a value cell has bad VK signature, it's skipped (continue in loop).
+    #[test]
+    fn read_registry_values_bad_vk_signature_skipped() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0070_0000;
+        let hive_paddr: u64 = 0x00E0_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let nk_offset: u32 = 0x20;
+        let vl_offset: u32 = 0x100;
+        let vk_offset: u32 = 0x120;
+
+        // nk with 1 value
+        let nk_data = build_nk_cell_data("BadVKKey", 0, 0, 0, 1, vl_offset);
+        let nk_cell = build_cell(&nk_data);
+
+        let vl_data = vk_offset.to_le_bytes();
+        let vl_cell = build_cell(&vl_data);
+
+        // vk cell with bad signature (0x0000 instead of VK_SIGNATURE=0x6B76)
+        let mut bad_vk = vec![0u8; 0x20];
+        bad_vk[0..2].copy_from_slice(&0x0000u16.to_le_bytes()); // bad sig
+        let bad_vk_cell = build_cell(&bad_vk);
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[nk_offset as usize..nk_offset as usize + nk_cell.len()].copy_from_slice(&nk_cell);
+        hbin[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
+        hbin[vk_offset as usize..vk_offset as usize + bad_vk_cell.len()].copy_from_slice(&bad_vk_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &vec![0u8; 4096])
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
+        // Bad sig causes an error inside read_single_value which is `continue`d
+        assert_eq!(values.len(), 0, "bad vk sig should be skipped");
+    }
+
+    // ── format_data_preview: REG_LINK (type 6) ──────────────────────
+
+    #[test]
+    fn format_data_preview_reg_link() {
+        // REG_LINK (6) uses same UTF-16LE decode as REG_SZ
+        let s: Vec<u8> = "Link"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let preview = format_data_preview(6, &s);
+        assert_eq!(preview, "Link");
+    }
+
+    // ── format_data_preview: truncated REG_SZ (> 80 chars) ──────────
+
+    #[test]
+    fn format_data_preview_reg_sz_long_string_truncated() {
+        // Build a UTF-16LE string longer than 80 chars
+        let long_str: String = "A".repeat(100);
+        let s: Vec<u8> = long_str
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let preview = format_data_preview(1, &s);
+        assert!(preview.ends_with("..."), "long string should end with ...: {preview}");
+        assert!(preview.len() <= 83, "preview should be at most 83 chars: {preview}");
+    }
+
+    // ── read_cell_data: zero abs_size (positive raw size = free cell) ──
+
+    /// A cell with positive raw_size (free, abs_size > 0 but data_len check)
+    /// still returns data — abs_size > 4 means data_len = abs_size - 4 > 0.
+    #[test]
+    fn read_cell_data_positive_size_still_read() {
+        // abs_size of a positive i32 cell: |+8| = 8, data_len = 4
+        // (positive = free cell, but we still read data)
+        let hive_vaddr: u64 = 0xFFFF_8000_0080_0000;
+        let hive_paddr: u64 = 0x00F0_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let cell_index: u32 = 0x20;
+        let cell_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET + cell_index as u64;
+        let cell_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64 + cell_index as u64;
+
+        // +8 raw_size: abs = 8, data_len = 4 → should read 4 bytes
+        let raw_size: i32 = 8i32; // positive (free cell), abs = 8
+        let mut cell_page = vec![0u8; 4096];
+        let cell_off = cell_index as usize;
+        cell_page[cell_off..cell_off + 4].copy_from_slice(&raw_size.to_le_bytes());
+        cell_page[cell_off + 4..cell_off + 8].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr & !0xFFF, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr & !0xFFF, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &vec![0u8; 4096])
+            .write_phys(hbin_paddr, &cell_page);
+
+        let reader = make_reader(ptb);
+        // cell_address computes: hive_vaddr + HBIN_START_OFFSET + cell_index
+        let cell_vaddr_computed = cell_address(hive_vaddr, cell_index);
+        assert_eq!(cell_vaddr_computed, cell_vaddr);
+        let data = read_cell_data(&reader, cell_vaddr_computed).unwrap();
+        assert!(!data.is_empty(), "positive size cell should still have readable data");
+    }
+
+    // ── walk_registry_keys: depth = 0 stops recursion ───────────────
+
+    /// When max_depth is 0, only the root key is returned (no recursion).
+    #[test]
+    fn walk_registry_keys_depth_zero_stops_at_root() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0090_0000;
+        let hive_paddr: u64 = 0x0070_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let root_cell_index: u32 = 0x20;
+        let list_cell_index: u32 = 0x100;
+        let child_cell_index: u32 = 0x200;
+
+        // Root with 1 subkey (pointing to list → child)
+        let root_nk = build_nk_cell_data("DROOT", 0, 1, list_cell_index, 0, 0);
+        let root_cell = build_cell(&root_nk);
+
+        let mut lf_data = vec![0u8; 12];
+        lf_data[0..2].copy_from_slice(&0x666Cu16.to_le_bytes());
+        lf_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        lf_data[4..8].copy_from_slice(&child_cell_index.to_le_bytes());
+        let lf_cell = build_cell(&lf_data);
+
+        let child_nk = build_nk_cell_data("DCHILD", 0, 0, 0, 0, 0);
+        let child_cell = build_cell(&child_nk);
+
+        let mut hbase = vec![0u8; 4096];
+        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()].copy_from_slice(&root_cell);
+        hbin[list_cell_index as usize..list_cell_index as usize + lf_cell.len()].copy_from_slice(&lf_cell);
+        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()].copy_from_slice(&child_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hbase)
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        // depth=0 → no recursion
+        let keys = walk_registry_keys(&reader, hive_vaddr, 0).unwrap();
+        assert_eq!(keys.len(), 1, "depth=0 should only return root");
+        assert_eq!(keys[0].path, "DROOT");
+    }
+
+    // ── read_registry_values: name_length > available data ──────────
+
+    /// A value cell where name_length extends beyond vk_data → name = "" (fallback).
+    #[test]
+    fn read_registry_values_name_length_overflow_empty_name() {
+        let hive_vaddr: u64 = 0xFFFF_8000_00A0_0000;
+        let hive_paddr: u64 = 0x0075_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let nk_offset: u32 = 0x20;
+        let vl_offset: u32 = 0x100;
+        let vk_offset: u32 = 0x120;
+
+        let nk_data = build_nk_cell_data("OvKey", 0, 0, 0, 1, vl_offset);
+        let nk_cell = build_cell(&nk_data);
+
+        let vl_data = vk_offset.to_le_bytes();
+        let vl_cell = build_cell(&vl_data);
+
+        // Build vk manually: valid VK_SIGNATURE, name_length = 200 (extends past data)
+        let mut vk_raw = vec![0u8; VK_NAME_OFFSET + 2]; // barely long enough for offsets
+        vk_raw[0..2].copy_from_slice(&VK_SIGNATURE.to_le_bytes());
+        // NameLength = 200 (beyond vk_raw.len() - VK_NAME_OFFSET)
+        vk_raw[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2].copy_from_slice(&200u16.to_le_bytes());
+        // DataLength = 0 (inline, avoid extra reads)
+        let vk_cell = build_cell(&vk_raw);
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[nk_offset as usize..nk_offset as usize + nk_cell.len()].copy_from_slice(&nk_cell);
+        hbin[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
+        hbin[vk_offset as usize..vk_offset as usize + vk_cell.len()].copy_from_slice(&vk_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &vec![0u8; 4096])
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
+        // name_length overflow → name = ""
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].name, "");
+    }
+
+    // ── RegistryKeyInfo and RegistryValueInfo struct tests ──────────
+
+    #[test]
+    fn registry_key_info_fields() {
+        let info = RegistryKeyInfo {
+            path: r"\SOFTWARE\Microsoft".to_string(),
+            last_write_time: 132_000_000_000_000_000,
+            subkey_count: 5,
+            value_count: 3,
+        };
+        assert_eq!(info.subkey_count, 5);
+        assert_eq!(info.value_count, 3);
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("SOFTWARE"));
+    }
+
+    #[test]
+    fn registry_value_info_fields() {
+        let info = RegistryValueInfo {
+            key_path: r"\SYSTEM\CurrentControlSet".to_string(),
+            name: "Start".to_string(),
+            value_type: "REG_DWORD".to_string(),
+            data_length: 4,
+            data_preview: "0x00000002 (2)".to_string(),
+        };
+        assert_eq!(info.name, "Start");
+        assert_eq!(info.value_type, "REG_DWORD");
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("REG_DWORD"));
+    }
+
+    // ── ri list with li sub-list ─────────────────────────────────────
+
+    /// ri list whose sub-entry is an li cell — exercises the inner
+    /// `0x696C` branch inside the ri handler.
+    #[test]
+    fn walk_registry_keys_ri_with_li_sublist() {
+        let hive_vaddr: u64 = 0xFFFF_8000_00B0_0000;
+        let hive_paddr: u64 = 0x007A_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let root_cell_index: u32 = 0x20;
+        let ri_cell_index: u32 = 0x100;
+        let li_cell_index: u32 = 0x180;
+        let child_cell_index: u32 = 0x200;
+
+        // Root nk
+        let root_nk = build_nk_cell_data("RILIROOT", 0, 1, ri_cell_index, 0, 0);
+        let root_cell = build_cell(&root_nk);
+
+        // ri cell → points to li cell
+        let mut ri_data = vec![0u8; 8];
+        ri_data[0..2].copy_from_slice(&0x6972u16.to_le_bytes());
+        ri_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        ri_data[4..8].copy_from_slice(&li_cell_index.to_le_bytes());
+        let ri_cell = build_cell(&ri_data);
+
+        // li cell → points to child
+        let mut li_data = vec![0u8; 8];
+        li_data[0..2].copy_from_slice(&0x696Cu16.to_le_bytes());
+        li_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        li_data[4..8].copy_from_slice(&child_cell_index.to_le_bytes());
+        let li_cell = build_cell(&li_data);
+
+        let child_nk = build_nk_cell_data("RILIChild", 0, 0, 0, 0, 0);
+        let child_cell = build_cell(&child_nk);
+
+        let mut hbase = vec![0u8; 4096];
+        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
+
+        let mut hbin = vec![0u8; 4096];
+        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()].copy_from_slice(&root_cell);
+        hbin[ri_cell_index as usize..ri_cell_index as usize + ri_cell.len()].copy_from_slice(&ri_cell);
+        hbin[li_cell_index as usize..li_cell_index as usize + li_cell.len()].copy_from_slice(&li_cell);
+        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()].copy_from_slice(&child_cell);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hbase)
+            .write_phys(hbin_paddr, &hbin);
+
+        let reader = make_reader(ptb);
+        let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
+        assert!(keys.len() >= 2, "expected root+child via ri→li, got {}", keys.len());
+        let paths: Vec<&str> = keys.iter().map(|k| k.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.ends_with("RILIChild")), "expected RILIChild");
+    }
 }

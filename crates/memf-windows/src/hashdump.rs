@@ -2832,4 +2832,201 @@ mod tests {
         let result = resolve_flat_base(&reader, hive_vaddr);
         assert_eq!(result, storage_ptr, "non-zero storage ptr → resolve_flat_base returns storage_ptr");
     }
+
+    // ── read_key_class_name: class_len == 0 returns empty ───────────
+
+    /// read_key_class_name with class_len = 0 returns empty.
+    #[test]
+    fn read_key_class_name_zero_len_returns_empty() {
+        let key_vaddr: u64 = 0x0040_0000;
+        let key_paddr: u64 = 0x0040_0000;
+
+        // Map a key page where class_len at +0x4E = 0
+        let key_page = vec![0u8; 0x1000]; // all zeros → class_len = 0
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(key_vaddr, key_paddr, flags::WRITABLE)
+            .write_phys(key_paddr, &key_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_key_class_name(&reader, 0x1000_0000, key_vaddr);
+        assert!(result.is_empty(), "class_len=0 → empty");
+    }
+
+    // ── read_value_data: val_count > 0 but val_list unmapped ────────
+
+    /// read_value_data: key with val_count=1 but val_list_addr unmapped → empty.
+    #[test]
+    fn read_value_data_val_list_unmapped_returns_empty() {
+        let key_vaddr: u64 = 0x0041_0000;
+        let key_paddr: u64 = 0x0041_0000;
+        let flat_base: u64 = 0x0042_0000;
+
+        // Key page: val_count at +0x28 = 1, val_list_off at +0x2C = 0xDEAD
+        let mut key_page = vec![0u8; 0x1000];
+        key_page[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count
+        key_page[0x2C..0x30].copy_from_slice(&0xDEADu32.to_le_bytes()); // unmapped list_off
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(key_vaddr, key_paddr, flags::WRITABLE)
+            .write_phys(key_paddr, &key_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // val_list_addr = flat_base + 0xDEAD + 4 → unmapped → read_cell_addr returns 0
+        let result = read_value_data(&reader, flat_base, key_vaddr, "F");
+        assert!(result.is_empty(), "unmapped val_list → empty");
+    }
+
+    // ── extract_hashes_from_v: nt_length >= 20, lm_length >= 20 in bounds ──
+
+    /// extract_hashes_from_v: both nt and lm offsets in bounds with enc_start in bounds.
+    /// With all-zero xor the DES decryption runs, producing a 16-byte result that
+    /// is hex-encoded (32 chars, different from empty hashes).
+    #[test]
+    fn extract_hashes_from_v_both_in_bounds_produces_hashes() {
+        // Enough space for: header (0xCC) + 64 bytes for nt + 64 bytes for lm data
+        let v_len = 0xCC + 128;
+        let mut v = vec![0u8; v_len];
+        let hbk = vec![0u8; 16]; // all-zero HBK
+
+        // NT hash: offset=0, length=24 → nt_abs = 0xCC, enc_start = 0xCC+4 = 0xD0
+        // enc_start+16 = 0xE0 < v_len=0xCC+128=0x14C → in bounds
+        v[0xA8..0xAC].copy_from_slice(&0u32.to_le_bytes()); // nt_offset = 0
+        v[0xAC..0xB0].copy_from_slice(&24u32.to_le_bytes()); // nt_length = 24
+
+        // LM hash: offset=32, length=24 → lm_abs = 0xCC+32 = 0xEC, enc_start=0xF0
+        // enc_start+16 = 0x100 < 0x14C → in bounds
+        v[0x9C..0xA0].copy_from_slice(&32u32.to_le_bytes()); // lm_offset = 32
+        v[0xA0..0xA4].copy_from_slice(&24u32.to_le_bytes()); // lm_length = 24
+
+        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
+        // Both should produce 32-char hex strings (DES output hex-encoded)
+        assert_eq!(nt.len(), 32, "NT hash should be 32 hex chars");
+        assert_eq!(lm.len(), 32, "LM hash should be 32 hex chars");
+    }
+
+    // ── extract_boot_key: ControlSet001 fallback branch ─────────────
+    //
+    // Build a SYSTEM hive with an lf list under root containing "ControlSet001"
+    // but NOT "CurrentControlSet". The fallback branch is exercised when
+    // CurrentControlSet is not found and ControlSet001 is tried.
+
+    /// extract_boot_key falls back to ControlSet001 when CurrentControlSet missing.
+    /// Since ControlSet001's subkeys are 0, it returns empty → walk_hashdump returns empty.
+    #[test]
+    fn extract_boot_key_fallback_to_controlset001() {
+        let sys_vaddr: u64 = 0x0080_0000;
+        let sys_paddr: u64 = 0x0080_0000;
+        let sys_bb: u64 = 0x0081_0000;
+        let sys_bb_paddr: u64 = 0x0081_0000;
+        let sys_flat_paddr: u64 = 0x0082_0000;
+
+        let root_cell_off: u32 = 0x20;
+        let list_cell_off: u32 = 0x80;
+        let ccs001_cell_off: u32 = 0xC0;
+
+        let root_off = (root_cell_off + 4) as usize;
+        let list_off = (list_cell_off + 4) as usize;
+        let ccs001_off = (ccs001_cell_off + 4) as usize;
+
+        let mut sys_page = vec![0u8; 0x1000];
+        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
+        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+
+        // Root NK: subkey_count=1, list=list_cell_off
+        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
+
+        // lf list: 1 entry → ControlSet001 cell
+        flat_page[list_off] = b'l';
+        flat_page[list_off + 1] = b'f';
+        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
+        flat_page[list_off + 4..list_off + 8].copy_from_slice(&ccs001_cell_off.to_le_bytes());
+
+        // ControlSet001 NK: name="ControlSet001", subkey_count=0 (no Control subkey)
+        let ccs_name = b"ControlSet001";
+        let ccs_name_len: u16 = ccs_name.len() as u16;
+        flat_page[ccs001_off + 0x4A..ccs001_off + 0x4C].copy_from_slice(&ccs_name_len.to_le_bytes());
+        flat_page[ccs001_off + 0x4C..ccs001_off + 0x4C + ccs_name.len()].copy_from_slice(ccs_name);
+        // subkey_count = 0 → find_subkey_by_name("Control") → 0 → boot_key empty
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // SAM hive: unmapped → resolve_flat_base returns 0 (doesn't matter, boot_key fails first)
+        let sam_vaddr: u64 = 0xDEAD_0000;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
+            .write_phys(sys_paddr, &sys_page)
+            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
+            .write_phys(sys_bb_paddr, &bb_page)
+            .map_4k(sys_bb + 0x1000, sys_flat_paddr, flags::WRITABLE)
+            .write_phys(sys_flat_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // ControlSet001 found but has no Control subkey → boot_key empty → walk returns empty
+        let result = walk_hashdump(&reader, sam_vaddr, sys_vaddr).unwrap();
+        assert!(result.is_empty(), "missing Control subkey → boot_key empty → empty result");
+    }
+
+    // ── find_subkey_by_name: unknown list sig returns 0 ─────────────
+
+    /// find_subkey_by_name with a list whose signature is unrecognised returns 0.
+    #[test]
+    fn find_subkey_by_name_unknown_list_sig_returns_zero() {
+        let flat_vaddr: u64 = 0x0090_0000;
+        let flat_paddr: u64 = 0x0090_0000;
+
+        // parent_addr = flat_vaddr + 0x100
+        // list_off at parent+0x20 = list_cell_off
+        // list_addr = flat_base + list_cell_off + 4
+        // Unknown sig at list_addr → returns 0
+        let parent_off: u64 = 0x100;
+        let list_cell_off: u32 = 0x200;
+        let list_off = (list_cell_off + 4) as usize; // 0x204
+
+        let mut page = vec![0u8; 0x1000];
+        // subkey_count at parent_off + 0x18 = 1
+        let po = parent_off as usize;
+        page[po + 0x18..po + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        // list_off at parent_off + 0x20
+        page[po + 0x20..po + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
+        // Unknown list sig at list_off
+        page[list_off..list_off + 2].copy_from_slice(&0xFFFFu16.to_le_bytes()); // unknown sig
+        // count = 1
+        page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(flat_vaddr, flat_paddr, flags::WRITABLE)
+            .write_phys(flat_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = find_subkey_by_name(&reader, flat_vaddr, flat_vaddr + parent_off, "SAM");
+        assert_eq!(result, 0, "unknown list sig → 0");
+    }
 }
