@@ -495,6 +495,131 @@ mod tests {
         assert!(MAX_MODULES <= 65536);
     }
 
+    /// walk_ldrmodules with one module in all three lists → 1 result, not suspicious.
+    ///
+    /// This exercises the walk_single_list inner function body, the cross-reference
+    /// loop (lines 186-207), and read_unicode_string for BaseDllName.
+    #[test]
+    fn walk_ldrmodules_one_module_in_all_three_lists() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // ISF offsets from windows_kernel_preset:
+        // _EPROCESS.Peb @ 0x550
+        // _PEB.Ldr @ 0x18
+        // _PEB_LDR_DATA.InLoadOrderModuleList @ 16 (0x10)
+        // _PEB_LDR_DATA.InMemoryOrderModuleList @ 32 (0x20)
+        // _PEB_LDR_DATA.InInitializationOrderModuleList @ 48 (0x30)
+        // _LDR_DATA_TABLE_ENTRY.InLoadOrderLinks @ 0
+        // _LDR_DATA_TABLE_ENTRY.InMemoryOrderLinks @ 16
+        // _LDR_DATA_TABLE_ENTRY.InInitializationOrderLinks @ 32
+        // _LDR_DATA_TABLE_ENTRY.DllBase @ 48
+        // _LDR_DATA_TABLE_ENTRY.BaseDllName @ 88 (UNICODE_STRING)
+        // _UNICODE_STRING.Length @ 0, Buffer @ 8
+
+        let eproc_vaddr: u64 = 0xFFFF_8001_0000_0000;
+        let eproc_paddr: u64 = 0x0001_0000;
+        let peb_vaddr: u64 = 0x0000_7FF0_1000_0000;
+        let peb_paddr: u64 = 0x0002_0000;
+        let ldr_vaddr: u64 = 0x0000_7FF0_2000_0000;
+        let ldr_paddr: u64 = 0x0003_0000;
+        let entry_vaddr: u64 = 0x0000_7FF0_3000_0000;
+        let entry_paddr: u64 = 0x0004_0000;
+        let name_buf_vaddr: u64 = 0x0000_7FF0_4000_0000;
+        let name_buf_paddr: u64 = 0x0005_0000;
+
+        let dll_base: u64 = 0x7FFF_0000_0000;
+        let dll_name = "kernel32.dll";
+        // UTF-16LE encoding
+        let name_bytes: Vec<u8> = dll_name.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let name_len = name_bytes.len() as u16;
+
+        // ldr_addr + 0x10 = head of InLoadOrderModuleList
+        // head Flink must point to entry's InLoadOrderLinks field = entry_vaddr + 0
+        // entry's InLoadOrderLinks Flink must point back to head = ldr_vaddr + 0x10
+
+        let load_head_vaddr = ldr_vaddr + 0x10;
+        let mem_head_vaddr = ldr_vaddr + 0x20;
+        let init_head_vaddr = ldr_vaddr + 0x30;
+
+        // InLoadOrderLinks at entry+0: Flink→load_head, Blink→load_head
+        // InMemoryOrderLinks at entry+0x10: Flink→mem_head, Blink→mem_head
+        // InInitializationOrderLinks at entry+0x20: Flink→init_head, Blink→init_head
+        // DllBase at entry+0x30: dll_base
+        // BaseDllName at entry+0x58 (UNICODE_STRING):
+        //   Length at +0: name_len
+        //   Buffer at +8: name_buf_vaddr
+
+        let mut entry_page = vec![0u8; 4096];
+        // InLoadOrderLinks.Flink at entry+0
+        entry_page[0x00..0x08].copy_from_slice(&load_head_vaddr.to_le_bytes());
+        // InMemoryOrderLinks.Flink at entry+0x10
+        entry_page[0x10..0x18].copy_from_slice(&mem_head_vaddr.to_le_bytes());
+        // InInitializationOrderLinks.Flink at entry+0x20
+        entry_page[0x20..0x28].copy_from_slice(&init_head_vaddr.to_le_bytes());
+        // DllBase at entry+0x30
+        entry_page[0x30..0x38].copy_from_slice(&dll_base.to_le_bytes());
+        // BaseDllName._UNICODE_STRING at entry+0x58
+        // Length at +0 (so entry+0x58)
+        entry_page[0x58..0x5A].copy_from_slice(&name_len.to_le_bytes());
+        // Buffer at +8 (so entry+0x60)
+        entry_page[0x60..0x68].copy_from_slice(&name_buf_vaddr.to_le_bytes());
+
+        // ldr_page:
+        // InLoadOrderModuleList at ldr+0x10: Flink = entry_vaddr + 0
+        let mut ldr_page = vec![0u8; 4096];
+        ldr_page[0x10..0x18].copy_from_slice(&(entry_vaddr + 0).to_le_bytes()); // load head Flink
+        ldr_page[0x20..0x28].copy_from_slice(&(entry_vaddr + 0x10).to_le_bytes()); // mem head Flink
+        ldr_page[0x30..0x38].copy_from_slice(&(entry_vaddr + 0x20).to_le_bytes()); // init head Flink
+
+        // peb_page: Ldr at peb+0x18 = ldr_vaddr
+        let mut peb_page = vec![0u8; 4096];
+        peb_page[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        // eproc_page: Peb at eproc+0x550 = peb_vaddr
+        let mut eproc_page = vec![0u8; 4096];
+        eproc_page[0x550..0x558].copy_from_slice(&peb_vaddr.to_le_bytes());
+
+        // name_buf_page: UTF-16LE bytes of "kernel32.dll"
+        let mut name_page = vec![0u8; 4096];
+        name_page[..name_bytes.len()].copy_from_slice(&name_bytes);
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .map_4k(ldr_vaddr, ldr_paddr, flags::WRITABLE)
+            .map_4k(entry_vaddr, entry_paddr, flags::WRITABLE)
+            .map_4k(name_buf_vaddr, name_buf_paddr, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_page)
+            .write_phys(peb_paddr, &peb_page)
+            .write_phys(ldr_paddr, &ldr_page)
+            .write_phys(entry_paddr, &entry_page)
+            .write_phys(name_buf_paddr, &name_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_ldrmodules(&reader, eproc_vaddr, 1234, "notepad.exe")
+            .expect("walk_ldrmodules should succeed");
+
+        assert_eq!(results.len(), 1, "expected 1 module, got {}", results.len());
+        let m = &results[0];
+        assert_eq!(m.base_addr, dll_base, "DllBase mismatch");
+        assert_eq!(m.dll_name, dll_name, "DLL name mismatch");
+        assert!(m.in_load, "should be in InLoad list");
+        assert!(m.in_mem, "should be in InMem list");
+        assert!(m.in_init, "should be in InInit list");
+        assert!(!m.is_suspicious, "module in all 3 lists should not be suspicious");
+        assert_eq!(m.pid, 1234);
+        assert_eq!(m.process_name, "notepad.exe");
+    }
+
     #[test]
     fn ldrmodule_serializes() {
         let info = LdrModuleInfo {

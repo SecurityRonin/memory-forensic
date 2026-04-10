@@ -1007,6 +1007,74 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // extract_console_commands coverage
+    // ---------------------------------------------------------------
+
+    /// extract_console_commands returns empty when peb_addr == 0.
+    #[test]
+    fn extract_console_commands_peb_zero_returns_empty() {
+        let reader = make_minimal_reader();
+        let result = extract_console_commands(&reader, 1, "conhost.exe", 0).unwrap();
+        assert!(result.is_empty(), "peb_addr == 0 should return empty");
+    }
+
+    /// extract_console_commands returns empty when heap_addr (ProcessHeap) == 0.
+    /// We map a PEB page with ProcessHeap = 0 at the expected field offset.
+    #[test]
+    fn extract_console_commands_heap_zero_returns_empty() {
+        let peb_addr: u64 = 0x0090_0000;
+        let peb_paddr: u64 = 0x0090_0000;
+
+        // ProcessHeap at PEB+0x30 = 0
+        let peb_page = vec![0u8; 0x1000]; // all zeros → ProcessHeap = 0
+
+        let isf = IsfBuilder::new()
+            .add_struct("_PEB", 0x400)
+            .add_field("_PEB", "ProcessHeap", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(peb_addr, peb_paddr, flags::WRITABLE)
+            .write_phys(peb_paddr, &peb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = extract_console_commands(&reader, 1, "conhost.exe", peb_addr).unwrap();
+        assert!(result.is_empty(), "ProcessHeap == 0 should return empty");
+    }
+
+    /// extract_console_commands: non-zero PEB and heap, but heap is not mappable
+    /// for scan → scan_for_console_info returns empty → extract returns empty.
+    #[test]
+    fn extract_console_commands_unmapped_heap_returns_empty() {
+        let peb_addr: u64 = 0x00A0_0000;
+        let peb_paddr: u64 = 0x00A0_0000;
+
+        // Non-zero but unmapped heap pointer (page not present).
+        let heap_ptr: u64 = 0xDEAD_CAFE_0000u64;
+
+        let mut peb_page = vec![0u8; 0x1000];
+        peb_page[0x30..0x38].copy_from_slice(&heap_ptr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_PEB", 0x400)
+            .add_field("_PEB", "ProcessHeap", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(peb_addr, peb_paddr, flags::WRITABLE)
+            .write_phys(peb_paddr, &peb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // heap_ptr is not mapped → scan_for_console_info returns empty → no commands.
+        let result = extract_console_commands(&reader, 1, "conhost.exe", peb_addr).unwrap();
+        assert!(result.is_empty(), "unmapped heap should yield no commands");
+    }
+
+    // ---------------------------------------------------------------
     // Additional classify_console_command edge cases
     // ---------------------------------------------------------------
 

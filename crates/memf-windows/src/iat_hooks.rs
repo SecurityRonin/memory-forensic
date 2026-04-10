@@ -1034,6 +1034,208 @@ mod tests {
         assert!(json.contains("\"is_suspicious\":false"));
     }
 
+    // ── parse_import_descriptors thunk loop coverage ────────────────
+
+    /// parse_module_imports with a valid PE32+ header and one IAT entry that
+    /// points within the expected module range → non-suspicious, not pushed.
+    /// Exercises the thunk iteration loop with iat_entry != 0.
+    #[test]
+    fn parse_module_imports_thunk_loop_benign_entry() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Image layout:
+        //   image_base = 0x0015_0000 (page 0: PE header)
+        //   import_rva = 0x1000 → import table at 0x0016_0000 (page 1)
+        //   iat_rva    = 0x2000 → IAT at 0x0017_0000 (page 2)
+        //   name_rva   = 0x3000 → "kernel32.dll" at 0x0018_0000 (page 3)
+        let image_base: u64 = 0x0015_0000;
+        let import_rva: u32 = 0x1000;
+        let iat_rva: u32    = 0x2000;
+        let name_rva: u32   = 0x3000;
+
+        // The "kernel32.dll" module range.
+        let k32_base: u64 = 0x7FF8_0000_0000u64;
+        let k32_size: u32 = 0x10_0000;
+        let k32_end: u64  = k32_base + k32_size as u64;
+
+        // IAT entry that IS inside kernel32.dll range.
+        let iat_entry: u64 = k32_base + 0x1234;
+
+        // --- Page 0: PE header (MZ + PE32+ optional header) ---
+        let mut header = vec![0u8; 4096];
+        header[0] = 0x4D; header[1] = 0x5A; // MZ
+        let e_lfanew: u32 = 0x40;
+        header[0x3C..0x40].copy_from_slice(&e_lfanew.to_le_bytes());
+        let nt_off = 0x40usize;
+        header[nt_off]     = b'P'; header[nt_off + 1] = b'E';
+        header[nt_off + 2] = 0;   header[nt_off + 3] = 0;
+        // COFF at nt_off+4, optional at nt_off+4+20 = nt_off+24
+        let opt_off = nt_off + 4 + 20;
+        header[opt_off]     = 0x0B; // PE32+ magic
+        header[opt_off + 1] = 0x02;
+        // import dir for PE32+: opt_off + 120
+        let import_dir_off = opt_off + 120;
+        header[import_dir_off..import_dir_off + 4]
+            .copy_from_slice(&import_rva.to_le_bytes());
+        // import_size = 40 (two 20-byte descriptors: one real + one null terminator)
+        header[import_dir_off + 4..import_dir_off + 8]
+            .copy_from_slice(&40u32.to_le_bytes());
+
+        // --- Page 1: Import descriptor table ---
+        // Descriptor: ilt_rva=0, name_rva=name_rva, iat_rva=iat_rva (20 bytes)
+        // Null terminator descriptor (all zeros, 20 bytes)
+        let mut import_table = vec![0u8; 4096];
+        // desc[0]: OriginalFirstThunk(ILT)=0, TimeDateStamp=0, ForwarderChain=0,
+        //          Name=name_rva, FirstThunk(IAT)=iat_rva
+        import_table[0..4].copy_from_slice(&0u32.to_le_bytes()); // ilt_rva = 0
+        import_table[4..8].copy_from_slice(&0u32.to_le_bytes()); // TimeDateStamp
+        import_table[8..12].copy_from_slice(&0u32.to_le_bytes()); // ForwarderChain
+        import_table[12..16].copy_from_slice(&name_rva.to_le_bytes()); // name_rva
+        import_table[16..20].copy_from_slice(&iat_rva.to_le_bytes()); // iat_rva
+        // desc[1]: all zeros (null terminator)
+
+        // --- Page 2: IAT data ---
+        // One non-zero IAT entry (8 bytes for PE32+), followed by null terminator.
+        let mut iat_data = vec![0u8; 4096];
+        iat_data[0..8].copy_from_slice(&iat_entry.to_le_bytes()); // entry = k32_base+0x1234
+        // iat_data[8..16] = 0 (null terminator)
+
+        // --- Page 3: Module name string "kernel32.dll\0" ---
+        let mut name_page = vec![0u8; 4096];
+        let mod_name = b"kernel32.dll\0";
+        name_page[..mod_name.len()].copy_from_slice(mod_name);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(image_base, image_base, flags::WRITABLE)
+            .write_phys(image_base, &header)
+            .map_4k(image_base + import_rva as u64, image_base + import_rva as u64, flags::WRITABLE)
+            .write_phys(image_base + import_rva as u64, &import_table)
+            .map_4k(image_base + iat_rva as u64, image_base + iat_rva as u64, flags::WRITABLE)
+            .write_phys(image_base + iat_rva as u64, &iat_data)
+            .map_4k(image_base + name_rva as u64, image_base + name_rva as u64, flags::WRITABLE)
+            .write_phys(image_base + name_rva as u64, &name_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (k32_base, k32_end, "kernel32.dll".to_string()),
+        ];
+
+        // iat_entry is inside k32 range → classify_iat_hook returns false → not pushed.
+        let result = parse_module_imports(
+            &reader,
+            image_base,
+            "test.exe",
+            &ranges,
+            1,
+            "test",
+            100,
+        );
+        assert!(result.is_empty(), "benign IAT entry (inside expected range) should not produce hook info");
+    }
+
+    /// parse_module_imports with a valid PE32+ header and one IAT entry that
+    /// points OUTSIDE the expected module range → suspicious, pushed to results.
+    #[test]
+    fn parse_module_imports_thunk_loop_suspicious_entry() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let image_base: u64 = 0x0019_0000;
+        let import_rva: u32 = 0x1000;
+        let iat_rva: u32    = 0x2000;
+        let name_rva: u32   = 0x3000;
+
+        let k32_base: u64 = 0x7FF8_0000_0000u64;
+        let k32_size: u32 = 0x10_0000;
+        let k32_end: u64  = k32_base + k32_size as u64;
+
+        // Hook target is OUTSIDE kernel32.dll range (will trigger suspicious).
+        let hook_target: u64 = 0xDEAD_BEEF_1234u64;
+
+        // Hook module is some other dll in ranges.
+        let evil_base: u64 = 0xDEAD_BEEF_0000u64;
+        let evil_end: u64  = evil_base + 0x10_0000;
+
+        let mut header = vec![0u8; 4096];
+        header[0] = 0x4D; header[1] = 0x5A;
+        let e_lfanew: u32 = 0x40;
+        header[0x3C..0x40].copy_from_slice(&e_lfanew.to_le_bytes());
+        let nt_off = 0x40usize;
+        header[nt_off]     = b'P'; header[nt_off + 1] = b'E';
+        header[nt_off + 2] = 0;   header[nt_off + 3] = 0;
+        let opt_off = nt_off + 4 + 20;
+        header[opt_off]     = 0x0B;
+        header[opt_off + 1] = 0x02;
+        let import_dir_off = opt_off + 120;
+        header[import_dir_off..import_dir_off + 4].copy_from_slice(&import_rva.to_le_bytes());
+        header[import_dir_off + 4..import_dir_off + 8].copy_from_slice(&40u32.to_le_bytes());
+
+        let mut import_table = vec![0u8; 4096];
+        import_table[0..4].copy_from_slice(&0u32.to_le_bytes()); // ilt_rva = 0
+        import_table[4..8].copy_from_slice(&0u32.to_le_bytes());
+        import_table[8..12].copy_from_slice(&0u32.to_le_bytes());
+        import_table[12..16].copy_from_slice(&name_rva.to_le_bytes());
+        import_table[16..20].copy_from_slice(&iat_rva.to_le_bytes());
+
+        let mut iat_data = vec![0u8; 4096];
+        iat_data[0..8].copy_from_slice(&hook_target.to_le_bytes());
+
+        let mut name_page = vec![0u8; 4096];
+        let mod_name = b"kernel32.dll\0";
+        name_page[..mod_name.len()].copy_from_slice(mod_name);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(image_base, image_base, flags::WRITABLE)
+            .write_phys(image_base, &header)
+            .map_4k(image_base + import_rva as u64, image_base + import_rva as u64, flags::WRITABLE)
+            .write_phys(image_base + import_rva as u64, &import_table)
+            .map_4k(image_base + iat_rva as u64, image_base + iat_rva as u64, flags::WRITABLE)
+            .write_phys(image_base + iat_rva as u64, &iat_data)
+            .map_4k(image_base + name_rva as u64, image_base + name_rva as u64, flags::WRITABLE)
+            .write_phys(image_base + name_rva as u64, &name_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (k32_base, k32_end, "kernel32.dll".to_string()),
+            (evil_base, evil_end, "evil.dll".to_string()),
+        ];
+
+        // hook_target is outside kernel32.dll range → suspicious → pushed.
+        let result = parse_module_imports(
+            &reader,
+            image_base,
+            "victim.exe",
+            &ranges,
+            42,
+            "victim.exe",
+            100,
+        );
+        assert_eq!(result.len(), 1, "one suspicious hook should be detected");
+        let hook = &result[0];
+        assert!(hook.is_suspicious);
+        assert_eq!(hook.hook_target, hook_target);
+        assert_eq!(hook.original_target, "kernel32.dll");
+        assert_eq!(hook.hooked_module, "victim.exe");
+        assert_eq!(hook.pid, 42);
+    }
+
     /// read_import_name returns empty when ilt_bytes is None.
     #[test]
     fn read_import_name_no_ilt_returns_empty() {

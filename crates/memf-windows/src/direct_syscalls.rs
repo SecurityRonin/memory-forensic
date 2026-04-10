@@ -539,6 +539,131 @@ mod tests {
         assert_eq!(technique, "direct_syscall", "high address should classify as direct_syscall");
     }
 
+    // -- find_ntdll_range tests ------------------------------------------
+
+    /// find_ntdll_range: peb_addr is 0 (proc.peb_addr used internally but
+    /// find_ntdll_range reads proc.peb_addr directly) → ldr read fails → None.
+    #[test]
+    fn find_ntdll_range_null_peb_returns_none() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        let proc = crate::WinProcessInfo {
+            vaddr: 0,
+            pid: 4,
+            ppid: 0,
+            image_name: "System".to_string(),
+            peb_addr: 0x0000_7FFF_1000_0000, // non-zero but unmapped
+            cr3: 0,
+            create_time: 0,
+            exit_time: 0,
+            thread_count: 0,
+            is_wow64: false,
+        };
+
+        // peb_addr is unmapped → read_field("_PEB", "Ldr") fails → None
+        let result = find_ntdll_range(&reader, &proc);
+        assert!(result.is_none(), "unmapped peb → find_ntdll_range returns None");
+    }
+
+    /// find_ntdll_range: PEB readable, Ldr = 0 → returns None.
+    #[test]
+    fn find_ntdll_range_zero_ldr_returns_none() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let peb_vaddr: u64 = 0x0000_7FFF_2000_0000;
+        let peb_paddr: u64 = 0x0020_0000;
+
+        // PEB.Ldr at offset 0x18 = 0
+        let mut peb_page = vec![0u8; 4096];
+        peb_page[0x18..0x20].copy_from_slice(&0u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys(peb_paddr, &peb_page)
+            .build();
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        let proc = crate::WinProcessInfo {
+            vaddr: 0,
+            pid: 100,
+            ppid: 0,
+            image_name: "notepad.exe".to_string(),
+            peb_addr: peb_vaddr,
+            cr3,
+            create_time: 0,
+            exit_time: 0,
+            thread_count: 0,
+            is_wow64: false,
+        };
+
+        let result = find_ntdll_range(&reader, &proc);
+        assert!(result.is_none(), "Ldr == 0 → find_ntdll_range returns None");
+    }
+
+    /// find_ntdll_range: PEB readable, Ldr non-zero but unmapped → walk_list_with fails → None.
+    #[test]
+    fn find_ntdll_range_unmapped_ldr_returns_none() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let peb_vaddr: u64 = 0x0000_7FFF_3000_0000;
+        let peb_paddr: u64 = 0x0030_0000;
+        let ldr_vaddr: u64 = 0xFFFF_DEAD_BEEF_0000; // unmapped ldr
+
+        let mut peb_page = vec![0u8; 4096];
+        peb_page[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys(peb_paddr, &peb_page)
+            .build();
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        let proc = crate::WinProcessInfo {
+            vaddr: 0,
+            pid: 200,
+            ppid: 0,
+            image_name: "test.exe".to_string(),
+            peb_addr: peb_vaddr,
+            cr3,
+            create_time: 0,
+            exit_time: 0,
+            thread_count: 0,
+            is_wow64: false,
+        };
+
+        let result = find_ntdll_range(&reader, &proc);
+        assert!(result.is_none(), "unmapped ldr → find_ntdll_range returns None");
+    }
+
     /// DirectSyscallInfo serialization includes all expected fields.
     #[test]
     fn direct_syscall_info_serializes() {

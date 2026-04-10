@@ -831,6 +831,130 @@ mod tests {
         assert_eq!(result, 0, "li-sig list with non-matching key should return 0");
     }
 
+    // ── find_subkey_by_name: lf/lh match and read_currval_length coverage
+
+    /// find_subkey_by_name with 'lf' list signature finds a matching child.
+    /// Also covers the lh arm (same branch) and the matching return path.
+    #[test]
+    fn find_subkey_by_name_lf_signature_matching_child() {
+        let parent_addr: u64 = 0x00A0_0000;
+        let flat_base: u64   = 0x00A1_0000;
+
+        // Layout (all on the same flat_base page):
+        //   parent_addr + 0x18: subkey_count = 1
+        //   parent_addr + 0x20: list_cell_off = 0x100
+        //   flat_base + 0x100 + 4: lf sig, count=1, entry_off=0x200, hash=0
+        //   flat_base + 0x200 + 4: key name_len=6, name="Policy"
+        let list_cell_off: u32 = 0x100;
+        let entry_off: u32     = 0x200;
+
+        // parent page
+        let mut parent_page = vec![0u8; 0x1000];
+        parent_page[0x18..0x1C].copy_from_slice(&1u32.to_le_bytes());
+        parent_page[0x20..0x24].copy_from_slice(&list_cell_off.to_le_bytes());
+
+        // flat_base page
+        let mut flat_page = vec![0u8; 0x2000]; // 2 pages to be safe
+
+        // lf list cell data at flat_base + list_cell_off + 4
+        let lf_off = (list_cell_off as usize) + 4;
+        flat_page[lf_off]     = b'l';
+        flat_page[lf_off + 1] = b'f';
+        flat_page[lf_off + 2] = 1u8; // count = 1
+        flat_page[lf_off + 3] = 0u8;
+        // entry[0]: entry_off (4 bytes) + hash (4 bytes)
+        flat_page[lf_off + 4..lf_off + 8].copy_from_slice(&entry_off.to_le_bytes());
+        flat_page[lf_off + 8..lf_off + 12].copy_from_slice(&0u32.to_le_bytes());
+
+        // child nk cell data at flat_base + entry_off + 4
+        let nk_off = (entry_off as usize) + 4;
+        // name_len at nk_off + 0x4A = 6 (length of "Policy")
+        flat_page[nk_off + 0x4A] = 6u8;
+        flat_page[nk_off + 0x4B] = 0u8;
+        // name at nk_off + 0x4C
+        flat_page[nk_off + 0x4C..nk_off + 0x4C + 6].copy_from_slice(b"Policy");
+
+        let isf = make_lsa_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(parent_addr, parent_addr, flags::WRITABLE)
+            .write_phys(parent_addr, &parent_page)
+            .map_4k(flat_base, flat_base, flags::WRITABLE)
+            .write_phys(flat_base, &flat_page[..0x1000])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let expected_key_addr = flat_base + entry_off as u64 + 4;
+        let result = find_subkey_by_name(&reader, flat_base, parent_addr, "Policy");
+        assert_eq!(result, expected_key_addr, "lf list should find 'Policy' child");
+    }
+
+    /// read_currval_length: covers the CurrVal navigation path.
+    /// We build a secret key node with a CurrVal subkey that has one vk value
+    /// with data_length = 128 → read_currval_length returns 128.
+    #[test]
+    fn read_currval_length_finds_default_value() {
+        // All structures reside in the flat_base page.
+        let flat_base: u64 = 0x00B0_0000;
+
+        // Secret key node at flat_base + 0x100 + 4 (via cell_off=0x100):
+        //   We'll pass this directly as secret_key_addr.
+        let secret_key_addr = flat_base + 0x100u64 + 4;
+
+        // CurrVal child setup (list_cell_off=0x200, entry_off=0x300, val_list_off=0x400, val_off=0x500):
+        let currval_list_cell_off: u32 = 0x200;
+        let currval_entry_off: u32     = 0x300;
+        let val_list_cell_off: u32     = 0x400;
+        let val_entry_off: u32         = 0x500;
+
+        let mut flat_page = vec![0u8; 0x2000];
+
+        // secret_key_addr (at flat_base + 0x100 + 4): subkey_count=1 at +0x18, list_off at +0x20
+        let sk_off = 0x100usize + 4;
+        flat_page[sk_off + 0x18..sk_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        flat_page[sk_off + 0x20..sk_off + 0x24].copy_from_slice(&currval_list_cell_off.to_le_bytes());
+
+        // CurrVal list cell at flat_base + 0x200 + 4: lf, count=1, entry=currval_entry_off
+        let cv_list_off = 0x200usize + 4;
+        flat_page[cv_list_off]     = b'l';
+        flat_page[cv_list_off + 1] = b'f';
+        flat_page[cv_list_off + 2] = 1u8;
+        flat_page[cv_list_off + 3] = 0u8;
+        flat_page[cv_list_off + 4..cv_list_off + 8].copy_from_slice(&currval_entry_off.to_le_bytes());
+        flat_page[cv_list_off + 8..cv_list_off + 12].copy_from_slice(&0u32.to_le_bytes()); // hash
+
+        // CurrVal key node at flat_base + 0x300 + 4: name_len=7, name="CurrVal"
+        let cv_nk_off = 0x300usize + 4;
+        flat_page[cv_nk_off + 0x4A] = 7u8;
+        flat_page[cv_nk_off + 0x4B] = 0u8;
+        flat_page[cv_nk_off + 0x4C..cv_nk_off + 0x4C + 7].copy_from_slice(b"CurrVal");
+        // val_count at +0x28: 1
+        flat_page[cv_nk_off + 0x28..cv_nk_off + 0x2C].copy_from_slice(&1u32.to_le_bytes());
+        // val_list_off at +0x2C: val_list_cell_off
+        flat_page[cv_nk_off + 0x2C..cv_nk_off + 0x30].copy_from_slice(&val_list_cell_off.to_le_bytes());
+
+        // Value list cell at flat_base + 0x400 + 4: single entry val_entry_off
+        let vl_off = 0x400usize + 4;
+        flat_page[vl_off..vl_off + 4].copy_from_slice(&val_entry_off.to_le_bytes());
+
+        // Value cell at flat_base + 0x500 + 4: DataLength at +0x08 = 128
+        let vk_off = 0x500usize + 4;
+        flat_page[vk_off + 0x08..vk_off + 0x0C].copy_from_slice(&128u32.to_le_bytes());
+
+        let isf = make_lsa_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(flat_base, flat_base, flags::WRITABLE)
+            .write_phys(flat_base, &flat_page[..0x1000])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_currval_length(&reader, flat_base, secret_key_addr);
+        assert_eq!(result, 128, "read_currval_length should return 128");
+    }
+
     // ── walk_lsa_secrets: subkey_count > MAX_SECRETS → empty ─────────
 
     /// Walker returns empty when secrets subkey_count exceeds MAX_SECRETS.

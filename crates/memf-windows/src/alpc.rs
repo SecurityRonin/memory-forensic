@@ -385,4 +385,92 @@ mod tests {
         let result = walk_alpc_ports(&reader).unwrap();
         assert!(result.is_empty());
     }
+
+    // ── walk body: one port entry ─────────────────────────────────────
+
+    /// Walk body: AlpcpPortList → one port → list_head (terminates).
+    /// Exercises lines 140–207: the while loop body (name, PID, server port, connection count).
+    ///
+    /// Default offsets (no _ALPC_PORT fields in ISF) are used:
+    ///   port_list_entry_off = 0x00
+    ///   owner_process_off   = 0x08
+    ///   connection_port_off = 0x10
+    ///   port_name_off       = 0x18  (_UNICODE_STRING: Length u16, MaxLen u16, Buffer ptr)
+    ///   connection_count_off= 0x28
+    ///   pid_off (EPROCESS)  = 0x440
+    #[test]
+    fn walk_alpc_ports_one_entry_in_loop() {
+        let list_head: u64 = 0xFFFF_8000_00F0_0000;
+        let entry_vaddr: u64 = 0xFFFF_8000_00F1_0000; // port_list_entry == port_addr (off=0)
+        let eproc_vaddr: u64 = 0xFFFF_8000_00F2_0000;
+        let str_buf_vaddr: u64 = 0xFFFF_8000_00F3_0000; // name buffer
+
+        let list_paddr: u64  = 0x00F0_0000;
+        let entry_paddr: u64 = 0x00F1_0000;
+        let eproc_paddr: u64 = 0x00F2_0000;
+        let str_paddr: u64   = 0x00F3_0000;
+
+        // Name: "\\RPC Control\\lsass" in UTF-16LE — benign (starts with known prefix).
+        let name_str = "\\RPC Control\\lsass";
+        let name_utf16: Vec<u8> = name_str
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
+        let name_len = name_utf16.len() as u16;
+
+        // List head: Flink → entry_vaddr.
+        let mut head_page = vec![0u8; 0x1000];
+        head_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes());
+
+        // Entry page (port_addr = entry_vaddr, port_list_entry_off=0):
+        //   [0..8]   Flink → list_head (terminates)
+        //   [0x08]   OwnerProcess ptr → eproc_vaddr
+        //   [0x10]   ConnectionPort ptr == port_addr (self → is_server_port=true)
+        //   [0x18]   UNICODE_STRING: Length=name_len, MaxLen=name_len, Buffer=str_buf_vaddr
+        //   [0x28]   ConnectionCount = 3
+        let mut entry_page = vec![0u8; 0x1000];
+        entry_page[0..8].copy_from_slice(&list_head.to_le_bytes()); // Flink
+        entry_page[0x08..0x10].copy_from_slice(&eproc_vaddr.to_le_bytes());
+        entry_page[0x10..0x18].copy_from_slice(&entry_vaddr.to_le_bytes()); // ConnectionPort == self
+        // UNICODE_STRING at 0x18: Length(u16), MaxLen(u16), pad(u32), Buffer(u64)
+        entry_page[0x18..0x1A].copy_from_slice(&name_len.to_le_bytes());
+        entry_page[0x1A..0x1C].copy_from_slice(&name_len.to_le_bytes());
+        entry_page[0x20..0x28].copy_from_slice(&str_buf_vaddr.to_le_bytes());
+        entry_page[0x28..0x2C].copy_from_slice(&3u32.to_le_bytes()); // ConnectionCount
+
+        // EPROCESS page: UniqueProcessId at +0x440 = 1234
+        let mut eproc_page = vec![0u8; 0x1000];
+        eproc_page[0x440..0x448].copy_from_slice(&1234u64.to_le_bytes());
+
+        // String buffer page.
+        let mut str_page = vec![0u8; 0x1000];
+        str_page[..name_utf16.len()].copy_from_slice(&name_utf16);
+
+        let isf = IsfBuilder::new()
+            .add_struct("_ALPC_PORT", 0x100)
+            .add_symbol("AlpcpPortList", list_head)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_head,     list_paddr,  flags::WRITABLE)
+            .map_4k(entry_vaddr,   entry_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr,   eproc_paddr, flags::WRITABLE)
+            .map_4k(str_buf_vaddr, str_paddr,   flags::WRITABLE)
+            .write_phys(list_paddr,  &head_page)
+            .write_phys(entry_paddr, &entry_page)
+            .write_phys(eproc_paddr, &eproc_page)
+            .write_phys(str_paddr,   &str_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_alpc_ports(&reader).unwrap();
+        assert_eq!(result.len(), 1, "one ALPC port should be found");
+        let port = &result[0];
+        assert_eq!(port.address, entry_vaddr);
+        assert_eq!(port.owner_pid, 1234);
+        assert!(port.is_server_port, "ConnectionPort == self → is_server_port");
+        assert_eq!(port.connection_count, 3);
+        assert!(!port.is_suspicious, "known RPC Control prefix should be benign");
+    }
 }

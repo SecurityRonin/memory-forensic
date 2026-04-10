@@ -479,4 +479,108 @@ mod tests {
             "C:\\Program Files\\MyApp\\updater.exe --check"
         ));
     }
+
+    // ── walk body coverage ──────────────────────────────────────────
+
+    /// Walk body: list_head → entry → list_head (one entry, then returns to head).
+    ///
+    /// Uses default field offsets (no _TASK_ENTRY fields in ISF), so all
+    /// strings are empty and the task is pushed with empty fields.
+    #[test]
+    fn walk_scheduled_tasks_one_entry_in_loop() {
+        // Memory layout:
+        //   list_head  = 0xFFFF_8000_0080_0000: Flink → entry (0xFFFF_8000_0081_0000)
+        //   entry_ptr  = 0xFFFF_8000_0081_0000: Flink → list_head (terminates loop)
+        //     At task_addr = entry_ptr - task_list_entry_off:
+        //       All UNICODE_STRING fields zero → empty strings
+        //       Enabled at +0x50 = 0 → false
+        //       LastRunTime at +0x58 = 0x1234
+        //       NextRunTime at +0x60 = 0x5678
+        //
+        // Since task_list_entry_off defaults to 0x00, task_addr = entry_ptr.
+        let list_vaddr: u64 = 0xFFFF_8000_0080_0000;
+        let list_paddr: u64 = 0x0080_0000;
+        let entry_vaddr: u64 = 0xFFFF_8000_0081_0000;
+        let entry_paddr: u64 = 0x0081_0000;
+
+        // List head page: [Flink=entry_vaddr, ...]
+        let mut head_page = vec![0u8; 0x1000];
+        head_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes());
+
+        // Entry page: [Flink=list_vaddr (loop terminator), ...task fields]
+        let mut entry_page = vec![0u8; 0x1000];
+        // Flink at offset 0 (task_list_entry_off = 0)
+        entry_page[0..8].copy_from_slice(&list_vaddr.to_le_bytes());
+        // LastRunTime at +0x58 = 0x1234
+        entry_page[0x58..0x60].copy_from_slice(&0x1234u64.to_le_bytes());
+        // NextRunTime at +0x60 = 0x5678
+        entry_page[0x60..0x68].copy_from_slice(&0x5678u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TASK_ENTRY", 0x80)
+            .add_symbol("UbpmTaskEnumerator", list_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &head_page)
+            .map_4k(entry_vaddr, entry_paddr, flags::WRITABLE)
+            .write_phys(entry_paddr, &entry_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_scheduled_tasks(&reader).unwrap();
+        assert_eq!(result.len(), 1, "exactly one task entry should be produced");
+        let task = &result[0];
+        assert_eq!(task.last_run_time, 0x1234);
+        assert_eq!(task.next_run_time, 0x5678);
+        assert!(!task.enabled);
+        assert!(!task.is_suspicious);
+    }
+
+    /// Walk body: two entries, second entry has Flink = list_head → loop stops.
+    /// Tests the Flink-following code path with two iterations.
+    #[test]
+    fn walk_scheduled_tasks_two_entries_in_loop() {
+        let list_vaddr: u64  = 0xFFFF_8000_0082_0000;
+        let entry1_vaddr: u64 = 0xFFFF_8000_0083_0000;
+        let entry2_vaddr: u64 = 0xFFFF_8000_0084_0000;
+
+        let list_paddr: u64   = 0x0082_0000;
+        let entry1_paddr: u64 = 0x0083_0000;
+        let entry2_paddr: u64 = 0x0084_0000;
+
+        let mut head_page = vec![0u8; 0x1000];
+        head_page[0..8].copy_from_slice(&entry1_vaddr.to_le_bytes());
+
+        let mut e1_page = vec![0u8; 0x1000];
+        e1_page[0..8].copy_from_slice(&entry2_vaddr.to_le_bytes());
+        // Enabled at +0x50 = 1
+        e1_page[0x50..0x54].copy_from_slice(&1u32.to_le_bytes());
+
+        let mut e2_page = vec![0u8; 0x1000];
+        e2_page[0..8].copy_from_slice(&list_vaddr.to_le_bytes()); // back to head
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TASK_ENTRY", 0x80)
+            .add_symbol("UbpmTaskEnumerator", list_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr,   list_paddr,   flags::WRITABLE)
+            .write_phys(list_paddr, &head_page)
+            .map_4k(entry1_vaddr, entry1_paddr, flags::WRITABLE)
+            .write_phys(entry1_paddr, &e1_page)
+            .map_4k(entry2_vaddr, entry2_paddr, flags::WRITABLE)
+            .write_phys(entry2_paddr, &e2_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_scheduled_tasks(&reader).unwrap();
+        assert_eq!(result.len(), 2, "two entries should be produced");
+        assert!(result[0].enabled, "first entry should be enabled");
+        assert!(!result[1].enabled, "second entry should not be enabled");
+    }
 }

@@ -349,4 +349,54 @@ mod tests {
         let pipes = walk_named_pipes(&reader).unwrap();
         assert!(pipes.is_empty(), "expected empty Vec for null root dir");
     }
+
+    // ── find_subdir_by_path / walk_named_pipes with non-null root dir ─
+
+    /// walk_named_pipes: root_dir_addr is non-null but points to an empty
+    /// _OBJECT_DIRECTORY (all 37 bucket pointers zero). find_subdir_by_path
+    /// will not find "Device" → returns None → walk returns empty Vec.
+    /// Covers the find_subdir_by_path body and the non-null root_dir branch.
+    #[test]
+    fn walk_named_pipes_non_null_root_empty_directory_returns_empty() {
+        let root_dir_addr: u64 = 0xFFFF_8000_0200_0000;
+        let root_dir_paddr: u64 = 0x00F0_0000; // within 16MB synthetic mem
+
+        // ObpRootDirectoryObject points to root_dir_addr
+        let root_dir_ptr_paddr: u64 = 0x00F1_0000;
+
+        // Root dir page: 37 buckets × 8 bytes = 296 bytes — all zeros (empty dir).
+        let root_dir_page = vec![0u8; 0x1000];
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(OBP_ROOT_DIR_OBJ_VADDR, root_dir_ptr_paddr, flags::WRITABLE)
+            .write_phys_u64(root_dir_ptr_paddr, root_dir_addr)
+            .map_4k(root_dir_addr, root_dir_paddr, flags::WRITABLE)
+            .write_phys(root_dir_paddr, &root_dir_page);
+
+        let reader = make_test_reader(ptb);
+        let pipes = walk_named_pipes(&reader).unwrap();
+        assert!(
+            pipes.is_empty(),
+            "empty root directory (no Device subdir) should return empty Vec"
+        );
+    }
+
+    /// find_subdir_by_path: depth limit (MAX_DIR_DEPTH) guard is never exceeded
+    /// in normal usage, but we can test that the loop iterates and returns None
+    /// when Device is not found after exhausting the directory.
+    /// This exercises find_subdir_by_path's for loop body with depth=0 (first segment).
+    #[test]
+    fn find_subdir_by_path_device_not_found_returns_none() {
+        // An unmapped directory address (walk_directory returns Err → ok()? = None).
+        let reader = {
+            let isf = IsfBuilder::windows_kernel_preset().build_json();
+            let resolver = IsfResolver::from_value(&isf).unwrap();
+            let (cr3, mem) = PageTableBuilder::new().build();
+            let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+            ObjectReader::new(vas, Box::new(resolver))
+        };
+
+        let result = find_subdir_by_path(&reader, 0xDEAD_BEEF_0000, &["Device", "NamedPipe"]);
+        assert!(result.is_none(), "unmapped dir_addr should return None from find_subdir_by_path");
+    }
 }

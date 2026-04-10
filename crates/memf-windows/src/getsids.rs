@@ -538,6 +538,223 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // read_token_user_sid coverage
+    // ---------------------------------------------------------------
+
+    /// read_token_user_sid: _TOKEN.UserAndGroups == 0 → returns empty string.
+    #[test]
+    fn read_token_user_sid_user_and_groups_zero() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let token_vaddr: u64 = 0xFFFF_8000_00C0_0000;
+        let token_paddr: u64 = 0x00C0_0000;
+
+        // Token page: UserAndGroups at offset 0x80 = 0 (null pointer).
+        let token_page = vec![0u8; 0x1000]; // all zeros
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TOKEN", 0x200)
+            .add_field("_TOKEN", "UserAndGroups", 0x80, "pointer")
+            .add_struct("_SID_AND_ATTRIBUTES", 0x10)
+            .add_field("_SID_AND_ATTRIBUTES", "Sid", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
+            .write_phys(token_paddr, &token_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_token_user_sid(&reader, token_vaddr);
+        assert_eq!(result, "", "UserAndGroups == 0 should return empty string");
+    }
+
+    /// read_token_user_sid: valid UserAndGroups and Sid pointer → returns SID string.
+    #[test]
+    fn read_token_user_sid_valid_path() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Addresses:
+        //   token_vaddr: _TOKEN with UserAndGroups at +0x80 → ug_vaddr
+        //   ug_vaddr: _SID_AND_ATTRIBUTES with Sid at +0x00 → sid_vaddr
+        //   sid_vaddr: S-1-5-18 (SYSTEM)
+        let token_vaddr: u64  = 0xFFFF_8000_00C1_0000;
+        let ug_vaddr: u64     = 0xFFFF_8000_00C2_0000;
+        let sid_vaddr: u64    = 0xFFFF_8000_00C3_0000;
+
+        let token_paddr: u64  = 0x00C1_0000;
+        let ug_paddr: u64     = 0x00C2_0000;
+        let sid_paddr: u64    = 0x00C3_0000;
+
+        let mut token_page = vec![0u8; 0x1000];
+        token_page[0x80..0x88].copy_from_slice(&ug_vaddr.to_le_bytes());
+
+        let mut ug_page = vec![0u8; 0x1000];
+        ug_page[0x00..0x08].copy_from_slice(&sid_vaddr.to_le_bytes()); // Sid at +0
+
+        // S-1-5-18 SID
+        let mut sid_page = vec![0u8; 0x1000];
+        sid_page[0] = 1; // Revision
+        sid_page[1] = 1; // SubAuthorityCount
+        sid_page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 5]);
+        sid_page[8..12].copy_from_slice(&18u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TOKEN", 0x200)
+            .add_field("_TOKEN", "UserAndGroups", 0x80, "pointer")
+            .add_struct("_SID_AND_ATTRIBUTES", 0x10)
+            .add_field("_SID_AND_ATTRIBUTES", "Sid", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
+            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
+            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .write_phys(token_paddr, &token_page)
+            .write_phys(ug_paddr,    &ug_page)
+            .write_phys(sid_paddr,   &sid_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_token_user_sid(&reader, token_vaddr);
+        assert_eq!(result, "S-1-5-18", "should return SYSTEM SID");
+    }
+
+    // ---------------------------------------------------------------
+    // read_integrity_level coverage
+    // ---------------------------------------------------------------
+
+    /// read_integrity_level: IntegrityLevelIndex path (ISF has the field).
+    /// Token has IntegrityLevelIndex = 0, UserAndGroups → entry at index 0 → SID.
+    #[test]
+    fn read_integrity_level_via_integrity_index() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let token_vaddr: u64  = 0xFFFF_8000_00D0_0000;
+        let ug_vaddr: u64     = 0xFFFF_8000_00D1_0000;
+        let sid_vaddr: u64    = 0xFFFF_8000_00D2_0000;
+
+        let token_paddr: u64  = 0x00D0_0000;
+        let ug_paddr: u64     = 0x00D1_0000;
+        let sid_paddr: u64    = 0x00D2_0000;
+
+        // _TOKEN:
+        //   IntegrityLevelIndex at +0x90 = 0 (u32)
+        //   UserAndGroups at +0x80 → ug_vaddr
+        let mut token_page = vec![0u8; 0x1000];
+        token_page[0x80..0x88].copy_from_slice(&ug_vaddr.to_le_bytes());
+        token_page[0x90..0x94].copy_from_slice(&0u32.to_le_bytes()); // index 0
+
+        // _SID_AND_ATTRIBUTES[0] at ug_vaddr+0 (sa_size=0x10): Sid → sid_vaddr
+        let mut ug_page = vec![0u8; 0x1000];
+        ug_page[0x00..0x08].copy_from_slice(&sid_vaddr.to_le_bytes());
+
+        // SID S-1-16-12288 (High integrity)
+        let mut sid_page = vec![0u8; 0x1000];
+        sid_page[0] = 1; // Revision
+        sid_page[1] = 1; // SubAuthorityCount
+        sid_page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 16]);
+        sid_page[8..12].copy_from_slice(&12288u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TOKEN", 0x200)
+            .add_field("_TOKEN", "IntegrityLevelIndex", 0x90, "unsigned long")
+            .add_field("_TOKEN", "UserAndGroups", 0x80, "pointer")
+            .add_struct("_SID_AND_ATTRIBUTES", 0x10)
+            .add_field("_SID_AND_ATTRIBUTES", "Sid", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
+            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
+            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .write_phys(token_paddr, &token_page)
+            .write_phys(ug_paddr,    &ug_page)
+            .write_phys(sid_paddr,   &sid_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_integrity_level(&reader, token_vaddr);
+        assert_eq!(result, "S-1-16-12288", "should return High integrity SID");
+    }
+
+    /// read_integrity_level: fallback path via UserAndGroupCount when IntegrityLevelIndex absent.
+    #[test]
+    fn read_integrity_level_via_usergroup_count_fallback() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // No IntegrityLevelIndex field → fall back to UserAndGroupCount - 1.
+        // UserAndGroupCount = 2, so integrity_index = 1.
+        // Entry at ug_vaddr + 1 * sa_size (0x10) has Sid → sid_vaddr.
+        let token_vaddr: u64  = 0xFFFF_8000_00E0_0000;
+        let ug_vaddr: u64     = 0xFFFF_8000_00E1_0000;
+        let sid_vaddr: u64    = 0xFFFF_8000_00E2_0000;
+
+        let token_paddr: u64  = 0x00E0_0000;
+        let ug_paddr: u64     = 0x00E1_0000;
+        let sid_paddr: u64    = 0x00E2_0000;
+
+        let mut token_page = vec![0u8; 0x1000];
+        // UserAndGroupCount at +0x88 = 2
+        token_page[0x88..0x8C].copy_from_slice(&2u32.to_le_bytes());
+        // UserAndGroups at +0x80
+        token_page[0x80..0x88].copy_from_slice(&ug_vaddr.to_le_bytes());
+
+        // _SID_AND_ATTRIBUTES[1] at ug_vaddr + 0x10 (sa_size=0x10): Sid → sid_vaddr
+        let mut ug_page = vec![0u8; 0x1000];
+        ug_page[0x10..0x18].copy_from_slice(&sid_vaddr.to_le_bytes());
+
+        // S-1-16-8192 (Medium)
+        let mut sid_page = vec![0u8; 0x1000];
+        sid_page[0] = 1;
+        sid_page[1] = 1;
+        sid_page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 16]);
+        sid_page[8..12].copy_from_slice(&8192u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_TOKEN", 0x200)
+            // No IntegrityLevelIndex field → Err → fallback.
+            .add_field("_TOKEN", "UserAndGroupCount", 0x88, "unsigned long")
+            .add_field("_TOKEN", "UserAndGroups", 0x80, "pointer")
+            .add_struct("_SID_AND_ATTRIBUTES", 0x10)
+            .add_field("_SID_AND_ATTRIBUTES", "Sid", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
+            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
+            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .write_phys(token_paddr, &token_page)
+            .write_phys(ug_paddr,    &ug_page)
+            .write_phys(sid_paddr,   &sid_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_integrity_level(&reader, token_vaddr);
+        assert_eq!(result, "S-1-16-8192", "fallback path should yield Medium integrity SID");
+    }
+
+    // ---------------------------------------------------------------
     // read_sid_at tests via mapped memory
     // ---------------------------------------------------------------
 

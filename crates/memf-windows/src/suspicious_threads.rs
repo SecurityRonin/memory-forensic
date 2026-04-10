@@ -509,4 +509,130 @@ mod tests {
         assert!(suspicious);
         assert!(reason.contains("system process"), "rule 1 should fire: {reason}");
     }
+
+    // ---------------------------------------------------------------
+    // walk_suspicious_threads walk body tests
+    // ---------------------------------------------------------------
+
+    /// walk_suspicious_threads: symbol present, one EPROCESS in list with peb_addr == 0
+    /// (kernel process) → skipped → empty result. Exercises the peb_addr==0 guard.
+    ///
+    /// This uses a full circular _EPROCESS list so walk_processes returns one process.
+    #[test]
+    fn walk_suspicious_threads_kernel_process_skipped() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // ISF preset offsets:
+        // _EPROCESS.ActiveProcessLinks = 0x448 (Flink = entry+0x448)
+        // _EPROCESS.UniqueProcessId = 0x440
+        // _EPROCESS.InheritedFromUniqueProcessId = 0x540
+        // _EPROCESS.ImageFileName = 0x5A8
+        // _EPROCESS.Peb = 0x550 (set to 0 → kernel process)
+        // _EPROCESS.CreateTime = 0x430, ExitTime = 0x438
+        // _EPROCESS.Pcb = 0x0, _KPROCESS.DirectoryTableBase = 0x28
+
+        let ps_head_vaddr: u64 = 0xFFFF_8002_0000_0000;
+        let ps_head_paddr: u64 = 0x0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8002_0100_0000;
+        let eproc_paddr: u64 = 0x0011_0000;
+
+        // Circular list: ps_head.Flink → eproc+0x448, eproc.Flink → ps_head
+        let mut ps_head_page = vec![0u8; 4096];
+        ps_head_page[0..8].copy_from_slice(&(eproc_vaddr + 0x448).to_le_bytes());
+
+        let mut eproc_page = vec![0u8; 4096];
+        // ActiveProcessLinks.Flink at eproc+0x448 → ps_head
+        eproc_page[0x448..0x450].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        // UniqueProcessId at eproc+0x440
+        eproc_page[0x440..0x448].copy_from_slice(&4u64.to_le_bytes());
+        // InheritedFromUniqueProcessId at eproc+0x540
+        eproc_page[0x540..0x548].copy_from_slice(&0u64.to_le_bytes());
+        // ImageFileName at eproc+0x5A8: "System\0"
+        let name = b"System\0";
+        eproc_page[0x5A8..0x5A8 + name.len()].copy_from_slice(name);
+        // Peb at eproc+0x550 = 0 (kernel process)
+        eproc_page[0x550..0x558].copy_from_slice(&0u64.to_le_bytes());
+        // DirectoryTableBase (_KPROCESS at offset 0) at kproc+0x28 = eproc+0x28
+        eproc_page[0x28..0x30].copy_from_slice(&(ps_head_paddr).to_le_bytes()); // any cr3
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &ps_head_page)
+            .write_phys(eproc_paddr, &eproc_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_suspicious_threads(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "kernel process (peb==0) should be skipped, got {} results",
+            result.len()
+        );
+    }
+
+    /// walk_suspicious_threads: process with peb_addr != 0, no threads → empty suspicious list.
+    /// Exercises the inner loop body (DLL/VAD walk, thread walk) with graceful degradation.
+    #[test]
+    fn walk_suspicious_threads_user_process_no_threads_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let ps_head_vaddr: u64 = 0xFFFF_8003_0000_0000;
+        let ps_head_paddr: u64 = 0x0020_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8003_0100_0000;
+        let eproc_paddr: u64 = 0x0021_0000;
+
+        let mut ps_head_page = vec![0u8; 4096];
+        ps_head_page[0..8].copy_from_slice(&(eproc_vaddr + 0x448).to_le_bytes());
+
+        let mut eproc_page = vec![0u8; 4096];
+        // ActiveProcessLinks.Flink → ps_head (terminates list)
+        eproc_page[0x448..0x450].copy_from_slice(&ps_head_vaddr.to_le_bytes());
+        eproc_page[0x440..0x448].copy_from_slice(&1234u64.to_le_bytes()); // PID
+        eproc_page[0x540..0x548].copy_from_slice(&0u64.to_le_bytes()); // PPID
+        let name = b"notepad.exe\0";
+        eproc_page[0x5A8..0x5A8 + name.len()].copy_from_slice(name);
+        // Peb at 0x550 = non-zero but unmapped (DLL walk will fail gracefully)
+        eproc_page[0x550..0x558].copy_from_slice(&0x0000_7FFF_0000_0000u64.to_le_bytes());
+        // CR3 (_KPROCESS.DirectoryTableBase at kproc=eproc+0, so offset 0x28) = cr3 value
+        // We'll fix this after building.
+        eproc_page[0x28..0x30].copy_from_slice(&0x0020_0000u64.to_le_bytes()); // placeholder
+
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PsActiveProcessHead", ps_head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ps_head_vaddr, ps_head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys(ps_head_paddr, &ps_head_page)
+            .write_phys(eproc_paddr, &eproc_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // walk_processes reads the EPROCESS, then the inner loop tries to walk DLLs/VADs/threads.
+        // All of those fail gracefully (unmapped memory) → empty result.
+        let result = walk_suspicious_threads(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "user process with no threads should yield empty suspicious list, got {}",
+            result.len()
+        );
+    }
 }

@@ -310,6 +310,108 @@ mod tests {
         assert!(!classify_timer(routine, kernel_base, kernel_size));
     }
 
+    // ── walk_timers body: actual timer in a bucket ────────────────────
+
+    /// Walk body: bucket 0 contains one timer. Covers lines 130–211.
+    ///
+    /// Memory layout (all identity-mapped):
+    ///   table_vaddr (bucket 0 = entry_addr): Flink → timer_list_entry_vaddr
+    ///   timer_list_entry_vaddr:
+    ///     offset  0: Flink → entry_addr (back to bucket head, terminates)
+    ///     offset +0x18: DueTime = 0x4321 (timer_list_entry_off=0, due_time_off=0x18)
+    ///     offset +0x24: Period = 100 (period_off=0x24)
+    ///     offset +0x30: Dpc ptr → dpc_vaddr (dpc_off=0x30)
+    ///   dpc_vaddr:
+    ///     offset +0x18: DeferredRoutine = 0xFFFF_8001_0000 (inside kernel range)
+    ///     offset +0x20: DeferredContext = 0xABCD
+    #[test]
+    fn walk_timers_with_one_timer_in_bucket() {
+        let table_vaddr: u64 = 0xFFFF_8000_00A0_0000;
+        // Use a tight layout: 256 buckets × 0x20 = 0x2000, but we only really need 2 pages.
+        // Bucket 0 = entry_addr = table_vaddr.
+        // Place the timer at table_vaddr + 0x2000 (next page area).
+        let timer_vaddr: u64 = table_vaddr.wrapping_add(0x2000); // timer_list_entry = timer_addr (off=0)
+        let dpc_vaddr: u64   = table_vaddr.wrapping_add(0x3000);
+
+        // Physical pages (identity map).
+        let table_paddr0: u64 = 0x00A0_0000;
+        let table_paddr1: u64 = 0x00A1_0000;
+        let timer_paddr: u64  = 0x00A2_0000;
+        let dpc_paddr: u64    = 0x00A3_0000;
+
+        let kernel_base: u64 = 0xFFFF_8001_0000_0000u64;
+        let dpc_routine: u64 = kernel_base + 0x1000; // inside kernel
+
+        let entry_size: u64 = 0x20;
+
+        // Page 0 and Page 1 of the timer table: all buckets' Flinka → themselves,
+        // except bucket 0 whose Flink → timer_vaddr.
+        let mut page0 = vec![0u8; 4096];
+        let mut page1 = vec![0u8; 4096];
+        for bucket in 0u64..256 {
+            let entry_addr = table_vaddr + bucket * entry_size;
+            let flink = if bucket == 0 { timer_vaddr } else { entry_addr };
+            let byte_off = (bucket * entry_size) as usize;
+            if byte_off + 8 <= 4096 {
+                page0[byte_off..byte_off + 8].copy_from_slice(&flink.to_le_bytes());
+            } else {
+                let off_in_p1 = byte_off - 4096;
+                if off_in_p1 + 8 <= 4096 {
+                    page1[off_in_p1..off_in_p1 + 8].copy_from_slice(&flink.to_le_bytes());
+                }
+            }
+        }
+
+        // Timer page: timer_list_entry_off=0 → timer_addr = timer_vaddr.
+        let mut timer_page = vec![0u8; 4096];
+        // Flink at +0 = table_vaddr (bucket 0 head) → terminates the chain.
+        timer_page[0..8].copy_from_slice(&table_vaddr.to_le_bytes());
+        // DueTime at +0x18 = 0x4321
+        timer_page[0x18..0x20].copy_from_slice(&0x4321i64.to_le_bytes());
+        // Period at +0x24 = 100
+        timer_page[0x24..0x28].copy_from_slice(&100u32.to_le_bytes());
+        // Dpc ptr at +0x30 = dpc_vaddr
+        timer_page[0x30..0x38].copy_from_slice(&dpc_vaddr.to_le_bytes());
+
+        // DPC page.
+        let mut dpc_page = vec![0u8; 4096];
+        // DeferredRoutine at +0x18
+        dpc_page[0x18..0x20].copy_from_slice(&dpc_routine.to_le_bytes());
+        // DeferredContext at +0x20 = 0xABCD
+        dpc_page[0x20..0x28].copy_from_slice(&0xABCDu64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("KiTimerTableListHead", table_vaddr)
+            .add_symbol("ntoskrnl", kernel_base)
+            .add_struct("_KTIMER", 0x40)
+            .add_struct("_KTIMER_TABLE_ENTRY", 0x20)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr,          table_paddr0, flags::WRITABLE)
+            .map_4k(table_vaddr + 0x1000, table_paddr1, flags::WRITABLE)
+            .map_4k(timer_vaddr,          timer_paddr,  flags::WRITABLE)
+            .map_4k(dpc_vaddr,            dpc_paddr,    flags::WRITABLE)
+            .write_phys(table_paddr0, &page0)
+            .write_phys(table_paddr1, &page1)
+            .write_phys(timer_paddr,  &timer_page)
+            .write_phys(dpc_paddr,    &dpc_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_timers(&reader).unwrap();
+        assert_eq!(result.len(), 1, "should find exactly one timer");
+        let t = &result[0];
+        assert_eq!(t.address, timer_vaddr);
+        assert_eq!(t.due_time, 0x4321);
+        assert_eq!(t.period, 100);
+        assert_eq!(t.dpc_address, dpc_vaddr);
+        assert_eq!(t.dpc_routine, dpc_routine);
+        assert_eq!(t.dpc_context, 0xABCD);
+        assert!(!t.is_suspicious, "routine inside kernel range should not be suspicious");
+    }
+
     /// KernelTimerInfo serializes correctly.
     #[test]
     fn kernel_timer_info_serializes() {

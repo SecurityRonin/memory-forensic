@@ -1198,6 +1198,125 @@ mod tests {
         assert!(find_subkey(&reader, 0, &parent_data, "InventoryApplicationFile").is_none());
     }
 
+    /// find_subkey: lf list with one entry pointing to a child nk with a matching name.
+    /// This covers the inner loop body of find_subkey including the NK_SIGNATURE check
+    /// and name comparison.
+    #[test]
+    fn find_subkey_lf_list_finds_matching_child() {
+        // hive_base: the HBASE_BLOCK. HBIN area = hive_base + 0x1000.
+        // list cell index = 0x100 → list_vaddr = hive_base + 0x1100
+        // child cell index = 0x200 → child_vaddr = hive_base + 0x1200
+        // Place list and child on the same 4K HBIN page (both within page at hive_base+0x1000).
+        let hive_base: u64 = 0x0090_0000;
+
+        let list_cell_index: u32 = 0x100;
+        let child_cell_index: u32 = 0x200;
+
+        let hbin_page_vaddr = hive_base + HBIN_START_OFFSET; // 0x0091_0000
+        let hbin_page_paddr: u64 = 0x0091_0000;
+
+        // parent nk_data with subkey_count=1, subkeys_list_index=0x100
+        let mut parent_data = vec![0u8; 0x60];
+        parent_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        parent_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell_index.to_le_bytes());
+
+        // Build the hbin page.
+        // list cell at offset 0x100 within page:
+        //   [i32 size=-24][sig=lf 0x666C][count=1][child_cell_index][hash=0]
+        // child cell at offset 0x200 within page:
+        //   [i32 size=-96][nk_data with sig=nk, name="Root"]
+        let mut hbin_page = vec![0u8; 0x1000];
+
+        let list_off = list_cell_index as usize;
+        hbin_page[list_off..list_off + 4].copy_from_slice(&(-24i32).to_le_bytes());
+        // lf sig = [0x6C, 0x66] (0x666C in LE)
+        hbin_page[list_off + 4] = 0x6C;
+        hbin_page[list_off + 5] = 0x66;
+        // count = 1
+        hbin_page[list_off + 6..list_off + 8].copy_from_slice(&1u16.to_le_bytes());
+        // entry[0]: child_cell_index
+        hbin_page[list_off + 8..list_off + 12]
+            .copy_from_slice(&child_cell_index.to_le_bytes());
+        // hash (ignored)
+        hbin_page[list_off + 12..list_off + 16].copy_from_slice(&0u32.to_le_bytes());
+
+        let child_off = child_cell_index as usize;
+        // abs_size = NK_NAME_OFFSET + 4 + 4 + 4 = large enough; use 0x80=128
+        hbin_page[child_off..child_off + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        // nk sig = 0x6B6E → bytes [0x6E, 0x6B]
+        hbin_page[child_off + 4] = 0x6E;
+        hbin_page[child_off + 5] = 0x6B;
+        let child_name = b"Root";
+        // NK_NAME_LENGTH_OFFSET = 0x48 within nk_data → page offset = child_off + 4 + 0x48
+        hbin_page[child_off + 4 + NK_NAME_LENGTH_OFFSET..child_off + 4 + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(child_name.len() as u16).to_le_bytes());
+        hbin_page[child_off + 4 + NK_NAME_OFFSET..child_off + 4 + NK_NAME_OFFSET + child_name.len()]
+            .copy_from_slice(child_name);
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hbin_page_vaddr, hbin_page_paddr, flags::WRITABLE)
+            .write_phys(hbin_page_paddr, &hbin_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Should find "Root"
+        let result = find_subkey(&reader, hive_base, &parent_data, "Root");
+        assert_eq!(result, Some(child_cell_index), "find_subkey should return child_cell_index for 'Root'");
+
+        // Should not find a name that isn't there
+        let result2 = find_subkey(&reader, hive_base, &parent_data, "NoSuchKey");
+        assert!(result2.is_none(), "find_subkey should return None for missing name");
+    }
+
+    /// read_value_string non-inline path: data is stored in a separate cell.
+    /// Covers the `else` branch at line 291 (is_inline == false).
+    #[test]
+    fn read_value_string_non_inline_utf16() {
+        // hive_base + HBIN_START + data_cell_index → data page
+        let hive_base: u64 = 0x00A0_0000;
+        let data_cell_index: u32 = 0x100;
+        let data_page_vaddr = hive_base + HBIN_START_OFFSET; // 0x00A1_0000
+        let data_page_paddr: u64 = 0x00A1_0000;
+
+        // String "AB" in UTF-16LE = [0x41, 0x00, 0x42, 0x00] = 4 bytes.
+        let utf16_bytes: &[u8] = &[0x41, 0x00, 0x42, 0x00];
+        let real_len = utf16_bytes.len();
+
+        // Build vk_data: non-inline, data_length = real_len, data_cell_index.
+        let mut vk = vec![0u8; 0x30];
+        // data_length (not inline) = real_len
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+            .copy_from_slice(&(real_len as u32).to_le_bytes());
+        // data_cell_index at VK_DATA_OFFSET
+        vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4]
+            .copy_from_slice(&data_cell_index.to_le_bytes());
+
+        // data cell on hbin page at offset data_cell_index:
+        // [i32 size = -(4 + real_len)][utf16 bytes]
+        let mut data_page = vec![0u8; 0x1000];
+        let cell_off = data_cell_index as usize;
+        let cell_size: i32 = -((4 + real_len) as i32);
+        data_page[cell_off..cell_off + 4].copy_from_slice(&cell_size.to_le_bytes());
+        data_page[cell_off + 4..cell_off + 4 + real_len].copy_from_slice(utf16_bytes);
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(data_page_vaddr, data_page_paddr, flags::WRITABLE)
+            .write_phys(data_page_paddr, &data_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_value_string(&reader, hive_base, &vk);
+        assert_eq!(result, "AB", "non-inline UTF-16LE should decode to 'AB'");
+    }
+
     /// Mapped hive; root cell has NK_SIGNATURE but no InventoryApplicationFile
     /// or Root subkey → walk returns empty Vec.
     #[test]

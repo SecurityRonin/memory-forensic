@@ -669,4 +669,189 @@ mod tests {
         assert!(json.contains("keylogger.dll"));
         assert!(json.contains("is_suspicious"));
     }
+
+    /// extract_pid_from_threadinfo: ethread_ptr == 0 → returns 0.
+    #[test]
+    fn extract_pid_zero_ethread_returns_zero() {
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // threadinfo page: at offset 0 (threadinfo_eprocess_off=0) → 0 (ethread null).
+        // extract_pid_from_threadinfo returns 0 when ethread == 0.
+        let result = extract_pid_from_threadinfo(&reader, 0xFFFF_8000_DEAD_0000, 0, 0x220, 0x440);
+        assert_eq!(result, 0, "unreadable threadinfo → 0");
+    }
+
+    /// extract_pid_from_threadinfo: ethread reads ok (non-zero), eprocess reads ok,
+    /// PID reads ok → returns correct PID.
+    #[test]
+    fn extract_pid_from_threadinfo_valid_chain() {
+        let threadinfo_vaddr: u64 = 0xFFFF_8000_4000_0000;
+        let threadinfo_paddr: u64 = 0x0040_0000;
+        let ethread_vaddr: u64 = 0xFFFF_8000_4100_0000;
+        let ethread_paddr: u64 = 0x0041_0000;
+        let eprocess_vaddr: u64 = 0xFFFF_8000_4200_0000;
+        let eprocess_paddr: u64 = 0x0042_0000;
+
+        let expected_pid: u64 = 9999;
+        // threadinfo_eprocess_off = 0 → ethread_vaddr at threadinfo+0
+        // ethread_process_off = 0x08 → eprocess_vaddr at ethread+0x08
+        // pid_off = 0x10 → pid at eprocess+0x10
+
+        let mut threadinfo_page = vec![0u8; 4096];
+        threadinfo_page[0..8].copy_from_slice(&ethread_vaddr.to_le_bytes());
+
+        let mut ethread_page = vec![0u8; 4096];
+        ethread_page[0x08..0x10].copy_from_slice(&eprocess_vaddr.to_le_bytes());
+
+        let mut eprocess_page = vec![0u8; 4096];
+        eprocess_page[0x10..0x18].copy_from_slice(&expected_pid.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(threadinfo_vaddr, threadinfo_paddr, flags::WRITABLE)
+            .map_4k(ethread_vaddr, ethread_paddr, flags::WRITABLE)
+            .map_4k(eprocess_vaddr, eprocess_paddr, flags::WRITABLE)
+            .write_phys(threadinfo_paddr, &threadinfo_page)
+            .write_phys(ethread_paddr, &ethread_page)
+            .write_phys(eprocess_paddr, &eprocess_page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let pid = extract_pid_from_threadinfo(&reader, threadinfo_vaddr, 0, 0x08, 0x10);
+        assert_eq!(pid, expected_pid as u32, "should extract PID {expected_pid}");
+    }
+
+    /// walker: winsta → desktop → deskinfo → one hook in aphkStart[0] → one hook returned.
+    ///
+    /// This exercises the inner aphk loop, hook chain traversal, and hook field reads.
+    /// The hook has ihmod <= 0xFFFF so module_name = "" → classify_message_hook → suspicious.
+    #[test]
+    fn walk_message_hooks_one_hook_inner_loop() {
+        // Memory layout (all on separate 4K pages, physical addrs < 16MB):
+        //   sym_page   → 8 bytes: winsta_vaddr
+        //   winsta_page → at +0x10: 0 (no next winsta), at +0x18: desktop_vaddr
+        //   desktop_page → at +0x10: 0 (no next desktop), at +0x20: deskinfo_vaddr
+        //   deskinfo_page → at +0x18: hook_vaddr (aphkStart[0])
+        //   hook_page  → at +0x00: 13u32 (WH_KEYBOARD_LL), +0x08: hook_proc,
+        //                           +0x10: 0u64 (ihmod ≤ 0xFFFF, so module = ""),
+        //                           +0x18: 0 (phkNext = null, chain ends),
+        //                           +0x28: 0 (ptiHooked = null → owner_pid = 0)
+
+        let sym_vaddr: u64 = 0xFFFF_8000_5000_0000;
+        let sym_paddr: u64 = 0x0050_0000;
+        let winsta_vaddr: u64 = 0xFFFF_8000_5100_0000;
+        let winsta_paddr: u64 = 0x0051_0000;
+        let desktop_vaddr: u64 = 0xFFFF_8000_5200_0000;
+        let desktop_paddr: u64 = 0x0052_0000;
+        let deskinfo_vaddr: u64 = 0xFFFF_8000_5300_0000;
+        let deskinfo_paddr: u64 = 0x0053_0000;
+        let hook_vaddr: u64 = 0xFFFF_8000_5400_0000;
+        let hook_paddr: u64 = 0x0054_0000;
+
+        let hook_proc_addr: u64 = 0xDEAD_CAFE_0000;
+
+        // sym_page: pointer to winsta
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_vaddr.to_le_bytes());
+
+        // winsta_page: rpwinstaNext (offset 0x10) = 0, rpdeskList (offset 0x18) = desktop_vaddr
+        let mut winsta_page = vec![0u8; 4096];
+        winsta_page[0x10..0x18].copy_from_slice(&0u64.to_le_bytes()); // no next
+        winsta_page[0x18..0x20].copy_from_slice(&desktop_vaddr.to_le_bytes());
+
+        // desktop_page: rpdeskNext (offset 0x10) = 0, pDeskInfo (offset 0x20) = deskinfo_vaddr
+        let mut desktop_page = vec![0u8; 4096];
+        desktop_page[0x10..0x18].copy_from_slice(&0u64.to_le_bytes()); // no next
+        desktop_page[0x20..0x28].copy_from_slice(&deskinfo_vaddr.to_le_bytes());
+
+        // deskinfo_page: aphkStart[0] (offset 0x18) = hook_vaddr
+        let mut deskinfo_page = vec![0u8; 4096];
+        deskinfo_page[0x18..0x20].copy_from_slice(&hook_vaddr.to_le_bytes());
+        // aphkStart[1..15] = 0 (no other hooks)
+
+        // hook_page:
+        //   iHook (offset 0x00, u32): 13 = WH_KEYBOARD_LL
+        //   offPfn (offset 0x08, u64): hook_proc_addr
+        //   ihmod (offset 0x10, u64): 0 (≤ 0xFFFF → module_name = "")
+        //   phkNext (offset 0x18, u64): 0 (chain ends)
+        //   ptiHooked (offset 0x28, u64): 0 (owner_pid = 0)
+        let mut hook_page = vec![0u8; 4096];
+        hook_page[0x00..0x04].copy_from_slice(&13u32.to_le_bytes()); // WH_KEYBOARD_LL
+        hook_page[0x08..0x10].copy_from_slice(&hook_proc_addr.to_le_bytes());
+        hook_page[0x10..0x18].copy_from_slice(&0u64.to_le_bytes()); // ihmod=0
+        hook_page[0x18..0x20].copy_from_slice(&0u64.to_le_bytes()); // phkNext=null
+        hook_page[0x28..0x30].copy_from_slice(&0u64.to_le_bytes()); // ptiHooked=null
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HOOK", 0x80)
+            .add_symbol("grpWinStaList", sym_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_vaddr, winsta_paddr, flags::WRITABLE)
+            .map_4k(desktop_vaddr, desktop_paddr, flags::WRITABLE)
+            .map_4k(deskinfo_vaddr, deskinfo_paddr, flags::WRITABLE)
+            .map_4k(hook_vaddr, hook_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .write_phys(desktop_paddr, &desktop_page)
+            .write_phys(deskinfo_paddr, &deskinfo_page)
+            .write_phys(hook_paddr, &hook_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let hooks = walk_message_hooks(&reader).unwrap();
+        assert_eq!(hooks.len(), 1, "expected exactly 1 hook, got {}", hooks.len());
+        let h = &hooks[0];
+        assert_eq!(h.address, hook_vaddr, "hook address mismatch");
+        assert_eq!(h.hook_type, "WH_KEYBOARD_LL", "hook type mismatch");
+        assert_eq!(h.hook_proc_addr, hook_proc_addr, "hook proc addr mismatch");
+        assert_eq!(h.owner_pid, 0, "owner_pid should be 0 (null ptiHooked)");
+        // Empty module name → suspicious
+        assert!(h.is_suspicious, "WH_KEYBOARD_LL with empty module should be suspicious");
+    }
+
+    /// extract_pid_from_threadinfo: ethread non-null, eprocess non-null, PID reads ok.
+    /// Verifies the full chain when ethread ptr returned is valid but ThreadsProcess = 0.
+    #[test]
+    fn extract_pid_zero_eprocess_returns_zero() {
+        let threadinfo_vaddr: u64 = 0xFFFF_8000_6000_0000;
+        let threadinfo_paddr: u64 = 0x0060_0000;
+        let ethread_vaddr: u64 = 0xFFFF_8000_6100_0000;
+        let ethread_paddr: u64 = 0x0061_0000;
+
+        // threadinfo: at +0 → ethread_vaddr
+        let mut threadinfo_page = vec![0u8; 4096];
+        threadinfo_page[0..8].copy_from_slice(&ethread_vaddr.to_le_bytes());
+
+        // ethread: at +0x08 → 0 (eprocess = null)
+        let mut ethread_page = vec![0u8; 4096];
+        ethread_page[0x08..0x10].copy_from_slice(&0u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(threadinfo_vaddr, threadinfo_paddr, flags::WRITABLE)
+            .map_4k(ethread_vaddr, ethread_paddr, flags::WRITABLE)
+            .write_phys(threadinfo_paddr, &threadinfo_page)
+            .write_phys(ethread_paddr, &ethread_page)
+            .build();
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let pid = extract_pid_from_threadinfo(&reader, threadinfo_vaddr, 0, 0x08, 0x10);
+        assert_eq!(pid, 0, "null eprocess → 0");
+    }
 }
