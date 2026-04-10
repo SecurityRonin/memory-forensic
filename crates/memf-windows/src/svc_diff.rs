@@ -182,7 +182,9 @@ const NK_NAME_LEN: usize = 0x48;
 const NK_NAME_DATA: usize = 0x4C;
 
 fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
-    hive_addr.wrapping_add(HBIN_START).wrapping_add(cell_index as u64)
+    hive_addr
+        .wrapping_add(HBIN_START)
+        .wrapping_add(cell_index as u64)
 }
 
 fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<Vec<u8>> {
@@ -194,7 +196,9 @@ fn key_node_name(data: &[u8]) -> String {
         return String::new();
     }
     let len = u16::from_le_bytes(
-        data[NK_NAME_LEN..NK_NAME_LEN + 2].try_into().unwrap_or([0; 2]),
+        data[NK_NAME_LEN..NK_NAME_LEN + 2]
+            .try_into()
+            .unwrap_or([0; 2]),
     ) as usize;
     let end = NK_NAME_DATA + len.min(data.len().saturating_sub(NK_NAME_DATA));
     String::from_utf8_lossy(&data[NK_NAME_DATA..end]).into_owned()
@@ -217,15 +221,13 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
         if sig != NK_SIG {
             return None;
         }
-        let count = u32::from_le_bytes(
-            data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?,
-        ) as usize;
+        let count = u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?)
+            as usize;
         if count == 0 {
             return None;
         }
-        let list_cell = u32::from_le_bytes(
-            data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?,
-        );
+        let list_cell =
+            u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
         let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
         if list_data.len() < 4 {
             return None;
@@ -243,8 +245,7 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
             if off + 4 > list_data.len() {
                 break;
             }
-            let child_cell =
-                u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
+            let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
             let child_data = read_cell(reader, cell_vaddr(hive_addr, child_cell))?;
             if key_node_name(&child_data).eq_ignore_ascii_case(component) {
                 found = Some(child_cell);
@@ -289,12 +290,10 @@ fn enum_direct_subkeys<P: PhysicalMemoryProvider>(
     if count == 0 {
         return Vec::new();
     }
-    let list_cell = u32::from_le_bytes(
-        match data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into() {
-            Ok(b) => b,
-            Err(_) => return Vec::new(),
-        },
-    );
+    let list_cell = u32::from_le_bytes(match data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into() {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    });
     let list_data = match read_cell(reader, cell_vaddr(hive_addr, list_cell)) {
         Some(d) => d,
         None => return Vec::new(),
@@ -321,11 +320,14 @@ fn enum_direct_subkeys<P: PhysicalMemoryProvider>(
         if off + 4 > list_data.len() {
             break;
         }
-        let child_cell =
-            match list_data[off..off + 4].try_into().ok().map(u32::from_le_bytes) {
-                Some(c) => c,
-                None => continue,
-            };
+        let child_cell = match list_data[off..off + 4]
+            .try_into()
+            .ok()
+            .map(u32::from_le_bytes)
+        {
+            Some(c) => c,
+            None => continue,
+        };
         if let Some(child_data) = read_cell(reader, cell_vaddr(hive_addr, child_cell)) {
             let name = key_node_name(&child_data);
             if !name.is_empty() {
@@ -339,6 +341,21 @@ fn enum_direct_subkeys<P: PhysicalMemoryProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memf_core::object_reader::ObjectReader;
+    use memf_core::test_builders::PageTableBuilder;
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
 
     // ── classify_svc_diff unit tests ────────────────────────────────
 
@@ -399,6 +416,12 @@ mod tests {
         assert!(!classify_svc_diff(false, true, 0));
     }
 
+    /// Unknown start type (e.g. 99) is not suspicious for registry-only.
+    #[test]
+    fn classify_registry_only_unknown_start_type_benign() {
+        assert!(!classify_svc_diff(false, true, 99));
+    }
+
     // ── SvcDiffEntry struct tests ───────────────────────────────────
 
     #[test]
@@ -438,5 +461,73 @@ mod tests {
         assert!(json.contains("\"in_registry\":true"));
         assert!(json.contains("\"is_suspicious\":false"));
         assert!(json.contains("\"start_type\":3"));
+    }
+
+    // ── walk_svc_diff with zero addresses ────────────────────────────
+
+    /// Both addresses zero → empty result, no error.
+    #[test]
+    fn walk_svc_diff_both_zero_empty() {
+        let reader = make_reader();
+        let result = walk_svc_diff(&reader, 0, 0).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// scm_list_head zero, non-zero but unmapped system_hive → empty.
+    #[test]
+    fn walk_svc_diff_zero_scm_unmapped_hive_empty() {
+        let reader = make_reader();
+        let result = walk_svc_diff(&reader, 0, 0xDEAD_BEEF_0000).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ── cell_vaddr / internal helpers ─────────────────────────────────
+
+    #[test]
+    fn cell_vaddr_calculation() {
+        let hive: u64 = 0x1000_0000;
+        let cell: u32 = 0x200;
+        let expected = hive + HBIN_START + cell as u64;
+        assert_eq!(cell_vaddr(hive, cell), expected);
+    }
+
+    #[test]
+    fn hive_constants_correct() {
+        assert_eq!(HBIN_START, 0x1000);
+        assert_eq!(ROOT_CELL_OFFSET, 0x24);
+        assert_eq!(NK_SIG, 0x6B6E);
+    }
+
+    // ── key_node_name helper ──────────────────────────────────────────
+
+    #[test]
+    fn key_node_name_too_short() {
+        let data = vec![0u8; NK_NAME_DATA - 1];
+        assert_eq!(key_node_name(&data), "");
+    }
+
+    #[test]
+    fn key_node_name_valid() {
+        // NK_NAME_LEN = 0x48, NK_NAME_DATA = 0x4C
+        let mut data = vec![0u8; 0x60];
+        let name = b"Services";
+        data[NK_NAME_LEN] = name.len() as u8;
+        data[NK_NAME_LEN + 1] = 0;
+        data[NK_NAME_DATA..NK_NAME_DATA + name.len()].copy_from_slice(name);
+        assert_eq!(key_node_name(&data), "Services");
+    }
+
+    #[test]
+    fn key_node_name_clamped_to_available() {
+        // length field says 10 bytes but only 5 bytes are available after NK_NAME_DATA
+        let mut data = vec![0u8; NK_NAME_DATA + 5];
+        data[NK_NAME_LEN] = 10;
+        data[NK_NAME_LEN + 1] = 0;
+        for i in 0..5 {
+            data[NK_NAME_DATA + i] = b'X';
+        }
+        // Should not panic; returns whatever fits
+        let name = key_node_name(&data);
+        assert!(name.len() <= 5);
     }
 }

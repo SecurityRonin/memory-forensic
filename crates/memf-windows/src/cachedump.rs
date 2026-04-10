@@ -120,7 +120,11 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     let flat_base = match reader.read_bytes(security_hive_addr + storage_off, 8) {
         Ok(bytes) if bytes.len() == 8 => {
             let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            if addr != 0 { addr } else { base_block_addr + 0x1000 }
+            if addr != 0 {
+                addr
+            } else {
+                base_block_addr + 0x1000
+            }
         }
         _ => base_block_addr + 0x1000,
     };
@@ -284,7 +288,10 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
 /// Check if a value name is a cached credential entry (`NL$1` through `NL$10`).
 fn is_nl_entry(name: &str) -> bool {
     if let Some(suffix) = name.strip_prefix("NL$") {
-        matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10")
+        matches!(
+            suffix,
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10"
+        )
     } else {
         false
     }
@@ -359,14 +366,10 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                    }
-                    _ => continue,
-                }
-            }
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                _ => continue,
+            },
             _ => return 0,
         };
 
@@ -406,6 +409,18 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
+    fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
     // ── Classifier tests ─────────────────────────────────────────────
 
     /// Normal domain credential with sufficient iteration count is benign.
@@ -426,6 +441,35 @@ mod tests {
         );
     }
 
+    /// Usernames with valid AD chars (alphanumeric, dot, dash, underscore) are benign.
+    #[test]
+    fn classify_benign_valid_ad_username_chars() {
+        assert!(!classify_cached_credential("alice.smith", "DOMAIN", 10240));
+        assert!(!classify_cached_credential("bob-jones", "DOMAIN", 10240));
+        assert!(!classify_cached_credential("svc_account", "DOMAIN", 10240));
+        assert!(!classify_cached_credential("User123", "DOMAIN", 10240));
+    }
+
+    /// Empty username with sufficient iteration count and non-empty domain is benign
+    /// (the username chars check short-circuits for empty strings).
+    #[test]
+    fn classify_benign_empty_username() {
+        // empty username has no invalid chars so only domain/count checked
+        assert!(!classify_cached_credential("", "DOMAIN", 10240));
+    }
+
+    /// Iteration count of exactly 10240 is benign (boundary).
+    #[test]
+    fn classify_boundary_iteration_count() {
+        assert!(!classify_cached_credential("user", "DOMAIN", 10240));
+    }
+
+    /// Iteration count of 10239 is suspicious (one below threshold).
+    #[test]
+    fn classify_boundary_below_threshold() {
+        assert!(classify_cached_credential("user", "DOMAIN", 10239));
+    }
+
     /// Low iteration count (pre-Vista default) is suspicious.
     #[test]
     fn classify_suspicious_low_iteration() {
@@ -433,6 +477,12 @@ mod tests {
             classify_cached_credential("user1", "DOMAIN", 1024),
             "iteration_count=1024 (below 10240) should be suspicious"
         );
+    }
+
+    /// Zero iteration count is suspicious.
+    #[test]
+    fn classify_suspicious_zero_iteration() {
+        assert!(classify_cached_credential("user1", "DOMAIN", 0));
     }
 
     /// Empty domain name is suspicious (corrupted/tampered entry).
@@ -462,40 +512,147 @@ mod tests {
         );
     }
 
+    /// Username with slash is suspicious.
+    #[test]
+    fn classify_suspicious_slash_in_username() {
+        assert!(classify_cached_credential("domain\\user", "DOMAIN", 10240));
+    }
+
+    /// Username with exclamation mark is suspicious.
+    #[test]
+    fn classify_suspicious_bang_in_username() {
+        assert!(classify_cached_credential("user!", "DOMAIN", 10240));
+    }
+
+    // ── is_nl_entry tests ─────────────────────────────────────────────
+
+    #[test]
+    fn is_nl_entry_valid() {
+        for i in 1..=10 {
+            assert!(is_nl_entry(&format!("NL${}", i)), "NL${} should be valid", i);
+        }
+    }
+
+    #[test]
+    fn is_nl_entry_invalid_prefix() {
+        assert!(!is_nl_entry("NL$0"));
+        assert!(!is_nl_entry("NL$11"));
+        assert!(!is_nl_entry("NL$100"));
+        assert!(!is_nl_entry("nl$1")); // case-sensitive
+        assert!(!is_nl_entry("CachedLogons"));
+        assert!(!is_nl_entry(""));
+        assert!(!is_nl_entry("NL$"));
+    }
+
+    #[test]
+    fn is_nl_entry_boundary_values() {
+        assert!(is_nl_entry("NL$1"));
+        assert!(is_nl_entry("NL$10"));
+        assert!(!is_nl_entry("NL$0"));
+        assert!(!is_nl_entry("NL$11"));
+    }
+
+    // ── decode_utf16le tests ──────────────────────────────────────────
+
+    #[test]
+    fn decode_utf16le_empty() {
+        assert_eq!(decode_utf16le(&[]), "");
+    }
+
+    #[test]
+    fn decode_utf16le_ascii() {
+        // "hello" as UTF-16LE
+        let bytes = b"h\0e\0l\0l\0o\0";
+        assert_eq!(decode_utf16le(bytes), "hello");
+    }
+
+    #[test]
+    fn decode_utf16le_unicode() {
+        // U+00E9 (é) as UTF-16LE: [0xE9, 0x00]
+        let bytes = &[0xE9u8, 0x00];
+        let result = decode_utf16le(bytes);
+        assert_eq!(result, "é");
+    }
+
+    #[test]
+    fn decode_utf16le_odd_byte_count() {
+        // Odd number of bytes: trailing byte is ignored by chunks_exact(2)
+        let bytes = b"h\0e\0x"; // 5 bytes, last one orphaned
+        let result = decode_utf16le(bytes);
+        assert_eq!(result, "he"); // 'x' byte orphaned
+    }
+
+    #[test]
+    fn decode_utf16le_domain_name() {
+        // "CORP" as UTF-16LE
+        let bytes = b"C\0O\0R\0P\0";
+        assert_eq!(decode_utf16le(bytes), "CORP");
+    }
+
     // ── Walker tests ─────────────────────────────────────────────────
 
     /// Zero hive address returns empty Vec (graceful degradation).
     #[test]
     fn walk_cached_credentials_zero_addr() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
+        let reader = make_reader();
         let result = walk_cached_credentials(&reader, 0).unwrap();
-        assert!(result.is_empty(), "Zero hive address should return empty Vec");
+        assert!(
+            result.is_empty(),
+            "Zero hive address should return empty Vec"
+        );
     }
 
     /// Non-zero but unmapped hive address degrades gracefully to empty Vec.
     #[test]
     fn walk_cached_credentials_unmapped_addr_graceful() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
+        let reader = make_reader();
         // Non-zero but unmapped address should return empty Vec, not panic.
         let result = walk_cached_credentials(&reader, 0xDEAD_BEEF).unwrap();
-        assert!(result.is_empty(), "Unmapped hive address should degrade gracefully");
+        assert!(
+            result.is_empty(),
+            "Unmapped hive address should degrade gracefully"
+        );
+    }
+
+    // ── CachedCredentialInfo struct tests ─────────────────────────────
+
+    #[test]
+    fn cached_credential_info_construction() {
+        let info = CachedCredentialInfo {
+            username: "john.doe".to_string(),
+            domain: "CONTOSO".to_string(),
+            domain_sid: "S-1-5-21-1234567890-1234567890-1234567890".to_string(),
+            iteration_count: 10240,
+            hash_data_length: 16,
+            is_suspicious: false,
+        };
+        assert_eq!(info.username, "john.doe");
+        assert_eq!(info.domain, "CONTOSO");
+        assert_eq!(info.iteration_count, 10240);
+        assert!(!info.is_suspicious);
+    }
+
+    #[test]
+    fn cached_credential_info_serialization() {
+        let info = CachedCredentialInfo {
+            username: "attacker".to_string(),
+            domain: "".to_string(),
+            domain_sid: String::new(),
+            iteration_count: 1024,
+            hash_data_length: 32,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"username\":\"attacker\""));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"iteration_count\":1024"));
+    }
+
+    // ── MAX_CACHED_CREDS constant ─────────────────────────────────────
+
+    #[test]
+    fn max_cached_creds_reasonable() {
+        assert!(MAX_CACHED_CREDS >= 10);
+        assert!(MAX_CACHED_CREDS <= 1024);
     }
 }

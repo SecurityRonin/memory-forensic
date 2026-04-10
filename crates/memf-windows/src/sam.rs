@@ -147,7 +147,11 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
     let flat_base = match reader.read_bytes(hive_addr + storage_base, 8) {
         Ok(bytes) if bytes.len() == 8 => {
             let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            if addr != 0 { addr } else { base_block_addr + 0x1000 }
+            if addr != 0 {
+                addr
+            } else {
+                base_block_addr + 0x1000
+            }
         }
         _ => base_block_addr + 0x1000,
     };
@@ -368,14 +372,10 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                    }
-                    _ => continue,
-                }
-            }
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                _ => continue,
+            },
             _ => return 0,
         };
 
@@ -454,14 +454,10 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
-                    }
-                    _ => continue,
-                }
-            }
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                _ => continue,
+            },
             _ => break,
         };
 
@@ -513,9 +509,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
         if val_type == target_rid {
             // Read the key name as the username.
             let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-                Ok(bytes) if bytes.len() == 2 => {
-                    u16::from_le_bytes(bytes[..2].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
                 _ => continue,
             };
 
@@ -643,7 +637,13 @@ fn read_f_value<P: PhysicalMemoryProvider>(
             _ => 0,
         };
 
-        return (flags_raw as u32, last_login, last_pw, created, login_cnt as u32);
+        return (
+            flags_raw as u32,
+            last_login,
+            last_pw,
+            created,
+            login_cnt as u32,
+        );
     }
 
     default
@@ -658,9 +658,7 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
-    /// No SAM hive address → empty Vec.
-    #[test]
-    fn walk_sam_users_no_hive() {
+    fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         let isf = IsfBuilder::new()
             .add_struct("_HHIVE", 0x600)
             .add_struct("_CM_KEY_NODE", 0x80)
@@ -668,16 +666,37 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
+        ObjectReader::new(vas, Box::new(resolver))
+    }
 
+    /// No SAM hive address → empty Vec.
+    #[test]
+    fn walk_sam_users_no_hive() {
+        let reader = make_reader();
         let result = walk_sam_users(&reader, 0).unwrap();
         assert!(result.is_empty());
     }
+
+    /// Non-zero but unmapped hive address → empty Vec (graceful degradation).
+    #[test]
+    fn walk_sam_users_unmapped_hive_graceful() {
+        let reader = make_reader();
+        let result = walk_sam_users(&reader, 0xDEAD_BEEF_0000).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ── classify_sam_user exhaustive tests ───────────────────────────
 
     /// Normal Administrator account is not suspicious.
     #[test]
     fn classify_sam_normal_admin() {
         assert!(!classify_sam_user("Administrator", 500, UAC_NORMAL_ACCOUNT));
+    }
+
+    /// "admin" (lowercase) as RID-500 name is also benign.
+    #[test]
+    fn classify_sam_admin_lowercase_benign() {
+        assert!(!classify_sam_user("admin", 500, UAC_NORMAL_ACCOUNT));
     }
 
     /// Renamed Administrator (RID 500) is suspicious.
@@ -686,16 +705,32 @@ mod tests {
         assert!(classify_sam_user("notadmin", 500, UAC_NORMAL_ACCOUNT));
     }
 
+    /// RID 500 with weird name is suspicious regardless of flags.
+    #[test]
+    fn classify_sam_rid500_weird_name_suspicious() {
+        assert!(classify_sam_user("svc_admin", 500, 0));
+    }
+
     /// Hidden account ending with '$' is suspicious.
     #[test]
     fn classify_sam_hidden_account() {
         assert!(classify_sam_user("backdoor$", 1001, UAC_NORMAL_ACCOUNT));
     }
 
-    /// Machine account ending with 'MACHINE$' is benign.
+    /// Dollar-sign account that IS a machine$ account is benign.
     #[test]
     fn classify_sam_machine_account_benign() {
-        assert!(!classify_sam_user("WORKSTATION$MACHINE$", 1000, UAC_NORMAL_ACCOUNT));
+        assert!(!classify_sam_user(
+            "WORKSTATION$MACHINE$",
+            1000,
+            UAC_NORMAL_ACCOUNT
+        ));
+    }
+
+    /// Dollar-sign accounts with other suffixes are suspicious.
+    #[test]
+    fn classify_sam_dollar_not_machine_suspicious() {
+        assert!(classify_sam_user("evil$", 1005, UAC_NORMAL_ACCOUNT));
     }
 
     /// Password-not-required on normal account is suspicious.
@@ -708,10 +743,29 @@ mod tests {
         ));
     }
 
-    /// Known attack tool account name is suspicious.
+    /// Password-not-required on non-normal account is NOT suspicious by this flag alone.
     #[test]
-    fn classify_sam_known_bad_name() {
+    fn classify_sam_no_password_non_normal_not_suspicious() {
+        // UAC_PASSWORD_NOT_REQUIRED without UAC_NORMAL_ACCOUNT
+        assert!(!classify_sam_user("svcuser", 1010, UAC_PASSWORD_NOT_REQUIRED));
+    }
+
+    /// Known attack tool account names are suspicious.
+    #[test]
+    fn classify_sam_known_bad_names() {
         assert!(classify_sam_user("backdoor", 1003, UAC_NORMAL_ACCOUNT));
+        assert!(classify_sam_user("hacker", 1003, UAC_NORMAL_ACCOUNT));
+        assert!(classify_sam_user("test123", 1003, UAC_NORMAL_ACCOUNT));
+        assert!(classify_sam_user("svc_admin", 1003, UAC_NORMAL_ACCOUNT));
+        assert!(classify_sam_user("defaultaccount0", 1003, UAC_NORMAL_ACCOUNT));
+        assert!(classify_sam_user("support_388945a0", 1003, UAC_NORMAL_ACCOUNT));
+    }
+
+    /// Known bad names are case-insensitive.
+    #[test]
+    fn classify_sam_known_bad_name_case_insensitive() {
+        assert!(classify_sam_user("Backdoor", 1003, UAC_NORMAL_ACCOUNT));
+        assert!(classify_sam_user("HACKER", 1003, UAC_NORMAL_ACCOUNT));
     }
 
     /// Regular user account is not suspicious.
@@ -720,9 +774,96 @@ mod tests {
         assert!(!classify_sam_user("john.doe", 1004, UAC_NORMAL_ACCOUNT));
     }
 
+    /// Regular user with RID > 500 and normal flags is benign.
+    #[test]
+    fn classify_sam_normal_user_benign() {
+        assert!(!classify_sam_user("alice", 1006, UAC_NORMAL_ACCOUNT));
+    }
+
     /// Empty username is not suspicious.
     #[test]
     fn classify_sam_empty_benign() {
         assert!(!classify_sam_user("", 0, 0));
+    }
+
+    /// Empty username with suspicious flags is still benign (early return).
+    #[test]
+    fn classify_sam_empty_with_flags_benign() {
+        assert!(!classify_sam_user(
+            "",
+            500,
+            UAC_NORMAL_ACCOUNT | UAC_PASSWORD_NOT_REQUIRED
+        ));
+    }
+
+    // ── UAC constant correctness ───────────────────────────────────────
+
+    #[test]
+    fn uac_constants_correct_values() {
+        assert_eq!(UAC_ACCOUNT_DISABLED, 0x0001);
+        assert_eq!(UAC_LOCKOUT, 0x0010);
+        assert_eq!(UAC_PASSWORD_NOT_REQUIRED, 0x0020);
+        assert_eq!(UAC_NORMAL_ACCOUNT, 0x0200);
+    }
+
+    // ── SamUserInfo construction ──────────────────────────────────────
+
+    #[test]
+    fn sam_user_info_fields() {
+        let info = SamUserInfo {
+            username: "alice".to_string(),
+            rid: 1001,
+            account_flags: UAC_NORMAL_ACCOUNT,
+            is_disabled: false,
+            has_empty_password: false,
+            last_login_time: 132_000_000_000_000_000,
+            last_password_change: 131_000_000_000_000_000,
+            account_created: 130_000_000_000_000_000,
+            login_count: 42,
+            is_suspicious: false,
+        };
+        assert_eq!(info.username, "alice");
+        assert_eq!(info.rid, 1001);
+        assert_eq!(info.login_count, 42);
+        assert!(!info.is_disabled);
+        assert!(!info.has_empty_password);
+        assert!(!info.is_suspicious);
+    }
+
+    #[test]
+    fn sam_user_info_disabled_flag() {
+        let flags_val = UAC_ACCOUNT_DISABLED | UAC_NORMAL_ACCOUNT;
+        let is_disabled = (flags_val & UAC_ACCOUNT_DISABLED) != 0;
+        assert!(is_disabled);
+    }
+
+    // ── SamUserInfo serialization ─────────────────────────────────────
+
+    #[test]
+    fn sam_user_info_serialization() {
+        let info = SamUserInfo {
+            username: "testuser".to_string(),
+            rid: 500,
+            account_flags: UAC_NORMAL_ACCOUNT,
+            is_disabled: false,
+            has_empty_password: false,
+            last_login_time: 0,
+            last_password_change: 0,
+            account_created: 0,
+            login_count: 1,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"username\":\"testuser\""));
+        assert!(json.contains("\"rid\":500"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
+    // ── MAX_USERS constant ────────────────────────────────────────────
+
+    #[test]
+    fn max_users_constant_reasonable() {
+        assert!(MAX_USERS > 0);
+        assert!(MAX_USERS <= 65536);
     }
 }

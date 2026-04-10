@@ -67,12 +67,7 @@ const MAX_SUBKEYS: usize = 4096;
 const MAX_VALUES: usize = 4096;
 
 /// The path components from the hive root to the TypedURLs key.
-const TYPED_URLS_PATH: &[&str] = &[
-    "Software",
-    "Microsoft",
-    "Internet Explorer",
-    "TypedURLs",
-];
+const TYPED_URLS_PATH: &[&str] = &["Software", "Microsoft", "Internet Explorer", "TypedURLs"];
 
 /// The path components from the hive root to the TypedURLsTime key.
 const TYPED_URLS_TIME_PATH: &[&str] = &[
@@ -262,13 +257,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell =
-                    u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig =
-                            u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -286,13 +279,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell =
-                    u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig =
-                            u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -310,16 +301,14 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_list_cell =
-                    u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let sub_list_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
                 let sub_data = read_cell_data(reader, sub_vaddr)?;
                 if sub_data.len() < 4 {
                     continue;
                 }
                 let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
-                let sub_count =
-                    u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                let sub_count = u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
                 let sub_count = sub_count.min(MAX_SUBKEYS);
                 let entry_size: usize = match sub_sig {
                     0x666C | 0x686C => 8,
@@ -336,8 +325,7 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                     let child_vaddr = cell_address(hive_addr, child_cell);
                     if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                         if child_nk.len() >= NK_NAME_OFFSET {
-                            let child_sig =
-                                u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                            let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
                             if child_sig == NK_SIGNATURE {
                                 let name = read_key_name(&child_nk);
                                 if name.eq_ignore_ascii_case(target_name) {
@@ -381,10 +369,11 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
     }
 
     // Read root cell index from _HBASE_BLOCK at HBASE_BLOCK_ROOT_CELL_OFFSET.
-    let root_cell_bytes = match reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4) {
-        Ok(b) => b,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let root_cell_bytes =
+        match reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4) {
+            Ok(b) => b,
+            Err(_) => return Ok(Vec::new()),
+        };
     let root_cell_index = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
 
     // Read the root nk cell.
@@ -460,10 +449,16 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                             let va = cell_address(hive_addr, cell_idx);
                             match read_cell_data(reader, va) {
                                 Ok(d) => cur = d,
-                                Err(_) => { ok = false; break; }
+                                Err(_) => {
+                                    ok = false;
+                                    break;
+                                }
                             }
                         }
-                        _ => { ok = false; break; }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
                     }
                 }
                 if ok {
@@ -501,19 +496,20 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                         let vk_vaddr = cell_address(hive_addr, vk_cell);
                         if let Ok(vk_data) = read_cell_data(reader, vk_vaddr) {
                             if vk_data.len() >= 2 {
-                                let vsig =
-                                    u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
+                                let vsig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
                                 if vsig == VK_SIGNATURE {
                                     let vname = read_value_name(&vk_data);
                                     // Read 8-byte FILETIME value
                                     if vk_data.len() >= VK_DATA_OFFSET_OFFSET + 4 {
                                         let data_len = u32::from_le_bytes(
-                                            vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+                                            vk_data
+                                                [VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
                                                 .try_into()
                                                 .unwrap(),
                                         );
                                         let data_cell = u32::from_le_bytes(
-                                            vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+                                            vk_data
+                                                [VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
                                                 .try_into()
                                                 .unwrap(),
                                         );
@@ -625,14 +621,39 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
+    fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
     // ── classify_typed_url tests ─────────────────────────────────────
 
     /// Normal websites should not be flagged.
     #[test]
     fn classify_benign_urls() {
         assert!(!classify_typed_url("https://www.google.com"));
-        assert!(!classify_typed_url("https://docs.microsoft.com/en-us/windows/"));
+        assert!(!classify_typed_url(
+            "https://docs.microsoft.com/en-us/windows/"
+        ));
         assert!(!classify_typed_url("http://intranet.corp.local/dashboard"));
+    }
+
+    /// Empty URL is benign.
+    #[test]
+    fn classify_empty_url_benign() {
+        assert!(!classify_typed_url(""));
+    }
+
+    /// Plain HTTP URL without credentials or suspicious domain is benign.
+    #[test]
+    fn classify_plain_http_benign() {
+        assert!(!classify_typed_url("http://example.com/page"));
     }
 
     /// Paste sites used for data exfiltration should be flagged.
@@ -641,6 +662,34 @@ mod tests {
         assert!(classify_typed_url("https://pastebin.com/raw/abc123"));
         assert!(classify_typed_url("https://paste.ee/p/xyz789"));
         assert!(classify_typed_url("https://hastebin.com/share/something"));
+    }
+
+    /// All suspicious domains are flagged.
+    #[test]
+    fn classify_all_suspicious_domains() {
+        let domains = [
+            "pastebin.com",
+            "paste.ee",
+            "hastebin.com",
+            "transfer.sh",
+            "file.io",
+            "mega.nz",
+            "anonfiles.com",
+        ];
+        for domain in &domains {
+            assert!(
+                classify_typed_url(&format!("https://{}/test", domain)),
+                "Expected {} to be suspicious",
+                domain
+            );
+        }
+    }
+
+    /// Domain checks are case-insensitive.
+    #[test]
+    fn classify_domain_case_insensitive() {
+        assert!(classify_typed_url("https://PASTEBIN.COM/raw/abc"));
+        assert!(classify_typed_url("HTTPS://Mega.NZ/folder/xyz"));
     }
 
     /// File-sharing and anonymous upload sites should be flagged.
@@ -666,11 +715,25 @@ mod tests {
         assert!(!classify_typed_url("file:///tmp/test.html"));
     }
 
+    /// file:// with a relative path (no leading double slash) is benign.
+    #[test]
+    fn classify_file_relative_benign() {
+        assert!(!classify_typed_url("file://localhost/path/to/file"));
+    }
+
     /// URLs with embedded credentials should be flagged.
     #[test]
     fn classify_credentials_suspicious() {
-        assert!(classify_typed_url("https://admin:password@internal.corp.local/admin"));
+        assert!(classify_typed_url(
+            "https://admin:password@internal.corp.local/admin"
+        ));
         assert!(classify_typed_url("ftp://user:secret@ftp.example.com/data"));
+    }
+
+    /// Credentials in URL without path separator in authority is flagged.
+    #[test]
+    fn classify_credentials_no_path_suspicious() {
+        assert!(classify_typed_url("https://user:pass@host.example.com"));
     }
 
     /// URLs with @ but no colon in authority (e.g. email-like) should NOT be flagged.
@@ -679,20 +742,90 @@ mod tests {
         assert!(!classify_typed_url("https://user@example.com/profile"));
     }
 
+    /// URL with colon before @ in domain name part (not credentials) is tricky —
+    /// the spec checks authority.contains(':') AND authority.contains('@').
+    /// A URL like "https://example.com:8080/path" has no '@' so is benign.
+    #[test]
+    fn classify_colon_in_host_no_at_benign() {
+        assert!(!classify_typed_url("https://example.com:8080/admin"));
+        assert!(!classify_typed_url("http://internal.server:9000/api"));
+    }
+
+    // ── read_key_name unit tests ──────────────────────────────────────
+
+    #[test]
+    fn read_key_name_too_short_returns_empty() {
+        let data = vec![0u8; NK_NAME_OFFSET]; // no room for name data
+        assert_eq!(read_key_name(&data), "");
+    }
+
+    #[test]
+    fn read_key_name_valid_ascii() {
+        let mut data = vec![0u8; 0x60];
+        let name = b"TypedURLs";
+        data[NK_NAME_LENGTH_OFFSET] = name.len() as u8;
+        data[NK_NAME_LENGTH_OFFSET + 1] = 0;
+        data[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+        assert_eq!(read_key_name(&data), "TypedURLs");
+    }
+
+    #[test]
+    fn read_key_name_length_overflow_returns_empty() {
+        let mut data = vec![0u8; 0x60];
+        // Set an impossible name length
+        data[NK_NAME_LENGTH_OFFSET] = 0xFF;
+        data[NK_NAME_LENGTH_OFFSET + 1] = 0xFF;
+        assert_eq!(read_key_name(&data), "");
+    }
+
+    // ── read_value_name unit tests ────────────────────────────────────
+
+    #[test]
+    fn read_value_name_too_short_returns_empty() {
+        let data = vec![0u8; VK_NAME_OFFSET]; // exactly VK_NAME_OFFSET = 0x14 bytes
+        assert_eq!(read_value_name(&data), "");
+    }
+
+    #[test]
+    fn read_value_name_valid() {
+        let mut data = vec![0u8; 0x30];
+        let name = b"url1";
+        data[VK_NAME_LENGTH_OFFSET] = name.len() as u8;
+        data[VK_NAME_LENGTH_OFFSET + 1] = 0;
+        data[VK_NAME_OFFSET..VK_NAME_OFFSET + name.len()].copy_from_slice(name);
+        assert_eq!(read_value_name(&data), "url1");
+    }
+
+    #[test]
+    fn read_value_name_length_overflow_returns_empty() {
+        let mut data = vec![0u8; 0x30];
+        data[VK_NAME_LENGTH_OFFSET] = 0xFF;
+        data[VK_NAME_LENGTH_OFFSET + 1] = 0xFF;
+        assert_eq!(read_value_name(&data), "");
+    }
+
+    // ── cell_address unit tests ────────────────────────────────────────
+
+    #[test]
+    fn cell_address_basic() {
+        let hive: u64 = 0x2000_0000;
+        let idx: u32 = 0x300;
+        let expected = hive + HBIN_START_OFFSET + idx as u64;
+        assert_eq!(cell_address(hive, idx), expected);
+    }
+
+    #[test]
+    fn cell_address_zero_index() {
+        let hive: u64 = 0x3000_0000;
+        assert_eq!(cell_address(hive, 0), hive + HBIN_START_OFFSET);
+    }
+
     // ── walk_typed_urls tests ────────────────────────────────────────
 
     /// Empty reader with zero hive_addr → returns empty Vec.
     #[test]
     fn walk_typed_urls_zero_hive() {
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
+        let reader = make_reader();
         let result = walk_typed_urls(&reader, 0, "testuser").unwrap();
         assert!(result.is_empty());
     }
@@ -700,16 +833,63 @@ mod tests {
     /// Hive with unreadable root cell → returns empty Vec.
     #[test]
     fn walk_typed_urls_unreadable_hive() {
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
+        let reader = make_reader();
         // Non-zero address but no mapped memory → read fails → empty Vec.
         let result = walk_typed_urls(&reader, 0xDEAD_0000, "bob").unwrap();
         assert!(result.is_empty());
+    }
+
+    // ── TypedUrlEntry struct tests ────────────────────────────────────
+
+    #[test]
+    fn typed_url_entry_construction() {
+        let entry = TypedUrlEntry {
+            username: "alice".to_string(),
+            url: "https://pastebin.com/abc".to_string(),
+            timestamp: 132_000_000_000_000_000,
+            is_suspicious: true,
+        };
+        assert_eq!(entry.username, "alice");
+        assert!(entry.is_suspicious);
+        assert!(entry.timestamp > 0);
+    }
+
+    #[test]
+    fn typed_url_entry_serialization() {
+        let entry = TypedUrlEntry {
+            username: "bob".to_string(),
+            url: "https://www.google.com".to_string(),
+            timestamp: 0,
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"username\":\"bob\""));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("\"timestamp\":0"));
+    }
+
+    // ── Constants ─────────────────────────────────────────────────────
+
+    #[test]
+    fn typed_url_constants_sane() {
+        assert_eq!(HBASE_BLOCK_ROOT_CELL_OFFSET, 0x24);
+        assert_eq!(HBIN_START_OFFSET, 0x1000);
+        assert_eq!(NK_SIGNATURE, 0x6B6E);
+        assert_eq!(VK_SIGNATURE, 0x6B76);
+        assert!(MAX_TYPED_URLS > 0);
+    }
+
+    #[test]
+    fn typed_urls_path_components_correct() {
+        assert_eq!(TYPED_URLS_PATH[0], "Software");
+        assert_eq!(TYPED_URLS_PATH[1], "Microsoft");
+        assert_eq!(TYPED_URLS_PATH[2], "Internet Explorer");
+        assert_eq!(TYPED_URLS_PATH[3], "TypedURLs");
+    }
+
+    #[test]
+    fn typed_urls_time_path_components_correct() {
+        assert_eq!(TYPED_URLS_TIME_PATH[0], "Software");
+        assert_eq!(TYPED_URLS_TIME_PATH[3], "TypedURLsTime");
     }
 }

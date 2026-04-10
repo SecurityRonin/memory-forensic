@@ -97,11 +97,7 @@ pub fn classify_amcache_entry(path: &str, publisher: &str) -> bool {
 
     // If the path is in a suspicious directory AND the publisher is not
     // a well-known trusted name, flag it.
-    if !is_trusted_publisher
-        && suspicious_dirs
-            .iter()
-            .any(|dir| path_lower.contains(dir))
-    {
+    if !is_trusted_publisher && suspicious_dirs.iter().any(|dir| path_lower.contains(dir)) {
         return true;
     }
 
@@ -247,8 +243,7 @@ fn find_subkey<P: PhysicalMemoryProvider>(
         if offset + 4 > list_data.len() {
             break;
         }
-        let child_index =
-            u32::from_le_bytes(list_data[offset..offset + 4].try_into().ok()?);
+        let child_index = u32::from_le_bytes(list_data[offset..offset + 4].try_into().ok()?);
 
         // Read the child key node to check its name.
         let child_data = read_cell_data(reader, hive_base, child_index, 0x200)?;
@@ -277,10 +272,11 @@ fn read_value_string<P: PhysicalMemoryProvider>(
     if vk_data.len() < VK_NAME_OFFSET {
         return String::new();
     }
-    let data_length =
-        u32::from_le_bytes(vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+    let data_length = u32::from_le_bytes(
+        vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
             .try_into()
-            .unwrap_or([0; 4]));
+            .unwrap_or([0; 4]),
+    );
     // Bit 31 set means data is stored inline in the DataOffset field itself.
     let is_inline = data_length & 0x8000_0000 != 0;
     let real_len = (data_length & 0x7FFF_FFFF) as usize;
@@ -293,10 +289,11 @@ fn read_value_string<P: PhysicalMemoryProvider>(
         // Inline data: stored in the 4 bytes of the DataOffset field.
         vk_data[VK_DATA_OFFSET..VK_DATA_OFFSET + real_len.min(4)].to_vec()
     } else {
-        let data_cell_index =
-            u32::from_le_bytes(vk_data[VK_DATA_OFFSET..VK_DATA_OFFSET + 4]
+        let data_cell_index = u32::from_le_bytes(
+            vk_data[VK_DATA_OFFSET..VK_DATA_OFFSET + 4]
                 .try_into()
-                .unwrap_or([0; 4]));
+                .unwrap_or([0; 4]),
+        );
         match read_cell_data(reader, hive_base, data_cell_index, real_len) {
             Some(d) => d,
             None => return String::new(),
@@ -322,24 +319,27 @@ fn read_value_u64<P: PhysicalMemoryProvider>(
     if vk_data.len() < VK_NAME_OFFSET {
         return 0;
     }
-    let value_type =
-        u32::from_le_bytes(vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4]
+    let value_type = u32::from_le_bytes(
+        vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4]
             .try_into()
-            .unwrap_or([0; 4]));
-    let data_length =
-        u32::from_le_bytes(vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+            .unwrap_or([0; 4]),
+    );
+    let data_length = u32::from_le_bytes(
+        vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
             .try_into()
-            .unwrap_or([0; 4]));
+            .unwrap_or([0; 4]),
+    );
     let is_inline = data_length & 0x8000_0000 != 0;
     let real_len = (data_length & 0x7FFF_FFFF) as usize;
 
     let raw = if is_inline {
         vk_data[VK_DATA_OFFSET..VK_DATA_OFFSET + real_len.min(4)].to_vec()
     } else {
-        let data_cell_index =
-            u32::from_le_bytes(vk_data[VK_DATA_OFFSET..VK_DATA_OFFSET + 4]
+        let data_cell_index = u32::from_le_bytes(
+            vk_data[VK_DATA_OFFSET..VK_DATA_OFFSET + 4]
                 .try_into()
-                .unwrap_or([0; 4]));
+                .unwrap_or([0; 4]),
+        );
         match read_cell_data(reader, hive_base, data_cell_index, real_len) {
             Some(d) => d,
             None => return 0,
@@ -347,9 +347,7 @@ fn read_value_u64<P: PhysicalMemoryProvider>(
     };
 
     match value_type {
-        REG_QWORD if raw.len() >= 8 => {
-            u64::from_le_bytes(raw[..8].try_into().unwrap_or([0; 8]))
-        }
+        REG_QWORD if raw.len() >= 8 => u64::from_le_bytes(raw[..8].try_into().unwrap_or([0; 8])),
         REG_DWORD if raw.len() >= 4 => {
             u32::from_le_bytes(raw[..4].try_into().unwrap_or([0; 4])) as u64
         }
@@ -384,8 +382,7 @@ fn find_value<P: PhysicalMemoryProvider>(
     );
 
     // The values list cell is an array of u32 cell indices.
-    let list_data =
-        read_cell_data(reader, hive_base, values_list_index, value_count * 4)?;
+    let list_data = read_cell_data(reader, hive_base, values_list_index, value_count * 4)?;
     let target_lower = target_name.to_ascii_lowercase();
 
     for i in 0..value_count {
@@ -393,8 +390,7 @@ fn find_value<P: PhysicalMemoryProvider>(
         if offset + 4 > list_data.len() {
             break;
         }
-        let vk_index =
-            u32::from_le_bytes(list_data[offset..offset + 4].try_into().ok()?);
+        let vk_index = u32::from_le_bytes(list_data[offset..offset + 4].try_into().ok()?);
         let vk_data = read_cell_data(reader, hive_base, vk_index, 0x200)?;
         if vk_data.len() < 4 {
             continue;
@@ -444,9 +440,7 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
         Err(_) => {
             // Fallback: read pointer at offset 0x10 from hive addr.
             match reader.read_bytes(amcache_hive_addr.wrapping_add(0x10), 8) {
-                Ok(bytes) if bytes.len() == 8 => {
-                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
-                }
+                Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
                 _ => return Ok(Vec::new()),
             }
         }
@@ -482,23 +476,27 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
     // find "InventoryApplicationFile" under it. In Amcache.hve the
     // root key is typically named "Root" and InventoryApplicationFile
     // is a direct child.
-    let iaf_cell = if let Some(iaf) =
-        find_subkey(reader, hive_base, &root_data, "InventoryApplicationFile")
-    {
-        iaf
-    } else if let Some(root_child) = find_subkey(reader, hive_base, &root_data, "Root") {
-        // Try one level deeper: Root → InventoryApplicationFile
-        let root_child_data = match read_cell_data(reader, hive_base, root_child, 0x200) {
-            Some(d) => d,
-            None => return Ok(Vec::new()),
+    let iaf_cell =
+        if let Some(iaf) = find_subkey(reader, hive_base, &root_data, "InventoryApplicationFile") {
+            iaf
+        } else if let Some(root_child) = find_subkey(reader, hive_base, &root_data, "Root") {
+            // Try one level deeper: Root → InventoryApplicationFile
+            let root_child_data = match read_cell_data(reader, hive_base, root_child, 0x200) {
+                Some(d) => d,
+                None => return Ok(Vec::new()),
+            };
+            match find_subkey(
+                reader,
+                hive_base,
+                &root_child_data,
+                "InventoryApplicationFile",
+            ) {
+                Some(idx) => idx,
+                None => return Ok(Vec::new()),
+            }
+        } else {
+            return Ok(Vec::new());
         };
-        match find_subkey(reader, hive_base, &root_child_data, "InventoryApplicationFile") {
-            Some(idx) => idx,
-            None => return Ok(Vec::new()),
-        }
-    } else {
-        return Ok(Vec::new());
-    };
 
     // Read the InventoryApplicationFile key node.
     let iaf_data = match read_cell_data(reader, hive_base, iaf_cell, 0x200) {
@@ -623,8 +621,21 @@ mod tests {
     fn walk_amcache_no_symbol() {
         let reader = make_empty_reader();
         let result = walk_amcache(&reader, 0).unwrap();
-        assert!(result.is_empty(), "expected empty Vec when hive address is 0");
+        assert!(
+            result.is_empty(),
+            "expected empty Vec when hive address is 0"
+        );
     }
+
+    /// Non-zero but unmapped address → empty Vec.
+    #[test]
+    fn walk_amcache_unmapped_hive_graceful() {
+        let reader = make_empty_reader();
+        let result = walk_amcache(&reader, 0xDEAD_BEEF_0000).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ── classify_amcache_entry: benign cases ─────────────────────────
 
     /// Entries with well-known publishers (Microsoft, etc.) in standard
     /// system paths should NOT be flagged as suspicious.
@@ -632,10 +643,7 @@ mod tests {
     fn classify_amcache_benign() {
         // Microsoft-signed binary in System32
         assert!(
-            !classify_amcache_entry(
-                r"C:\Windows\System32\cmd.exe",
-                "Microsoft Corporation"
-            ),
+            !classify_amcache_entry(r"C:\Windows\System32\cmd.exe", "Microsoft Corporation"),
             "Microsoft-signed binary in System32 should not be suspicious"
         );
 
@@ -696,5 +704,197 @@ mod tests {
             classify_amcache_entry(r"C:\Program Files\SomeApp\nopub.exe", ""),
             "unsigned binary in Program Files should be suspicious"
         );
+    }
+
+    // ── classify_amcache_entry: suspicious directory + untrusted publisher ──
+
+    /// Unknown publisher in temp path should be suspicious (even if non-empty).
+    #[test]
+    fn classify_amcache_untrusted_publisher_in_temp() {
+        assert!(
+            classify_amcache_entry(r"C:\Temp\payload.exe", "EvilCorp LLC"),
+            "Unknown publisher in \\Temp\\ should be suspicious"
+        );
+    }
+
+    /// Unknown publisher in Downloads should be suspicious.
+    #[test]
+    fn classify_amcache_untrusted_publisher_in_downloads() {
+        assert!(
+            classify_amcache_entry(r"C:\Users\bob\Downloads\tool.exe", "Unknown Software"),
+            "Unknown publisher in \\Downloads\\ should be suspicious"
+        );
+    }
+
+    /// Unknown publisher in AppData should be suspicious.
+    #[test]
+    fn classify_amcache_untrusted_publisher_in_appdata() {
+        assert!(
+            classify_amcache_entry(r"C:\Users\bob\AppData\Local\evil.exe", "BadCo"),
+            "Unknown publisher in \\AppData\\ should be suspicious"
+        );
+    }
+
+    /// Known trusted publisher in temp is NOT suspicious (brand-name software).
+    #[test]
+    fn classify_amcache_trusted_publisher_in_temp_not_suspicious() {
+        assert!(
+            !classify_amcache_entry(r"C:\Temp\update.exe", "Microsoft Corporation"),
+            "Trusted publisher (Microsoft) in temp is not suspicious"
+        );
+    }
+
+    /// Google binary in temp is not suspicious (trusted publisher).
+    #[test]
+    fn classify_amcache_google_in_temp_not_suspicious() {
+        assert!(
+            !classify_amcache_entry(r"C:\Temp\google_update.exe", "Google LLC"),
+            "Trusted publisher (Google) in temp is not suspicious"
+        );
+    }
+
+    /// Unknown publisher in \Recycle path should be suspicious.
+    #[test]
+    fn classify_amcache_recycle_suspicious() {
+        assert!(
+            classify_amcache_entry(r"C:\$Recycle.Bin\S-1-5-21\evil.exe", "MalwareCo"),
+            "Binary in recycle path should be suspicious"
+        );
+    }
+
+    /// Unknown publisher in \ProgramData should be suspicious.
+    #[test]
+    fn classify_amcache_programdata_suspicious() {
+        assert!(
+            classify_amcache_entry(r"C:\ProgramData\hidden\dropper.exe", "DropperCo"),
+            "Unknown publisher in \\ProgramData\\ should be suspicious"
+        );
+    }
+
+    /// Well-known publisher check is case-insensitive (contains check).
+    #[test]
+    fn classify_amcache_publisher_case_insensitive() {
+        assert!(
+            !classify_amcache_entry(r"C:\Temp\adobe_update.exe", "ADOBE Systems"),
+            "Adobe in temp with trusted publisher should not be suspicious"
+        );
+        assert!(
+            !classify_amcache_entry(r"C:\Temp\vmtools.exe", "VMware, Inc."),
+            "VMware in temp should not be suspicious"
+        );
+    }
+
+    // ── read_ascii_name unit tests ────────────────────────────────────
+
+    #[test]
+    fn read_ascii_name_empty_data() {
+        // Data too short to contain name length at offset
+        let data = vec![0u8; 3];
+        let result = read_ascii_name(&data, 0, 2);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn read_ascii_name_zero_length() {
+        // Name length = 0 → empty string
+        let mut data = vec![0u8; 32];
+        // name_length_offset=0, so data[0..2] = length=0
+        data[0] = 0;
+        data[1] = 0;
+        let result = read_ascii_name(&data, 0, 2);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn read_ascii_name_valid() {
+        // Layout: u16 length at offset 0, name data at offset 2
+        let mut data = vec![0u8; 32];
+        let name = b"Software";
+        data[0] = name.len() as u8;
+        data[1] = 0;
+        data[2..2 + name.len()].copy_from_slice(name);
+        let result = read_ascii_name(&data, 0, 2);
+        assert_eq!(result, "Software");
+    }
+
+    #[test]
+    fn read_ascii_name_overflow_truncated() {
+        // Name length larger than available data → empty
+        let mut data = vec![0u8; 10];
+        data[0] = 100; // length = 100 but data only 10 bytes
+        data[1] = 0;
+        let result = read_ascii_name(&data, 0, 2);
+        assert_eq!(result, "");
+    }
+
+    // ── AmcacheEntry struct and serialization ─────────────────────────
+
+    #[test]
+    fn amcache_entry_construction() {
+        let entry = AmcacheEntry {
+            file_path: r"C:\Windows\System32\cmd.exe".to_string(),
+            sha1_hash: "aabbccddeeff00112233445566778899aabbccdd".to_string(),
+            file_size: 393216,
+            link_timestamp: 130_000_000_000_000_000,
+            publisher: "Microsoft Corporation".to_string(),
+            product_name: "Microsoft Windows".to_string(),
+            is_suspicious: false,
+        };
+        assert_eq!(entry.file_path, r"C:\Windows\System32\cmd.exe");
+        assert!(!entry.is_suspicious);
+        assert_eq!(entry.file_size, 393216);
+    }
+
+    #[test]
+    fn amcache_entry_sha1_strip_prefix() {
+        // Test the 0000-prefix stripping logic mirrors the production code
+        let sha1_raw = "0000aabbccddeeff001122334455667788991234".to_string();
+        let sha1_hash = sha1_raw
+            .strip_prefix("0000")
+            .unwrap_or(&sha1_raw)
+            .to_string();
+        assert_eq!(sha1_hash, "aabbccddeeff001122334455667788991234");
+    }
+
+    #[test]
+    fn amcache_entry_sha1_no_prefix() {
+        let sha1_raw = "aabbccddeeff001122334455667788991234".to_string();
+        let sha1_hash = sha1_raw
+            .strip_prefix("0000")
+            .unwrap_or(&sha1_raw)
+            .to_string();
+        assert_eq!(sha1_hash, "aabbccddeeff001122334455667788991234");
+    }
+
+    #[test]
+    fn amcache_entry_serialization() {
+        let entry = AmcacheEntry {
+            file_path: r"C:\Temp\evil.exe".to_string(),
+            sha1_hash: "deadbeefdeadbeef".to_string(),
+            file_size: 12345,
+            link_timestamp: 0,
+            publisher: String::new(),
+            product_name: String::new(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"file_size\":12345"));
+    }
+
+    // ── Constants correctness ─────────────────────────────────────────
+
+    #[test]
+    fn hive_constants_sane() {
+        assert_eq!(HBASE_BLOCK_ROOT_CELL_OFFSET, 0x24);
+        assert_eq!(HBIN_START_OFFSET, 0x1000);
+        assert_eq!(NK_SIGNATURE, 0x6B6E);
+        assert_eq!(VK_SIGNATURE, 0x6B76);
+    }
+
+    #[test]
+    fn max_amcache_entries_reasonable() {
+        assert!(MAX_AMCACHE_ENTRIES > 0);
+        assert!(MAX_AMCACHE_ENTRIES <= 100_000);
     }
 }

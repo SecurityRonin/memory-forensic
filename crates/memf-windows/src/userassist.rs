@@ -140,8 +140,8 @@ const SUSPICIOUS_TOOLS: &[&str] = &[
     "netcat",
     "nc.exe",
     "nc64.exe",
-    "whoami",    // not always suspicious, but in UserAssist context it is noteworthy
-    "certutil",  // frequently abused for downloads
+    "whoami",   // not always suspicious, but in UserAssist context it is noteworthy
+    "certutil", // frequently abused for downloads
 ];
 
 /// Script engines and living-off-the-land binaries that are always
@@ -307,13 +307,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell =
-                    u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig =
-                            u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -331,13 +329,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell =
-                    u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig =
-                            u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -356,8 +352,7 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_list_cell =
-                    u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let sub_list_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 // Build a synthetic nk_data-like slice so we can call ourselves
                 // with the sub-list. Instead, just read the sub-list directly.
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
@@ -366,8 +361,7 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                     continue;
                 }
                 let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
-                let sub_count =
-                    u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                let sub_count = u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
                 let sub_count = sub_count.min(MAX_SUBKEYS);
                 let entry_size: usize = match sub_sig {
                     0x666C | 0x686C => 8,
@@ -384,8 +378,7 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                     let child_vaddr = cell_address(hive_addr, child_cell);
                     if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                         if child_nk.len() >= NK_NAME_OFFSET {
-                            let child_sig =
-                                u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                            let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
                             if child_sig == NK_SIGNATURE {
                                 let name = read_key_name(&child_nk);
                                 if name.eq_ignore_ascii_case(target_name) {
@@ -470,13 +463,11 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_cell =
-                    u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let sub_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let sub_vaddr = cell_address(hive_addr, sub_cell);
                 if let Ok(sub_data) = read_cell_data(reader, sub_vaddr) {
                     if sub_data.len() >= 4 {
-                        let sub_sig =
-                            u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
+                        let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
                         let sub_count =
                             u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
                         let sub_count = sub_count.min(MAX_SUBKEYS);
@@ -522,12 +513,11 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
     hive_addr: u64,
 ) -> crate::Result<Vec<UserAssistEntry>> {
     // Read root cell index from _HBASE_BLOCK.
-    let root_cell_bytes = match reader
-        .read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4)
-    {
-        Ok(b) => b,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let root_cell_bytes =
+        match reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4) {
+            Ok(b) => b,
+            Err(_) => return Ok(Vec::new()),
+        };
     let root_cell = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
     if root_cell == 0 {
         return Ok(Vec::new());
@@ -627,8 +617,7 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             if off + 4 > vl_data.len() {
                 break;
             }
-            let val_cell =
-                u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
+            let val_cell = u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
 
             match parse_userassist_value(reader, hive_addr, val_cell) {
                 Ok(Some(entry)) => entries.push(entry),
@@ -720,7 +709,18 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
-    // ── rot13_decode tests ───────────────────────────────────────────
+    fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    // ── rot13_decode exhaustive tests ────────────────────────────────
 
     /// Basic ROT13: "Pzq.rkr" decodes to "Cmd.exe".
     #[test]
@@ -735,14 +735,58 @@ mod tests {
         assert_eq!(rot13_decode("P:\\Hfref"), "C:\\Users");
     }
 
+    /// ROT13 is its own inverse.
+    #[test]
+    fn rot13_involutory() {
+        let original = "mimikatz.exe";
+        assert_eq!(rot13_decode(&rot13_decode(original)), original);
+    }
+
+    /// Empty string decodes to empty string.
+    #[test]
+    fn rot13_empty_string() {
+        assert_eq!(rot13_decode(""), "");
+    }
+
+    /// Digits and punctuation pass through unchanged.
+    #[test]
+    fn rot13_digits_unchanged() {
+        assert_eq!(rot13_decode("1234567890!@#$%"), "1234567890!@#$%");
+    }
+
+    /// ROT13 wraps at alphabet boundaries: 'N'→'A', 'Z'→'M', 'n'→'a', 'z'→'m'.
+    #[test]
+    fn rot13_boundary_wrap() {
+        assert_eq!(rot13_decode("N"), "A");
+        assert_eq!(rot13_decode("Z"), "M");
+        assert_eq!(rot13_decode("n"), "a");
+        assert_eq!(rot13_decode("z"), "m");
+        // Forward direction
+        assert_eq!(rot13_decode("A"), "N");
+        assert_eq!(rot13_decode("M"), "Z");
+        assert_eq!(rot13_decode("a"), "n");
+        assert_eq!(rot13_decode("m"), "z");
+    }
+
+    /// Decode a known ROT13 encoded UserAssist name.
+    #[test]
+    fn rot13_decode_userassist_known() {
+        // "zvzvxngm.rkr" is ROT13 of "mimikatz.exe"
+        assert_eq!(rot13_decode("zvzvxngm.rkr"), "mimikatz.exe");
+    }
+
     // ── classify_userassist tests ────────────────────────────────────
 
     /// Normal Windows programs should not be flagged.
     #[test]
     fn classify_userassist_benign() {
         assert!(!classify_userassist("C:\\Windows\\System32\\notepad.exe"));
-        assert!(!classify_userassist("C:\\Program Files\\Microsoft Office\\WINWORD.EXE"));
-        assert!(!classify_userassist("{6D809377-6AF0-444B-8957-A3773F02200E}\\calc.exe"));
+        assert!(!classify_userassist(
+            "C:\\Program Files\\Microsoft Office\\WINWORD.EXE"
+        ));
+        assert!(!classify_userassist(
+            "{6D809377-6AF0-444B-8957-A3773F02200E}\\calc.exe"
+        ));
     }
 
     /// Known offensive/hacking tools must be flagged as suspicious.
@@ -752,6 +796,24 @@ mod tests {
         assert!(classify_userassist("C:\\Users\\admin\\Desktop\\PsExec.exe"));
         assert!(classify_userassist("D:\\tools\\cobalt_strike\\beacon.exe"));
         assert!(classify_userassist("C:\\Users\\hacker\\procdump.exe"));
+    }
+
+    /// All known suspicious tools are flagged.
+    #[test]
+    fn classify_userassist_all_suspicious_tools() {
+        let tools = [
+            "mimikatz", "psexec", "procdump", "beacon", "cobalt", "rubeus",
+            "seatbelt", "sharpup", "sharphound", "bloodhound", "lazagne",
+            "safetykatz", "winpeas", "linpeas", "chisel", "plink", "ncat",
+            "netcat", "nc.exe", "nc64.exe", "whoami", "certutil",
+        ];
+        for tool in &tools {
+            assert!(
+                classify_userassist(&format!("C:\\Temp\\{}.exe", tool)),
+                "Expected {} to be suspicious",
+                tool
+            );
+        }
     }
 
     /// Script engines and living-off-the-land binaries from unusual
@@ -765,21 +827,207 @@ mod tests {
         assert!(classify_userassist("C:\\Windows\\System32\\cscript.exe"));
     }
 
+    /// All LOLBins are flagged.
+    #[test]
+    fn classify_userassist_all_lolbins_suspicious() {
+        let lolbins = [
+            "mshta.exe", "wscript.exe", "cscript.exe", "regsvr32.exe",
+            "rundll32.exe", "msiexec.exe", "certutil.exe", "bitsadmin.exe",
+        ];
+        for bin in &lolbins {
+            assert!(
+                classify_userassist(&format!("C:\\Windows\\System32\\{}", bin)),
+                "Expected LOLBin {} to be suspicious",
+                bin
+            );
+        }
+    }
+
+    /// LOLBins also detected by path component.
+    #[test]
+    fn classify_userassist_lolbin_path_contains() {
+        assert!(classify_userassist("C:\\Users\\user\\mshta.exe"));
+        assert!(classify_userassist("C:\\Temp\\rundll32.exe"));
+    }
+
+    /// cmd.exe from system32 is NOT suspicious.
+    #[test]
+    fn classify_userassist_cmd_system32_benign() {
+        assert!(!classify_userassist(
+            "C:\\Windows\\System32\\cmd.exe"
+        ));
+    }
+
+    /// cmd.exe from outside system32 IS suspicious.
+    #[test]
+    fn classify_userassist_cmd_outside_system32_suspicious() {
+        assert!(classify_userassist("C:\\Temp\\cmd.exe"));
+        assert!(classify_userassist("C:\\Users\\admin\\cmd.exe"));
+    }
+
+    /// powershell.exe from system32 is NOT suspicious.
+    #[test]
+    fn classify_userassist_powershell_system32_benign() {
+        assert!(!classify_userassist(
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        ));
+    }
+
+    /// powershell.exe from outside system32 IS suspicious.
+    #[test]
+    fn classify_userassist_powershell_outside_system32_suspicious() {
+        assert!(classify_userassist("C:\\Temp\\powershell.exe"));
+    }
+
+    /// Empty string is benign.
+    #[test]
+    fn classify_userassist_empty_benign() {
+        assert!(!classify_userassist(""));
+    }
+
+    // ── read_key_name unit tests ─────────────────────────────────────
+
+    #[test]
+    fn read_key_name_too_short() {
+        let data = vec![0u8; NK_NAME_OFFSET]; // exactly NK_NAME_OFFSET bytes, no room for data
+        assert_eq!(read_key_name(&data), "");
+    }
+
+    #[test]
+    fn read_key_name_valid() {
+        let mut data = vec![0u8; 0x60];
+        let name = b"Software";
+        // NK_NAME_LENGTH_OFFSET = 0x48, NK_NAME_OFFSET = 0x4C
+        data[NK_NAME_LENGTH_OFFSET] = name.len() as u8;
+        data[NK_NAME_LENGTH_OFFSET + 1] = 0;
+        data[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+        assert_eq!(read_key_name(&data), "Software");
+    }
+
+    #[test]
+    fn read_key_name_overflow_returns_empty() {
+        let mut data = vec![0u8; 0x60];
+        // Set name length to something larger than buffer allows
+        data[NK_NAME_LENGTH_OFFSET] = 0xFF;
+        data[NK_NAME_LENGTH_OFFSET + 1] = 0xFF;
+        assert_eq!(read_key_name(&data), "");
+    }
+
+    // ── read_value_name unit tests ────────────────────────────────────
+
+    #[test]
+    fn read_value_name_too_short() {
+        let data = vec![0u8; VK_NAME_OFFSET]; // exactly VK_NAME_OFFSET, no room
+        assert_eq!(read_value_name(&data), "");
+    }
+
+    #[test]
+    fn read_value_name_valid() {
+        let mut data = vec![0u8; 0x30];
+        let name = b"url1";
+        // VK_NAME_LENGTH_OFFSET = 0x02, VK_NAME_OFFSET = 0x14
+        data[VK_NAME_LENGTH_OFFSET] = name.len() as u8;
+        data[VK_NAME_LENGTH_OFFSET + 1] = 0;
+        data[VK_NAME_OFFSET..VK_NAME_OFFSET + name.len()].copy_from_slice(name);
+        assert_eq!(read_value_name(&data), "url1");
+    }
+
+    #[test]
+    fn read_value_name_overflow_returns_empty() {
+        let mut data = vec![0u8; 0x30];
+        data[VK_NAME_LENGTH_OFFSET] = 0xFF;
+        data[VK_NAME_LENGTH_OFFSET + 1] = 0xFF;
+        assert_eq!(read_value_name(&data), "");
+    }
+
+    // ── cell_address unit test ────────────────────────────────────────
+
+    #[test]
+    fn cell_address_calculation() {
+        // cell_address(hive_addr, cell_index) = hive_addr + HBIN_START + cell_index
+        let hive_addr: u64 = 0x1000_0000;
+        let cell_index: u32 = 0x100;
+        let expected = hive_addr + HBIN_START_OFFSET + cell_index as u64;
+        assert_eq!(cell_address(hive_addr, cell_index), expected);
+    }
+
+    #[test]
+    fn cell_address_zero_index() {
+        let hive_addr: u64 = 0x2000_0000;
+        let expected = hive_addr + HBIN_START_OFFSET;
+        assert_eq!(cell_address(hive_addr, 0), expected);
+    }
+
     // ── walk_userassist tests ────────────────────────────────────────
 
     /// Empty reader with no relevant symbols → returns empty Vec.
     #[test]
     fn walk_userassist_no_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
+        let reader = make_reader();
         let result = walk_userassist(&reader, 0).unwrap();
         assert!(result.is_empty());
+    }
+
+    /// Non-zero but unmapped hive address → returns empty Vec.
+    #[test]
+    fn walk_userassist_unmapped_hive_graceful() {
+        let reader = make_reader();
+        let result = walk_userassist(&reader, 0xDEAD_BEEF_0000).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ── UserAssistEntry struct tests ─────────────────────────────────
+
+    #[test]
+    fn userassist_entry_construction() {
+        let entry = UserAssistEntry {
+            name: "C:\\Windows\\System32\\notepad.exe".to_string(),
+            run_count: 5,
+            focus_count: 3,
+            last_run_time: 132_000_000_000_000_000,
+            focus_time_ms: 15000,
+            is_suspicious: false,
+        };
+        assert_eq!(entry.run_count, 5);
+        assert_eq!(entry.focus_count, 3);
+        assert!(!entry.is_suspicious);
+    }
+
+    #[test]
+    fn userassist_entry_serialization() {
+        let entry = UserAssistEntry {
+            name: "mimikatz.exe".to_string(),
+            run_count: 1,
+            focus_count: 1,
+            last_run_time: 0,
+            focus_time_ms: 0,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"run_count\":1"));
+        assert!(json.contains("\"name\":\"mimikatz.exe\""));
+    }
+
+    // ── Constants ─────────────────────────────────────────────────────
+
+    #[test]
+    fn userassist_constants_sane() {
+        assert_eq!(HBASE_BLOCK_ROOT_CELL_OFFSET, 0x24);
+        assert_eq!(HBIN_START_OFFSET, 0x1000);
+        assert_eq!(NK_SIGNATURE, 0x6B6E);
+        assert_eq!(VK_SIGNATURE, 0x6B76);
+        assert_eq!(USERASSIST_DATA_SIZE, 72);
+        assert_eq!(MAX_USERASSIST_ENTRIES, 4096);
+    }
+
+    #[test]
+    fn userassist_path_components() {
+        assert_eq!(USERASSIST_PATH[0], "Software");
+        assert_eq!(USERASSIST_PATH[1], "Microsoft");
+        assert_eq!(USERASSIST_PATH[2], "Windows");
+        assert_eq!(USERASSIST_PATH[3], "CurrentVersion");
+        assert_eq!(USERASSIST_PATH[4], "Explorer");
+        assert_eq!(USERASSIST_PATH[5], "UserAssist");
     }
 }
