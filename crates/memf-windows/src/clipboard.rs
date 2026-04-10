@@ -363,7 +363,7 @@ mod tests {
     /// 101 chars with a space — not suspicious (space breaks the no-space rule).
     #[test]
     fn classify_clipboard_101_chars_with_space_benign() {
-        let s = format!("{} {}", "a".repeat(50), "b".repeat(49));
+        let s = format!("{} {}", "a".repeat(50), "b".repeat(50));
         assert_eq!(s.len(), 101);
         assert!(!classify_clipboard(&s));
     }

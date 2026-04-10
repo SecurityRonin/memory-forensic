@@ -424,7 +424,7 @@ mod tests {
         let record = build_printk_record(123_456_789, log_text);
 
         let buf_vaddr: u64 = 0xFFFF_8800_0000_0000;
-        let buf_paddr: u64 = 0x0200_0000;
+        let buf_paddr: u64 = 0x0010_0000; // 1 MB — within 16 MB SyntheticPhysMem limit
 
         let isf = IsfBuilder::new()
             .add_symbol("__log_buf", buf_vaddr)
@@ -464,7 +464,7 @@ mod tests {
         let record = build_printk_record(999, log_text);
 
         let buf_vaddr: u64 = 0xFFFF_8800_0001_0000;
-        let buf_paddr: u64 = 0x0300_0000;
+        let buf_paddr: u64 = 0x0020_0000; // 2 MB — within 16 MB SyntheticPhysMem limit
 
         let isf = IsfBuilder::new()
             .add_symbol("__log_buf", buf_vaddr)

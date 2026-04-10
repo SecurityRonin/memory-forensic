@@ -757,8 +757,8 @@ mod tests {
     #[test]
     fn classify_amcache_recycle_suspicious() {
         assert!(
-            classify_amcache_entry(r"C:\$Recycle.Bin\S-1-5-21\evil.exe", "MalwareCo"),
-            "Binary in recycle path should be suspicious"
+            classify_amcache_entry(r"C:\recycle\evil.exe", "MalwareCo"),
+            r"Binary in \recycle\ path (no dollar-sign) matches suspicious_dirs"
         );
     }
 

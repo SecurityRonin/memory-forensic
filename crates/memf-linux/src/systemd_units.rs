@@ -528,8 +528,8 @@ mod tests {
         let marker_pos = 300usize;
         data[marker_pos..marker_pos + prefix.len()].copy_from_slice(prefix);
 
-        // The unit extension is at marker_pos + 600 (within window)
-        let pos = marker_pos + 600;
+        // EXEC_SEARCH_WINDOW = 512: search pos must be within 512 bytes of marker
+        let pos = marker_pos + 400; // 400 < 512 → marker is within the window
         let result = find_exec_start(&data, pos);
         assert_eq!(result, "/tmp/evil.sh");
     }
