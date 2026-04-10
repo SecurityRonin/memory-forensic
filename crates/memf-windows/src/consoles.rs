@@ -1155,6 +1155,203 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------
+    // scan_for_console_info: exercise the self-consistency check
+    // ---------------------------------------------------------------
+
+    /// scan_for_console_info finds a candidate when flink→blink == head_addr.
+    ///
+    /// Layout (all in one 4K page at base_addr):
+    ///   hist_list_off = 0x40
+    ///   base_addr + 0: potential _CONSOLE_INFORMATION candidate
+    ///     + 0x40: HistoryList Flink = flink_addr (= base_addr + 0x300)
+    ///     + 0x48: HistoryList Blink = some_blink (= flink_addr)
+    ///   flink_addr = base_addr + 0x300:
+    ///     + 0x08: Blink = head_addr (= base_addr + 0x40)  ← self-consistency check
+    ///
+    /// With hist_list_off=0x40:
+    ///   candidate_addr = base_addr + 0 (offset=0 in scan)
+    ///   head_addr = candidate_addr + 0x40 = base_addr + 0x40
+    ///   flink = page[0x40..0x48] = base_addr + 0x300 (plausible user-mode pointer)
+    ///   blink = page[0x48..0x50] = flink (non-null, plausible)
+    ///   flink_blink = page at flink+8 = base_addr + 0x308 = head_addr ✓ → candidate found.
+    #[test]
+    fn scan_for_console_info_finds_candidate_with_valid_list() {
+        // base_addr must be a user-mode address (< 0x0000_8000_0000_0000) so pointers
+        // are plausible (is_plausible_pointer checks upper >> 47 == 0 or 0x1FFFF).
+        let base_addr: u64 = 0x0001_0000;
+        let base_paddr: u64 = 0x0001_0000;
+        let hist_list_off: u64 = 0x40;
+
+        // flink_addr must be a plausible user-mode pointer.
+        let flink_addr: u64 = base_addr + 0x300; // within the same page
+        let head_addr = base_addr.wrapping_add(hist_list_off); // = base_addr + 0x40
+
+        let mut page = vec![0u8; 0x1000];
+
+        // At offset 0 (candidate at base_addr+0):
+        //   HistoryList.Flink at +0x40 = flink_addr
+        //   HistoryList.Blink at +0x48 = flink_addr (non-null, plausible)
+        page[0x40..0x48].copy_from_slice(&flink_addr.to_le_bytes());
+        page[0x48..0x50].copy_from_slice(&flink_addr.to_le_bytes());
+
+        // At flink_addr (base_addr+0x300):
+        //   flink_addr + 8 = Blink = head_addr
+        page[0x308..0x310].copy_from_slice(&head_addr.to_le_bytes());
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(base_addr, base_paddr, flags::WRITABLE)
+            .write_phys(base_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let found = scan_for_console_info(&reader, base_addr, hist_list_off);
+        assert!(
+            !found.is_empty(),
+            "should find at least one candidate with valid self-consistent list"
+        );
+        // The candidate should be base_addr + 0 = base_addr.
+        assert!(
+            found.contains(&base_addr),
+            "candidate should be base_addr: found {:?}", found
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // extract_console_commands: full command extraction path
+    // ---------------------------------------------------------------
+
+    /// extract_console_commands: full path through scan → history → command.
+    ///
+    /// Memory layout (single physical page for everything):
+    ///   hist_list_off = 0x40 (default from unwrap_or)
+    ///   PEB at peb_vaddr with ProcessHeap = heap_vaddr
+    ///   heap_vaddr = base_addr (user-mode address for scan)
+    ///
+    ///   Scan finds candidate at heap_vaddr+0:
+    ///     HistoryList.Flink at +0x40 = hist_entry_addr
+    ///     HistoryList.Blink at +0x48 = hist_entry_addr
+    ///   hist_entry_addr: flink at +8 = head_addr (self-consistency)
+    ///
+    ///   History entry (cmd_hist_list_off=0, so hist_addr = hist_entry_addr):
+    ///     Application (_UNICODE_STRING) at +cmd_hist_app_off = +0x10:
+    ///       Length=14 at +0x10, MaxLength=14 at +0x12, Buffer=app_name_vaddr at +0x18
+    ///     CommandCount at +cmd_hist_count_off = +0x20: 1
+    ///     CommandBucket at +cmd_hist_buf_off = +0x28: bucket_ptr
+    ///
+    ///   bucket_ptr: pointer to cmd_entry_addr
+    ///   cmd_entry_addr:
+    ///     CommandLength at +cmd_entry_size_off = +0x00: 16 (bytes of UTF-16LE "whoami /all")
+    ///     Command at +cmd_entry_data_off = +0x08: UTF-16LE "whoami /all"
+    ///
+    ///   app_name_vaddr: UTF-16LE "cmd.exe"
+    ///
+    /// "whoami /all" contains "whoami" → is_suspicious = true.
+    #[test]
+    fn extract_console_commands_full_path_finds_suspicious_command() {
+        // All addresses are user-mode (< 0x0000_8000_0000_0000) so pointers pass
+        // is_plausible_pointer check.
+        let base_paddr: u64    = 0x0050_0000;
+        let base_vaddr: u64    = 0x0050_0000; // user-mode
+        let peb_paddr: u64     = 0x0051_0000;
+        let peb_vaddr: u64     = 0x0051_0000;
+
+        // Layout within base_page (all offsets within 4K):
+        let hist_list_off: u64 = 0x40; // default from extract_console_commands
+        let cmd_hist_app_off: u64 = 0x10;
+        let cmd_hist_count_off: u64 = 0x20;
+        let cmd_hist_buf_off: u64 = 0x28;
+        let cmd_entry_size_off: u64 = 0x00;
+        let cmd_entry_data_off: u64 = 0x08;
+
+        let hist_entry_addr: u64 = base_vaddr + 0x200; // _COMMAND_HISTORY at +0x200
+        let head_addr = base_vaddr.wrapping_add(hist_list_off); // base+0x40
+
+        // app_name: UTF-16LE "cmd.exe" (7 chars = 14 bytes)
+        let app_name_utf16: Vec<u8> = "cmd.exe".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let app_name_addr: u64 = base_vaddr + 0x500;
+
+        // cmd entry at base+0x400, bucket ptr (u64) at base+0x380
+        let cmd_entry_addr: u64 = base_vaddr + 0x400;
+        let bucket_ptr_addr: u64 = base_vaddr + 0x380; // pointer to array of cmd ptrs
+
+        // "whoami /all" in UTF-16LE (11 chars = 22 bytes)
+        let cmd_text = "whoami /all";
+        let cmd_utf16: Vec<u8> = cmd_text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let cmd_byte_len = cmd_utf16.len() as u16; // 22
+
+        let mut page = vec![0u8; 0x1000];
+
+        // Scan candidate at base+0: HistoryList.{Flink,Blink} = hist_entry_addr
+        page[0x40..0x48].copy_from_slice(&hist_entry_addr.to_le_bytes()); // Flink
+        page[0x48..0x50].copy_from_slice(&hist_entry_addr.to_le_bytes()); // Blink
+        // flink→blink = head_addr (for self-consistency check)
+        // hist_entry_addr is at base+0x200, so flink+8 is at base+0x208
+        page[0x208..0x210].copy_from_slice(&head_addr.to_le_bytes()); // flink_blink
+
+        // History entry at base+0x200:
+        //   [+0x00] Flink = 0 (end of history list, next read_ptr returns 0)
+        // Actually walk_history_list reads Flink from current (=hist_entry_addr).
+        // hist_entry_addr+0 = Flink for the _LIST_ENTRY embedded in _COMMAND_HISTORY.
+        // To terminate: flink should point to list_head (= head_addr) or 0.
+        // If flink == list_head, walk terminates. Set flink = head_addr.
+        page[0x200..0x208].copy_from_slice(&head_addr.to_le_bytes()); // Flink → head (terminates)
+
+        // Application _UNICODE_STRING at hist_entry+cmd_hist_app_off = base+0x210:
+        // Length=14 at +0, MaxLength=14 at +2, Buffer=app_name_addr at +8
+        let app_len = app_name_utf16.len() as u16;
+        page[0x210..0x212].copy_from_slice(&app_len.to_le_bytes()); // Length
+        page[0x212..0x214].copy_from_slice(&app_len.to_le_bytes()); // MaxLength
+        page[0x218..0x220].copy_from_slice(&app_name_addr.to_le_bytes()); // Buffer
+
+        // CommandCount at hist_entry+cmd_hist_count_off = base+0x220: 1
+        page[0x220..0x224].copy_from_slice(&1u32.to_le_bytes());
+
+        // CommandBucket at hist_entry+cmd_hist_buf_off = base+0x228: bucket_ptr_addr
+        page[0x228..0x230].copy_from_slice(&bucket_ptr_addr.to_le_bytes());
+
+        // Bucket array at base+0x380: one u64 pointer → cmd_entry_addr
+        page[0x380..0x388].copy_from_slice(&cmd_entry_addr.to_le_bytes());
+
+        // Command entry at base+0x400:
+        //   CommandLength at +0x00: cmd_byte_len (22)
+        //   Command at +0x08: UTF-16LE "whoami /all"
+        page[0x400..0x402].copy_from_slice(&cmd_byte_len.to_le_bytes());
+        page[0x408..0x408 + cmd_utf16.len()].copy_from_slice(&cmd_utf16);
+
+        // App name UTF-16LE "cmd.exe" at base+0x500
+        page[0x500..0x500 + app_name_utf16.len()].copy_from_slice(&app_name_utf16);
+
+        // PEB page: ProcessHeap = base_vaddr at +0x30
+        let mut peb_page = vec![0u8; 0x1000];
+        peb_page[0x30..0x38].copy_from_slice(&base_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_PEB", 0x400)
+            .add_field("_PEB", "ProcessHeap", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(base_vaddr, base_paddr, flags::WRITABLE)
+            .write_phys(base_paddr, &page)
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys(peb_paddr, &peb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = extract_console_commands(&reader, 42, "conhost.exe", peb_vaddr).unwrap();
+        assert!(!result.is_empty(), "should extract at least one command");
+        let cmd = &result[0];
+        assert_eq!(cmd.pid, 42);
+        assert_eq!(cmd.process_name, "conhost.exe");
+        assert_eq!(cmd.command, cmd_text, "command text should match");
+        assert!(cmd.is_suspicious, "whoami command should be suspicious");
+    }
+
     /// walk_consoles: "conhost.exe" with non-zero peb and cr3, but ProcessHeap
     /// is zero (unmapped PEB) → extract_console_commands returns empty.
     /// Exercises lines 140-150 (reader.with_cr3, extract_console_commands call).
