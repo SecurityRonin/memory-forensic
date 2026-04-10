@@ -426,6 +426,53 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // walk_dentry_cache: symbol present + self-pointing list (walk body runs)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_dentry_symbol_present_empty_list() {
+        // init_task present, self-pointing tasks list, files == NULL.
+        // The walk body runs the list loop but finds no hidden dentries.
+        let sym_vaddr: u64 = 0xFFFF_8800_0030_0000;
+        let sym_paddr: u64 = 0x0040_0000;
+        let tasks_offset = 16u64;
+
+        let mut page = [0u8; 4096];
+        // pid = 1
+        page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // self-pointing tasks list
+        let list_self = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        // comm = "init"
+        page[32..36].copy_from_slice(b"init");
+        // files = 0 (NULL → no open fds, collect function returns early)
+        page[48..56].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tasks", 16, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "files", 48, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_dentry_cache(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "no hidden dentries expected for task with files==NULL");
+    }
+
+    // -----------------------------------------------------------------------
     // Additional classify_hidden_dentry branch coverage
     // -----------------------------------------------------------------------
 

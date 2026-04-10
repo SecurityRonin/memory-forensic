@@ -325,6 +325,61 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // walk_zombie_orphan: symbol present + self-pointing list (body runs)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn walk_zombie_orphan_symbol_present_empty_list() {
+        // init_task present, tasks self-pointing (empty list). init_task has
+        // a normal running state, so read_task returns None and results stay empty.
+        let sym_vaddr: u64 = 0xFFFF_8800_0030_0000;
+        let sym_paddr: u64 = 0x0040_0000;
+        let tasks_offset = 24u64;
+
+        let mut page = [0u8; 4096];
+        // pid = 1
+        page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // state = 0 (TASK_RUNNING — neither zombie nor orphan → read_task returns None)
+        page[8..16].copy_from_slice(&0i64.to_le_bytes());
+        // exit_code = 0
+        page[16..20].copy_from_slice(&0i32.to_le_bytes());
+        // tasks: self-pointing list_head
+        let list_self = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        // comm = "systemd"
+        page[40..47].copy_from_slice(b"systemd");
+        // real_parent = self (pid 1), parent = self
+        page[56..64].copy_from_slice(&sym_vaddr.to_le_bytes());
+        page[64..72].copy_from_slice(&sym_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "state", 8, "unsigned long")
+            .add_field("task_struct", "exit_code", 16, "int")
+            .add_field("task_struct", "tasks", 24, "pointer")
+            .add_field("task_struct", "comm", 40, "char")
+            .add_field("task_struct", "real_parent", 56, "pointer")
+            .add_field("task_struct", "parent", 64, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_zombie_orphan(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "running init task is neither zombie nor orphan");
+    }
+
+    // -------------------------------------------------------------------
     // classify edge cases — all SUSPICIOUS_DAEMON_NAMES are matched
     // -------------------------------------------------------------------
 

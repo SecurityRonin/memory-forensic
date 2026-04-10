@@ -382,6 +382,103 @@ mod tests {
         assert!(result.is_empty(), "in_use == 0 should yield empty vec for semaphores");
     }
 
+    // -----------------------------------------------------------------------
+    // walk_semaphores: sem_ids present, in_use > 0 but xa_head == 0 → empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_sem_in_use_nonzero_xa_head_zero_returns_empty() {
+        // sem_ids present with in_use = 1, but radix_tree_root.xa_head == 0.
+        // The walker reads first_entry == 0 and returns Ok(empty).
+        let vaddr: u64 = 0xFFFF_8800_00A0_0000;
+        let paddr: u64 = 0x00B0_0000;
+        let mut data = vec![0u8; 4096];
+
+        // ipc_ids.in_use (u32 at offset 0) = 1
+        data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // ipcs_idr at offset 8; idr_rt at offset 0 within idr = offset 8 overall;
+        // radix_tree_root.xa_head at offset 0 within rtr = offset 8 overall.
+        // All remaining bytes are 0 → xa_head == 0 → first_entry == 0 → empty.
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            .add_field("ipc_ids", "in_use", 0, "unsigned int")
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_struct("idr", 32)
+            .add_field("idr", "idr_rt", 0, "radix_tree_root")
+            .add_struct("radix_tree_root", 16)
+            .add_field("radix_tree_root", "xa_head", 0, "pointer")
+            .add_struct("kern_ipc_perm", 64)
+            .add_field("kern_ipc_perm", "key", 0, "unsigned int")
+            .add_field("kern_ipc_perm", "id", 4, "unsigned int")
+            .add_field("kern_ipc_perm", "mode", 8, "unsigned int")
+            .add_struct("sem_array", 128)
+            .add_field("sem_array", "sem_perm", 0, "kern_ipc_perm")
+            .add_field("sem_array", "sem_nsems", 64, "unsigned int")
+            .add_field("sem_array", "sem_otime_high", 68, "unsigned int")
+            .add_symbol("sem_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_semaphores(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "xa_head==0 with in_use>0 should yield empty semaphore list");
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_shm_segments: shm_ids present, in_use > 0 but xa_head == 0 → empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_shm_in_use_nonzero_xa_head_zero_returns_empty() {
+        // shm_ids present with in_use = 1 but xa_head == 0 → empty.
+        let vaddr: u64 = 0xFFFF_8800_00C0_0000;
+        let paddr: u64 = 0x00D0_0000;
+        let mut data = vec![0u8; 4096];
+
+        // ipc_ids.in_use (u32 at offset 0) = 1
+        data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // xa_head pointer = 0 (all remaining bytes are zero)
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            .add_field("ipc_ids", "in_use", 0, "unsigned int")
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_struct("idr", 32)
+            .add_field("idr", "idr_rt", 0, "radix_tree_root")
+            .add_struct("radix_tree_root", 16)
+            .add_field("radix_tree_root", "xa_head", 0, "pointer")
+            .add_struct("kern_ipc_perm", 64)
+            .add_field("kern_ipc_perm", "key", 0, "unsigned int")
+            .add_field("kern_ipc_perm", "id", 4, "unsigned int")
+            .add_field("kern_ipc_perm", "mode", 8, "unsigned int")
+            .add_struct("shmid_kernel", 128)
+            .add_field("shmid_kernel", "shm_perm", 0, "kern_ipc_perm")
+            .add_field("shmid_kernel", "shm_segsz", 64, "unsigned long")
+            .add_field("shmid_kernel", "shm_cprid", 72, "unsigned int")
+            .add_field("shmid_kernel", "shm_lprid", 76, "unsigned int")
+            .add_field("shmid_kernel", "shm_nattch", 80, "unsigned int")
+            .add_symbol("shm_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_shm_segments(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "xa_head==0 with in_use>0 should yield empty shm list");
+    }
+
     #[test]
     fn walk_shm_single_segment() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;

@@ -383,6 +383,47 @@ mod tests {
         assert!(results.is_empty(), "missing _etext should yield empty vec");
     }
 
+    // -----------------------------------------------------------------------
+    // scan_proc_fops: all symbols present, proc_root.subdir == 0 → empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scan_proc_fops_symbol_present_empty_proc_tree() {
+        // proc_root, _stext, _etext all present. proc_root memory is all
+        // zeros so proc_dir_entry.subdir == 0 → stack stays empty → no results.
+        let proc_root_vaddr: u64 = 0xFFFF_8800_0060_0000;
+        let proc_root_paddr: u64 = 0x0070_0000;
+        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
+
+        // All zeros: proc_dir_entry.subdir pointer at offset 0 = 0
+        let page = [0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("proc_dir_entry", 256)
+            .add_field("proc_dir_entry", "subdir", 0, "pointer")
+            .add_field("proc_dir_entry", "next", 8, "pointer")
+            .add_field("proc_dir_entry", "proc_fops", 16, "pointer")
+            .add_field("proc_dir_entry", "name", 24, "char")
+            .add_struct("file_operations", 256)
+            .add_field("file_operations", "read", 0, "pointer")
+            .add_symbol("proc_root", proc_root_vaddr)
+            .add_symbol("_stext", kernel_start)
+            .add_symbol("_etext", kernel_end)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(proc_root_vaddr, proc_root_paddr, ptflags::WRITABLE)
+            .write_phys(proc_root_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = scan_proc_fops(&reader).unwrap_or_default();
+        assert!(results.is_empty(), "empty proc tree should produce no fops hook entries");
+    }
+
     #[test]
     fn check_fops_entry_null_pointer_skipped() {
         // file_operations struct where all pointers are NULL → no results

@@ -350,6 +350,59 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // walk_check_creds: symbol present + self-pointing list (walk body runs)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_check_creds_symbol_present_single_task_no_sharing() {
+        // init_task present, tasks self-pointing (only one process).
+        // With a single process in the cred map, group.len() < 2 → no results.
+        let sym_vaddr: u64 = 0xFFFF_8800_0090_0000;
+        let sym_paddr: u64 = 0x00A0_0000;
+        let tasks_offset = 16u64;
+
+        let mut page = [0u8; 4096];
+        // pid = 1
+        page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // tgid = 1
+        page[4..8].copy_from_slice(&1u32.to_le_bytes());
+        // tasks: self-pointing
+        let list_self = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        // comm = "systemd"
+        page[32..39].copy_from_slice(b"systemd");
+        // cred pointer = some non-zero value (unique to this task)
+        let cred_ptr: u64 = 0xFFFF_8800_DEAD_0000;
+        page[96..104].copy_from_slice(&cred_ptr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tgid", 4, "unsigned int")
+            .add_field("task_struct", "tasks", 16, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "cred", 96, "pointer")
+            .add_struct("cred", 64)
+            .add_field("cred", "uid", 4, "unsigned int")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_check_creds(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "single task with unique cred should not be flagged");
+    }
+
+    // ---------------------------------------------------------------
     // walk_check_creds: missing tasks field → empty Vec (graceful degradation)
     // ---------------------------------------------------------------
 

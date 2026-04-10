@@ -310,6 +310,53 @@ mod tests {
         assert!(!classify_pam_hook("/usr/lib64/security/libpam_unix.so"));
     }
 
+    // ---------------------------------------------------------------------------
+    // walk_pam_hooks: symbol present + self-pointing list (walk body runs)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn walk_pam_hooks_symbol_present_empty_list() {
+        // init_task present with self-pointing tasks list and mm==NULL.
+        // walk body runs but scan_process_pam returns early on mm==0.
+        let sym_vaddr: u64 = 0xFFFF_8800_0040_0000;
+        let sym_paddr: u64 = 0x0050_0000;
+        let tasks_offset = 16u64;
+
+        let mut page = [0u8; 4096];
+        // pid = 0 (swapper)
+        page[0..4].copy_from_slice(&0u32.to_le_bytes());
+        // tasks: self-pointing
+        let list_self = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        // comm = "swapper"
+        page[32..39].copy_from_slice(b"swapper");
+        // mm = 0 (kernel thread)
+        page[48..56].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tasks", 16, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptflags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_pam_hooks(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "kernel thread with mm==NULL should produce no PAM findings");
+    }
+
     #[test]
     fn walk_pam_hooks_missing_tasks_field_returns_empty() {
         // init_task is present but "tasks" field offset is absent.

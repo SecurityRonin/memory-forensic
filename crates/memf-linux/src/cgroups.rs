@@ -542,6 +542,56 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // walk_cgroups: cgroups field present, process list non-empty,
+    // css_set pointer == 0 → body runs but skips the process
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_cgroups_css_set_null_produces_no_output() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags as ptflags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+        use crate::ProcessInfo;
+
+        let task_vaddr: u64 = 0xFFFF_8800_0050_0000;
+        let task_paddr: u64 = 0x0060_0000;
+        let cgroups_offset = 64u64;
+
+        let mut page = [0u8; 4096];
+        // cgroups pointer at offset 64 = 0 (NULL → skip)
+        page[cgroups_offset as usize..cgroups_offset as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "cgroups", 64, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
+            .write_phys(task_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let processes = vec![ProcessInfo {
+            pid: 42,
+            ppid: 1,
+            comm: "bash".to_string(),
+            state: crate::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        }];
+
+        let result = walk_cgroups(&reader, &processes).unwrap();
+        assert!(result.is_empty(), "process with css_set==NULL should produce no cgroup output");
+    }
+
+    // -----------------------------------------------------------------------
     // CgroupInfo: Debug + Clone
     // -----------------------------------------------------------------------
 

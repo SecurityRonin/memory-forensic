@@ -265,6 +265,53 @@ mod tests {
         assert!(results.is_empty(), "missing _etext should yield empty vec");
     }
 
+    // -----------------------------------------------------------------------
+    // walk_kernel_timers: all symbols present, vectors all zero → empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_kernel_timers_symbol_present_all_vectors_zero() {
+        // timer_bases, _stext, _etext all present.
+        // timer_base struct with all vector fields = 0 → each group is skipped.
+        let bases_vaddr: u64 = 0xFFFF_8800_0040_0000;
+        let bases_paddr: u64 = 0x0050_0000;
+
+        // All zeros: every vectors.{n} pointer reads as 0 → continue in loop
+        let page = [0u8; 4096];
+
+        let mut isf_builder = IsfBuilder::new()
+            .add_struct("timer_base", 512)
+            .add_struct("timer_list", 64)
+            .add_field("timer_list", "entry", 0, "pointer")
+            .add_field("timer_list", "expires", 16, "unsigned long")
+            .add_field("timer_list", "function", 24, "pointer")
+            .add_symbol("timer_bases", bases_vaddr)
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000u64)
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFFu64);
+
+        // Add vectors.0 .. vectors.8 fields on timer_base (all at offset 0)
+        for i in 0..TIMER_WHEEL_GROUPS {
+            isf_builder = isf_builder.add_field(
+                "timer_base",
+                &format!("vectors.{i}"),
+                0,
+                "pointer",
+            );
+        }
+        let isf = isf_builder.build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bases_vaddr, bases_paddr, flags::WRITABLE)
+            .write_phys(bases_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_kernel_timers(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "all-zero vector heads should produce no timer entries");
+    }
+
     #[test]
     fn classify_kernel_timer_just_below_kernel_start_is_suspicious() {
         let kernel_start = 0xFFFF_8000_0000_0000u64;

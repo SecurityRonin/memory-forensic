@@ -280,6 +280,40 @@ mod tests {
         assert!(results.is_empty(), "missing _etext should yield empty vec");
     }
 
+    // -----------------------------------------------------------------------
+    // walk_check_idt: all symbols present, IDT all zeros → all entries skipped
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_check_idt_symbol_present_all_zero_entries() {
+        // idt_table, _stext, _etext all present. IDT memory is all zeros:
+        // every gate's reconstructed handler_addr == 0 → skipped → empty result.
+        let idt_vaddr: u64 = 0xFFFF_8800_0070_0000;
+        let idt_paddr: u64 = 0x0080_0000;
+        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
+
+        // 256 * 16 = 4096 bytes, all zeros → every handler_addr == 0 → skipped
+        let page = [0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_symbol("_stext", kernel_start)
+            .add_symbol("_etext", kernel_end)
+            .add_symbol("idt_table", idt_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(idt_vaddr, idt_paddr, memf_core::test_builders::flags::WRITABLE)
+            .write_phys(idt_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_check_idt(&reader).unwrap_or_default();
+        assert!(results.is_empty(), "all-zero IDT entries (handler==0) should all be skipped");
+    }
+
     #[test]
     fn gate_type_all_nibbles_covered() {
         // Verify every nibble value yields a consistent string

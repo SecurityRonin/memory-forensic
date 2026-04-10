@@ -462,6 +462,53 @@ mod tests {
         assert!(classify_memfd("PAYLOAD_EXEC", false), "case-insensitive suspicious match");
     }
 
+    // -----------------------------------------------------------------------
+    // walk_memfd_create: symbol present + self-pointing list (walk body runs)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_memfd_symbol_present_empty_list() {
+        // init_task present with self-pointing tasks list and mm==NULL.
+        // The walk body runs but finds no memfd entries.
+        let sym_vaddr: u64 = 0xFFFF_8800_0020_0000;
+        let sym_paddr: u64 = 0x0030_0000;
+        let tasks_offset = 16u64;
+
+        let mut page = [0u8; 4096];
+        // pid = 1
+        page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // tasks.next = tasks.prev = &init_task.tasks  (self-pointing = empty list)
+        let list_self = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        // comm = "init"
+        page[32..36].copy_from_slice(b"init");
+        // mm = 0 (kernel thread — no user mm, so collect_memfd_for_task returns early)
+        page[48..56].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "tasks", 16, "pointer")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).unwrap_or_default();
+        assert!(result.is_empty(), "no memfd mappings expected for a kernel thread");
+    }
+
     #[test]
     fn memfd_info_serializes() {
         let info = MemfdInfo {
