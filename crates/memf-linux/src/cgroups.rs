@@ -592,6 +592,226 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // walk_cgroups: css_set non-null, subsys_ptr (css_ptr) == 0 → skips process
+    // Exercises lines after the css_set_ptr != 0 check.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_cgroups_css_ptr_null_skips_process() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags as ptflags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // task_addr holds:  cgroups_offset(64) → css_set_vaddr (non-zero)
+        // css_set_vaddr holds: subsys_offset(0x10) → 0  (null css_ptr → skip)
+        let task_vaddr: u64   = 0xFFFF_8800_0070_0000;
+        let task_paddr: u64   = 0x0070_0000;
+        let cssset_vaddr: u64 = 0xFFFF_8800_0071_0000;
+        let cssset_paddr: u64 = 0x0071_0000;
+        let cgroups_offset: u64 = 64;
+        let subsys_offset: u64  = 0x10;
+
+        let mut task_page = [0u8; 4096];
+        task_page[cgroups_offset as usize..cgroups_offset as usize + 8]
+            .copy_from_slice(&cssset_vaddr.to_le_bytes());
+
+        let mut cssset_page = [0u8; 4096];
+        // subsys[0] at subsys_offset = 0 → css_ptr is null → process skipped
+        cssset_page[subsys_offset as usize..subsys_offset as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "cgroups", 64, "pointer")
+            .add_struct("css_set", 256)
+            .add_field("css_set", "subsys", 0x10, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr,   task_paddr,   ptflags::WRITABLE)
+            .write_phys(task_paddr,   &task_page)
+            .map_4k(cssset_vaddr, cssset_paddr, ptflags::WRITABLE)
+            .write_phys(cssset_paddr, &cssset_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let processes = vec![ProcessInfo {
+            pid: 55,
+            ppid: 1,
+            comm: "bash".to_string(),
+            state: crate::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        }];
+
+        let result = walk_cgroups(&reader, &processes).unwrap();
+        assert!(result.is_empty(), "null css_ptr should skip the process");
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_cgroups: css_set and css_ptr non-null, cgroup_ptr == 0 → skips process
+    // Exercises the cgroup_ptr == 0 guard.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_cgroups_cgroup_ptr_null_skips_process() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags as ptflags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let task_vaddr: u64   = 0xFFFF_8800_0072_0000;
+        let task_paddr: u64   = 0x0072_0000;
+        let cssset_vaddr: u64 = 0xFFFF_8800_0073_0000;
+        let cssset_paddr: u64 = 0x0073_0000;
+        let css_vaddr: u64    = 0xFFFF_8800_0074_0000;
+        let css_paddr: u64    = 0x0074_0000;
+        let cgroups_offset: u64 = 64;
+        let subsys_offset: u64  = 0x10;
+        let css_cgroup_offset: u64 = 0x08;
+
+        let mut task_page = [0u8; 4096];
+        task_page[cgroups_offset as usize..cgroups_offset as usize + 8]
+            .copy_from_slice(&cssset_vaddr.to_le_bytes());
+
+        let mut cssset_page = [0u8; 4096];
+        cssset_page[subsys_offset as usize..subsys_offset as usize + 8]
+            .copy_from_slice(&css_vaddr.to_le_bytes());
+
+        let mut css_page = [0u8; 4096];
+        // cgroup_subsys_state.cgroup at offset 0x08 = 0 (null → skip)
+        css_page[css_cgroup_offset as usize..css_cgroup_offset as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "cgroups", 64, "pointer")
+            .add_struct("css_set", 256)
+            .add_field("css_set", "subsys", 0x10, "pointer")
+            .add_struct("cgroup_subsys_state", 256)
+            .add_field("cgroup_subsys_state", "cgroup", 0x08, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr,   task_paddr,   ptflags::WRITABLE)
+            .write_phys(task_paddr,   &task_page)
+            .map_4k(cssset_vaddr, cssset_paddr, ptflags::WRITABLE)
+            .write_phys(cssset_paddr, &cssset_page)
+            .map_4k(css_vaddr,    css_paddr,    ptflags::WRITABLE)
+            .write_phys(css_paddr,    &css_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let processes = vec![ProcessInfo {
+            pid: 66,
+            ppid: 1,
+            comm: "bash".to_string(),
+            state: crate::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        }];
+
+        let result = walk_cgroups(&reader, &processes).unwrap();
+        assert!(result.is_empty(), "null cgroup_ptr should skip the process");
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_cgroups: full path to kn_ptr == 0 → cgroup_path = "/" → result pushed
+    // Exercises kn_ptr==0 branch → build_kernfs_path not called → "/" path.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_cgroups_kn_ptr_zero_produces_root_path_result() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags as ptflags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let task_vaddr: u64   = 0xFFFF_8800_0075_0000;
+        let task_paddr: u64   = 0x0075_0000;
+        let cssset_vaddr: u64 = 0xFFFF_8800_0076_0000;
+        let cssset_paddr: u64 = 0x0076_0000;
+        let css_vaddr: u64    = 0xFFFF_8800_0077_0000;
+        let css_paddr: u64    = 0x0077_0000;
+        let cgroup_vaddr: u64 = 0xFFFF_8800_0078_0000;
+        let cgroup_paddr: u64 = 0x0078_0000;
+
+        let cgroups_offset: u64      = 64;
+        let subsys_offset: u64       = 0x10;
+        let css_cgroup_offset: u64   = 0x08;
+        let cgroup_kn_offset: u64    = 0x48;
+
+        let mut task_page = [0u8; 4096];
+        task_page[cgroups_offset as usize..cgroups_offset as usize + 8]
+            .copy_from_slice(&cssset_vaddr.to_le_bytes());
+
+        let mut cssset_page = [0u8; 4096];
+        cssset_page[subsys_offset as usize..subsys_offset as usize + 8]
+            .copy_from_slice(&css_vaddr.to_le_bytes());
+
+        let mut css_page = [0u8; 4096];
+        css_page[css_cgroup_offset as usize..css_cgroup_offset as usize + 8]
+            .copy_from_slice(&cgroup_vaddr.to_le_bytes());
+
+        let mut cgroup_page = [0u8; 4096];
+        // kn at offset 0x48 = 0 → kn_ptr == 0 → cgroup_path = "/"
+        cgroup_page[cgroup_kn_offset as usize..cgroup_kn_offset as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "cgroups", 64, "pointer")
+            .add_struct("css_set", 256)
+            .add_field("css_set", "subsys", 0x10, "pointer")
+            .add_struct("cgroup_subsys_state", 256)
+            .add_field("cgroup_subsys_state", "cgroup", 0x08, "pointer")
+            .add_struct("cgroup", 512)
+            .add_field("cgroup", "kn", 0x48, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr,    task_paddr,    ptflags::WRITABLE)
+            .write_phys(task_paddr,    &task_page)
+            .map_4k(cssset_vaddr,  cssset_paddr,  ptflags::WRITABLE)
+            .write_phys(cssset_paddr,  &cssset_page)
+            .map_4k(css_vaddr,     css_paddr,     ptflags::WRITABLE)
+            .write_phys(css_paddr,     &css_page)
+            .map_4k(cgroup_vaddr,  cgroup_paddr,  ptflags::WRITABLE)
+            .write_phys(cgroup_paddr,  &cgroup_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let processes = vec![ProcessInfo {
+            pid: 77,
+            ppid: 1,
+            comm: "bash".to_string(),
+            state: crate::ProcessState::Running,
+            vaddr: task_vaddr,
+            cr3: None,
+            start_time: 0,
+        }];
+
+        let result = walk_cgroups(&reader, &processes).unwrap();
+        // kn_ptr==0 → cgroup_path = "/" → is_suspicious_cgroup("/", 77) = true (pid≠1)
+        assert_eq!(result.len(), 1, "full chain resolved → one result pushed");
+        assert_eq!(result[0].cgroup_path, "/");
+        assert_eq!(result[0].pid, 77);
+        assert!(result[0].is_suspicious, "root cgroup for non-init pid is suspicious");
+    }
+
+    // -----------------------------------------------------------------------
     // CgroupInfo: Debug + Clone
     // -----------------------------------------------------------------------
 

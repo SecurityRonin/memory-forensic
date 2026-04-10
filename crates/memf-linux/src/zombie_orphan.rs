@@ -380,6 +380,98 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // walk_zombie_orphan: init_task has zombie state → read_task returns Some
+    // Exercises the branch where is_zombie=true and ppid==1 → suspicious.
+    // Uses self-pointing list (no other tasks) so only init_task is processed.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn walk_zombie_orphan_zombie_task_detected() {
+        let sym_vaddr: u64   = 0xFFFF_8800_0050_0000;
+        let sym_paddr: u64   = 0x0050_0000; // < 16 MB
+        let tasks_offset: u64 = 24;
+
+        // init_task will be the zombie: parent = itself (pid 1 → ppid 1)
+        // is_orphan check: ppid(1) == 1 && original_ppid(1) == ppid → is_orphan=false
+        // is_zombie=true → read_task returns Some → pushed to results
+
+        let mut page = [0u8; 4096];
+        // pid = 1
+        page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // state = 0x20 = 32 = EXIT_ZOMBIE
+        let zombie_state: i64 = 0x20;
+        page[8..16].copy_from_slice(&zombie_state.to_le_bytes());
+        // exit_code = 139 (SIGSEGV → suspicious via walker exit_code check)
+        page[16..20].copy_from_slice(&139i32.to_le_bytes());
+        // tasks: self-pointing
+        let self_ptr = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // comm = "crashed"
+        page[40..47].copy_from_slice(b"crashed");
+        // real_parent = self (so ppid = 1, same pid)
+        page[56..64].copy_from_slice(&sym_vaddr.to_le_bytes());
+        // parent = self
+        page[64..72].copy_from_slice(&sym_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_field("list_head", "prev", 0x08, "pointer")
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .add_field("task_struct", "state", 8, "unsigned long")
+            .add_field("task_struct", "exit_code", 16, "int")
+            .add_field("task_struct", "tasks", 24, "pointer")
+            .add_field("task_struct", "comm", 40, "char")
+            .add_field("task_struct", "real_parent", 56, "pointer")
+            .add_field("task_struct", "parent", 64, "pointer")
+            .add_symbol("init_task", sym_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_zombie_orphan(&reader).unwrap();
+        // init_task is zombie (state=0x20), exit_code=139 → suspicious
+        assert_eq!(result.len(), 1, "zombie task should appear in results");
+        assert!(result[0].is_zombie, "state=0x20 → zombie");
+        assert!(result[0].is_suspicious, "zombie with non-zero exit_code → suspicious");
+        assert_eq!(result[0].exit_code, 139);
+        assert_eq!(result[0].comm, "crashed");
+    }
+
+    // -------------------------------------------------------------------
+    // ZombieOrphanInfo: Clone + Debug
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn zombie_orphan_info_clone_and_debug() {
+        let info = ZombieOrphanInfo {
+            pid: 999,
+            ppid: 1,
+            comm: "ghost".to_string(),
+            state: "Z (zombie)".to_string(),
+            exit_code: 0,
+            original_ppid: 500,
+            is_zombie: true,
+            is_orphan: false,
+            is_suspicious: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.pid, 999);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("ghost"));
+    }
+
+    // -------------------------------------------------------------------
     // classify edge cases — all SUSPICIOUS_DAEMON_NAMES are matched
     // -------------------------------------------------------------------
 

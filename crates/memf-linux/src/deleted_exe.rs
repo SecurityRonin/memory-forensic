@@ -385,6 +385,67 @@ mod tests {
         );
     }
 
+    // --- walk_deleted_exe: symbol present, self-pointing tasks list, mm != 0, exe_file == 0 ---
+    // Exercises read_deleted_exe_info: mm pointer is non-null (reads ok), but
+    // mm_struct.exe_file == 0 → returns None → result stays empty.
+    #[test]
+    fn walk_deleted_exe_mm_non_null_exe_file_null_returns_empty() {
+        let tasks_offset: u64 = 0x10;
+        let mm_offset: u64    = 0x30;
+        let sym_vaddr: u64    = 0xFFFF_8800_0090_0000;
+        let sym_paddr: u64    = 0x0090_0000; // < 16 MB
+        let mm_vaddr: u64     = 0xFFFF_8800_0091_0000;
+        let mm_paddr: u64     = 0x0091_0000;
+
+        // task page
+        let mut task_page = [0u8; 4096];
+        // pid = 5
+        task_page[0..4].copy_from_slice(&5u32.to_le_bytes());
+        // tasks self-pointing
+        let self_ptr = sym_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // mm at offset 0x30 → non-zero (points to mm page)
+        task_page[mm_offset as usize..mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+        // comm = "worker"
+        task_page[0x20..0x26].copy_from_slice(b"worker");
+
+        // mm page: exe_file at offset 0x18 = 0 (null)
+        let mm_page = [0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00, "pointer")
+            .add_field("list_head", "prev", 0x08, "pointer")
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x200)
+            .add_field("mm_struct", "exe_file", 0x18, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_deleted_exe(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "mm non-null but exe_file==0 → read_deleted_exe_info returns None → empty"
+        );
+    }
+
     // --- walk_deleted_exe: symbol present, self-pointing tasks list, mm == 0 → exercises body ---
     // Exercises the task-list body and `read_deleted_exe_info`: init_task has mm=0 (kernel thread),
     // so it is skipped, and walk_list returns empty → result is empty but no error.
