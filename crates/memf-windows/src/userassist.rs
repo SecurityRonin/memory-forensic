@@ -1939,4 +1939,225 @@ mod tests {
         assert_eq!(USERASSIST_PATH[4], "Explorer");
         assert_eq!(USERASSIST_PATH[5], "UserAssist");
     }
+
+    // ── walk_userassist full-path integration test ────────────────────
+    //
+    // Builds a minimal synthetic NTUSER.DAT hive with the full path:
+    //   root -> Software -> Microsoft -> Windows -> CurrentVersion ->
+    //   Explorer -> UserAssist -> {GUID} -> Count -> value "zvzvxngm.rkr"
+    //
+    // Layout (all cells on a single 4K HBIN page):
+    //   Slot size: 0x80 bytes each
+    //   nk cells:    [0] root  [1] Software  [2] Microsoft  [3] Windows
+    //                [4] CurrentVersion  [5] Explorer  [6] UserAssist
+    //                [7] {GUID}  [8] Count
+    //   lf lists:    [0x480..0x800] — 8 lf lists, one per parent nk
+    //   values_list: 0x880
+    //   vk cell:     0x900
+    //   data cell:   0x980
+    //
+    // Each nk cell at slot N has:
+    //   - 4-byte size header (negative = allocated)
+    //   - NK_SIGNATURE at [0..2]
+    //   - subkey_count=1 at [0x14]
+    //   - subkeys_list_cell = lf_list_cell_for_N at [0x1C]
+    //   - name at [0x48..], length at [0x48]  (wait: NK_NAME_LENGTH_OFFSET=0x48, NK_NAME_OFFSET=0x4C)
+    //
+    // The lf list for slot N:
+    //   - points to the nk cell at slot N+1 (child)
+    //   - sig = "lf" (0x666C), count = 1, entry = (child_cell, hash=0)
+    //
+    // The {GUID} nk (slot 7) has subkey_count=1, lf→Count nk (slot 8).
+    // The Count nk (slot 8) has value_count=1, values_list_cell pointing to values_list.
+    // The values_list has one entry: vk_cell.
+    // The vk cell: name="zvzvxngm.rkr" (ROT13 of "mimikatz.exe"), data_length=72, data_cell.
+    // The data cell: 72 bytes of UA data (run_count=5 at [4], focus_count=2 at [8], etc.)
+    //
+    // All cell indices are offsets within the HBIN page (< 0x1000).
+    #[test]
+    fn walk_userassist_full_path_finds_mimikatz() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Hive block at 0xFFFF_8000_0A00_0000, HBIN page at 0xFFFF_8000_0A01_0000.
+        let hive_vaddr: u64 = 0xFFFF_8000_0A00_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hive_paddr: u64 = 0x00A0_0000;
+        let hbin_paddr: u64 = 0x00A1_0000;
+        let data_paddr: u64 = 0x00A2_0000;
+
+        // ── Cell index plan (offsets within HBIN page) ──────────────────
+        // Each nk slot is 0x80 bytes; cell index = slot_base within hbin page.
+        // Since cell_address = hive_addr + 0x1000 + cell_index,
+        // cell index 0 → vaddr = hbin_vaddr, which is on hbin_paddr.
+        //
+        // nk cells at indices: root=0x000, sw=0x080, ms=0x100, win=0x180,
+        //   cv=0x200, exp=0x280, ua=0x300, guid=0x380, count=0x400
+        // lf lists at: lf0=0x480(root→sw), lf1=0x500(sw→ms), lf2=0x580(ms→win),
+        //   lf3=0x600(win→cv), lf4=0x680(cv→exp), lf5=0x700(exp→ua),
+        //   lf6=0x780(ua→guid), lf7=0x800(guid→count)
+        // values_list at: 0x880
+        // vk cell at:     0x900
+        // data cell at a separate page (data_paddr), cell index=0x1000 (next page).
+        //
+        // data cell index: 0x1000 (= second HBIN page start)
+        // data_vaddr = hive_vaddr + 0x1000 + 0x1000 = hive_vaddr + 0x2000
+
+        // NK_ROOT must be non-zero (walk_userassist returns early if root_cell == 0).
+        const NK_ROOT:  u32 = 0x020;
+        const NK_SW:    u32 = 0x0A0;
+        const NK_MS:    u32 = 0x120;
+        const NK_WIN:   u32 = 0x1A0;
+        const NK_CV:    u32 = 0x220;
+        const NK_EXP:   u32 = 0x2A0;
+        const NK_UA:    u32 = 0x320;
+        const NK_GUID:  u32 = 0x3A0;
+        const NK_COUNT: u32 = 0x420;
+        const LF_ROOT:  u32 = 0x4A0;
+        const LF_SW:    u32 = 0x4C0;
+        const LF_MS:    u32 = 0x4E0;
+        const LF_WIN:   u32 = 0x500;
+        const LF_CV:    u32 = 0x520;
+        const LF_EXP:   u32 = 0x540;
+        const LF_UA:    u32 = 0x560;
+        const LF_GUID:  u32 = 0x580;
+        const VLIST:    u32 = 0x5A0;
+        const VK_IDX:   u32 = 0x5C0;
+        const DATA_IDX: u32 = 0x1000; // on second HBIN page
+
+        let data_vaddr = hive_vaddr + HBIN_START_OFFSET + DATA_IDX as u64;
+
+        // Helper: write an allocated cell at `off` in buf.
+        // Writes: i32 size (negative), then `payload` bytes.
+        let write_cell = |buf: &mut Vec<u8>, off: usize, payload: &[u8]| {
+            let abs_size = (payload.len() + 4) as i32;
+            buf[off..off + 4].copy_from_slice(&(-abs_size).to_le_bytes());
+            buf[off + 4..off + 4 + payload.len()].copy_from_slice(payload);
+        };
+
+        // Helper: build a minimal nk cell data (payload, no size header).
+        // name is ASCII, subkey_count=1 (unless is_leaf), lf_cell is the subkeys list.
+        // For Count node: subkey_count=0, value_count=1, values_list_cell=VLIST.
+        let make_nk = |name: &[u8], subkey_count: u32, lf_cell: u32,
+                        value_count: u32, vlist_cell: u32| -> Vec<u8> {
+            let needed = NK_NAME_OFFSET + name.len();
+            let mut nk = vec![0u8; needed];
+            nk[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+            nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+                .copy_from_slice(&subkey_count.to_le_bytes());
+            nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+                .copy_from_slice(&lf_cell.to_le_bytes());
+            nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+                .copy_from_slice(&value_count.to_le_bytes());
+            nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+                .copy_from_slice(&vlist_cell.to_le_bytes());
+            let name_len = name.len() as u16;
+            nk[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&name_len.to_le_bytes());
+            nk[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+            nk
+        };
+
+        // Helper: build an lf list payload pointing to one child cell.
+        let make_lf = |child_cell: u32| -> Vec<u8> {
+            let mut lf = vec![0u8; 12]; // sig(2) + count(2) + entry(4+4)
+            lf[0..2].copy_from_slice(&[0x6C, 0x66]); // "lf"
+            lf[2..4].copy_from_slice(&1u16.to_le_bytes());
+            lf[4..8].copy_from_slice(&child_cell.to_le_bytes());
+            lf[8..12].copy_from_slice(&0u32.to_le_bytes()); // hash
+            lf
+        };
+
+        let mut hbin = vec![0u8; 0x1000];
+
+        // nk cells
+        write_cell(&mut hbin, NK_ROOT as usize,  &make_nk(b"$$$PROTO.HIV", 1, LF_ROOT,  0, 0));
+        write_cell(&mut hbin, NK_SW as usize,    &make_nk(b"Software",     1, LF_SW,    0, 0));
+        write_cell(&mut hbin, NK_MS as usize,    &make_nk(b"Microsoft",    1, LF_MS,    0, 0));
+        write_cell(&mut hbin, NK_WIN as usize,   &make_nk(b"Windows",      1, LF_WIN,   0, 0));
+        write_cell(&mut hbin, NK_CV as usize,    &make_nk(b"CurrentVersion", 1, LF_CV,  0, 0));
+        write_cell(&mut hbin, NK_EXP as usize,   &make_nk(b"Explorer",     1, LF_EXP,  0, 0));
+        write_cell(&mut hbin, NK_UA as usize,    &make_nk(b"UserAssist",   1, LF_UA,   0, 0));
+        write_cell(&mut hbin, NK_GUID as usize,  &make_nk(b"{GUIDTEST}",   1, LF_GUID, 0, 0));
+        // Count nk: subkey_count=0, value_count=1, values_list=VLIST
+        write_cell(&mut hbin, NK_COUNT as usize, &make_nk(b"Count",        0, 0,       1, VLIST));
+
+        // lf lists
+        write_cell(&mut hbin, LF_ROOT as usize,  &make_lf(NK_SW));
+        write_cell(&mut hbin, LF_SW as usize,    &make_lf(NK_MS));
+        write_cell(&mut hbin, LF_MS as usize,    &make_lf(NK_WIN));
+        write_cell(&mut hbin, LF_WIN as usize,   &make_lf(NK_CV));
+        write_cell(&mut hbin, LF_CV as usize,    &make_lf(NK_EXP));
+        write_cell(&mut hbin, LF_EXP as usize,   &make_lf(NK_UA));
+        write_cell(&mut hbin, LF_UA as usize,    &make_lf(NK_GUID));
+        write_cell(&mut hbin, LF_GUID as usize,  &make_lf(NK_COUNT));
+
+        // values_list: one entry pointing to VK_IDX
+        {
+            let off = VLIST as usize;
+            hbin[off..off + 4].copy_from_slice(&(-8i32).to_le_bytes()); // size=8: 4hdr+4entry
+            hbin[off + 4..off + 8].copy_from_slice(&VK_IDX.to_le_bytes());
+        }
+
+        // vk cell: name="zvzvxngm.rkr" (ROT13 of "mimikatz.exe"), data_length=72, data_cell=DATA_IDX
+        let rot13_name = b"zvzvxngm.rkr";
+        {
+            let vk_off = VK_IDX as usize;
+            let vk_payload_len = 4 + VK_NAME_OFFSET + rot13_name.len();
+            let abs_vk = (vk_payload_len + 4) as i32;
+            hbin[vk_off..vk_off + 4].copy_from_slice(&(-abs_vk).to_le_bytes());
+            let d = vk_off + 4; // vk data start
+            hbin[d..d + 2].copy_from_slice(&VK_SIGNATURE.to_le_bytes());
+            hbin[d + VK_NAME_LENGTH_OFFSET..d + VK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&(rot13_name.len() as u16).to_le_bytes());
+            hbin[d + VK_DATA_LENGTH_OFFSET..d + VK_DATA_LENGTH_OFFSET + 4]
+                .copy_from_slice(&(USERASSIST_DATA_SIZE as u32).to_le_bytes());
+            hbin[d + VK_DATA_OFFSET_OFFSET..d + VK_DATA_OFFSET_OFFSET + 4]
+                .copy_from_slice(&DATA_IDX.to_le_bytes());
+            hbin[d + VK_NAME_OFFSET..d + VK_NAME_OFFSET + rot13_name.len()]
+                .copy_from_slice(rot13_name);
+        }
+
+        // hive block page: RootCell at offset 0x24 = NK_ROOT
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&NK_ROOT.to_le_bytes());
+
+        // data cell page (72 bytes UA data):
+        //   run_count=5 at [4], focus_count=2 at [8], focus_time_ms=3000 at [12],
+        //   last_run_time=132_111_000_000 at [60]
+        let mut data_page = vec![0u8; 0x1000];
+        let data_abs = (USERASSIST_DATA_SIZE as i32 + 4) as i32;
+        data_page[0..4].copy_from_slice(&(-data_abs).to_le_bytes());
+        data_page[4 + 4..4 + 8].copy_from_slice(&5u32.to_le_bytes());   // run_count
+        data_page[4 + 8..4 + 12].copy_from_slice(&2u32.to_le_bytes());  // focus_count
+        data_page[4 + 12..4 + 16].copy_from_slice(&3000u32.to_le_bytes()); // focus_time_ms
+        data_page[4 + 60..4 + 68].copy_from_slice(&132_111_000_000u64.to_le_bytes()); // last_run
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hbin_paddr, &hbin)
+            .map_4k(data_vaddr, data_paddr, flags::WRITABLE)
+            .write_phys(data_paddr, &data_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_userassist(&reader, hive_vaddr).unwrap();
+
+        assert!(!entries.is_empty(), "should find at least one UserAssist entry");
+        let e = &entries[0];
+        assert_eq!(e.name, "mimikatz.exe", "ROT13 name should decode correctly");
+        assert_eq!(e.run_count, 5);
+        assert_eq!(e.focus_count, 2);
+        assert_eq!(e.focus_time_ms, 3000);
+        assert_eq!(e.last_run_time, 132_111_000_000);
+        assert!(e.is_suspicious, "mimikatz.exe should be suspicious");
+    }
 }
