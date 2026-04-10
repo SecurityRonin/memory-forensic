@@ -340,6 +340,264 @@ mod tests {
 
     // ── walk_bigpools tests ─────────────────────────────────────────
 
+    /// walk_bigpools: PoolBigPageTable symbol present but memory unreadable → empty Vec.
+    #[test]
+    fn walk_bigpools_symbol_unreadable_memory() {
+        // Symbol at unmapped address → read fails → empty.
+        let table_sym_addr: u64 = 0xFFFF_8000_DEAD_0000;
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_BIG_PAGES", 24)
+            .add_symbol("PoolBigPageTable", table_sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bigpools(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// walk_bigpools: PoolBigPageTable symbol → 0 table_addr → empty.
+    #[test]
+    fn walk_bigpools_zero_table_addr_empty() {
+        let table_sym_addr: u64 = 0xFFFF_8000_1000_0000;
+        let table_sym_paddr: u64 = 0x0091_0000;
+
+        let mut page = vec![0u8; 4096];
+        // Write 0 as the table pointer value.
+        page[0..8].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_BIG_PAGES", 24)
+            .add_symbol("PoolBigPageTable", table_sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_sym_addr, table_sym_paddr, flags::WRITABLE)
+            .write_phys(table_sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bigpools(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// walk_bigpools: table addr non-zero, PoolBigPageTableSize symbol missing → empty.
+    #[test]
+    fn walk_bigpools_missing_size_symbol_empty() {
+        let table_sym_addr: u64 = 0xFFFF_8000_1100_0000;
+        let table_sym_paddr: u64 = 0x0092_0000;
+        let table_addr: u64 = 0xFFFF_8000_1200_0000;
+
+        let mut page = vec![0u8; 4096];
+        page[0..8].copy_from_slice(&table_addr.to_le_bytes());
+
+        // ISF has PoolBigPageTable but NOT PoolBigPageTableSize.
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_BIG_PAGES", 24)
+            .add_symbol("PoolBigPageTable", table_sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_sym_addr, table_sym_paddr, flags::WRITABLE)
+            .write_phys(table_sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bigpools(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// walk_bigpools: entry_count=0 → empty.
+    #[test]
+    fn walk_bigpools_zero_entry_count_empty() {
+        let table_sym_addr: u64 = 0xFFFF_8000_1300_0000;
+        let table_sym_paddr: u64 = 0x0093_0000;
+        let size_sym_addr: u64 = 0xFFFF_8000_1400_0000;
+        let size_sym_paddr: u64 = 0x0094_0000;
+        let table_addr: u64 = 0xFFFF_8000_1500_0000;
+
+        let mut table_ptr_page = vec![0u8; 4096];
+        table_ptr_page[0..8].copy_from_slice(&table_addr.to_le_bytes());
+
+        let mut size_page = vec![0u8; 4096];
+        size_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // entry_count = 0
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_BIG_PAGES", 24)
+            .add_symbol("PoolBigPageTable", table_sym_addr)
+            .add_symbol("PoolBigPageTableSize", size_sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_sym_addr, table_sym_paddr, flags::WRITABLE)
+            .map_4k(size_sym_addr, size_sym_paddr, flags::WRITABLE)
+            .write_phys(table_sym_paddr, &table_ptr_page)
+            .write_phys(size_sym_paddr, &size_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bigpools(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// walk_bigpools: reads a single valid entry from synthetic memory.
+    #[test]
+    fn walk_bigpools_single_valid_entry() {
+        let table_sym_addr: u64 = 0xFFFF_8000_2000_0000;
+        let table_sym_paddr: u64 = 0x0095_0000;
+        let size_sym_addr: u64 = 0xFFFF_8000_2100_0000;
+        let size_sym_paddr: u64 = 0x0096_0000;
+        let table_addr: u64 = 0xFFFF_8000_2200_0000;
+        let table_paddr: u64 = 0x0097_0000;
+
+        let mut table_ptr_page = vec![0u8; 4096];
+        table_ptr_page[0..8].copy_from_slice(&table_addr.to_le_bytes());
+
+        let mut size_page = vec![0u8; 4096];
+        size_page[0..8].copy_from_slice(&1u64.to_le_bytes()); // entry_count = 1
+
+        // One 24-byte _POOL_TRACKER_BIG_PAGES entry:
+        //   Va=0xFFFF_8000_3000_0002 (is_free=bit0, address=0xFFFF_8000_3000_0002&~1)
+        //   Tag=b"CM31"
+        //   PoolType=1 (PagedPool)
+        //   NumberOfBytes=4096
+        let mut table_page = vec![0u8; 4096];
+        let va: u64 = 0xFFFF_8000_3000_0002; // bit0=0 → not free, address = va & !1
+        let tag_raw: u32 = u32::from_le_bytes(*b"CM31");
+        let pool_type: u32 = 1u32;
+        let num_bytes: u64 = 4096u64;
+        table_page[0..8].copy_from_slice(&va.to_le_bytes());
+        table_page[8..12].copy_from_slice(&tag_raw.to_le_bytes());
+        table_page[12..16].copy_from_slice(&pool_type.to_le_bytes());
+        table_page[16..24].copy_from_slice(&num_bytes.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_BIG_PAGES", 24)
+            .add_symbol("PoolBigPageTable", table_sym_addr)
+            .add_symbol("PoolBigPageTableSize", size_sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_sym_addr, table_sym_paddr, flags::WRITABLE)
+            .map_4k(size_sym_addr, size_sym_paddr, flags::WRITABLE)
+            .map_4k(table_addr, table_paddr, flags::WRITABLE)
+            .write_phys(table_sym_paddr, &table_ptr_page)
+            .write_phys(size_sym_paddr, &size_page)
+            .write_phys(table_paddr, &table_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bigpools(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].pool_tag, "CM31");
+        assert_eq!(result[0].size, 4096);
+        assert_eq!(result[0].pool_type, "PagedPool");
+        assert!(!result[0].is_free);
+    }
+
+    /// walk_bigpools: entry with bit0=1 in Va → is_free=true.
+    #[test]
+    fn walk_bigpools_free_entry_bit0_set() {
+        let table_sym_addr: u64 = 0xFFFF_8000_3000_0000;
+        let table_sym_paddr: u64 = 0x0098_0000;
+        let size_sym_addr: u64 = 0xFFFF_8000_3100_0000;
+        let size_sym_paddr: u64 = 0x0099_0000;
+        let table_addr: u64 = 0xFFFF_8000_3200_0000;
+        let table_paddr: u64 = 0x009A_0000;
+
+        let mut table_ptr_page = vec![0u8; 4096];
+        table_ptr_page[0..8].copy_from_slice(&table_addr.to_le_bytes());
+
+        let mut size_page = vec![0u8; 4096];
+        size_page[0..8].copy_from_slice(&1u64.to_le_bytes());
+
+        let mut table_page = vec![0u8; 4096];
+        // Va with bit0=1 → is_free=true.
+        let va: u64 = 0xFFFF_8000_4000_0001; // bit0 set
+        let tag_raw: u32 = u32::from_le_bytes(*b"Proc");
+        let pool_type: u32 = 0u32;
+        let num_bytes: u64 = 8192u64;
+        table_page[0..8].copy_from_slice(&va.to_le_bytes());
+        table_page[8..12].copy_from_slice(&tag_raw.to_le_bytes());
+        table_page[12..16].copy_from_slice(&pool_type.to_le_bytes());
+        table_page[16..24].copy_from_slice(&num_bytes.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_BIG_PAGES", 24)
+            .add_symbol("PoolBigPageTable", table_sym_addr)
+            .add_symbol("PoolBigPageTableSize", size_sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_sym_addr, table_sym_paddr, flags::WRITABLE)
+            .map_4k(size_sym_addr, size_sym_paddr, flags::WRITABLE)
+            .map_4k(table_addr, table_paddr, flags::WRITABLE)
+            .write_phys(table_sym_paddr, &table_ptr_page)
+            .write_phys(size_sym_paddr, &size_page)
+            .write_phys(table_paddr, &table_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bigpools(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_free);
+        assert_eq!(result[0].pool_tag, "Proc");
+        assert_eq!(result[0].pool_type, "NonPagedPool");
+    }
+
+    /// walk_bigpools: all-zero entry is skipped (va=0, tag=0, size=0).
+    #[test]
+    fn walk_bigpools_all_zero_entry_skipped() {
+        let table_sym_addr: u64 = 0xFFFF_8000_4000_0000;
+        let table_sym_paddr: u64 = 0x009B_0000;
+        let size_sym_addr: u64 = 0xFFFF_8000_4100_0000;
+        let size_sym_paddr: u64 = 0x009C_0000;
+        let table_addr: u64 = 0xFFFF_8000_4200_0000;
+        let table_paddr: u64 = 0x009D_0000;
+
+        let mut table_ptr_page = vec![0u8; 4096];
+        table_ptr_page[0..8].copy_from_slice(&table_addr.to_le_bytes());
+
+        let mut size_page = vec![0u8; 4096];
+        size_page[0..8].copy_from_slice(&1u64.to_le_bytes());
+
+        // Table page: all zeros → va=0, tag=0, bytes=0 → skipped.
+        let table_page = vec![0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_BIG_PAGES", 24)
+            .add_symbol("PoolBigPageTable", table_sym_addr)
+            .add_symbol("PoolBigPageTableSize", size_sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_sym_addr, table_sym_paddr, flags::WRITABLE)
+            .map_4k(size_sym_addr, size_sym_paddr, flags::WRITABLE)
+            .map_4k(table_addr, table_paddr, flags::WRITABLE)
+            .write_phys(table_sym_paddr, &table_ptr_page)
+            .write_phys(size_sym_paddr, &size_page)
+            .write_phys(table_paddr, &table_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bigpools(&reader).unwrap();
+        assert!(result.is_empty(), "all-zero entry should be skipped");
+    }
+
     /// No PoolBigPageTable symbol -> empty Vec (not an error).
     #[test]
     fn walk_no_symbol_returns_empty() {

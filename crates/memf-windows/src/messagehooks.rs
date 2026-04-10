@@ -573,6 +573,86 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// walker with grpWinStaList → non-zero winsta → zero desktop list → empty.
+    #[test]
+    fn walk_message_hooks_nonzero_winsta_zero_desktop() {
+        let sym_vaddr: u64 = 0xFFFF_8000_3100_0000;
+        let sym_paddr: u64 = 0x0073_0000;
+        let winsta_vaddr: u64 = 0xFFFF_8000_3200_0000;
+        let winsta_paddr: u64 = 0x0074_0000;
+
+        // sym page: 8 bytes = winsta_vaddr.
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_vaddr.to_le_bytes());
+
+        // winsta page: all zeros → first_desktop = 0 (at winsta + 0x18).
+        // rpwinstaNext at winsta + 0x10 = 0 → loop ends.
+        let winsta_page = vec![0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HOOK", 0x80)
+            .add_symbol("grpWinStaList", sym_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_vaddr, winsta_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_message_hooks(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// classify: WH_SHELL from downloads path is suspicious.
+    #[test]
+    fn classify_shell_hook_downloads_suspicious() {
+        assert!(classify_message_hook(
+            "WH_SHELL",
+            "C:\\Users\\victim\\Downloads\\hook.dll"
+        ));
+    }
+
+    /// classify: WH_CBT from imm32.dll is benign.
+    #[test]
+    fn classify_cbt_imm32_benign() {
+        assert!(!classify_message_hook("WH_CBT", "imm32.dll"));
+    }
+
+    /// classify: WH_MOUSE_LL from msctf.dll is benign.
+    #[test]
+    fn classify_mouse_ll_msctf_benign() {
+        assert!(!classify_message_hook("WH_MOUSE_LL", "msctf.dll"));
+    }
+
+    /// classify: path-qualified imm32.dll is benign for WH_KEYBOARD_LL.
+    #[test]
+    fn classify_path_qualified_imm32_benign() {
+        assert!(!classify_message_hook(
+            "WH_KEYBOARD_LL",
+            "C:\\Windows\\System32\\imm32.dll"
+        ));
+    }
+
+    /// hook_type_name: value 15 → unknown.
+    #[test]
+    fn hook_type_name_value_15_unknown() {
+        assert_eq!(hook_type_name(15), "WH_UNKNOWN(15)");
+    }
+
+    /// HOOK_TYPE_COUNT and MAX_HOOKS constants are reasonable.
+    #[test]
+    fn hook_constants_sensible() {
+        assert_eq!(HOOK_TYPE_COUNT, 16);
+        assert!(MAX_HOOKS > 0);
+        assert!(MAX_HOOKS <= 65536);
+    }
+
     /// MessageHookInfo serializes to JSON.
     #[test]
     fn message_hook_info_serializes() {

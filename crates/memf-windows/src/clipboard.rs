@@ -475,6 +475,201 @@ mod tests {
         assert_eq!(format_name(9999), "Unknown");
     }
 
+    // ── read_ansi_preview and read_unicode_preview coverage ──────────
+
+    /// read_ansi_preview from a mapped page returns text correctly.
+    #[test]
+    fn read_ansi_preview_mapped_text() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let addr: u64 = 0x0010_0000;
+        let paddr: u64 = 0x0010_0000;
+        let mut page = vec![0u8; 4096];
+        let text = b"hello world\0";
+        page[..text.len()].copy_from_slice(text);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(addr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let (size, preview) = read_ansi_preview(&reader, addr);
+        assert_eq!(preview, "hello world");
+        assert_eq!(size, 11); // length before null
+    }
+
+    /// read_ansi_preview with addr=0 returns empty.
+    #[test]
+    fn read_ansi_preview_zero_addr_empty() {
+        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let (size, preview) = read_ansi_preview(&reader, 0);
+        assert_eq!(size, 0);
+        assert!(preview.is_empty());
+    }
+
+    /// read_ansi_preview from unmapped address returns empty.
+    #[test]
+    fn read_ansi_preview_unmapped_addr_empty() {
+        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let (size, preview) = read_ansi_preview(&reader, 0xDEAD_BEEF_0000);
+        assert_eq!(size, 0);
+        assert!(preview.is_empty());
+    }
+
+    /// read_unicode_preview with addr=0 returns empty.
+    #[test]
+    fn read_unicode_preview_zero_addr_empty() {
+        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let (size, preview) = read_unicode_preview(&reader, 0);
+        assert_eq!(size, 0);
+        assert!(preview.is_empty());
+    }
+
+    /// read_unicode_preview from unmapped address returns empty.
+    #[test]
+    fn read_unicode_preview_unmapped_empty() {
+        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let (size, preview) = read_unicode_preview(&reader, 0xDEAD_BEEF_0000);
+        assert_eq!(size, 0);
+        assert!(preview.is_empty());
+    }
+
+    /// read_unicode_preview decodes a UTF-16LE string from mapped memory.
+    #[test]
+    fn read_unicode_preview_mapped_text() {
+        use memf_core::test_builders::flags;
+        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let addr: u64 = 0x0020_0000;
+        let paddr: u64 = 0x0020_0000;
+        let mut page = vec![0u8; 4096];
+        // "Hi" in UTF-16LE = [0x48, 0x00, 0x69, 0x00, 0x00, 0x00]
+        let utf16: &[u8] = &[0x48, 0x00, 0x69, 0x00, 0x00, 0x00];
+        page[..utf16.len()].copy_from_slice(utf16);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(addr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let (size, preview) = read_unicode_preview(&reader, addr);
+        assert_eq!(preview, "Hi");
+        assert_eq!(size, 4); // 2 chars * 2 bytes, stopping at null
+    }
+
+    /// MAX_CLIP_ENTRIES constant is reasonable.
+    #[test]
+    fn max_clip_entries_constant_sensible() {
+        assert!(MAX_CLIP_ENTRIES > 0);
+        assert!(MAX_CLIP_ENTRIES <= 4096);
+    }
+
+    // ── walk_clipboard tests — walker body coverage ──────────────────
+
+    /// walk_clipboard: grpWinStaList symbol present but memory read fails → empty.
+    #[test]
+    fn walk_clipboard_symbol_but_unreadable_memory() {
+        use memf_core::test_builders::flags;
+        // Symbol at an unmapped address → reading 8 bytes fails → empty.
+        let sym_addr: u64 = 0xFFFF_8000_9999_0000;
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_clipboard(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// walk_clipboard: grpWinStaList points to a 0 winsta ptr → empty.
+    #[test]
+    fn walk_clipboard_zero_winsta_ptr_empty() {
+        use memf_core::test_builders::flags;
+        let sym_addr: u64 = 0xFFFF_8000_5000_0000;
+        let sym_paddr: u64 = 0x0050_0000;
+
+        let mut page = vec![0u8; 4096];
+        // Write 0 as winsta pointer.
+        page[0..8].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_clipboard(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// walk_clipboard: grpWinStaList → valid winsta but cNumClipFormats=0 → empty.
+    #[test]
+    fn walk_clipboard_zero_num_formats_empty() {
+        use memf_core::test_builders::flags;
+        let sym_addr: u64 = 0xFFFF_8000_5100_0000;
+        let sym_paddr: u64 = 0x0051_0000;
+        let winsta_addr: u64 = 0x0000_7FF0_4000_0000;
+        let winsta_paddr: u64 = 0x0052_0000;
+
+        // sym page: 8 bytes = winsta_addr.
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
+
+        // winsta page: cNumClipFormats at default offset 0x60 = 0.
+        let winsta_page = vec![0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_clipboard(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
     // ── walk_clipboard tests ──────────────────────────────────────────
 
     /// No grpWinStaList symbol → empty Vec.
