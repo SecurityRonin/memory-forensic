@@ -50,11 +50,7 @@ const SYSTEM_PROCESSES: &[&str] = &[
 ];
 
 /// DLLs commonly used as injection targets / trampolines.
-const KNOWN_INJECTION_TARGETS: &[&str] = &[
-    "ntdll.dll",
-    "kernel32.dll",
-    "kernelbase.dll",
-];
+const KNOWN_INJECTION_TARGETS: &[&str] = &["ntdll.dll", "kernel32.dll", "kernelbase.dll"];
 
 /// Classify whether a thread is suspicious based on its characteristics.
 ///
@@ -109,11 +105,7 @@ pub fn classify_suspicious_thread(
     //  combined with other signals. Since is_orphan is false here,
     //  this combination doesn't apply. Keep for clarity.)
     let _mod_lower = start_module.to_lowercase();
-    if KNOWN_INJECTION_TARGETS
-        .iter()
-        .any(|&t| _mod_lower == t)
-        && is_orphan
-    {
+    if KNOWN_INJECTION_TARGETS.iter().any(|&t| _mod_lower == t) && is_orphan {
         return (
             true,
             format!(
@@ -137,17 +129,17 @@ const VAD_PROT_EXECUTE_WRITECOPY: u32 = 7;
 
 /// Whether a VAD protection value indicates RWX.
 fn is_rwx_protection(prot: u32) -> bool {
-    matches!(prot, VAD_PROT_EXECUTE_READWRITE | VAD_PROT_EXECUTE_WRITECOPY)
+    matches!(
+        prot,
+        VAD_PROT_EXECUTE_READWRITE | VAD_PROT_EXECUTE_WRITECOPY
+    )
 }
 
 /// Find which module (DLL) contains the given address.
 ///
 /// Returns the DLL base name if found, or "unknown" if the address
 /// doesn't fall within any loaded module's range.
-fn find_containing_module(
-    dlls: &[crate::WinDllInfo],
-    address: u64,
-) -> (String, bool) {
+fn find_containing_module(dlls: &[crate::WinDllInfo], address: u64) -> (String, bool) {
     for dll in dlls {
         let end = dll.base_addr.saturating_add(dll.size);
         if address >= dll.base_addr && address < end {
@@ -160,9 +152,7 @@ fn find_containing_module(
 /// Check whether the given address falls within an RWX VAD region.
 fn is_address_in_rwx_vad(vads: &[crate::WinVadInfo], address: u64) -> bool {
     vads.iter().any(|v| {
-        address >= v.start_vaddr
-            && address <= v.end_vaddr
-            && is_rwx_protection(v.protection)
+        address >= v.start_vaddr && address <= v.end_vaddr && is_rwx_protection(v.protection)
     })
 }
 
@@ -185,9 +175,7 @@ pub fn walk_suspicious_threads<P: PhysicalMemoryProvider + Clone>(
     let procs = process::walk_processes(reader, ps_head)?;
 
     // Resolve VadRoot offset (optional — degrade gracefully)
-    let vad_root_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "VadRoot");
+    let vad_root_offset = reader.symbols().field_offset("_EPROCESS", "VadRoot");
 
     let mut suspicious = Vec::new();
 
@@ -230,12 +218,8 @@ pub fn walk_suspicious_threads<P: PhysicalMemoryProvider + Clone>(
             let (start_module, is_orphan) = find_containing_module(&dlls, thr.start_address);
             let in_rwx = is_address_in_rwx_vad(&vads, thr.start_address);
 
-            let (is_suspicious, reason) = classify_suspicious_thread(
-                &start_module,
-                is_orphan,
-                in_rwx,
-                &proc.image_name,
-            );
+            let (is_suspicious, reason) =
+                classify_suspicious_thread(&start_module, is_orphan, in_rwx, &proc.image_name);
 
             if is_suspicious {
                 suspicious.push(SuspiciousThreadInfo {
@@ -300,14 +284,16 @@ mod tests {
     fn normal_module_benign() {
         let (suspicious, reason) =
             classify_suspicious_thread("kernel32.dll", false, false, "notepad.exe");
-        assert!(!suspicious, "normal thread in known module should be benign");
+        assert!(
+            !suspicious,
+            "normal thread in known module should be benign"
+        );
         assert!(reason.is_empty(), "benign reason should be empty: {reason}");
     }
 
     #[test]
     fn system_process_orphan_suspicious() {
-        let (suspicious, reason) =
-            classify_suspicious_thread("unknown", true, false, "csrss.exe");
+        let (suspicious, reason) = classify_suspicious_thread("unknown", true, false, "csrss.exe");
         assert!(
             suspicious,
             "orphan thread in system process should be suspicious"
@@ -385,5 +371,142 @@ mod tests {
             result.is_empty(),
             "should return empty Vec when PsActiveProcessHead symbol is missing"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // is_rwx_protection unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn is_rwx_protection_execute_readwrite() {
+        assert!(is_rwx_protection(VAD_PROT_EXECUTE_READWRITE));
+    }
+
+    #[test]
+    fn is_rwx_protection_execute_writecopy() {
+        assert!(is_rwx_protection(VAD_PROT_EXECUTE_WRITECOPY));
+    }
+
+    #[test]
+    fn is_rwx_protection_readonly_not_rwx() {
+        // PAGE_READONLY = 1
+        assert!(!is_rwx_protection(1));
+        // PAGE_READWRITE = 4
+        assert!(!is_rwx_protection(4));
+        // PAGE_EXECUTE_READ = 5
+        assert!(!is_rwx_protection(5));
+        // 0 (not committed)
+        assert!(!is_rwx_protection(0));
+    }
+
+    // ---------------------------------------------------------------
+    // find_containing_module unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn find_containing_module_found() {
+        let dlls = vec![crate::WinDllInfo {
+            name: "ntdll.dll".to_string(),
+            base_addr: 0x7FFE_0000_0000,
+            size: 0x20_0000,
+            full_path: String::new(),
+            load_order: 0,
+        }];
+        let addr = 0x7FFE_0000_0000 + 0x1000; // inside ntdll
+        let (module, is_orphan) = find_containing_module(&dlls, addr);
+        assert_eq!(module, "ntdll.dll");
+        assert!(!is_orphan);
+    }
+
+    #[test]
+    fn find_containing_module_not_found() {
+        let dlls = vec![crate::WinDllInfo {
+            name: "ntdll.dll".to_string(),
+            base_addr: 0x7FFE_0000_0000,
+            size: 0x20_0000,
+            full_path: String::new(),
+            load_order: 0,
+        }];
+        let addr = 0xDEAD_BEEF_0000; // outside any dll range
+        let (module, is_orphan) = find_containing_module(&dlls, addr);
+        assert_eq!(module, "unknown");
+        assert!(is_orphan);
+    }
+
+    #[test]
+    fn find_containing_module_empty_dlls() {
+        let (module, is_orphan) = find_containing_module(&[], 0x1000);
+        assert_eq!(module, "unknown");
+        assert!(is_orphan);
+    }
+
+    #[test]
+    fn find_containing_module_at_exact_base() {
+        let dlls = vec![crate::WinDllInfo {
+            name: "kernel32.dll".to_string(),
+            base_addr: 0x7700_0000,
+            size: 0x10_0000,
+            full_path: String::new(),
+            load_order: 1,
+        }];
+        // Exactly at base address
+        let (module, is_orphan) = find_containing_module(&dlls, 0x7700_0000);
+        assert_eq!(module, "kernel32.dll");
+        assert!(!is_orphan);
+    }
+
+    // ---------------------------------------------------------------
+    // is_address_in_rwx_vad unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn is_address_in_rwx_vad_inside_rwx() {
+        let vads = vec![crate::WinVadInfo {
+            start_vaddr: 0x0001_0000,
+            end_vaddr: 0x0002_0000,
+            protection: VAD_PROT_EXECUTE_READWRITE,
+            protection_str: "PAGE_EXECUTE_READWRITE".to_string(),
+            pid: 1,
+            image_name: "test.exe".to_string(),
+            is_private: true,
+        }];
+        assert!(is_address_in_rwx_vad(&vads, 0x0001_5000));
+    }
+
+    #[test]
+    fn is_address_in_rwx_vad_inside_non_rwx() {
+        let vads = vec![crate::WinVadInfo {
+            start_vaddr: 0x0001_0000,
+            end_vaddr: 0x0002_0000,
+            protection: 4, // PAGE_READWRITE
+            protection_str: "PAGE_READWRITE".to_string(),
+            pid: 1,
+            image_name: "test.exe".to_string(),
+            is_private: true,
+        }];
+        assert!(!is_address_in_rwx_vad(&vads, 0x0001_5000));
+    }
+
+    #[test]
+    fn is_address_in_rwx_vad_outside_rwx() {
+        let vads = vec![crate::WinVadInfo {
+            start_vaddr: 0x0001_0000,
+            end_vaddr: 0x0002_0000,
+            protection: VAD_PROT_EXECUTE_READWRITE,
+            protection_str: "PAGE_EXECUTE_READWRITE".to_string(),
+            pid: 1,
+            image_name: "test.exe".to_string(),
+            is_private: true,
+        }];
+        // Address outside the VAD range
+        assert!(!is_address_in_rwx_vad(&vads, 0x0005_0000));
+    }
+
+    #[test]
+    fn classify_system_process_orphan_with_rwx_prioritizes_system_rule() {
+        // Both system process + rwx; rule 1 (system process orphan) fires first
+        let (suspicious, reason) = classify_suspicious_thread("unknown", true, true, "lsass.exe");
+        assert!(suspicious);
+        assert!(reason.contains("system process"), "rule 1 should fire: {reason}");
     }
 }

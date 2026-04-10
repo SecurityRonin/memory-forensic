@@ -96,9 +96,7 @@ pub fn walk_etw_sessions<P: PhysicalMemoryProvider>(
         // Read the pointer at array[i] (8-byte pointer).
         let ptr_addr = array_addr + (i as u64) * 8;
         let ctx_addr = match reader.read_bytes(ptr_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => {
-                u64::from_le_bytes(bytes[..8].try_into().unwrap())
-            }
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
             _ => break, // End of mapped memory — stop scanning.
         };
 
@@ -107,8 +105,7 @@ pub fn walk_etw_sessions<P: PhysicalMemoryProvider>(
         }
 
         // Read _WMI_LOGGER_CONTEXT fields.
-        let name = read_unicode_string(reader, ctx_addr + name_offset)
-            .unwrap_or_default();
+        let name = read_unicode_string(reader, ctx_addr + name_offset).unwrap_or_default();
 
         let running: u32 = reader
             .read_field(ctx_addr, "_WMI_LOGGER_CONTEXT", "Running")

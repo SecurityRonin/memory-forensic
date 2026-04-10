@@ -115,9 +115,7 @@ pub fn walk_peb_masquerade<P: PhysicalMemoryProvider>(
         .symbols()
         .field_offset("_RTL_USER_PROCESS_PARAMETERS", "ImagePathName")
         .ok_or_else(|| {
-            Error::Walker(
-                "missing _RTL_USER_PROCESS_PARAMETERS.ImagePathName offset".into(),
-            )
+            Error::Walker("missing _RTL_USER_PROCESS_PARAMETERS.ImagePathName offset".into())
         })?;
     let image_path_ustr_addr = params_ptr.wrapping_add(image_path_offset);
     let peb_image_path = read_unicode_string(reader, image_path_ustr_addr)?;
@@ -127,9 +125,7 @@ pub fn walk_peb_masquerade<P: PhysicalMemoryProvider>(
         .symbols()
         .field_offset("_RTL_USER_PROCESS_PARAMETERS", "CommandLine")
         .ok_or_else(|| {
-            Error::Walker(
-                "missing _RTL_USER_PROCESS_PARAMETERS.CommandLine offset".into(),
-            )
+            Error::Walker("missing _RTL_USER_PROCESS_PARAMETERS.CommandLine offset".into())
         })?;
     let cmdline_ustr_addr = params_ptr.wrapping_add(cmdline_offset);
     let peb_command_line = read_unicode_string(reader, cmdline_ustr_addr)?;
@@ -175,10 +171,7 @@ mod tests {
     #[test]
     fn classify_csrss_masquerade_suspicious() {
         // EPROCESS says csrss.exe but PEB points to a completely different binary
-        assert!(classify_peb_masquerade(
-            "csrss.exe",
-            r"C:\Temp\malware.exe"
-        ));
+        assert!(classify_peb_masquerade("csrss.exe", r"C:\Temp\malware.exe"));
     }
 
     #[test]

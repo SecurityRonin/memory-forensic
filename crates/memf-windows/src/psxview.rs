@@ -106,9 +106,7 @@ fn walk_active_list<P: PhysicalMemoryProvider>(
 ///
 /// `PspCidTable` is a pointer to a `_HANDLE_TABLE` whose entries map
 /// PIDs (as handle values) to `_EPROCESS` pointers.
-fn walk_cid_table<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-) -> Result<Vec<RawProcInfo>> {
+fn walk_cid_table<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<RawProcInfo>> {
     let cid_table_ptr = reader
         .symbols()
         .symbol_address("PspCidTable")
@@ -117,9 +115,11 @@ fn walk_cid_table<P: PhysicalMemoryProvider>(
     // PspCidTable stores a pointer to _HANDLE_TABLE; dereference it.
     let ht_addr: u64 = {
         let bytes = reader.read_bytes(cid_table_ptr, 8)?;
-        u64::from_le_bytes(bytes.try_into().map_err(|_| {
-            Error::Walker("failed to read PspCidTable pointer".into())
-        })?)
+        u64::from_le_bytes(
+            bytes
+                .try_into()
+                .map_err(|_| Error::Walker("failed to read PspCidTable pointer".into()))?,
+        )
     };
 
     if ht_addr == 0 {
@@ -148,8 +148,7 @@ fn walk_cid_table<P: PhysicalMemoryProvider>(
         .ok_or_else(|| Error::Walker("missing _HANDLE_TABLE_ENTRY size".into()))?;
 
     // Read NextHandleNeedingPool to determine entry count
-    let next_handle: u32 =
-        reader.read_field(ht_addr, "_HANDLE_TABLE", "NextHandleNeedingPool")?;
+    let next_handle: u32 = reader.read_field(ht_addr, "_HANDLE_TABLE", "NextHandleNeedingPool")?;
 
     // Number of entries = next_handle / 4 (handle values are index * 4)
     let num_entries = u64::from(next_handle) / 4;
@@ -162,14 +161,11 @@ fn walk_cid_table<P: PhysicalMemoryProvider>(
     for idx in 1..num_entries {
         let entry_addr = base_addr + idx * entry_size;
 
-        let obj_ptr: u64 = match reader.read_field(
-            entry_addr,
-            "_HANDLE_TABLE_ENTRY",
-            "ObjectPointerBits",
-        ) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let obj_ptr: u64 =
+            match reader.read_field(entry_addr, "_HANDLE_TABLE_ENTRY", "ObjectPointerBits") {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
         if obj_ptr == 0 {
             continue;
@@ -337,10 +333,7 @@ mod tests {
             .write_phys_u64(paddr + EPROCESS_PEB, 0)
             .write_phys(paddr + EPROCESS_IMAGE_NAME, name_bytes);
         if name_bytes.len() < 15 {
-            ptb = ptb.write_phys(
-                paddr + EPROCESS_IMAGE_NAME + name_bytes.len() as u64,
-                &[0],
-            );
+            ptb = ptb.write_phys(paddr + EPROCESS_IMAGE_NAME + name_bytes.len() as u64, &[0]);
         }
         ptb
     }
@@ -371,11 +364,11 @@ mod tests {
         //   PspCidTable -> _HANDLE_TABLE -> entry for pid=4 -> eproc1
         //
         // Physical addresses (all below 0x100_0000 = 16MB):
-        let head_paddr: u64 = 0x0010_0000;     // 1MB - sentinel LIST_ENTRY
-        let eproc1_paddr: u64 = 0x0020_0000;   // 2MB - _EPROCESS for System (pid=4)
-        let cid_ptr_paddr: u64 = 0x0030_0000;  // 3MB - PspCidTable pointer
-        let ht_paddr: u64 = 0x0040_0000;       // 4MB - _HANDLE_TABLE
-        let entries_paddr: u64 = 0x0050_0000;  // 5MB - handle table entries
+        let head_paddr: u64 = 0x0010_0000; // 1MB - sentinel LIST_ENTRY
+        let eproc1_paddr: u64 = 0x0020_0000; // 2MB - _EPROCESS for System (pid=4)
+        let cid_ptr_paddr: u64 = 0x0030_0000; // 3MB - PspCidTable pointer
+        let ht_paddr: u64 = 0x0040_0000; // 4MB - _HANDLE_TABLE
+        let entries_paddr: u64 = 0x0050_0000; // 5MB - handle table entries
 
         // Virtual addresses
         let head_vaddr: u64 = PS_ACTIVE_HEAD_VADDR;
@@ -390,7 +383,11 @@ mod tests {
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
             // Map the _EPROCESS upper page too (ImageFileName at 0x5A8 needs second page)
-            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(
+                eproc1_vaddr + 0x1000,
+                eproc1_paddr + 0x1000,
+                flags::WRITABLE,
+            )
             .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
             .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
             .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE);
@@ -444,8 +441,8 @@ mod tests {
         // Malware is only in CID table (removed from ActiveProcessLinks via DKOM).
 
         let head_paddr: u64 = 0x0010_0000;
-        let eproc1_paddr: u64 = 0x0020_0000;   // System, pid=4
-        let eproc2_paddr: u64 = 0x0030_0000;   // malware.exe, pid=8
+        let eproc1_paddr: u64 = 0x0020_0000; // System, pid=4
+        let eproc2_paddr: u64 = 0x0030_0000; // malware.exe, pid=8
         let cid_ptr_paddr: u64 = 0x0040_0000;
         let ht_paddr: u64 = 0x0050_0000;
         let entries_paddr: u64 = 0x0060_0000;
@@ -461,9 +458,17 @@ mod tests {
         let ptb = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
-            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(
+                eproc1_vaddr + 0x1000,
+                eproc1_paddr + 0x1000,
+                flags::WRITABLE,
+            )
             .map_4k(eproc2_vaddr, eproc2_paddr, flags::WRITABLE)
-            .map_4k(eproc2_vaddr + 0x1000, eproc2_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(
+                eproc2_vaddr + 0x1000,
+                eproc2_paddr + 0x1000,
+                flags::WRITABLE,
+            )
             .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
             .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
             .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE);

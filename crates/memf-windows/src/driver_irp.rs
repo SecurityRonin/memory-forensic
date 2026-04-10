@@ -106,10 +106,8 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
     driver_obj_addr: u64,
     modules: &[crate::WinDriverInfo],
 ) -> Result<Vec<DriverIrpHookInfo>> {
-    let driver_base: u64 =
-        reader.read_field(driver_obj_addr, "_DRIVER_OBJECT", "DriverStart")?;
-    let driver_size: u32 =
-        reader.read_field(driver_obj_addr, "_DRIVER_OBJECT", "DriverSize")?;
+    let driver_base: u64 = reader.read_field(driver_obj_addr, "_DRIVER_OBJECT", "DriverStart")?;
+    let driver_size: u32 = reader.read_field(driver_obj_addr, "_DRIVER_OBJECT", "DriverSize")?;
 
     let driver_name_offset = reader
         .symbols()
@@ -133,8 +131,11 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
     let mut results = Vec::new();
     for i in 0..IRP_MJ_COUNT {
         let byte_off = i * 8;
-        let handler_addr =
-            u64::from_le_bytes(mf_bytes[byte_off..byte_off + 8].try_into().expect("8 bytes"));
+        let handler_addr = u64::from_le_bytes(
+            mf_bytes[byte_off..byte_off + 8]
+                .try_into()
+                .expect("8 bytes"),
+        );
         if handler_addr == 0 {
             continue;
         }

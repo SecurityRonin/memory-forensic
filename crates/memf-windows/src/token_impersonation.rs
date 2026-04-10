@@ -58,9 +58,7 @@ pub fn classify_token_impersonation(
     impersonation_user: &str,
     level: u32,
 ) -> bool {
-    impersonation_user.contains("S-1-5-18")
-        && !primary_user.contains("S-1-5-18")
-        && level >= 2
+    impersonation_user.contains("S-1-5-18") && !primary_user.contains("S-1-5-18") && level >= 2
 }
 
 /// Walk all threads and detect suspicious token impersonation.
@@ -104,8 +102,8 @@ mod tests {
     fn classify_system_impersonation_from_user_process_suspicious() {
         assert!(classify_token_impersonation(
             "S-1-5-21-1234567890-1234567890-1234567890-1001", // regular user
-            "S-1-5-18",                                        // SYSTEM
-            2,                                                  // Impersonation level
+            "S-1-5-18",                                       // SYSTEM
+            2,                                                // Impersonation level
         ));
     }
 

@@ -109,7 +109,8 @@ pub fn walk_crashinfo<P: PhysicalMemoryProvider>(
     let param4 = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
 
     // Try to read system_time from KdDebuggerDataBlock at offset +0x14.
-    let system_time = if let Some(kd_addr) = reader.symbols().symbol_address("KdDebuggerDataBlock") {
+    let system_time = if let Some(kd_addr) = reader.symbols().symbol_address("KdDebuggerDataBlock")
+    {
         reader
             .read_bytes(kd_addr.wrapping_add(0x14), 8)
             .ok()
@@ -333,8 +334,7 @@ mod tests {
         let bugcheck_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let bugcheck_paddr: u64 = 0x0090_0000;
 
-        let isf = IsfBuilder::new()
-            .add_symbol("KiBugCheckData", bugcheck_vaddr);
+        let isf = IsfBuilder::new().add_symbol("KiBugCheckData", bugcheck_vaddr);
 
         let json = isf.build_json();
         let resolver = IsfResolver::from_value(&json).unwrap();
@@ -370,8 +370,7 @@ mod tests {
         let bugcheck_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let bugcheck_paddr: u64 = 0x0090_0000;
 
-        let isf = IsfBuilder::new()
-            .add_symbol("KiBugCheckData", bugcheck_vaddr);
+        let isf = IsfBuilder::new().add_symbol("KiBugCheckData", bugcheck_vaddr);
 
         let json = isf.build_json();
         let resolver = IsfResolver::from_value(&json).unwrap();

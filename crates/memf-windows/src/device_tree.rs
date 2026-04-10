@@ -204,17 +204,19 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
         let driver_addr = flink.wrapping_sub(driver_section_off as u64);
 
         // Read DriverName (_UNICODE_STRING)
-        let driver_name = read_unicode_string(reader, driver_addr.wrapping_add(driver_name_off as u64))
-            .unwrap_or_default();
+        let driver_name =
+            read_unicode_string(reader, driver_addr.wrapping_add(driver_name_off as u64))
+                .unwrap_or_default();
 
         // Read DeviceObject pointer
-        let dev_ptr_bytes = match reader.read_bytes(driver_addr.wrapping_add(device_object_off as u64), 8) {
-            Ok(b) => b,
-            Err(_) => {
-                current = flink;
-                continue;
-            }
-        };
+        let dev_ptr_bytes =
+            match reader.read_bytes(driver_addr.wrapping_add(device_object_off as u64), 8) {
+                Ok(b) => b,
+                Err(_) => {
+                    current = flink;
+                    continue;
+                }
+            };
         let mut device_addr = u64::from_le_bytes(dev_ptr_bytes[..8].try_into().unwrap());
 
         // Walk the device chain
@@ -380,7 +382,10 @@ mod tests {
     }
 
     /// Build a reader from ISF and page table builder.
-    fn make_reader(isf: &serde_json::Value, ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
+    fn make_reader(
+        isf: &serde_json::Value,
+        ptb: PageTableBuilder,
+    ) -> ObjectReader<SyntheticPhysMem> {
         let resolver = IsfResolver::from_value(isf).unwrap();
         let (cr3, mem) = ptb.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);

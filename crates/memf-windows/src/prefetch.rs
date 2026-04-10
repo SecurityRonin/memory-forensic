@@ -128,7 +128,9 @@ fn parse_prefetch_header<P: PhysicalMemoryProvider>(
     addr: u64,
 ) -> Option<PrefetchInfo> {
     // Read the executable name (UTF-16LE, 30 wchars = 60 bytes).
-    let name_bytes = reader.read_bytes(addr + EXE_NAME_OFFSET as u64, EXE_NAME_LEN).ok()?;
+    let name_bytes = reader
+        .read_bytes(addr + EXE_NAME_OFFSET as u64, EXE_NAME_LEN)
+        .ok()?;
     if name_bytes.len() < EXE_NAME_LEN {
         return None;
     }
@@ -261,10 +263,7 @@ mod tests {
 
         // Write executable name at offset 0x10 as UTF-16LE: "NOTEPAD.EXE"
         let exe_name = "NOTEPAD.EXE";
-        let exe_utf16: Vec<u8> = exe_name
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let exe_utf16: Vec<u8> = exe_name.encode_utf16().flat_map(u16::to_le_bytes).collect();
         builder = builder.write_phys(PF_PADDR + EXE_NAME_OFFSET as u64, &exe_utf16);
 
         // Write path hash at offset 0x4C

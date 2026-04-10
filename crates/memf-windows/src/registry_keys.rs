@@ -140,10 +140,8 @@ pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
     max_depth: usize,
 ) -> crate::Result<Vec<RegistryKeyInfo>> {
     // Read root cell index from _HBASE_BLOCK
-    let root_cell_bytes = reader.read_bytes(
-        hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET),
-        4,
-    )?;
+    let root_cell_bytes =
+        reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4)?;
     let root_cell = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
 
     if root_cell == 0 {
@@ -152,7 +150,14 @@ pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
 
     let depth = max_depth.min(MAX_DEPTH);
     let mut keys = Vec::new();
-    walk_key_recursive(reader, hive_addr, root_cell, String::new(), depth, &mut keys)?;
+    walk_key_recursive(
+        reader,
+        hive_addr,
+        root_cell,
+        String::new(),
+        depth,
+        &mut keys,
+    )?;
     Ok(keys)
 }
 
@@ -251,7 +256,8 @@ fn read_cell_data<P: PhysicalMemoryProvider>(
     let data_len = abs_size - 4;
     // Cap read to prevent runaway reads on corrupt data
     let capped_len = data_len.min(0x10000);
-    reader.read_bytes(cell_vaddr.wrapping_add(4), capped_len)
+    reader
+        .read_bytes(cell_vaddr.wrapping_add(4), capped_len)
         .map_err(Into::into)
 }
 
@@ -366,9 +372,8 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                 if entry_off + 4 > sl_data.len() {
                     break;
                 }
-                let child_cell = u32::from_le_bytes(
-                    sl_data[entry_off..entry_off + 4].try_into().unwrap(),
-                );
+                let child_cell =
+                    u32::from_le_bytes(sl_data[entry_off..entry_off + 4].try_into().unwrap());
                 walk_key_recursive(
                     reader,
                     hive_addr,
@@ -389,9 +394,8 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                 if entry_off + 4 > sl_data.len() {
                     break;
                 }
-                let child_cell = u32::from_le_bytes(
-                    sl_data[entry_off..entry_off + 4].try_into().unwrap(),
-                );
+                let child_cell =
+                    u32::from_le_bytes(sl_data[entry_off..entry_off + 4].try_into().unwrap());
                 walk_key_recursive(
                     reader,
                     hive_addr,
@@ -412,9 +416,8 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                 if entry_off + 4 > sl_data.len() {
                     break;
                 }
-                let sub_list_cell = u32::from_le_bytes(
-                    sl_data[entry_off..entry_off + 4].try_into().unwrap(),
-                );
+                let sub_list_cell =
+                    u32::from_le_bytes(sl_data[entry_off..entry_off + 4].try_into().unwrap());
                 // Read the sub-list and enumerate its children
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
                 let sub_data = read_cell_data(reader, sub_vaddr)?;
@@ -436,9 +439,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                     if off + 4 > sub_data.len() {
                         break;
                     }
-                    let child_cell = u32::from_le_bytes(
-                        sub_data[off..off + 4].try_into().unwrap(),
-                    );
+                    let child_cell = u32::from_le_bytes(sub_data[off..off + 4].try_into().unwrap());
                     walk_key_recursive(
                         reader,
                         hive_addr,
@@ -498,7 +499,9 @@ fn read_single_value<P: PhysicalMemoryProvider>(
     );
 
     let value_type_raw = u32::from_le_bytes(
-        vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].try_into().unwrap(),
+        vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4]
+            .try_into()
+            .unwrap(),
     );
 
     let name = if name_length == 0 {
@@ -518,10 +521,7 @@ fn read_single_value<P: PhysicalMemoryProvider>(
     let (actual_data_length, data_preview) = if data_length_raw & 0x8000_0000 != 0 {
         let inline_len = (data_length_raw & 0x7FFF_FFFF).min(4);
         let inline_bytes = data_offset.to_le_bytes();
-        let preview = format_data_preview(
-            value_type_raw,
-            &inline_bytes[..inline_len as usize],
-        );
+        let preview = format_data_preview(value_type_raw, &inline_bytes[..inline_len as usize]);
         (inline_len, preview)
     } else if data_length_raw > 0 && data_length_raw < 0x8000_0000 {
         // Data is in a separate cell
@@ -683,8 +683,7 @@ mod tests {
         data[NK_LAST_WRITE_TIME_OFFSET..NK_LAST_WRITE_TIME_OFFSET + 8]
             .copy_from_slice(&last_write_time.to_le_bytes());
         // Parent (unused in these tests)
-        data[NK_PARENT_OFFSET..NK_PARENT_OFFSET + 4]
-            .copy_from_slice(&0u32.to_le_bytes());
+        data[NK_PARENT_OFFSET..NK_PARENT_OFFSET + 4].copy_from_slice(&0u32.to_le_bytes());
         // Stable subkey count
         data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
             .copy_from_slice(&stable_subkey_count.to_le_bytes());
@@ -701,8 +700,7 @@ mod tests {
         data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
         // Name
-        data[NK_NAME_OFFSET..NK_NAME_OFFSET + name_bytes.len()]
-            .copy_from_slice(name_bytes);
+        data[NK_NAME_OFFSET..NK_NAME_OFFSET + name_bytes.len()].copy_from_slice(name_bytes);
 
         data
     }
@@ -730,13 +728,195 @@ mod tests {
         data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
             .copy_from_slice(&data_offset.to_le_bytes());
         // Type
-        data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4]
-            .copy_from_slice(&value_type.to_le_bytes());
+        data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&value_type.to_le_bytes());
         // Name
-        data[VK_NAME_OFFSET..VK_NAME_OFFSET + name_bytes.len()]
-            .copy_from_slice(name_bytes);
+        data[VK_NAME_OFFSET..VK_NAME_OFFSET + name_bytes.len()].copy_from_slice(name_bytes);
 
         data
+    }
+
+    // ── reg_type_name coverage ──────────────────────────────────────
+
+    #[test]
+    fn reg_type_name_all_known() {
+        assert_eq!(reg_type_name(0), "REG_NONE");
+        assert_eq!(reg_type_name(1), "REG_SZ");
+        assert_eq!(reg_type_name(2), "REG_EXPAND_SZ");
+        assert_eq!(reg_type_name(3), "REG_BINARY");
+        assert_eq!(reg_type_name(4), "REG_DWORD");
+        assert_eq!(reg_type_name(5), "REG_DWORD_BIG_ENDIAN");
+        assert_eq!(reg_type_name(6), "REG_LINK");
+        assert_eq!(reg_type_name(7), "REG_MULTI_SZ");
+        assert_eq!(reg_type_name(8), "REG_RESOURCE_LIST");
+        assert_eq!(reg_type_name(9), "REG_FULL_RESOURCE_DESCRIPTOR");
+        assert_eq!(reg_type_name(10), "REG_RESOURCE_REQUIREMENTS_LIST");
+        assert_eq!(reg_type_name(11), "REG_QWORD");
+    }
+
+    #[test]
+    fn reg_type_name_unknown() {
+        let name = reg_type_name(99);
+        assert!(
+            name.starts_with("REG_UNKNOWN("),
+            "unknown type should produce REG_UNKNOWN(N): {name}"
+        );
+    }
+
+    // ── format_data_preview coverage ────────────────────────────────
+
+    #[test]
+    fn format_data_preview_reg_dword() {
+        // REG_DWORD (4): 4-byte LE u32 formatted as hex+decimal
+        let data = 42u32.to_le_bytes();
+        let preview = format_data_preview(4, &data);
+        assert!(
+            preview.contains("42"),
+            "REG_DWORD preview should contain decimal value: {preview}"
+        );
+        assert!(
+            preview.contains("0x"),
+            "REG_DWORD preview should contain hex: {preview}"
+        );
+    }
+
+    #[test]
+    fn format_data_preview_reg_dword_short_data() {
+        // If data is < 4 bytes, falls through to hex preview
+        let data = &[0xABu8];
+        let preview = format_data_preview(4, data);
+        // Should not panic; hex format applied
+        assert!(!preview.is_empty());
+    }
+
+    #[test]
+    fn format_data_preview_reg_qword() {
+        // REG_QWORD (11): 8-byte LE u64
+        let data = 0x0102030405060708u64.to_le_bytes();
+        let preview = format_data_preview(11, &data);
+        assert!(
+            preview.contains("0x"),
+            "REG_QWORD preview should contain hex: {preview}"
+        );
+    }
+
+    #[test]
+    fn format_data_preview_reg_qword_short_data() {
+        // < 8 bytes → hex fallback
+        let data = &[0x01u8, 0x02u8];
+        let preview = format_data_preview(11, data);
+        assert!(!preview.is_empty());
+    }
+
+    #[test]
+    fn format_data_preview_reg_sz_utf16() {
+        // REG_SZ (1): UTF-16LE "Hi"
+        let s: Vec<u8> = "Hi"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .chain([0u8, 0u8]) // null terminator
+            .collect();
+        let preview = format_data_preview(1, &s);
+        assert_eq!(preview, "Hi");
+    }
+
+    #[test]
+    fn format_data_preview_reg_expand_sz() {
+        // REG_EXPAND_SZ (2) same decoding as REG_SZ
+        let s: Vec<u8> = "%SystemRoot%"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let preview = format_data_preview(2, &s);
+        assert_eq!(preview, "%SystemRoot%");
+    }
+
+    #[test]
+    fn format_data_preview_reg_binary() {
+        // REG_BINARY (3): hex dump
+        let data = vec![0xDEu8, 0xAD, 0xBE, 0xEF];
+        let preview = format_data_preview(3, &data);
+        assert!(preview.contains("DE"), "binary preview should hex-dump: {preview}");
+    }
+
+    #[test]
+    fn format_data_preview_reg_binary_truncated_at_32() {
+        // More than 32 bytes → preview truncated with "..."
+        let data = vec![0xAAu8; 64];
+        let preview = format_data_preview(3, &data);
+        assert!(
+            preview.ends_with("..."),
+            "long binary preview should be truncated: {preview}"
+        );
+    }
+
+    #[test]
+    fn format_data_preview_reg_sz_empty_data() {
+        // REG_SZ with less than 2 bytes → empty string
+        let preview = format_data_preview(1, &[0x41u8]);
+        assert!(preview.is_empty(), "single-byte REG_SZ should be empty: {preview}");
+    }
+
+    // ── Inline value (MSB set in DataLength) ────────────────────────
+
+    #[test]
+    fn read_registry_values_inline_reg_dword() {
+        // Build a key with 1 value where DataLength has MSB set (inline data).
+        // Inline: DataLength = 0x8000_0004 (4 bytes inline), DataOffset = value 0xDEAD_BEEF
+
+        let hive_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let hive_paddr: u64 = 0x0080_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+
+        let nk_offset: u32 = 0x20;
+        let vl_offset: u32 = 0x100;
+        let vk_offset: u32 = 0x120;
+
+        // nk cell: 1 value
+        let nk_data = build_nk_cell_data("InlineKey", 0, 0, 0, 1, vl_offset);
+        let nk_cell = build_cell(&nk_data);
+
+        // value-list: one entry → vk_offset
+        let vl_data = vk_offset.to_le_bytes();
+        let vl_cell = build_cell(&vl_data);
+
+        // vk cell: "InlineVal", REG_DWORD, DataLength has MSB set (inline 4 bytes)
+        // DataOffset = 0x0000_002A (decimal 42) stored inline
+        let vk_data = build_vk_cell_data(
+            "InlineVal",
+            4,                   // REG_DWORD
+            0x8000_0004,         // MSB set → 4 inline bytes
+            42u32,               // inline value = 42
+        );
+        let vk_cell = build_cell(&vk_data);
+
+        let mut hbin_page = vec![0u8; 4096];
+        hbin_page[nk_offset as usize..nk_offset as usize + nk_cell.len()].copy_from_slice(&nk_cell);
+        hbin_page[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
+        hbin_page[vk_offset as usize..vk_offset as usize + vk_cell.len()].copy_from_slice(&vk_cell);
+
+        let hbase_block = vec![0u8; 4096];
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hbase_block)
+            .write_phys(hbin_paddr, &hbin_page);
+
+        let reader = make_reader(ptb);
+        let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].name, "InlineVal");
+        assert_eq!(values[0].value_type, "REG_DWORD");
+        // Inline data length should be 4
+        assert_eq!(values[0].data_length, 4);
+        // Preview should show the inline value (42 = 0x0000002A)
+        assert!(
+            values[0].data_preview.contains("42") || values[0].data_preview.contains("2A"),
+            "preview should show inline value 42: {}",
+            values[0].data_preview
+        );
     }
 
     // ── Test 1: Empty hive (root cell = 0) → empty Vec ──────────────
@@ -789,10 +969,10 @@ mod tests {
         let nk_data = build_nk_cell_data(
             "CMI-CreateHive{ROOT}",
             last_write,
-            0,  // no subkeys
-            0,  // no subkeys list
-            0,  // no values
-            0,  // no values list
+            0, // no subkeys
+            0, // no subkeys list
+            0, // no values
+            0, // no values list
         );
         let nk_cell = build_cell(&nk_data);
 
@@ -836,18 +1016,16 @@ mod tests {
 
         // Key cell offset (used as the key_cell_offset parameter)
         let nk_offset: u32 = 0x20;
-        let vl_offset: u32 = 0x100;  // value list cell offset
-        let vk_offset: u32 = 0x120;  // vk cell offset
+        let vl_offset: u32 = 0x100; // value list cell offset
+        let vk_offset: u32 = 0x120; // vk cell offset
         let data_cell_offset: u32 = 0x180; // data cell offset
 
         // Build nk cell
         let nk_data = build_nk_cell_data(
-            "TestKey",
-            0,
-            0,          // no subkeys
-            0,          // no subkeys list
-            1,          // 1 value
-            vl_offset,  // value list cell
+            "TestKey", 0, 0,         // no subkeys
+            0,         // no subkeys list
+            1,         // 1 value
+            vl_offset, // value list cell
         );
         let nk_cell = build_cell(&nk_data);
 
@@ -866,9 +1044,9 @@ mod tests {
 
         let vk_data = build_vk_cell_data(
             "TestValue",
-            1,                 // REG_SZ
-            data_len,          // data length (no MSB set = external)
-            data_cell_offset,  // data cell index
+            1,                // REG_SZ
+            data_len,         // data length (no MSB set = external)
+            data_cell_offset, // data cell index
         );
         let vk_cell = build_cell(&vk_data);
 
@@ -877,12 +1055,9 @@ mod tests {
 
         // Assemble HBIN page
         let mut hbin_page = vec![0u8; 4096];
-        hbin_page[nk_offset as usize..nk_offset as usize + nk_cell.len()]
-            .copy_from_slice(&nk_cell);
-        hbin_page[vl_offset as usize..vl_offset as usize + vl_cell.len()]
-            .copy_from_slice(&vl_cell);
-        hbin_page[vk_offset as usize..vk_offset as usize + vk_cell.len()]
-            .copy_from_slice(&vk_cell);
+        hbin_page[nk_offset as usize..nk_offset as usize + nk_cell.len()].copy_from_slice(&nk_cell);
+        hbin_page[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
+        hbin_page[vk_offset as usize..vk_offset as usize + vk_cell.len()].copy_from_slice(&vk_cell);
         hbin_page[data_cell_offset as usize..data_cell_offset as usize + data_cell.len()]
             .copy_from_slice(&data_cell);
 

@@ -55,7 +55,11 @@ pub fn classify_atom(name: &str) -> bool {
     }
 
     // High entropy: mostly hex chars, length > 16, no readable words
-    if name.len() > 16 && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-' || c == '_') {
+    if name.len() > 16
+        && name
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-' || c == '_')
+    {
         return true;
     }
 
@@ -134,9 +138,7 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
         // Read the head pointer for this bucket.
         let bucket_ptr_addr = table_addr + buckets_offset + (bucket_idx as u64) * 8;
         let mut entry_addr = match reader.read_bytes(bucket_ptr_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => {
-                u64::from_le_bytes(bytes[..8].try_into().unwrap())
-            }
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
             _ => continue,
         };
 
@@ -317,7 +319,7 @@ mod tests {
         entry_data[0x08..0x0C].copy_from_slice(&3u32.to_le_bytes()); // ReferenceCount
         entry_data[0x0C..0x0E].copy_from_slice(&0xC001u16.to_le_bytes()); // Atom
         entry_data[0x0E..0x10].copy_from_slice(&4u16.to_le_bytes()); // NameLength (chars)
-        // Name as inline UTF-16LE at offset 0x10
+                                                                     // Name as inline UTF-16LE at offset 0x10
         let name_utf16: Vec<u8> = "Test".encode_utf16().flat_map(u16::to_le_bytes).collect();
         entry_data[0x10..0x10 + name_utf16.len()].copy_from_slice(&name_utf16);
 

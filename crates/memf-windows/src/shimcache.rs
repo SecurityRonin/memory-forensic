@@ -59,9 +59,7 @@ pub fn walk_shimcache<P: PhysicalMemoryProvider>(
     // g_ShimCache is a pointer — read 8 bytes at the symbol address to
     // get the address of the cache header.
     let header_addr: u64 = match reader.read_bytes(cache_ptr_addr, 8) {
-        Ok(bytes) if bytes.len() == 8 => {
-            u64::from_le_bytes(bytes[..8].try_into().unwrap())
-        }
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
         _ => return Ok(Vec::new()),
     };
 
@@ -91,9 +89,7 @@ pub fn walk_shimcache<P: PhysicalMemoryProvider>(
 
     // Read Flink of ListHead to get first entry.
     let mut current: u64 = match reader.read_bytes(list_head_addr, 8) {
-        Ok(bytes) if bytes.len() == 8 => {
-            u64::from_le_bytes(bytes[..8].try_into().unwrap())
-        }
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
         _ => return Ok(Vec::new()),
     };
 
@@ -115,8 +111,7 @@ pub fn walk_shimcache<P: PhysicalMemoryProvider>(
         let entry_addr = current;
 
         // Read the path _UNICODE_STRING.
-        let path = read_unicode_string(reader, entry_addr + path_offset)
-            .unwrap_or_default();
+        let path = read_unicode_string(reader, entry_addr + path_offset).unwrap_or_default();
 
         // Read LastModified (FILETIME, u64).
         let last_modified: u64 = reader
@@ -143,9 +138,7 @@ pub fn walk_shimcache<P: PhysicalMemoryProvider>(
 
         // Advance to next entry (Flink at offset 0 of _LIST_ENTRY).
         current = match reader.read_bytes(entry_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => {
-                u64::from_le_bytes(bytes[..8].try_into().unwrap())
-            }
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
             _ => break,
         };
 
@@ -190,15 +183,12 @@ mod tests {
 
     /// Build an ISF with the shimcache structures AND the g_ShimCache symbol.
     fn shimcache_isf_with_symbol(symbol_addr: u64) -> IsfBuilder {
-        shimcache_isf_no_symbol()
-            .add_symbol("g_ShimCache", symbol_addr)
+        shimcache_isf_no_symbol().add_symbol("g_ShimCache", symbol_addr)
     }
 
     /// Encode a Rust &str as UTF-16LE bytes.
     fn encode_utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
-            .collect()
+        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
     }
 
     // ── No symbol → empty Vec ───────────────────────────────────────
@@ -241,9 +231,7 @@ mod tests {
     const PATH0_BUF_VADDR: u64 = 0xFFFF_8000_0030_1000;
     const PATH0_BUF_PADDR: u64 = 0x00A1_0000;
 
-    fn build_single_entry_reader(
-        insert_flag: u32,
-    ) -> ObjectReader<SyntheticPhysMem> {
+    fn build_single_entry_reader(insert_flag: u32) -> ObjectReader<SyntheticPhysMem> {
         let isf = shimcache_isf_with_symbol(PTR_VADDR).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 

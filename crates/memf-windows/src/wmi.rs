@@ -107,10 +107,7 @@ pub fn walk_wmi_subscriptions<P: PhysicalMemoryProvider>(
         .field_offset("_WMI_BINDING", "Query")
         .unwrap_or(0x30);
 
-    let binding_size = reader
-        .symbols()
-        .struct_size("_WMI_BINDING")
-        .unwrap_or(0x80) as u64;
+    let binding_size = reader.symbols().struct_size("_WMI_BINDING").unwrap_or(0x80) as u64;
 
     let mut subscriptions = Vec::new();
 
@@ -159,15 +156,9 @@ pub fn walk_wmi_subscriptions<P: PhysicalMemoryProvider>(
 /// WMI-based persistence used by threat actors.
 pub fn classify_wmi_consumer(consumer_type: &str, query: &str) -> bool {
     // Suspicious consumer types that can execute arbitrary code.
-    let suspicious_types = [
-        "CommandLineEventConsumer",
-        "ActiveScriptEventConsumer",
-    ];
+    let suspicious_types = ["CommandLineEventConsumer", "ActiveScriptEventConsumer"];
 
-    if suspicious_types
-        .iter()
-        .any(|t| consumer_type.contains(t))
-    {
+    if suspicious_types.iter().any(|t| consumer_type.contains(t)) {
         return true;
     }
 
@@ -179,9 +170,7 @@ pub fn classify_wmi_consumer(consumer_type: &str, query: &str) -> bool {
         "win32_processstoptrace",
     ];
 
-    suspicious_queries
-        .iter()
-        .any(|q| query_lower.contains(q))
+    suspicious_queries.iter().any(|q| query_lower.contains(q))
 }
 
 #[cfg(test)]
@@ -317,26 +306,22 @@ mod tests {
 
         // FilterName at offset 0x00 (_UNICODE_STRING: Length u16, MaxLen u16, pad 4, Buffer u64)
         binding_data[0x00..0x02].copy_from_slice(&(filter_name.len() as u16).to_le_bytes());
-        binding_data[0x02..0x04]
-            .copy_from_slice(&((filter_name.len() + 2) as u16).to_le_bytes());
+        binding_data[0x02..0x04].copy_from_slice(&((filter_name.len() + 2) as u16).to_le_bytes());
         binding_data[0x08..0x10].copy_from_slice(&filter_buf_vaddr.to_le_bytes());
 
         // ConsumerName at offset 0x10
         binding_data[0x10..0x12].copy_from_slice(&(consumer_name.len() as u16).to_le_bytes());
-        binding_data[0x12..0x14]
-            .copy_from_slice(&((consumer_name.len() + 2) as u16).to_le_bytes());
+        binding_data[0x12..0x14].copy_from_slice(&((consumer_name.len() + 2) as u16).to_le_bytes());
         binding_data[0x18..0x20].copy_from_slice(&consumer_buf_vaddr.to_le_bytes());
 
         // ConsumerType at offset 0x20
         binding_data[0x20..0x22].copy_from_slice(&(consumer_type.len() as u16).to_le_bytes());
-        binding_data[0x22..0x24]
-            .copy_from_slice(&((consumer_type.len() + 2) as u16).to_le_bytes());
+        binding_data[0x22..0x24].copy_from_slice(&((consumer_type.len() + 2) as u16).to_le_bytes());
         binding_data[0x28..0x30].copy_from_slice(&type_buf_vaddr.to_le_bytes());
 
         // Query at offset 0x30
         binding_data[0x30..0x32].copy_from_slice(&(query_str.len() as u16).to_le_bytes());
-        binding_data[0x32..0x34]
-            .copy_from_slice(&((query_str.len() + 2) as u16).to_le_bytes());
+        binding_data[0x32..0x34].copy_from_slice(&((query_str.len() + 2) as u16).to_le_bytes());
         binding_data[0x38..0x40].copy_from_slice(&query_buf_vaddr.to_le_bytes());
 
         // Build page table with all mappings and write physical data inline.

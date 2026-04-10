@@ -168,6 +168,120 @@ mod tests {
         assert!(classify_pool_tag("XxXx"));
     }
 
+    /// All tags in KNOWN_TAGS must be classified as not suspicious.
+    #[test]
+    fn classify_all_known_tags_not_suspicious() {
+        let known = [
+            "Proc", "Thre", "Driv", "File", "Mutant", "Even", "Sema",
+            "Sect", "Port", "Vad\x20", "CM10", "CM31", "ObNm", "ObHd",
+        ];
+        for tag in &known {
+            assert!(
+                !classify_pool_tag(tag),
+                "known tag '{tag}' should not be suspicious"
+            );
+        }
+    }
+
+    /// pool_type_name covers all documented branches.
+    #[test]
+    fn pool_type_name_all_branches() {
+        assert_eq!(pool_type_name(0), "NonPagedPool");
+        assert_eq!(pool_type_name(1), "PagedPool");
+        assert_eq!(pool_type_name(2), "NonPagedPoolMustSucceed");
+        assert_eq!(pool_type_name(4), "NonPagedPoolCacheAligned");
+        assert_eq!(pool_type_name(5), "PagedPoolCacheAligned");
+        assert_eq!(pool_type_name(6), "NonPagedPoolCacheAlignedMustS");
+        // Values 3, 7–15 fall through to "Unknown"
+        assert_eq!(pool_type_name(3), "Unknown");
+        assert_eq!(pool_type_name(7), "Unknown");
+        assert_eq!(pool_type_name(0x0F), "Unknown");
+        // High nibble masked out: 0x11 & 0x0F = 1 → PagedPool
+        assert_eq!(pool_type_name(0x11), "PagedPool");
+    }
+
+    /// infer_struct_type maps known tags correctly.
+    #[test]
+    fn infer_struct_type_known_tags() {
+        assert_eq!(infer_struct_type("Proc"), "EPROCESS");
+        assert_eq!(infer_struct_type("Thre"), "ETHREAD");
+        assert_eq!(infer_struct_type("Driv"), "DRIVER_OBJECT");
+        assert_eq!(infer_struct_type("File"), "FILE_OBJECT");
+        assert_eq!(infer_struct_type("Mutant"), "KMUTANT");
+        assert_eq!(infer_struct_type("Port"), "ALPC_PORT");
+        assert_eq!(infer_struct_type("ObHd"), "OBJECT_HEADER");
+    }
+
+    /// infer_struct_type returns "Unknown" for unrecognized tags.
+    #[test]
+    fn infer_struct_type_unknown_tag() {
+        assert_eq!(infer_struct_type("Xxxx"), "Unknown");
+        assert_eq!(infer_struct_type(""), "Unknown");
+    }
+
+    /// scan_pool_for_tag finds matching pool tags in synthetic memory.
+    #[test]
+    fn scan_pool_for_tag_finds_match() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // "Proc" tag as u32 little-endian: b'P'=0x50, b'r'=0x72, b'o'=0x6F, b'c'=0x63
+        let proc_tag: u32 = u32::from_le_bytes(*b"Proc");
+
+        // Build a 4096-byte page with a fake pool header at offset 0x10
+        // _POOL_HEADER: bytes 4–7 = pool tag
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+        let mut page = vec![0u8; 4096];
+        // Write the "Proc" tag at offset 0x10 + 4 = 0x14
+        page[0x10 + 4..0x10 + 8].copy_from_slice(&proc_tag.to_le_bytes());
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let hits = scan_pool_for_tag(&reader, proc_tag, page_vaddr, page_vaddr + 4096);
+        assert!(
+            hits.contains(&(page_vaddr + 0x10)),
+            "should find pool tag at offset 0x10, hits = {hits:?}"
+        );
+    }
+
+    /// scan_pool_for_tag returns empty when no tag matches.
+    #[test]
+    fn scan_pool_for_tag_no_match() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let page_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let page_paddr: u64 = 0x0090_0000;
+        let page = vec![0u8; 4096]; // all zeros, no matching tag
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let proc_tag: u32 = u32::from_le_bytes(*b"Proc");
+        let hits = scan_pool_for_tag(&reader, proc_tag, page_vaddr, page_vaddr + 4096);
+        assert!(hits.is_empty(), "zeroed page should produce no tag hits");
+    }
+
     /// When MmNonPagedPoolStart symbol is absent, walker returns empty.
     #[test]
     fn walk_pool_scan_no_symbol_returns_empty() {
