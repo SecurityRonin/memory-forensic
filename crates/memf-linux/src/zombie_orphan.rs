@@ -17,8 +17,20 @@ use crate::{Error, ProcessState, Result};
 /// directly; an orphan with a daemon name suggests reparenting after
 /// parent death, which can indicate injection or persistence.
 const SUSPICIOUS_DAEMON_NAMES: &[&str] = &[
-    "sshd", "httpd", "nginx", "apache", "mysqld", "postgres", "redis",
-    "memcached", "mongod", "named", "bind", "cupsd", "cron", "atd",
+    "sshd",
+    "httpd",
+    "nginx",
+    "apache",
+    "mysqld",
+    "postgres",
+    "redis",
+    "memcached",
+    "mongod",
+    "named",
+    "bind",
+    "cupsd",
+    "cron",
+    "atd",
 ];
 
 /// Information about a zombie or orphan process found in memory.
@@ -56,12 +68,7 @@ pub struct ZombieOrphanInfo {
 ///
 /// Returns `false` (benign) for normal zombies awaiting reaping by their
 /// parent and normal processes.
-pub fn classify_zombie_orphan(
-    is_zombie: bool,
-    is_orphan: bool,
-    ppid: u32,
-    comm: &str,
-) -> bool {
+pub fn classify_zombie_orphan(is_zombie: bool, is_orphan: bool, ppid: u32, comm: &str) -> bool {
     // Reparented zombie: parent died, zombie left behind -- malware crash indicator.
     if is_zombie && ppid == 1 {
         return true;
@@ -128,8 +135,7 @@ pub fn walk_zombie_orphan<P: PhysicalMemoryProvider>(
             .unwrap_or_else(|_| "<unknown>".to_string());
 
         // Read real_parent->pid (current parent after possible reparenting).
-        let real_parent_ptr: u64 =
-            reader.read_field(addr, "task_struct", "real_parent").ok()?;
+        let real_parent_ptr: u64 = reader.read_field(addr, "task_struct", "real_parent").ok()?;
         let ppid: u32 = if real_parent_ptr != 0 {
             reader
                 .read_field(real_parent_ptr, "task_struct", "pid")
@@ -292,6 +298,107 @@ mod tests {
         // Graceful degradation: missing symbol -> empty vec, not an error.
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // Walker integration test -- missing tasks field -> empty Vec
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn walk_no_tasks_offset_returns_empty() {
+        // init_task symbol present but task_struct.tasks field missing.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "int")
+            // NOTE: no "tasks" field registered on task_struct
+            .add_symbol("init_task", 0xFFFF_8000_0000_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_zombie_orphan(&reader);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // classify edge cases — all SUSPICIOUS_DAEMON_NAMES are matched
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn classify_orphan_httpd_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "httpd"));
+    }
+
+    #[test]
+    fn classify_orphan_nginx_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "nginx"));
+    }
+
+    #[test]
+    fn classify_orphan_apache_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "apache2"));
+    }
+
+    #[test]
+    fn classify_orphan_mysqld_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "mysqld"));
+    }
+
+    #[test]
+    fn classify_orphan_postgres_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "postgres"));
+    }
+
+    #[test]
+    fn classify_orphan_redis_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "redis-server"));
+    }
+
+    #[test]
+    fn classify_orphan_memcached_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "memcached"));
+    }
+
+    #[test]
+    fn classify_orphan_mongod_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "mongod"));
+    }
+
+    #[test]
+    fn classify_orphan_named_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "named"));
+    }
+
+    #[test]
+    fn classify_orphan_bind_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "bind"));
+    }
+
+    #[test]
+    fn classify_orphan_cupsd_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "cupsd"));
+    }
+
+    #[test]
+    fn classify_orphan_cron_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "cron"));
+    }
+
+    #[test]
+    fn classify_orphan_atd_suspicious() {
+        assert!(classify_zombie_orphan(false, true, 1, "atd"));
+    }
+
+    #[test]
+    fn classify_zombie_non_init_parent_benign() {
+        // Zombie but parent is not init (ppid != 1) → check first rule fails
+        // Not an orphan either → check second rule fails
+        // → benign
+        assert!(!classify_zombie_orphan(true, false, 999, "worker"));
     }
 
     // -------------------------------------------------------------------

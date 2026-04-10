@@ -86,7 +86,11 @@ pub fn walk_dentry_cache<P: PhysicalMemoryProvider>(
         Some(o) => o,
         None => return Ok(vec![]),
     };
-    if reader.symbols().field_offset("task_struct", "files").is_none() {
+    if reader
+        .symbols()
+        .field_offset("task_struct", "files")
+        .is_none()
+    {
         return Ok(vec![]);
     }
 
@@ -159,9 +163,7 @@ fn collect_hidden_dentries_for_task<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        if let Some(info) =
-            try_read_hidden_dentry(reader, pid, &comm, fd_index as u32, file_ptr)
-        {
+        if let Some(info) = try_read_hidden_dentry(reader, pid, &comm, fd_index as u32, file_ptr) {
             out.push(info);
         }
     }
@@ -378,5 +380,121 @@ mod tests {
             result.is_empty(),
             "kernel thread with files==NULL must produce no hidden-dentry results"
         );
+    }
+
+    #[test]
+    fn walk_dentry_missing_tasks_field_returns_empty() {
+        // init_task symbol present but task_struct.tasks field is not defined.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // No "tasks" field → graceful degradation
+            .add_field("task_struct", "files", 48, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0000_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_dentry_cache(&reader).expect("should not error");
+        assert!(result.is_empty(), "missing tasks field must yield empty (graceful degradation)");
+    }
+
+    #[test]
+    fn walk_dentry_missing_files_field_returns_empty() {
+        // init_task and tasks present, but task_struct.files field missing.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 16, "list_head")
+            // No "files" field → graceful degradation
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0000_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_dentry_cache(&reader).expect("should not error");
+        assert!(result.is_empty(), "missing files field must yield empty (graceful degradation)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional classify_hidden_dentry branch coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_hidden_nlink_positive_so_is_suspicious() {
+        // nlink > 0 but .so extension → suspicious (file in use with dangerous extension)
+        assert!(
+            classify_hidden_dentry(2, "libplugin.so"),
+            "linked .so file must be suspicious due to extension"
+        );
+    }
+
+    #[test]
+    fn classify_hidden_nlink_positive_bin_is_suspicious() {
+        assert!(
+            classify_hidden_dentry(1, "stage2.bin"),
+            "linked .bin file must be suspicious due to extension"
+        );
+    }
+
+    #[test]
+    fn classify_hidden_nlink_positive_elf_is_suspicious() {
+        assert!(
+            classify_hidden_dentry(1, "payload.elf"),
+            "linked .elf file must be suspicious due to extension"
+        );
+    }
+
+    #[test]
+    fn classify_hidden_nlink_positive_py_is_suspicious() {
+        assert!(
+            classify_hidden_dentry(3, "backdoor.py"),
+            "linked .py file must be suspicious due to extension"
+        );
+    }
+
+    #[test]
+    fn classify_hidden_nlink_positive_sh_is_suspicious() {
+        assert!(
+            classify_hidden_dentry(1, "install.sh"),
+            "linked .sh file must be suspicious due to extension"
+        );
+    }
+
+    #[test]
+    fn classify_hidden_extension_check_is_case_insensitive() {
+        // Extension matching uses to_lowercase()
+        assert!(
+            classify_hidden_dentry(1, "PAYLOAD.SO"),
+            "extension check should be case-insensitive"
+        );
+    }
+
+    #[test]
+    fn hidden_dentry_info_serializes() {
+        let info = HiddenDentryInfo {
+            pid: 42,
+            comm: "evil".to_string(),
+            fd: 3,
+            dentry_addr: 0xFFFF_8000_0001_0000,
+            filename: "rootkit.so".to_string(),
+            inode_num: 12345,
+            file_size: 65536,
+            nlink: 0,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":42"));
+        assert!(json.contains("rootkit.so"));
+        assert!(json.contains("\"is_suspicious\":true"));
     }
 }

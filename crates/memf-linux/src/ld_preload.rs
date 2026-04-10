@@ -65,7 +65,9 @@ pub fn classify_ld_preload(value: &str) -> bool {
     ];
 
     let libraries = parse_ld_preload(value);
-    libraries.iter().any(|lib| is_suspicious_path(lib, SAFE_PREFIXES))
+    libraries
+        .iter()
+        .any(|lib| is_suspicious_path(lib, SAFE_PREFIXES))
 }
 
 /// Check whether a single library path looks suspicious.
@@ -81,9 +83,10 @@ fn is_suspicious_path(path: &str, safe_prefixes: &[&str]) -> bool {
     }
 
     // Hidden path components (directories or files starting with '.') are suspicious.
-    if path.split('/').any(|component| {
-        !component.is_empty() && component.starts_with('.')
-    }) {
+    if path
+        .split('/')
+        .any(|component| !component.is_empty() && component.starts_with('.'))
+    {
         return true;
     }
 
@@ -303,6 +306,180 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = scan_ld_preload(&reader, &[]).unwrap();
-        assert!(result.is_empty(), "expected empty vec for empty process list");
+        assert!(
+            result.is_empty(),
+            "expected empty vec for empty process list"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // extract_ld_preload unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn extract_ld_preload_finds_value() {
+        let env = b"PATH=/usr/bin\0LD_PRELOAD=/tmp/evil.so\0HOME=/root\0";
+        let result = extract_ld_preload(env);
+        assert_eq!(result.unwrap(), "/tmp/evil.so");
+    }
+
+    #[test]
+    fn extract_ld_preload_not_present_returns_none() {
+        let env = b"PATH=/usr/bin\0HOME=/root\0";
+        assert!(extract_ld_preload(env).is_none());
+    }
+
+    #[test]
+    fn extract_ld_preload_empty_value_returns_none() {
+        // LD_PRELOAD= with empty value (whitespace only) → None
+        let env = b"LD_PRELOAD=   \0OTHER=val\0";
+        assert!(extract_ld_preload(env).is_none(), "whitespace-only value must return None");
+    }
+
+    #[test]
+    fn extract_ld_preload_trims_whitespace() {
+        let env = b"LD_PRELOAD=  /usr/lib/lib.so  \0";
+        let result = extract_ld_preload(env);
+        assert_eq!(result.unwrap(), "/usr/lib/lib.so");
+    }
+
+    // ---------------------------------------------------------------
+    // is_suspicious_path boundary tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn is_suspicious_path_tmp_exact_is_suspicious() {
+        const SAFE: &[&str] = &["/usr/lib/"];
+        assert!(is_suspicious_path("/tmp", SAFE), "/tmp itself must be suspicious");
+    }
+
+    #[test]
+    fn is_suspicious_path_devshm_exact_is_suspicious() {
+        const SAFE: &[&str] = &["/usr/lib/"];
+        assert!(is_suspicious_path("/dev/shm", SAFE), "/dev/shm itself must be suspicious");
+    }
+
+    #[test]
+    fn is_suspicious_path_hidden_dotfile_is_suspicious() {
+        const SAFE: &[&str] = &["/usr/lib/"];
+        assert!(is_suspicious_path("/home/user/.hidden.so", SAFE), "dotfile must be suspicious");
+    }
+
+    #[test]
+    fn is_suspicious_path_safe_prefix_not_suspicious() {
+        const SAFE: &[&str] = &["/usr/lib/"];
+        assert!(!is_suspicious_path("/usr/lib/libasan.so", SAFE));
+    }
+
+    #[test]
+    fn is_suspicious_path_non_safe_non_tmp_non_hidden_is_suspicious() {
+        const SAFE: &[&str] = &["/usr/lib/"];
+        // /var/run does not match any safe prefix and is not /tmp or /dev/shm
+        assert!(is_suspicious_path("/var/run/payload.so", SAFE));
+    }
+
+    // ---------------------------------------------------------------
+    // classify_ld_preload additional paths
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn classify_lib_not_suspicious() {
+        assert!(!classify_ld_preload("/lib/libasan.so"));
+    }
+
+    #[test]
+    fn classify_lib64_not_suspicious() {
+        assert!(!classify_ld_preload("/lib64/libasan.so"));
+    }
+
+    #[test]
+    fn classify_lib32_not_suspicious() {
+        assert!(!classify_ld_preload("/lib32/libasan.so"));
+    }
+
+    #[test]
+    fn classify_usr_local_lib_not_suspicious() {
+        assert!(!classify_ld_preload("/usr/local/lib/libfoo.so"));
+    }
+
+    #[test]
+    fn classify_usr_local_lib64_not_suspicious() {
+        assert!(!classify_ld_preload("/usr/local/lib64/libfoo.so"));
+    }
+
+    #[test]
+    fn classify_usr_lib32_not_suspicious() {
+        assert!(!classify_ld_preload("/usr/lib32/libfoo.so"));
+    }
+
+    // ---------------------------------------------------------------
+    // scan_ld_preload with an unreadable task_struct → silently skipped
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn scan_ld_preload_unreadable_task_skips_silently() {
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "mm", 8, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "env_start", 0, "unsigned long")
+            .add_field("mm_struct", "env_end", 8, "unsigned long")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // vaddr not mapped → read_field("mm") fails → scan_process_ld_preload returns None
+        let proc = ProcessInfo {
+            pid: 500,
+            ppid: 1,
+            comm: "bash".to_string(),
+            state: crate::types::ProcessState::Running,
+            vaddr: 0xDEAD_0000_0000_0000,
+            cr3: None,
+            start_time: 0,
+        };
+
+        let result = scan_ld_preload(&reader, &[proc]).unwrap();
+        assert!(result.is_empty(), "unreadable process must be silently skipped");
+    }
+
+    #[test]
+    fn ld_preload_info_serializes() {
+        let info = LdPreloadInfo {
+            pid: 42,
+            process_name: "bash".to_string(),
+            ld_preload_value: "/tmp/evil.so".to_string(),
+            preloaded_libraries: vec!["/tmp/evil.so".to_string()],
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":42"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
+    // ---------------------------------------------------------------
+    // parse_ld_preload edge cases
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn parse_ld_preload_consecutive_delimiters_filtered() {
+        // Consecutive delimiters produce empty entries which should be filtered
+        let result = parse_ld_preload("/lib/a.so::/lib/b.so");
+        assert_eq!(result, vec!["/lib/a.so", "/lib/b.so"]);
+    }
+
+    #[test]
+    fn parse_ld_preload_tab_delimiter() {
+        let result = parse_ld_preload("/lib/a.so\t/lib/b.so");
+        assert_eq!(result, vec!["/lib/a.so", "/lib/b.so"]);
     }
 }

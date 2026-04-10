@@ -381,4 +381,100 @@ mod tests {
             "a kernel thread with mm==NULL must not produce any memfd results"
         );
     }
+
+    #[test]
+    fn walk_memfd_missing_tasks_offset_returns_empty() {
+        // init_task present but task_struct.tasks field missing → graceful degradation.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // No "tasks" field
+            .add_symbol("init_task", 0xFFFF_8000_0000_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "missing tasks offset must yield empty result");
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional classify_memfd branch coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_memfd_shm_prefix_benign() {
+        assert!(!classify_memfd("shm_region", false), "shm prefix must be benign");
+    }
+
+    #[test]
+    fn classify_memfd_chrome_prefix_benign() {
+        assert!(!classify_memfd("chrome_shared", false), "chrome prefix must be benign");
+    }
+
+    #[test]
+    fn classify_memfd_firefox_prefix_benign() {
+        assert!(!classify_memfd("firefox-ipc", false), "firefox prefix must be benign");
+    }
+
+    #[test]
+    fn classify_memfd_v8_prefix_benign() {
+        assert!(!classify_memfd("v8-heap", false), "v8 prefix must be benign");
+    }
+
+    #[test]
+    fn classify_memfd_dbus_prefix_benign() {
+        assert!(!classify_memfd("dbus-shm", false), "dbus prefix must be benign");
+    }
+
+    #[test]
+    fn classify_memfd_stage_name_suspicious() {
+        assert!(classify_memfd("stage2", false), "stage substring must be suspicious");
+    }
+
+    #[test]
+    fn classify_memfd_loader_name_suspicious() {
+        assert!(classify_memfd("loader", false), "loader substring must be suspicious");
+    }
+
+    #[test]
+    fn classify_memfd_inject_name_suspicious() {
+        assert!(classify_memfd("inject_hook", false), "inject substring must be suspicious");
+    }
+
+    #[test]
+    fn classify_memfd_hack_name_suspicious() {
+        assert!(classify_memfd("hack_tool", false), "hack substring must be suspicious");
+    }
+
+    #[test]
+    fn classify_memfd_benign_non_prefix_non_suspicious_name() {
+        // Name does not match any prefix or suspicious substring, not executable
+        assert!(!classify_memfd("my_normal_buffer", false), "innocuous name must be benign");
+    }
+
+    #[test]
+    fn classify_memfd_case_insensitive_suspicious() {
+        // Suspicious substring matching should be case-insensitive
+        assert!(classify_memfd("PAYLOAD_EXEC", false), "case-insensitive suspicious match");
+    }
+
+    #[test]
+    fn memfd_info_serializes() {
+        let info = MemfdInfo {
+            pid: 999,
+            comm: "evil".to_string(),
+            memfd_name: "payload".to_string(),
+            size_bytes: 4096,
+            is_executable: true,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":999"));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"is_executable\":true"));
+    }
 }

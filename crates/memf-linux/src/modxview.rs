@@ -134,10 +134,7 @@ pub fn walk_modxview<P: PhysicalMemoryProvider>(
 /// pointer, indicating the module is linked into the sysfs kobj tree.
 /// Returns `true` (assume present) if the required field offsets are
 /// unavailable.
-fn check_kobj_linkage<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    mod_addr: u64,
-) -> bool {
+fn check_kobj_linkage<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, mod_addr: u64) -> bool {
     // Resolve mkobj offset within module struct
     let mkobj_offset = match reader.symbols().field_offset("module", "mkobj") {
         Some(off) => off,
@@ -255,5 +252,174 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("test_module"));
         assert!(json.contains("\"is_hidden\":true"));
+    }
+
+    #[test]
+    fn classify_missing_from_memory_suspicious() {
+        // Present in module list and kobj, but memory is not mapped
+        assert!(classify_module_visibility(true, true, false));
+    }
+
+    #[test]
+    fn classify_only_in_memory_suspicious() {
+        // Only found in memory map, missing from both lists
+        assert!(classify_module_visibility(false, false, true));
+    }
+
+    #[test]
+    fn classify_only_in_module_list_suspicious() {
+        // Only found in module list, missing from kobj and memory
+        assert!(classify_module_visibility(true, false, false));
+    }
+
+    #[test]
+    fn classify_only_in_kobj_suspicious() {
+        // Only found in kobj, missing from module list and memory
+        assert!(classify_module_visibility(false, true, false));
+    }
+
+    #[test]
+    fn check_memory_mapped_zero_base_returns_true() {
+        // base_addr == 0 → can't verify, assume present
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert!(check_memory_mapped(&reader, 0, 4096));
+    }
+
+    #[test]
+    fn check_memory_mapped_zero_size_returns_true() {
+        // size == 0 → can't verify, assume present
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert!(check_memory_mapped(&reader, 0xFFFF_8000_0000_1000, 0));
+    }
+
+    #[test]
+    fn check_memory_mapped_unreadable_returns_false() {
+        // base_addr non-zero, size non-zero, but memory not mapped → unreadable → false
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Address not mapped → read_bytes returns Err → false
+        assert!(!check_memory_mapped(&reader, 0xDEAD_BEEF_0000_1000, 4096));
+    }
+
+    #[test]
+    fn check_kobj_linkage_missing_mkobj_offset_returns_true() {
+        // If mkobj field is not in the ISF, assume linked (return true)
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // No "module" struct defined → field_offset("module", "mkobj") returns None
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert!(check_kobj_linkage(&reader, 0xFFFF_8000_0000_0000));
+    }
+
+    #[test]
+    fn check_kobj_linkage_missing_kobj_offset_returns_true() {
+        // module struct present but module_kobject not defined
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new()
+            .add_struct("module", 128)
+            .add_field("module", "mkobj", 0, "pointer")
+            // module_kobject not defined → field_offset("module_kobject", "kobj") returns None
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert!(check_kobj_linkage(&reader, 0xFFFF_8000_0000_0000));
+    }
+
+    #[test]
+    fn check_kobj_linkage_missing_entry_offset_returns_true() {
+        // module and module_kobject defined but kobject.entry missing
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new()
+            .add_struct("module", 128)
+            .add_field("module", "mkobj", 0, "pointer")
+            .add_struct("module_kobject", 64)
+            .add_field("module_kobject", "kobj", 0, "pointer")
+            // kobject not defined → field_offset("kobject", "entry") returns None
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert!(check_kobj_linkage(&reader, 0xFFFF_8000_0000_0000));
+    }
+
+    #[test]
+    fn check_kobj_linkage_unreadable_memory_returns_true() {
+        // All offsets available but memory not mapped → read fails → assume present
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new()
+            .add_struct("module", 128)
+            .add_field("module", "mkobj", 0, "pointer")
+            .add_struct("module_kobject", 64)
+            .add_field("module_kobject", "kobj", 0, "pointer")
+            .add_struct("kobject", 64)
+            .add_field("kobject", "entry", 0, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Address not mapped → read_field returns Err → assume present (true)
+        assert!(check_kobj_linkage(&reader, 0xDEAD_BEEF_0000_0000));
     }
 }

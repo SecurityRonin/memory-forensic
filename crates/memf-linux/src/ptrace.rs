@@ -18,14 +18,10 @@ use crate::{ProcessInfo, Result};
 // ---------------------------------------------------------------------------
 
 /// Well-known debugger/tracer binaries that are expected to ptrace.
-const KNOWN_DEBUGGERS: &[&str] = &[
-    "gdb", "lldb", "strace", "ltrace", "valgrind", "perf",
-];
+const KNOWN_DEBUGGERS: &[&str] = &["gdb", "lldb", "strace", "ltrace", "valgrind", "perf"];
 
 /// High-value target processes -- tracing these by a non-debugger is suspicious.
-const HIGH_VALUE_TARGETS: &[&str] = &[
-    "sshd", "login", "passwd", "sudo", "su", "gpg-agent",
-];
+const HIGH_VALUE_TARGETS: &[&str] = &["sshd", "login", "passwd", "sudo", "su", "gpg-agent"];
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -112,8 +108,8 @@ pub fn scan_ptrace_relationships<P: PhysicalMemoryProvider>(
     for proc in processes {
         match read_ptrace_info(reader, proc) {
             Ok(Some(rel)) => results.push(rel),
-            Ok(None) => continue,     // not being traced
-            Err(_) => continue,       // unreadable task_struct, skip
+            Ok(None) => continue, // not being traced
+            Err(_) => continue,   // unreadable task_struct, skip
         }
     }
 
@@ -137,8 +133,7 @@ fn read_ptrace_info<P: PhysicalMemoryProvider>(
     // ptrace reparents the tracee: parent becomes the tracer while
     // real_parent remains the biological parent.
     let parent_ptr: u64 = reader.read_pointer(proc.vaddr, "task_struct", "parent")?;
-    let real_parent_ptr: u64 =
-        reader.read_pointer(proc.vaddr, "task_struct", "real_parent")?;
+    let real_parent_ptr: u64 = reader.read_pointer(proc.vaddr, "task_struct", "real_parent")?;
 
     if parent_ptr == real_parent_ptr || parent_ptr == 0 {
         // No reparenting detected or parent is NULL -- can't identify tracer.
@@ -146,10 +141,8 @@ fn read_ptrace_info<P: PhysicalMemoryProvider>(
     }
 
     // The parent (tracer) task_struct: read its PID and comm.
-    let tracer_pid: u32 =
-        reader.read_field::<u64>(parent_ptr, "task_struct", "pid")? as u32;
-    let tracer_name =
-        reader.read_field_string(parent_ptr, "task_struct", "comm", 16)?;
+    let tracer_pid: u32 = reader.read_field::<u64>(parent_ptr, "task_struct", "pid")? as u32;
+    let tracer_name = reader.read_field_string(parent_ptr, "task_struct", "comm", 16)?;
 
     let tracee_name = proc.comm.clone();
     let is_suspicious = classify_ptrace(&tracer_name, &tracee_name);
@@ -277,5 +270,116 @@ mod tests {
             result.is_empty(),
             "expected empty vec for empty process list"
         );
+    }
+
+    #[test]
+    fn scan_ptrace_unreadable_task_struct_skips_process() {
+        // Process list has one entry, but the task_struct at that vaddr is not mapped.
+        // read_ptrace_info returns Err → should be silently skipped → empty result.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "ptrace", 8, "unsigned int")
+            .add_field("task_struct", "parent", 16, "pointer")
+            .add_field("task_struct", "real_parent", 24, "pointer")
+            .add_field("task_struct", "comm", 32, "char");
+        let ptb = PageTableBuilder::new();
+        let reader = make_reader(&isf, ptb);
+
+        // vaddr not mapped → read_field("ptrace") will fail
+        let proc = fake_process(100, "bash", 0xDEAD_0000_0000_0000);
+        let result = scan_ptrace_relationships(&reader, &[proc]).unwrap();
+        assert!(
+            result.is_empty(),
+            "unreadable task_struct must be silently skipped"
+        );
+    }
+
+    #[test]
+    fn scan_ptrace_zero_ptrace_flags_skips_process() {
+        // Process with ptrace flags == 0 should not be recorded.
+        use memf_core::test_builders::flags as ptf;
+
+        let task_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let task_paddr: u64 = 0x0080_0000;
+
+        let mut data = vec![0u8; 512];
+        // pid = 200
+        data[0..4].copy_from_slice(&200u32.to_le_bytes());
+        // ptrace flags = 0 (not being traced)
+        data[8..12].copy_from_slice(&0u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "ptrace", 8, "unsigned int")
+            .add_field("task_struct", "parent", 16, "pointer")
+            .add_field("task_struct", "real_parent", 24, "pointer")
+            .add_field("task_struct", "comm", 32, "char");
+        let ptb = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &data);
+        let reader = make_reader(&isf, ptb);
+
+        let proc = fake_process(200, "bash", task_vaddr);
+        let result = scan_ptrace_relationships(&reader, &[proc]).unwrap();
+        assert!(
+            result.is_empty(),
+            "process with ptrace==0 should not produce a relationship entry"
+        );
+    }
+
+    #[test]
+    fn classify_ptrace_lldb_is_benign() {
+        assert!(!classify_ptrace("lldb", "target"), "lldb is a known debugger");
+    }
+
+    #[test]
+    fn classify_ptrace_ltrace_is_benign() {
+        assert!(!classify_ptrace("ltrace", "any"), "ltrace is a known debugger");
+    }
+
+    #[test]
+    fn classify_ptrace_valgrind_is_benign() {
+        assert!(!classify_ptrace("valgrind", "leaky"), "valgrind is a known debugger");
+    }
+
+    #[test]
+    fn classify_ptrace_perf_is_benign() {
+        assert!(!classify_ptrace("perf", "app"), "perf is a known debugger");
+    }
+
+    #[test]
+    fn classify_ptrace_unknown_tracing_login_suspicious() {
+        assert!(classify_ptrace("injector", "login"), "tracing login must be suspicious");
+    }
+
+    #[test]
+    fn classify_ptrace_unknown_tracing_sudo_suspicious() {
+        assert!(classify_ptrace("spyware", "sudo"), "tracing sudo must be suspicious");
+    }
+
+    #[test]
+    fn classify_ptrace_unknown_tracing_su_suspicious() {
+        assert!(classify_ptrace("spyware", "su"), "tracing su must be suspicious");
+    }
+
+    #[test]
+    fn classify_ptrace_unknown_tracing_gpg_agent_suspicious() {
+        assert!(classify_ptrace("spyware", "gpg-agent"), "tracing gpg-agent must be suspicious");
+    }
+
+    #[test]
+    fn ptrace_relationship_serializes() {
+        let rel = PtraceRelationship {
+            tracer_pid: 42,
+            tracer_name: "evil".to_string(),
+            tracee_pid: 100,
+            tracee_name: "sshd".to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&rel).unwrap();
+        assert!(json.contains("\"tracer_pid\":42"));
+        assert!(json.contains("\"is_suspicious\":true"));
     }
 }

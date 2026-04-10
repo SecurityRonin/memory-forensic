@@ -278,4 +278,246 @@ mod tests {
             "no __log_buf symbol → empty vec expected"
         );
     }
+
+    // -------------------------------------------------------------------
+    // parse_oom_line edge-case tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_oom_line_with_mem_cgroup_prefix() {
+        // Line uses "Kill" variant (also matches "Killed")
+        let line = "Out of memory: Kill process 100 (victim) score 0 total-vm:1024kB, anon-rss:512kB";
+        let result = parse_oom_line(line);
+        assert!(result.is_some(), "Kill (without -ed) should also match");
+        let (pid, comm, _, total_vm, rss) = result.unwrap();
+        assert_eq!(pid, 100);
+        assert_eq!(comm, "victim");
+        assert_eq!(total_vm, 1024);
+        assert_eq!(rss, 512);
+    }
+
+    #[test]
+    fn parse_oom_line_no_score_field() {
+        // Line without "score" → score_adj defaults to 0
+        let line = "Out of memory: Killed process 5678 (noscore) total-vm:2048kB, anon-rss:1024kB";
+        let (pid, comm, score, total_vm, rss) = parse_oom_line(line).unwrap();
+        assert_eq!(pid, 5678);
+        assert_eq!(comm, "noscore");
+        assert_eq!(score, 0);
+        assert_eq!(total_vm, 2048);
+        assert_eq!(rss, 1024);
+    }
+
+    #[test]
+    fn parse_oom_line_no_total_vm() {
+        // total-vm missing → 0
+        let line = "Out of memory: Killed process 42 (partial) score 10 anon-rss:256kB";
+        let (pid, _comm, _score, total_vm, rss) = parse_oom_line(line).unwrap();
+        assert_eq!(pid, 42);
+        assert_eq!(total_vm, 0);
+        assert_eq!(rss, 256);
+    }
+
+    #[test]
+    fn parse_oom_line_no_anon_rss() {
+        // anon-rss missing → 0
+        let line = "Out of memory: Killed process 99 (norss) score 5 total-vm:512kB";
+        let (_pid, _comm, _score, total_vm, rss) = parse_oom_line(line).unwrap();
+        assert_eq!(total_vm, 512);
+        assert_eq!(rss, 0);
+    }
+
+    #[test]
+    fn parse_oom_line_pid_parse_failure_returns_none() {
+        // "process" marker is present but PID is not a number
+        let line = "Out of memory: Killed process NOTAPID (comm) score 0";
+        assert!(parse_oom_line(line).is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // extract_kb unit tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn extract_kb_missing_label_returns_zero() {
+        assert_eq!(extract_kb("no labels here", "total-vm:"), 0);
+    }
+
+    #[test]
+    fn extract_kb_label_present_parses_value() {
+        assert_eq!(extract_kb("total-vm:8192kB, anon-rss:4096kB", "total-vm:"), 8192);
+    }
+
+    #[test]
+    fn extract_kb_at_end_of_string() {
+        // No non-digit character after the value → uses line.len() as end
+        assert_eq!(extract_kb("anon-rss:1024", "anon-rss:"), 1024);
+    }
+
+    // -------------------------------------------------------------------
+    // classify_oom_victim — additional names
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn classify_oom_victim_journald_suspicious() {
+        assert!(classify_oom_victim("systemd-journald", 5000));
+    }
+
+    #[test]
+    fn classify_oom_victim_rsyslogd_suspicious() {
+        assert!(classify_oom_victim("rsyslogd", 300));
+    }
+
+    #[test]
+    fn classify_oom_victim_dockerd_suspicious() {
+        assert!(classify_oom_victim("dockerd", 1000));
+    }
+
+    #[test]
+    fn classify_oom_victim_systemd_suspicious() {
+        assert!(classify_oom_victim("systemd", 1));
+    }
+
+    #[test]
+    fn classify_oom_victim_pid_exactly_100_not_suspicious() {
+        // Boundary: pid == 100 is NOT < 100
+        assert!(!classify_oom_victim("someproc", 100));
+    }
+
+    #[test]
+    fn classify_oom_victim_pid_99_suspicious() {
+        assert!(classify_oom_victim("someproc", 99));
+    }
+
+    // -------------------------------------------------------------------
+    // walk_oom_events with a synthetic log buffer
+    // -------------------------------------------------------------------
+
+    fn build_printk_record(ts_nsec: u64, text: &[u8]) -> Vec<u8> {
+        // printk_log header layout (kernel 3.x+):
+        //   u64 ts_nsec   @ 0
+        //   u16 len       @ 8   (total record size including header)
+        //   u16 text_len  @ 10
+        //   u16 dict_len  @ 12
+        //   u8  facility  @ 14
+        //   u8  flags     @ 15
+        let header_size = 16usize;
+        let text_len = text.len();
+        // total len must be aligned to 8 bytes
+        let raw_len = header_size + text_len;
+        let len = (raw_len + 7) & !7;
+
+        let mut rec = vec![0u8; len];
+        rec[0..8].copy_from_slice(&ts_nsec.to_le_bytes());
+        rec[8..10].copy_from_slice(&(len as u16).to_le_bytes());
+        rec[10..12].copy_from_slice(&(text_len as u16).to_le_bytes());
+        // dict_len, facility, flags_level all zero
+        rec[header_size..header_size + text_len].copy_from_slice(text);
+        rec
+    }
+
+    #[test]
+    fn walk_oom_events_with_synthetic_oom_record() {
+        use memf_core::test_builders::flags as ptf;
+
+        let log_text = b"Out of memory: Killed process 1234 (auditd) score 200 total-vm:65536kB, anon-rss:32768kB, file-rss:0kB";
+        let record = build_printk_record(123_456_789, log_text);
+
+        let buf_vaddr: u64 = 0xFFFF_8800_0000_0000;
+        let buf_paddr: u64 = 0x0200_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("__log_buf", buf_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Pad record to at least 4096 bytes so the default buf_len read works
+        let mut buf = record.clone();
+        buf.resize(4096, 0);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(buf_vaddr, buf_paddr, ptf::WRITABLE)
+            .write_phys(buf_paddr, &buf)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_oom_events(&reader).expect("should not error");
+        assert_eq!(result.len(), 1, "expected exactly one OOM event");
+        let ev = &result[0];
+        assert_eq!(ev.victim_pid, 1234);
+        assert_eq!(ev.victim_comm, "auditd");
+        assert_eq!(ev.total_vm_kb, 65536);
+        assert_eq!(ev.rss_kb, 32768);
+        assert!(ev.is_suspicious, "auditd kill must be suspicious");
+        assert_eq!(ev.timestamp_ns, 123_456_789);
+        assert_eq!(ev.reason, "oom_kill_process");
+    }
+
+    #[test]
+    fn walk_oom_events_mem_cgroup_reason() {
+        use memf_core::test_builders::flags as ptf;
+
+        let log_text = b"Out of memory: Kill process 200 (victim) due to memory cgroup score 0 total-vm:1024kB, anon-rss:512kB";
+        let record = build_printk_record(999, log_text);
+
+        let buf_vaddr: u64 = 0xFFFF_8800_0001_0000;
+        let buf_paddr: u64 = 0x0300_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("__log_buf", buf_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut buf = record.clone();
+        buf.resize(4096, 0);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(buf_vaddr, buf_paddr, ptf::WRITABLE)
+            .write_phys(buf_paddr, &buf)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_oom_events(&reader).expect("should not error");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].reason, "mem_cgroup_oom");
+    }
+
+    #[test]
+    fn walk_oom_events_log_buf_unreadable_returns_empty() {
+        // __log_buf symbol exists but the address is not mapped → read_bytes fails → empty
+        let isf = IsfBuilder::new()
+            .add_symbol("__log_buf", 0xDEAD_BEEF_0000_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_oom_events(&reader).expect("should not error");
+        assert!(result.is_empty(), "unreadable log buffer must yield empty result");
+    }
+
+    #[test]
+    fn oom_event_info_serializes() {
+        let ev = OomEventInfo {
+            victim_pid: 42,
+            victim_comm: "auditd".to_string(),
+            oom_score_adj: 0,
+            total_vm_kb: 1024,
+            rss_kb: 512,
+            timestamp_ns: 1_000_000,
+            reason: "oom_kill_process".to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"victim_pid\":42"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
 }
