@@ -224,4 +224,84 @@ mod tests {
             "no futex_queues symbol → empty vec expected"
         );
     }
+
+    // --- classify_futex additional branch/boundary coverage ---
+
+    #[test]
+    fn classify_futex_waiter_count_zero_benign() {
+        assert!(
+            !classify_futex(0x7FFF_0000_0000, 0, 0),
+            "zero waiters must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_futex_exactly_boundary_key_not_suspicious() {
+        // key_address == 0x7FFF_FFFF_FFFF is NOT > 0x7FFF_FFFF_FFFF, so not suspicious
+        assert!(
+            !classify_futex(0x7FFF_FFFF_FFFF, 1, 1),
+            "key at exactly 0x7FFF_FFFF_FFFF must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_futex_key_one_above_boundary_suspicious() {
+        // key_address == 0x8000_0000_0000 IS > 0x7FFF_FFFF_FFFF and owner_pid > 0
+        assert!(
+            classify_futex(0x8000_0000_0000, 1, 1),
+            "key just above boundary with non-zero pid must be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_futex_both_conditions_true_suspicious() {
+        // Both high waiter count AND kernel-space key with userspace owner
+        assert!(
+            classify_futex(0xFFFF_8000_0000_0000, 99, 5000),
+            "both conditions true must be suspicious"
+        );
+    }
+
+    // --- walk_futex_table: symbol present but chain offset missing ---
+
+    #[test]
+    fn walk_futex_missing_chain_offset_returns_empty() {
+        // futex_queues symbol present but futex_hash_bucket.chain field missing
+        let isf = IsfBuilder::new()
+            .add_symbol("futex_queues", 0xFFFF_8000_ABCD_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_futex_table(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "missing futex_hash_bucket.chain offset → empty vec expected"
+        );
+    }
+
+    // --- walk_futex_table: symbol + chain offset present but memory unreadable ---
+
+    #[test]
+    fn walk_futex_unreadable_bucket_returns_empty() {
+        // futex_queues points to an unmapped address, so read_bytes on chain_head fails
+        let isf = IsfBuilder::new()
+            .add_symbol("futex_queues", 0xDEAD_BEEF_CAFE_0000)
+            .add_struct("futex_hash_bucket", 64)
+            .add_field("futex_hash_bucket", "chain", 0, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // All 256 buckets will fail to read → no waiters found → empty result
+        let result = walk_futex_table(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "unreadable bucket memory → empty vec expected"
+        );
+    }
 }

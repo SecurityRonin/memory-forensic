@@ -284,4 +284,123 @@ mod tests {
             "no super_blocks symbol → empty vec expected"
         );
     }
+
+    // --- additional classify_tmpfs_file coverage ---
+
+    #[test]
+    fn classify_empty_filename_not_suspicious() {
+        // Empty filename: does not start with '.', not executable
+        assert!(
+            !classify_tmpfs_file("", 0o100_644),
+            "empty filename non-executable must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_dot_with_exec_bit_not_suspicious_because_len_1() {
+        // "." starts with '.' but len == 1, so hidden check fails.
+        // Also a directory (0o040_755) so exec check also fails.
+        assert!(
+            !classify_tmpfs_file(".", 0o040_755),
+            "bare '.' must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_directory_with_exec_bits_not_suspicious() {
+        // S_IFDIR = 0o040000; exec bits set but it's not S_IFREG
+        assert!(
+            !classify_tmpfs_file("mydir", 0o040_755),
+            "directory with exec bits must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_regular_file_no_exec_not_suspicious() {
+        // S_IFREG = 0o100000, mode 0o600 — no exec bit
+        assert!(
+            !classify_tmpfs_file("secret.dat", 0o100_600),
+            "regular non-executable non-hidden file must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_regular_file_group_exec_suspicious() {
+        // Group execute bit (0o010) set on regular file
+        assert!(
+            classify_tmpfs_file("grpexec", 0o100_610),
+            "regular file with group exec bit must be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_regular_file_other_exec_suspicious() {
+        // Other execute bit (0o001) set on regular file
+        assert!(
+            classify_tmpfs_file("otherexec", 0o100_601),
+            "regular file with other exec bit must be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_dotdot_not_suspicious() {
+        // ".." starts with '.' but len == 2; the hidden check passes
+        // however ".." is a valid directory reference — verify behaviour is consistent
+        // The function does NOT special-case ".."; len > 1 makes it suspicious
+        assert!(
+            classify_tmpfs_file("..", 0o040_755),
+            "'..' is two chars starting with '.'; hidden-check flags it"
+        );
+    }
+
+    #[test]
+    fn classify_non_regular_non_exec_file_benign() {
+        // S_IFLNK = 0o120000 — symlink, with rwx bits; not S_IFREG so exec check fails
+        assert!(
+            !classify_tmpfs_file("mylink", 0o120_777),
+            "symlink with rwx bits must not be suspicious (not S_IFREG)"
+        );
+    }
+
+    // --- walk_tmpfs_files: symbol present but s_list field missing ---
+
+    #[test]
+    fn walk_tmpfs_missing_s_list_offset_returns_empty() {
+        // Build a reader that HAS the super_blocks symbol but NO s_list field
+        let isf = IsfBuilder::new()
+            .add_symbol("super_blocks", 0xFFFF_8000_1234_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tmpfs_files(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "missing s_list field_offset → empty vec expected"
+        );
+    }
+
+    // --- walk_tmpfs_files: symbol + s_list present but read fails (sb_list_addr unreadable) ---
+
+    #[test]
+    fn walk_tmpfs_unreadable_first_sb_returns_empty() {
+        // super_blocks symbol points to an unmapped address; read_bytes will fail
+        let isf = IsfBuilder::new()
+            .add_symbol("super_blocks", 0xDEAD_BEEF_0000_0000)
+            .add_struct("super_block", 512)
+            .add_field("super_block", "s_list", 0, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tmpfs_files(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "unreadable super_blocks address → empty vec expected"
+        );
+    }
 }

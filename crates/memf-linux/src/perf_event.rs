@@ -299,4 +299,125 @@ mod tests {
             "no init_task symbol → empty vec expected"
         );
     }
+
+    // --- perf_type_name exhaustive coverage ---
+
+    #[test]
+    fn perf_type_name_software() {
+        assert_eq!(perf_type_name(1), "SOFTWARE");
+    }
+
+    #[test]
+    fn perf_type_name_tracepoint() {
+        assert_eq!(perf_type_name(2), "TRACEPOINT");
+    }
+
+    #[test]
+    fn perf_type_name_hw_cache() {
+        assert_eq!(perf_type_name(3), "HW_CACHE");
+    }
+
+    #[test]
+    fn perf_type_name_raw() {
+        assert_eq!(perf_type_name(4), "RAW");
+    }
+
+    #[test]
+    fn perf_type_name_breakpoint() {
+        assert_eq!(perf_type_name(5), "BREAKPOINT");
+    }
+
+    // --- classify_perf_event boundary and branch coverage ---
+
+    #[test]
+    fn classify_hw_cache_config_byte_1_suspicious() {
+        // PERF_TYPE_HW_CACHE (3), config low byte = 1 (PERF_COUNT_HW_CACHE_L1I)
+        assert!(
+            classify_perf_event(3, 1),
+            "HW_CACHE with config=1 must be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_hw_cache_config_byte_3_not_suspicious() {
+        // low byte = 3 is > 2, so NOT suspicious
+        assert!(
+            !classify_perf_event(3, 3),
+            "HW_CACHE with config byte = 3 must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_hw_cache_config_high_byte_not_suspicious() {
+        // config = 0x0300 → low byte = 0, which IS <= 2 (suspicious)
+        // But config = 0xFF03 → low byte = 3, not suspicious
+        assert!(
+            !classify_perf_event(3, 0xFF03),
+            "HW_CACHE with low byte > 2 must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_tracepoint_not_suspicious() {
+        assert!(
+            !classify_perf_event(2, 0),
+            "TRACEPOINT event must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_breakpoint_not_suspicious() {
+        assert!(
+            !classify_perf_event(5, 0),
+            "BREAKPOINT event must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_unknown_type_not_suspicious() {
+        assert!(
+            !classify_perf_event(99, 0),
+            "unknown event type must not be suspicious"
+        );
+    }
+
+    // --- walk_perf_events: has init_task but no tasks field ---
+
+    #[test]
+    fn walk_perf_events_missing_tasks_offset_returns_empty() {
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_8888_0000_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_perf_events(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "missing task_struct.tasks offset → empty vec expected"
+        );
+    }
+
+    // --- walk_perf_events: has init_task + tasks but no perf_event_ctxp ---
+
+    #[test]
+    fn walk_perf_events_missing_ctxp_offset_returns_empty() {
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_8888_0000_0000)
+            .add_struct("task_struct", 512)
+            .add_field("task_struct", "tasks", 8, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_perf_events(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "missing perf_event_ctxp offset → empty vec expected"
+        );
+    }
 }

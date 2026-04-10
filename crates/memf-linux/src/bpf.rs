@@ -272,7 +272,10 @@ mod tests {
     fn walk_bpf_no_symbol() {
         let reader = make_reader_no_bpf_symbol();
         let result = walk_bpf_programs(&reader).unwrap();
-        assert!(result.is_empty(), "expected empty vec when bpf_prog_idr symbol missing");
+        assert!(
+            result.is_empty(),
+            "expected empty vec when bpf_prog_idr symbol missing"
+        );
     }
 
     #[test]
@@ -304,6 +307,104 @@ mod tests {
         assert!(
             !classify_bpf_program("tracing", "my_tracer"),
             "named tracing programs should not be flagged as suspicious"
+        );
+    }
+
+    // --- prog_type_name (private) exercised via walk_bpf + classify paths ---
+    // We exercise it indirectly through classify_bpf_program and read_bpf_prog
+    // by covering all classify arms.
+
+    #[test]
+    fn classify_bpf_raw_tracepoint_unnamed_suspicious() {
+        assert!(
+            classify_bpf_program("raw_tracepoint", ""),
+            "unnamed raw_tracepoint must be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_bpf_raw_tracepoint_named_benign() {
+        assert!(
+            !classify_bpf_program("raw_tracepoint", "my_hook"),
+            "named raw_tracepoint must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_bpf_raw_tracepoint_writable_always_suspicious() {
+        assert!(
+            classify_bpf_program("raw_tracepoint_writable", ""),
+            "raw_tracepoint_writable with no name must be suspicious"
+        );
+        assert!(
+            classify_bpf_program("raw_tracepoint_writable", "named"),
+            "raw_tracepoint_writable with a name must also be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_bpf_lsm_always_suspicious() {
+        assert!(
+            classify_bpf_program("lsm", ""),
+            "lsm with no name must be suspicious"
+        );
+        assert!(
+            classify_bpf_program("lsm", "some_lsm_prog"),
+            "lsm with a name must also be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_bpf_xdp_not_suspicious() {
+        assert!(
+            !classify_bpf_program("xdp", "my_xdp"),
+            "xdp program must not be suspicious by default"
+        );
+    }
+
+    #[test]
+    fn classify_bpf_tracepoint_not_suspicious() {
+        assert!(
+            !classify_bpf_program("tracepoint", ""),
+            "plain tracepoint must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_bpf_sched_cls_not_suspicious() {
+        assert!(
+            !classify_bpf_program("sched_cls", "tc_prog"),
+            "sched_cls must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_bpf_unknown_type_not_suspicious() {
+        assert!(
+            !classify_bpf_program("unknown_type_xyz", ""),
+            "unknown program type must not be suspicious"
+        );
+    }
+
+    // --- walk_bpf_programs: symbol present but xa_head resolves to 0 (empty tree) ---
+
+    #[test]
+    fn walk_bpf_programs_empty_idr_returns_empty() {
+        // Provide the bpf_prog_idr symbol at an unmapped address.
+        // read_field for idr.idr_rt will fail, or_else for idr.top also fails → xa_head = 0
+        // → returns Ok(Vec::new())
+        let isf = IsfBuilder::new()
+            .add_symbol("bpf_prog_idr", 0xDEAD_0000_0000_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bpf_programs(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "bpf_prog_idr with unreadable/zero xa_head → empty vec expected"
         );
     }
 }

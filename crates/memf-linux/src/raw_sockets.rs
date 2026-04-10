@@ -353,4 +353,173 @@ mod tests {
             "missing init_task must yield empty results (graceful degradation)"
         );
     }
+
+    // --- classify_raw_socket exhaustive branch coverage ---
+
+    #[test]
+    fn classify_raw_socket_unknown_type_benign() {
+        // socket_type is neither "AF_PACKET" nor "SOCK_RAW" and not promiscuous
+        assert!(
+            !classify_raw_socket("someproc", "UNKNOWN_TYPE", false),
+            "unknown socket type, not promiscuous must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_wireshark_af_packet_benign() {
+        assert!(
+            !classify_raw_socket("wireshark", "AF_PACKET", false),
+            "wireshark AF_PACKET must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_dumpcap_af_packet_benign() {
+        assert!(
+            !classify_raw_socket("dumpcap", "AF_PACKET", false),
+            "dumpcap AF_PACKET must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_dhclient_af_packet_benign() {
+        assert!(
+            !classify_raw_socket("dhclient", "AF_PACKET", false),
+            "dhclient AF_PACKET must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_dhcpcd_af_packet_benign() {
+        assert!(
+            !classify_raw_socket("dhcpcd", "AF_PACKET", false),
+            "dhcpcd AF_PACKET must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_arping_af_packet_benign() {
+        assert!(
+            !classify_raw_socket("arping", "AF_PACKET", false),
+            "arping AF_PACKET must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_ping_af_packet_benign() {
+        assert!(
+            !classify_raw_socket("ping", "AF_PACKET", false),
+            "ping AF_PACKET must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_ping6_af_packet_benign() {
+        assert!(
+            !classify_raw_socket("ping6", "AF_PACKET", false),
+            "ping6 AF_PACKET must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_traceroute_sock_raw_benign() {
+        assert!(
+            !classify_raw_socket("traceroute", "SOCK_RAW", false),
+            "traceroute SOCK_RAW must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_traceroute6_sock_raw_benign() {
+        assert!(
+            !classify_raw_socket("traceroute6", "SOCK_RAW", false),
+            "traceroute6 SOCK_RAW must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_arping_sock_raw_benign() {
+        assert!(
+            !classify_raw_socket("arping", "SOCK_RAW", false),
+            "arping SOCK_RAW must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_ping6_sock_raw_benign() {
+        assert!(
+            !classify_raw_socket("ping6", "SOCK_RAW", false),
+            "ping6 SOCK_RAW must not be suspicious"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_uppercase_comm_not_benign() {
+        // comm is lowercased before comparison; "TCPDUMP" → "tcpdump" should match
+        assert!(
+            !classify_raw_socket("TCPDUMP", "AF_PACKET", false),
+            "TCPDUMP (uppercase) AF_PACKET must not be suspicious (case-folded)"
+        );
+    }
+
+    #[test]
+    fn classify_raw_socket_promisc_overrides_benign_comm() {
+        // promiscuous always wins even for known-benign tools
+        assert!(
+            classify_raw_socket("wireshark", "AF_PACKET", true),
+            "promiscuous wireshark must still be suspicious"
+        );
+    }
+
+    // --- walk_raw_sockets: has init_task but missing tasks offset ---
+
+    fn make_reader_with_init_task_no_tasks() -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_FFFF_8260_0000)
+            .add_struct("task_struct", 512)
+            .add_field("task_struct", "pid", 0, "int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    #[test]
+    fn walk_raw_sockets_missing_tasks_offset_returns_empty() {
+        let reader = make_reader_with_init_task_no_tasks();
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert!(
+            result.is_empty(),
+            "missing task_struct.tasks offset must yield empty results"
+        );
+    }
+
+    // --- walk_raw_sockets: has init_task + tasks but missing files field ---
+
+    fn make_reader_with_tasks_no_files() -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_FFFF_8260_0000)
+            .add_struct("task_struct", 512)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 8, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    #[test]
+    fn walk_raw_sockets_missing_files_field_returns_empty() {
+        let reader = make_reader_with_tasks_no_files();
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert!(
+            result.is_empty(),
+            "missing task_struct.files field must yield empty results"
+        );
+    }
 }
