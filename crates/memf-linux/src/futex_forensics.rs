@@ -304,4 +304,45 @@ mod tests {
             "unreadable bucket memory → empty vec expected"
         );
     }
+
+    // --- walk_futex_table: symbol + chain present, mapped memory, all buckets zero → exercises loop ---
+    // Exercises the bucket scanning loop: chain_head reads succeed (memory mapped) but
+    // first_q == 0 for every bucket → waiter_count stays 0 → no entries pushed.
+    #[test]
+    fn walk_futex_symbol_present_mapped_zero_buckets_returns_empty() {
+        use memf_core::test_builders::flags as ptf;
+
+        // bucket_size=64, chain at offset 0. 256 buckets = 256*64 = 16384 bytes = 4 pages.
+        // We map 4 consecutive 4K pages of zeros.
+        let fq_vaddr: u64 = 0xFFFF_8800_00B0_0000;
+        let fq_paddr_base: u64 = 0x00B0_0000; // unique, < 16 MB; 4 pages = 0xB0_0000..0xB0_4000
+
+        let isf = IsfBuilder::new()
+            .add_symbol("futex_queues", fq_vaddr)
+            .add_struct("futex_hash_bucket", 64)
+            .add_field("futex_hash_bucket", "chain", 0, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let zero_page = [0u8; 4096];
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(fq_vaddr,                  fq_paddr_base,          ptf::WRITABLE)
+            .write_phys(fq_paddr_base,          &zero_page)
+            .map_4k(fq_vaddr + 0x1000,          fq_paddr_base + 0x1000, ptf::WRITABLE)
+            .write_phys(fq_paddr_base + 0x1000, &zero_page)
+            .map_4k(fq_vaddr + 0x2000,          fq_paddr_base + 0x2000, ptf::WRITABLE)
+            .write_phys(fq_paddr_base + 0x2000, &zero_page)
+            .map_4k(fq_vaddr + 0x3000,          fq_paddr_base + 0x3000, ptf::WRITABLE)
+            .write_phys(fq_paddr_base + 0x3000, &zero_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_futex_table(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "all-zero buckets (first_q==0) → waiter_count stays 0 → empty results"
+        );
+    }
 }

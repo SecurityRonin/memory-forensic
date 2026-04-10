@@ -522,4 +522,50 @@ mod tests {
             "missing task_struct.files field must yield empty results"
         );
     }
+
+    // --- walk_raw_sockets: all symbols present, self-pointing list, files=0 → exercises body ---
+    // Exercises collect_raw_sockets_for_task: files ptr is 0 → early return → no raw sockets.
+    #[test]
+    fn walk_raw_sockets_symbol_present_files_null_returns_empty() {
+        use memf_core::test_builders::flags as ptf;
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        // tasks at offset 0x10; pid at 0x00; comm at 0x20; files at 0x30.
+        let tasks_offset: u64 = 0x10;
+        let sym_vaddr: u64 = 0xFFFF_8800_0090_0000;
+        let sym_paddr: u64 = 0x0090_0000; // unique, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset as usize, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "files", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Build init_task page: tasks.next self-pointing, files=0 → no fd table.
+        let mut page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // files at 0x30 remains 0.
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_raw_sockets(&reader).expect("should not error");
+        assert!(
+            result.is_empty(),
+            "null files ptr → no fd table → no raw sockets"
+        );
+    }
 }

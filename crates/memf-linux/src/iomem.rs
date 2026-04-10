@@ -355,6 +355,53 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // walk_iomem_regions: symbol present, child == 0 → exercises body, returns empty
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn walk_iomem_symbol_present_no_children_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // iomem_resource is the root struct resource (not a pointer to it).
+        // The walk reads root_addr + child_offset; child_offset defaults to 0x28.
+        // If that value is 0, the walk returns Ok(Vec::new()) immediately.
+        let root_vaddr: u64 = 0xFFFF_8800_00A0_0000;
+        let root_paddr: u64 = 0x00A0_0000; // unique, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("iomem_resource", root_vaddr)
+            .add_struct("resource", 0x60)
+            .add_field("resource", "start",   0x00, "unsigned long")
+            .add_field("resource", "end",     0x08, "unsigned long")
+            .add_field("resource", "flags",   0x10, "unsigned long")
+            .add_field("resource", "name",    0x18, "pointer")
+            .add_field("resource", "sibling", 0x20, "pointer")
+            .add_field("resource", "child",   0x28, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // All zeros: child pointer at 0x28 == 0 → walk returns empty immediately.
+        let page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(root_vaddr, root_paddr, ptf::WRITABLE)
+            .write_phys(root_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_iomem_regions(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "iomem_resource with zero child pointer → no regions"
+        );
+    }
+
+    // ---------------------------------------------------------------
     // IoMemRegion: Clone + Debug + Serialize
     // ---------------------------------------------------------------
 

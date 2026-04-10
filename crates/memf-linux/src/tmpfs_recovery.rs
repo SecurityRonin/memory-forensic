@@ -403,4 +403,42 @@ mod tests {
             "unreadable super_blocks address → empty vec expected"
         );
     }
+
+    // --- walk_tmpfs_files: symbol + s_list present, self-pointing list → empty ---
+    // Exercises the superblock scanning loop body with an empty (self-pointing) list.
+    #[test]
+    fn walk_tmpfs_symbol_present_self_pointing_list_returns_empty() {
+        use memf_core::test_builders::flags as ptf;
+
+        // super_blocks points to a mapped page; the first 8 bytes (s_list.next)
+        // point back to super_blocks itself → loop exits immediately (cursor == sb_list_addr).
+        let sym_vaddr: u64 = 0xFFFF_8800_0010_0000;
+        let sym_paddr: u64 = 0x0030_0000; // unique paddr, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("super_blocks", sym_vaddr)
+            .add_struct("super_block", 0x200)
+            .add_field("super_block", "s_list", 0x00, "pointer")
+            .add_field("super_block", "s_type", 0x08, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Write a page where offset 0 (s_list.next) == sym_vaddr (self-pointer).
+        let mut page = [0u8; 4096];
+        page[0..8].copy_from_slice(&sym_vaddr.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tmpfs_files(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "self-pointing superblock list → no entries"
+        );
+    }
 }

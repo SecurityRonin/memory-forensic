@@ -401,4 +401,42 @@ mod tests {
         let result = walk_unix_sockets(&reader).unwrap();
         assert!(result.is_empty(), "missing unix_socket_table symbol must yield empty vec");
     }
+
+    // --- walk_unix_sockets: symbol present, all 256 buckets are zero → exercises loop body ---
+    // Exercises the hash-table scanning loop: each bucket's first pointer is 0 → no sockets.
+    #[test]
+    fn walk_unix_sockets_symbol_present_empty_buckets_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // unix_socket_table is an array of 256 hlist_head (each 8 bytes = 2048 bytes total).
+        // All zeros → every bucket's first pointer is 0 → no sockets enumerated.
+        // We need two 4K pages to cover: page 0 (buckets 0–511 bytes fit in 4K).
+        let table_vaddr: u64 = 0xFFFF_8800_0070_0000;
+        let table_paddr: u64 = 0x0070_0000; // unique, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("unix_socket_table", table_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // All-zero page → all 256 bucket pointers are 0.
+        let page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, ptf::WRITABLE)
+            .write_phys(table_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "all-zero hash buckets → no unix sockets found"
+        );
+    }
 }

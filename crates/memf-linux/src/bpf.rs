@@ -407,4 +407,44 @@ mod tests {
             "bpf_prog_idr with unreadable/zero xa_head → empty vec expected"
         );
     }
+
+    // --- walk_bpf_programs: symbol present, xa_head non-zero but tagged (retry entry) ---
+    // Exercises walk_idr_entries body: a tagged pointer (low bits == 0x1) is neither
+    // a node (0x2) nor a clean leaf (0x0), so it is silently skipped → empty result.
+    #[test]
+    fn walk_bpf_programs_tagged_xa_head_skipped_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        // bpf_prog_idr at a mapped address; idr.idr_rt at offset 0 returns xa_head.
+        // xa_head value = 0x0001 (low bits 0x1 → retry/reserved entry, not node, not leaf).
+        let idr_vaddr: u64 = 0xFFFF_8800_0050_0000;
+        let idr_paddr: u64 = 0x0050_0000; // unique, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("bpf_prog_idr", idr_vaddr)
+            .add_struct("idr", 0x20)
+            .add_field("idr", "idr_rt", 0x00, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Write the idr page: idr_rt at offset 0 = 0x0001 (tagged, non-zero).
+        let xa_head: u64 = 0x0001u64; // low bits 0x1 → skipped by walk_idr_entries
+        let mut page = [0u8; 4096];
+        page[0..8].copy_from_slice(&xa_head.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(idr_vaddr, idr_paddr, ptf::WRITABLE)
+            .write_phys(idr_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_bpf_programs(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "tagged xa_head (retry entry) must be skipped → empty vec"
+        );
+    }
 }

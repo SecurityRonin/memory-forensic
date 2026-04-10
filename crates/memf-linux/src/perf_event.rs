@@ -420,4 +420,53 @@ mod tests {
             "missing perf_event_ctxp offset → empty vec expected"
         );
     }
+
+    // --- walk_perf_events: all symbols present, self-pointing tasks list → empty ---
+    // Exercises the task-list traversal body and the perf-context branch.
+    #[test]
+    fn walk_perf_events_symbol_present_self_pointing_list_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+
+        // tasks field is at offset 0x10; perf_event_ctxp is at offset 0x20.
+        // init_task.tasks.next must point back to init_task_addr + tasks_offset
+        // so that the loop's "task_addr == init_task_addr" guard fires immediately.
+        let tasks_offset: u64 = 0x10;
+        let ctxp_offset: u64 = 0x20;
+
+        let sym_vaddr: u64 = 0xFFFF_8800_0020_0000;
+        let sym_paddr: u64 = 0x0040_0000; // unique paddr, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset as usize, "pointer")
+            .add_field("task_struct", "perf_event_ctxp", ctxp_offset as usize, "pointer")
+            .add_field("task_struct", "pid", 0x30, "unsigned int")
+            .add_field("task_struct", "comm", 0x38, "char")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Build a page for init_task:
+        // [tasks_offset+0..+8] = init_task_vaddr + tasks_offset  (self-pointing → empty list)
+        // [ctxp_offset+0..+8]  = 0  (null ctx_ptr → loop skips perf context)
+        let mut page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // ctxp already zero
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_perf_events(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "self-pointing tasks list with null ctx_ptr → no perf events"
+        );
+    }
 }

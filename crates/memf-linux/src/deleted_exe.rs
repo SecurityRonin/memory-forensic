@@ -384,4 +384,46 @@ mod tests {
             "walk_deleted_exe must error when init_task symbol is missing"
         );
     }
+
+    // --- walk_deleted_exe: symbol present, self-pointing tasks list, mm == 0 → exercises body ---
+    // Exercises the task-list body and `read_deleted_exe_info`: init_task has mm=0 (kernel thread),
+    // so it is skipped, and walk_list returns empty → result is empty but no error.
+    #[test]
+    fn walk_deleted_exe_symbol_present_kernel_thread_returns_empty() {
+        // tasks at offset 0x10; pid at 0x00; comm at 0x20; mm at 0x30.
+        let tasks_offset: u64 = 0x10;
+        let sym_vaddr: u64 = 0xFFFF_8800_0080_0000;
+        let sym_paddr: u64 = 0x0080_0000; // unique, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset as usize, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "mm", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Build init_task page: tasks.next self-pointing, mm = 0 (kernel thread).
+        let mut page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // mm at 0x30 remains 0 → read_deleted_exe_info returns None.
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_deleted_exe(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "init_task with mm=0 → skipped as kernel thread → empty results"
+        );
+    }
 }

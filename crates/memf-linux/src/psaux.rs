@@ -525,4 +525,55 @@ mod tests {
         let result = walk_psaux(&reader);
         assert!(result.is_err(), "missing tasks field must return an error");
     }
+
+    // --- walk_psaux: symbol present, self-pointing tasks list → exercises loop body ---
+    // Walks the tasks list (finding no additional tasks) and reads init_task itself.
+    #[test]
+    fn walk_psaux_symbol_present_self_pointing_list_returns_init_task() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // tasks field at offset 0x10; pid at offset 0x00; comm at offset 0x20.
+        let tasks_offset: u64 = 0x10;
+        let sym_vaddr: u64 = 0xFFFF_8800_0060_0000;
+        let sym_paddr: u64 = 0x0060_0000; // unique, < 16 MB
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", sym_vaddr)
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset as usize, "pointer")
+            .add_field("task_struct", "pid", 0x00, "unsigned int")
+            .add_field("task_struct", "comm", 0x20, "char")
+            .add_field("task_struct", "state", 0x08, "int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Build a page for init_task:
+        // [tasks_offset..+8] = sym_vaddr + tasks_offset (self-pointing, empty list)
+        // [0x00..4] = pid 0
+        // [0x08..8] = state 0 (Running)
+        // [0x20..] = comm "swapper\0"
+        let mut page = [0u8; 4096];
+        let self_ptr = sym_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        // comm at 0x20
+        page[0x20..0x28].copy_from_slice(b"swapper\0");
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // Should succeed: walk_list returns empty, but init_task itself is read.
+        let result = walk_psaux(&reader).unwrap();
+        // init_task (pid=0) is included; loop body executes with empty task list.
+        assert_eq!(result.len(), 1, "only init_task should appear (self-pointing list)");
+        assert_eq!(result[0].pid, 0);
+    }
 }
