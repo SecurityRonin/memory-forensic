@@ -2381,4 +2381,172 @@ mod tests {
         let result = walk_hashdump(&reader, 0xFFFF_8000_1111_0000, 0xFFFF_8000_2222_0000).unwrap();
         assert!(result.is_empty());
     }
+
+    // ── Additional coverage: internal helpers ────────────────────────
+
+    /// gf_mul(0, x) = 0 for all x.
+    #[test]
+    fn gf_mul_zero_operand() {
+        for b in 0u8..=255 {
+            assert_eq!(gf_mul(0, b), 0, "gf_mul(0, {b}) should be 0");
+        }
+    }
+
+    /// gf_mul(1, x) = x (multiplicative identity).
+    #[test]
+    fn gf_mul_identity() {
+        for b in 0u8..=255 {
+            assert_eq!(gf_mul(1, b), b, "gf_mul(1, {b}) should be {b}");
+        }
+    }
+
+    /// gf_mul(2, 0x80) should reduce by 0x1b (polynomial).
+    #[test]
+    fn gf_mul_reduction() {
+        // 0x80 << 1 = 0x100, high bit set → XOR 0x1b → result = 0x1b
+        assert_eq!(gf_mul(0x80, 2), 0x1b);
+    }
+
+    /// aes128_key_expansion produces exactly 11 round keys of 16 bytes each.
+    #[test]
+    fn aes128_key_expansion_count() {
+        let key = [0u8; 16];
+        let rks = aes128_key_expansion(&key);
+        assert_eq!(rks.len(), 11);
+        for rk in &rks {
+            assert_eq!(rk.len(), 16);
+        }
+    }
+
+    /// inv_sub_bytes is the inverse of sub_bytes (round-trip via AES_SBOX → INV_SBOX).
+    #[test]
+    fn inv_sub_bytes_round_trip() {
+        let original: [u8; 16] = [
+            0x00, 0x01, 0x10, 0xFF, 0xAB, 0xCD, 0x63, 0x7C,
+            0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01,
+        ];
+        // Apply forward S-box manually
+        let mut sboxed = original;
+        for b in sboxed.iter_mut() {
+            *b = AES_SBOX[*b as usize];
+        }
+        // Apply inverse S-box
+        inv_sub_bytes(&mut sboxed);
+        assert_eq!(sboxed, original, "inv_sub_bytes should undo forward S-box");
+    }
+
+    /// inv_shift_rows applied twice returns original state (period 2 for rows 1 and 3).
+    #[test]
+    fn inv_shift_rows_twice_returns_original() {
+        let original: [u8; 16] = [
+            0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13,
+            0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
+        ];
+        let mut state = original;
+        inv_shift_rows(&mut state);
+        inv_shift_rows(&mut state);
+        // Row 2 (swapped twice) should be back to original
+        // Row 1 and 3 (shifted by odd amount) need 4 applications for full period,
+        // but we just verify the call doesn't panic and state is modified/restored
+        // by a consistent number of applications.
+        // Actually inv_shift_rows period for row 1 (shift 1) is 4 and row 3 (shift 3) is 4.
+        // So let's do 4 applications and check original restored.
+        let mut state2 = original;
+        for _ in 0..4 {
+            inv_shift_rows(&mut state2);
+        }
+        assert_eq!(state2, original, "4x inv_shift_rows should restore original");
+    }
+
+    /// hex_encode with multi-byte input.
+    #[test]
+    fn hex_encode_multi_byte() {
+        assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
+        assert_eq!(hex_encode(&[0x00, 0xFF]), "00ff");
+    }
+
+    /// classify_hashdump: case-insensitive hash comparison works.
+    #[test]
+    fn classify_hashdump_case_insensitive_hashes() {
+        // "password" NT hash in uppercase should still be suspicious.
+        assert!(classify_hashdump("user", "A4F49C406510BDCAB6824EE7C30FD852"));
+        // "admin" NT hash in mixed case should be suspicious.
+        assert!(classify_hashdump("user", "209C6174DA490CAEB422F3FA5A7AE634"));
+    }
+
+    /// extract_hashes_from_v with nt_length == 4 returns EMPTY_NT_HASH.
+    #[test]
+    fn extract_hashes_from_v_nt_length_four_empty_marker() {
+        let mut v = vec![0u8; 0xCC + 32];
+        let hbk = vec![0xAAu8; 16];
+        // Set nt_length = 4 at V[0xAC..0xB0]
+        v[0xAC..0xB0].copy_from_slice(&4u32.to_le_bytes());
+        // Set lm_length = 4 at V[0xA0..0xA4]
+        v[0xA0..0xA4].copy_from_slice(&4u32.to_le_bytes());
+        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
+        assert_eq!(nt, EMPTY_NT_HASH, "nt_length=4 → EMPTY_NT_HASH");
+        assert_eq!(lm, EMPTY_LM_HASH, "lm_length=4 → EMPTY_LM_HASH");
+    }
+
+    /// resolve_flat_base returns 0 when hive_addr is unmapped.
+    #[test]
+    fn resolve_flat_base_unmapped_returns_zero() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(resolve_flat_base(&reader, 0xDEAD_BEEF), 0);
+    }
+
+    /// resolve_root_cell returns 0 when hive_addr is unmapped.
+    #[test]
+    fn resolve_root_cell_unmapped_returns_zero() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(resolve_root_cell(&reader, 0xDEAD_BEEF, 0x1000_0000), 0);
+    }
+
+    /// read_value_data returns empty when key_addr is unmapped.
+    #[test]
+    fn read_value_data_unmapped_returns_empty() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_value_data(&reader, 0x1000_0000, 0xDEAD_BEEF, "F");
+        assert!(result.is_empty());
+    }
+
+    /// read_key_class_name returns empty when key_addr is unmapped.
+    #[test]
+    fn read_key_class_name_unmapped_returns_empty() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_key_class_name(&reader, 0x1000_0000, 0xDEAD_BEEF);
+        assert!(result.is_empty());
+    }
 }

@@ -676,4 +676,123 @@ mod tests {
         let name = key_node_name(&data);
         assert_eq!(name, "");
     }
+
+    // ── Additional coverage: classify + helpers ──────────────────────
+
+    /// classify_svc_diff: both absent (not in SCM, not in registry) is benign.
+    #[test]
+    fn classify_both_absent_benign() {
+        // Neither condition fires.
+        assert!(!classify_svc_diff(false, false, 2));
+        assert!(!classify_svc_diff(false, false, 0));
+    }
+
+    /// classify_svc_diff: in SCM AND in registry is benign (normal service).
+    #[test]
+    fn classify_both_present_benign() {
+        assert!(!classify_svc_diff(true, true, 2));
+        assert!(!classify_svc_diff(true, true, 1));
+        assert!(!classify_svc_diff(true, true, 3));
+    }
+
+    /// classify_svc_diff: registry-only with demand start (3) is benign.
+    #[test]
+    fn classify_registry_only_demand_start_benign() {
+        assert!(!classify_svc_diff(false, true, 3));
+    }
+
+    /// classify_svc_diff: registry-only with disabled (4) is benign.
+    #[test]
+    fn classify_registry_only_disabled_benign() {
+        assert!(!classify_svc_diff(false, true, 4));
+    }
+
+    /// classify_svc_diff: registry-only boot start (0) is benign (not 1 or 2).
+    #[test]
+    fn classify_registry_only_boot_start_benign() {
+        assert!(!classify_svc_diff(false, true, 0));
+    }
+
+    /// SvcDiffEntry construction and serialization.
+    #[test]
+    fn svc_diff_entry_serializes() {
+        let entry = SvcDiffEntry {
+            service_name: "EvilSvc".to_string(),
+            display_name: "Evil Service".to_string(),
+            binary_path: "C:\\evil.exe".to_string(),
+            in_scm: true,
+            in_registry: false,
+            start_type: 2,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("EvilSvc"));
+        assert!(json.contains("is_suspicious"));
+        assert!(json.contains("in_scm"));
+    }
+
+    /// key_node_name with data shorter than NK_NAME_DATA returns empty (wave5 variant).
+    #[test]
+    fn key_node_name_too_short_w5() {
+        let data = vec![0u8; NK_NAME_DATA - 1];
+        assert_eq!(key_node_name(&data), "");
+    }
+
+    /// key_node_name with a non-zero name length extracts the name correctly.
+    #[test]
+    fn key_node_name_extracts_name() {
+        let name = b"Services";
+        let mut data = vec![0u8; NK_NAME_DATA + name.len() + 4];
+        data[NK_NAME_LEN] = name.len() as u8;
+        data[NK_NAME_LEN + 1] = 0;
+        data[NK_NAME_DATA..NK_NAME_DATA + name.len()].copy_from_slice(name);
+        assert_eq!(key_node_name(&data), "Services");
+    }
+
+    /// cell_vaddr wraps correctly without panicking.
+    #[test]
+    fn cell_vaddr_arithmetic() {
+        let hive: u64 = 0x0010_0000;
+        let idx: u32 = 0x300;
+        let result = cell_vaddr(hive, idx);
+        assert_eq!(result, hive + HBIN_START + idx as u64);
+    }
+
+    /// read_cell on unmapped address returns None.
+    #[test]
+    fn read_cell_unmapped_returns_none() {
+        let reader = make_reader();
+        assert!(read_cell(&reader, 0xDEAD_BEEF_0000).is_none());
+    }
+
+    /// find_key_cell on unmapped hive returns None.
+    #[test]
+    fn find_key_cell_unmapped_returns_none() {
+        let reader = make_reader();
+        assert!(find_key_cell(&reader, 0xDEAD_BEEF_0000, "CurrentControlSet").is_none());
+    }
+
+    /// enum_direct_subkeys on unmapped hive returns empty Vec.
+    #[test]
+    fn enum_direct_subkeys_unmapped_returns_empty() {
+        let reader = make_reader();
+        let names = enum_direct_subkeys(&reader, 0xDEAD_BEEF_0000, "CurrentControlSet\\Services");
+        assert!(names.is_empty());
+    }
+
+    /// walk_svc_diff with both addresses zero → empty Vec (wave5 variant).
+    #[test]
+    fn walk_svc_diff_both_zero_empty_w5() {
+        let reader = make_reader();
+        let result = walk_svc_diff(&reader, 0, 0).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// walk_svc_diff with zero SCM head and unmapped hive → empty Vec (wave5 variant).
+    #[test]
+    fn walk_svc_diff_zero_scm_unmapped_hive_empty_w5() {
+        let reader = make_reader();
+        let result = walk_svc_diff(&reader, 0, 0xFFFF_8000_DEAD_0000).unwrap();
+        assert!(result.is_empty());
+    }
 }

@@ -1071,4 +1071,149 @@ mod tests {
         let result = walk_typed_urls(&reader, hive_vaddr, "dave").unwrap();
         assert!(result.is_empty(), "unknown list sig → Software not found → empty Vec");
     }
+
+    // ── Additional coverage: walk_typed_urls early-exit paths ────────────
+
+    /// hive_addr = 0 returns empty immediately.
+    #[test]
+    fn walk_typed_urls_zero_hive_returns_empty() {
+        let reader = make_reader();
+        let result = walk_typed_urls(&reader, 0, "nobody").unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Non-zero but unmapped hive → read_bytes fails → empty.
+    #[test]
+    fn walk_typed_urls_unmapped_hive_returns_empty() {
+        let reader = make_reader();
+        let result = walk_typed_urls(&reader, 0xFFFF_8000_DEAD_0000, "nobody").unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// TypedUrlEntry struct construction and serialization.
+    #[test]
+    fn typed_url_entry_serializes() {
+        let entry = TypedUrlEntry {
+            username: "alice".to_string(),
+            url: "https://mega.nz/folder/abc".to_string(),
+            timestamp: 0x01D900_0000_0000,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("alice"));
+        assert!(json.contains("mega.nz"));
+        assert!(json.contains("is_suspicious"));
+    }
+
+    // ── classify_typed_url: URL without scheme (no "://") is benign ────
+
+    /// URL without "://" scheme separator should not trigger credential check.
+    #[test]
+    fn classify_no_scheme_benign() {
+        assert!(!classify_typed_url("www.example.com/page"));
+        assert!(!classify_typed_url("just_a_path/no_scheme"));
+    }
+
+    /// file:// with a single slash after host (not UNC) is benign.
+    #[test]
+    fn classify_file_single_slash_benign() {
+        assert!(!classify_typed_url("file://localhost/C:/Users/file.txt"));
+    }
+
+    /// Credential URL where @ appears after first slash (in path, not authority) is benign.
+    #[test]
+    fn classify_at_in_path_not_authority_benign() {
+        // The @ appears after a '/' so it's in the path, not the authority.
+        assert!(!classify_typed_url("https://example.com/profile/@username"));
+    }
+
+    // ── find_subkey: li-list branch via synthetic memory ────────────────
+
+    fn make_typed_url_isf_with_subkeyfields() -> serde_json::Value {
+        IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x80)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .build_json()
+    }
+
+    /// hive with NK root cell whose value count is 0 → TypedURLs not found → empty.
+    #[test]
+    fn walk_typed_urls_root_has_zero_subkeys_empty() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64 = 0x0050_0000;
+        let hive_paddr: u64 = 0x0050_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x0051_0000;
+
+        // root_cell_index = 0 → root nk at hive + HBIN + 0.
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[HBASE_BLOCK_ROOT_CELL_OFFSET as usize
+            ..HBASE_BLOCK_ROOT_CELL_OFFSET as usize + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // Cell size header at offset 0 (4 bytes, negative = allocated)
+        let raw_size: i32 = -0x80i32;
+        cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
+        // nk signature at offset 4 (after size header — read_cell_data skips 4-byte size)
+        let nk_sig: u16 = NK_SIGNATURE;
+        cell_page[4..6].copy_from_slice(&nk_sig.to_le_bytes());
+        // NK_STABLE_SUBKEY_COUNT_OFFSET (0x14) within nk data (data starts at offset 4+4=8):
+        // nk data[0x14] = subkey_count = 0 (already zero)
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "alice").unwrap();
+        assert!(
+            result.is_empty(),
+            "root with zero subkeys → Software not found → empty"
+        );
+    }
+
+    /// hive root cell has wrong signature → empty.
+    #[test]
+    fn walk_typed_urls_wrong_root_sig_empty() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64 = 0x0060_0000;
+        let hive_paddr: u64 = 0x0060_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x0061_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[HBASE_BLOCK_ROOT_CELL_OFFSET as usize
+            ..HBASE_BLOCK_ROOT_CELL_OFFSET as usize + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // Cell size
+        let raw_size: i32 = -0x80i32;
+        cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
+        // Bad signature: 0xDEAD instead of NK_SIGNATURE
+        cell_page[4..6].copy_from_slice(&0xDEADu16.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "bob").unwrap();
+        assert!(result.is_empty(), "wrong root signature → empty");
+    }
 }

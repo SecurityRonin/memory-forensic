@@ -573,4 +573,158 @@ mod tests {
         let result = walk_shellbags(&reader, 0xFFFF_8000_0000_1234).unwrap();
         assert!(result.is_empty());
     }
+
+    // ── Additional coverage: classify_shellbag edge cases ────────────
+
+    /// Exact match for "C:\\PERFLOGS" (uppercase) is suspicious.
+    #[test]
+    fn classify_shellbag_perflogs_exact_match() {
+        assert!(classify_shellbag("C:\\PerfLogs"));
+        assert!(classify_shellbag("C:\\PERFLOGS"));
+    }
+
+    /// Exact match for "C:\\WINDOWS\\TEMP" is suspicious.
+    #[test]
+    fn classify_shellbag_windows_temp_exact_match() {
+        assert!(classify_shellbag("C:\\Windows\\Temp"));
+        assert!(classify_shellbag("C:\\WINDOWS\\TEMP"));
+    }
+
+    /// Non-suspicious path with colon (drive letter) not UNC is benign.
+    #[test]
+    fn classify_shellbag_drive_letter_benign() {
+        assert!(!classify_shellbag("D:\\Projects\\work"));
+        assert!(!classify_shellbag("E:\\Backup\\data"));
+    }
+
+    /// Path with single backslash (not UNC) is benign.
+    #[test]
+    fn classify_shellbag_single_backslash_benign() {
+        assert!(!classify_shellbag("\\local_path\\folder"));
+    }
+
+    // ── Additional coverage: extract_folder_name branches ─────────────
+
+    /// extract_folder_name with only a type byte (len=1) returns empty (too short for scan).
+    #[test]
+    fn extract_folder_name_only_type_byte() {
+        let data = [0x31u8]; // only type byte, nothing else
+        let result = extract_folder_name(&data);
+        // start = 1.min(1) = 1, loop over data[1..] is empty → name_bytes empty
+        // data.len() = 1 < 4 → no UTF-16 fallback
+        assert!(result.is_empty());
+    }
+
+    /// extract_folder_name with non-ASCII first byte stops immediately.
+    #[test]
+    fn extract_folder_name_non_ascii_stops() {
+        // type byte 0x31, then 0x80 (non-ASCII graphic) → stops immediately
+        let data = [0x31u8, 0x80, 0x41, 0x00, 0x42, 0x00];
+        let result = extract_folder_name(&data);
+        // ASCII scan yields 0 bytes (0x80 is non-ASCII), tries UTF-16LE from offset 1
+        // UTF-16 at offset 1: [0x80, 0x41] = 0x4180 (non-null), [0x00, 0x42] = 0x4200,
+        // both non-zero, yields 2 chars → decoded.len() >= 2 → returns that.
+        // We just verify no panic.
+        let _ = result;
+    }
+
+    /// extract_folder_name with UTF-16LE single char (decoded.len() < 2) → empty.
+    #[test]
+    fn extract_folder_name_utf16_single_char_empty() {
+        // type byte, then UTF-16LE 'A' = [0x41, 0x00], null terminator [0x00, 0x00]
+        // ASCII scan: 0x41 is graphic → pushed, then 0x00 → breaks; name_bytes = [0x41], len=1 < 2
+        // UTF-16 fallback: from offset 1: [0x41,0x00]=0x41 (non-zero pushed), [0x00,0x00]=0 → break
+        // utf16_units = [0x41], decoded = "A", len=1 < 2 → returns empty
+        let data = [0x31u8, 0x41, 0x00, 0x00, 0x00];
+        let result = extract_folder_name(&data);
+        // The ASCII scan gets 0x41='A' and stops at 0x00, name_bytes=['A'], len=1<2
+        // The UTF-16 fallback gets "A" (len=1<2) → empty string
+        assert!(result.is_empty());
+    }
+
+    /// extract_folder_name: data has only type byte + non-graphic non-null byte.
+    #[test]
+    fn extract_folder_name_non_graphic_non_null() {
+        // type=0x31, then 0x01 (non-ASCII graphic, non-null) → ASCII scan stops,
+        // data.len()=2 < 4 → no UTF-16 fallback → empty
+        let data = [0x31u8, 0x01];
+        let result = extract_folder_name(&data);
+        assert!(result.is_empty());
+    }
+
+    // ── Additional coverage: find_extension_timestamps branches ───────
+
+    /// find_extension_timestamps: blob more than 24 bytes with sig near start.
+    #[test]
+    fn find_extension_timestamps_sig_at_start() {
+        // Need blob.len() > 24 so the loop runs (loop is 0..blob.len()-24).
+        let mut blob = [0u8; 48];
+        // sig at offset 0 (i=0, i+4=4 matches sig check)
+        blob[0] = 0x04;
+        blob[1] = 0x00;
+        blob[2] = 0xEF;
+        blob[3] = 0xBE;
+        // creation at blob[4..12] (i+4..i+12)
+        blob[4..12].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
+        // access at blob[12..20] (i+12..i+20)
+        blob[12..20].copy_from_slice(&0xFEDC_BA98_7654_3210u64.to_le_bytes());
+        let (access, creation) = find_extension_timestamps(&blob);
+        assert_eq!(access, 0xFEDC_BA98_7654_3210);
+        assert_eq!(creation, 0x1234_5678_9ABC_DEF0);
+    }
+
+    /// find_extension_timestamps: sig at an offset with truncated access field.
+    /// Access field requires i+20 <= blob.len(). If blob is just large enough that
+    /// the loop runs (blob.len() > 24) but i+20 > blob.len() → access = 0.
+    #[test]
+    fn find_extension_timestamps_truncated_after_sig() {
+        // blob of 25 bytes: loop runs for i in 0..1 (only i=0).
+        // At i=0: sig at [0..4]; creation at [4..12]; access at [12..20] where i+20=20 <=25 ok.
+        // So we need blob to be 28 bytes with sig at offset 4:
+        // i=4, i+12=16 <=28 ok, i+20=24 <=28 ok. Doesn't test truncated.
+        // For truncated access: place sig so i+20 > blob.len.
+        // blob=26 bytes, sig at i=0: i+20=20 <=26 ok. No truncation.
+        // To hit truncated creation (i+12 > blob.len): blob=25, sig at i=0:
+        //   i+4=4 → sig found; i+12=12 <=25 → creation OK; i+20=20 <=25 → access OK.
+        // Actually the truncated branches are unreachable via the loop condition
+        // (loop runs only when i < blob.len()-24, so i+24 <= blob.len() always).
+        // This test documents that and verifies no panic with a valid-looking blob.
+        let mut blob = [0u8; 32];
+        // Sig at offset 4 (i=4, 4 < 32-24=8 → loop runs)
+        blob[4] = 0x04;
+        blob[5] = 0x00;
+        blob[6] = 0xEF;
+        blob[7] = 0xBE;
+        // creation at i+4..i+12 = 8..16
+        blob[8..16].copy_from_slice(&0xAAAA_BBBB_CCCC_DDDDu64.to_le_bytes());
+        // access at i+12..i+20 = 16..24
+        blob[16..24].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
+        let (access, creation) = find_extension_timestamps(&blob);
+        assert_eq!(creation, 0xAAAA_BBBB_CCCC_DDDD);
+        assert_eq!(access, 0x1111_2222_3333_4444);
+    }
+
+    // ── Additional coverage: walk_shellbags with mapped memory ────────
+
+    /// walk_shellbags with non-zero hive_addr but all reads fail → empty (graceful).
+    #[test]
+    fn walk_shellbags_unmapped_hive_empty() {
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
+            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
+            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Non-zero hive_addr but nothing mapped — reads fail → walk_bagmru_node
+        // fails to read value_list_addr → folder_name empty → current_path empty
+        // → no entry pushed; subkeys_list_addr = 0 → return immediately.
+        let result = walk_shellbags(&reader, 0x0010_0000).unwrap();
+        assert!(result.is_empty());
+    }
 }

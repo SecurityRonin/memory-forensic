@@ -878,4 +878,252 @@ mod tests {
         let result = parse_module_imports(&reader, image_base, "test.dll", &ranges, 1, "test", 100);
         assert!(result.is_empty(), "zero import_rva should return empty");
     }
+
+    // ── Additional coverage: helpers and classify edge cases ─────────
+
+    /// read_ascii_string returns empty when address is unmapped.
+    #[test]
+    fn read_ascii_string_unmapped_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_ascii_string(&reader, 0xDEAD_BEEF_0000);
+        assert!(result.is_empty());
+    }
+
+    /// read_ascii_string with a mapped null-terminated string.
+    #[test]
+    fn read_ascii_string_reads_until_null() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let vaddr: u64 = 0x0013_0000;
+        let paddr: u64 = 0x0013_0000;
+
+        let mut page = vec![0u8; 4096];
+        let s = b"kernel32.dll\0rest";
+        page[..s.len()].copy_from_slice(s);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_ascii_string(&reader, vaddr);
+        assert_eq!(result, "kernel32.dll");
+    }
+
+    /// classify_iat_hook with hook_target = base - 1 (below base) is suspicious.
+    #[test]
+    fn classify_iat_hook_below_base_suspicious() {
+        let base: u64 = 0x7FF8_0000_1000;
+        let size: u32 = 0x10_0000;
+        let target = base - 1;
+        assert!(classify_iat_hook(target, base, size, "kernel32.dll"));
+    }
+
+    /// parse_module_imports: header read fails (unmapped) → empty.
+    #[test]
+    fn parse_module_imports_read_fails_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        let ranges: Vec<(u64, u64, String)> = vec![];
+        // image_base unmapped → read_bytes fails → empty Vec
+        let result = parse_module_imports(
+            &reader,
+            0xDEAD_BEEF_0000,
+            "bad.dll",
+            &ranges,
+            1,
+            "test",
+            100,
+        );
+        assert!(result.is_empty(), "unmapped image_base should return empty");
+    }
+
+    /// parse_module_imports: valid PE32 header (not PE32+) with zero import_rva → empty.
+    #[test]
+    fn parse_module_imports_pe32_zero_import_rva() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let image_base: u64 = 0x0014_0000;
+        let image_paddr: u64 = 0x0014_0000;
+
+        let mut header = vec![0u8; 1024];
+        // DOS header
+        header[0] = 0x4D; // M
+        header[1] = 0x5A; // Z
+        let e_lfanew: u32 = 0x40;
+        header[0x3C..0x40].copy_from_slice(&e_lfanew.to_le_bytes());
+        // PE signature
+        header[0x40] = b'P';
+        header[0x41] = b'E';
+        header[0x42] = 0;
+        header[0x43] = 0;
+        // opt_magic = 0x010B (PE32, not PE32+) at offset 0x40+4+20 = 0x58
+        header[0x58] = 0x0B;
+        header[0x59] = 0x01;
+        // import_dir for PE32: opt_off + 104 = 0x58 + 0x68 = 0xC0
+        // import_rva = 0 (already zero)
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(image_base, image_paddr, flags::WRITABLE)
+            .write_phys(image_paddr, &header)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let ranges: Vec<(u64, u64, String)> = vec![];
+        let result = parse_module_imports(&reader, image_base, "test.dll", &ranges, 1, "test", 100);
+        assert!(result.is_empty(), "PE32 with zero import_rva should return empty");
+    }
+
+    /// IatHookInfo with is_suspicious=false still serializes correctly.
+    #[test]
+    fn iat_hook_info_benign_serializes() {
+        let hook = IatHookInfo {
+            pid: 100,
+            process_name: "svchost.exe".into(),
+            hooked_module: "kernel32.dll".into(),
+            hooked_function: "CreateFileW".into(),
+            iat_address: 0x7FF8_0001_0000,
+            original_target: "kernel32.dll".into(),
+            hook_target: 0x7FF8_0005_0000,
+            hook_module: "kernel32.dll".into(),
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&hook).unwrap();
+        assert!(json.contains("svchost.exe"));
+        assert!(json.contains("CreateFileW"));
+        assert!(json.contains("\"is_suspicious\":false"));
+    }
+
+    /// read_import_name returns empty when ilt_bytes is None.
+    #[test]
+    fn read_import_name_no_ilt_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        // ilt_bytes = None → returns empty string immediately.
+        let result = read_import_name(&reader, &None, 0, 8, true, 0x1000_0000);
+        assert!(result.is_empty(), "None ilt_bytes → empty import name");
+    }
+
+    /// read_import_name with ordinal flag set returns "Ordinal#<n>" string.
+    #[test]
+    fn read_import_name_ordinal_flag_pe32plus() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        // PE32+: ordinal flag is bit 63. Ordinal 42.
+        let ilt_entry: u64 = (1u64 << 63) | 42;
+        let mut ilt_bytes = vec![0u8; 8];
+        ilt_bytes[..8].copy_from_slice(&ilt_entry.to_le_bytes());
+
+        let result = read_import_name(&reader, &Some(ilt_bytes), 0, 8, true, 0x1000_0000);
+        assert_eq!(result, "Ordinal#42");
+    }
+
+    /// read_import_name with ordinal flag set (PE32, bit 31) returns "Ordinal#<n>".
+    #[test]
+    fn read_import_name_ordinal_flag_pe32() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        // PE32: ordinal flag is bit 31. Ordinal 7.
+        let ilt_entry: u32 = (1u32 << 31) | 7;
+        let mut ilt_bytes = vec![0u8; 4];
+        ilt_bytes[..4].copy_from_slice(&ilt_entry.to_le_bytes());
+
+        let result = read_import_name(&reader, &Some(ilt_bytes), 0, 4, false, 0x1000_0000);
+        assert_eq!(result, "Ordinal#7");
+    }
+
+    /// read_import_name with zero ilt_entry returns empty string.
+    #[test]
+    fn read_import_name_zero_entry_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        // ilt_entry = 0 → returns empty immediately.
+        let ilt_bytes = vec![0u8; 8];
+        let result = read_import_name(&reader, &Some(ilt_bytes), 0, 8, true, 0x1000_0000);
+        assert!(result.is_empty(), "zero ilt_entry → empty name");
+    }
 }
