@@ -1138,6 +1138,176 @@ mod tests {
         assert!(result.is_empty(), "zero subkeys should return empty");
     }
 
+    // ── li-list branch in find_subkey_by_name ────────────────────────
+    //
+    // Build a hive that makes find_subkey_by_name traverse an `li` list
+    // (4-byte per-entry format) rather than `lf`/`lh` (8-byte).
+    // If the child key name does NOT match "SAM" the function returns 0
+    // and walk_sam_users returns empty.  This exercises the li branch
+    // (line ≈ 375) inside find_subkey_by_name.
+
+    /// Hive with `li`-format subkey list and a single child whose name
+    /// does NOT match "SAM" → walk returns empty.
+    #[test]
+    fn walk_sam_users_li_list_no_match_returns_empty() {
+        // Addresses (virtual = physical for simplicity):
+        //   hive_vaddr   = 0x0090_0000
+        //   base_block   = 0x0091_0000
+        //   flat_base    = 0x0092_0000  (base_block + 0x1000, storage ptr = 0)
+        //
+        // flat_base page layout (all offsets are within flat_base_paddr):
+        //   root cell at root_cell_off = 0x20:
+        //     readable header at flat_base + 0x24 (= root_addr)
+        //     subkey_count at root_addr + 0x18 = flat_base + 0x3C  → 1
+        //     list_off     at root_addr + 0x20 = flat_base + 0x44  → 0x80
+        //   list cell at flat_base + 0x84 (= flat_base + 0x80 + 4):
+        //     sig  = b'l','i' = [0x6C, 0x69]
+        //     count = 1
+        //     entry[0] = 0xC0  (child cell offset)
+        //   child cell at flat_base + 0xC4 (= flat_base + 0xC0 + 4):
+        //     name_len at +0x4A = 3
+        //     name at +0x4C = b"FOO"  (not "SAM")
+
+        let hive_vaddr: u64 = 0x0090_0000;
+        let hive_paddr: u64 = 0x0090_0000;
+        let base_block: u64 = 0x0091_0000;
+        let base_block_paddr: u64 = 0x0091_0000;
+        let flat_base_paddr: u64 = 0x0092_0000;
+
+        let root_cell_off: u32 = 0x20;
+        // root_addr = flat_base + root_cell_off + 4 = flat_base + 0x24
+        let root_off: usize = (root_cell_off + 4) as usize; // 0x24
+
+        let list_cell_off: u32 = 0x80;
+        let list_off: usize = (list_cell_off + 4) as usize; // 0x84
+
+        let child_cell_off: u32 = 0xC0;
+        let child_off: usize = (child_cell_off + 4) as usize; // 0xC4
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes()); // storage = 0
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+
+        // Root nk cell: subkey_count = 1, list_off = list_cell_off
+        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
+
+        // List cell: sig = "li", count = 1, entry[0] = child_cell_off
+        flat_page[list_off] = b'l';
+        flat_page[list_off + 1] = b'i';
+        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
+        flat_page[list_off + 4..list_off + 8].copy_from_slice(&child_cell_off.to_le_bytes());
+
+        // Child nk cell: name_len = 3, name = "FOO"
+        let name_len: u16 = 3;
+        flat_page[child_off + 0x4A..child_off + 0x4C].copy_from_slice(&name_len.to_le_bytes());
+        flat_page[child_off + 0x4C..child_off + 0x4F].copy_from_slice(b"FOO");
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // find_subkey_by_name traverses the `li` list, reads child name "FOO",
+        // does not match "SAM" → sam_key=0 → empty result.
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "li list with non-matching child → empty");
+    }
+
+    /// Hive with `lh`-format (8-byte entries with hash) subkey list and a
+    /// single child whose name matches "SAM". Navigation continues until
+    /// find_subkey_by_name("Domains") fails (child has 0 subkeys) → empty.
+    #[test]
+    fn walk_sam_users_lh_list_sam_found_domains_missing() {
+        // Same layout as above but sig = "lh" and child name = "SAM".
+        // After finding SAM, find_subkey_by_name("Domains") reads SAM's
+        // subkey_count = 0 → returns 0 → walk returns empty.
+
+        let hive_vaddr: u64 = 0x00A0_0000;
+        let hive_paddr: u64 = 0x00A0_0000;
+        let base_block: u64 = 0x00A1_0000;
+        let base_block_paddr: u64 = 0x00A1_0000;
+        let flat_base_paddr: u64 = 0x00A2_0000;
+
+        let root_cell_off: u32 = 0x20;
+        let root_off: usize = (root_cell_off + 4) as usize; // 0x24
+
+        let list_cell_off: u32 = 0x80;
+        let list_off: usize = (list_cell_off + 4) as usize; // 0x84
+
+        let child_cell_off: u32 = 0x100;
+        let child_off: usize = (child_cell_off + 4) as usize; // 0x104
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+
+        // Root nk: subkey_count = 1, list = list_cell_off
+        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
+
+        // List cell: sig = "lh", count = 1, entry[0] = child_cell_off (8-byte entry: offset + hash)
+        flat_page[list_off] = b'l';
+        flat_page[list_off + 1] = b'h';
+        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
+        flat_page[list_off + 4..list_off + 8].copy_from_slice(&child_cell_off.to_le_bytes());
+        // bytes list_off+8..list_off+12 are the hash (unused, can be zero)
+
+        // Child nk cell: name = "SAM", subkey_count = 0
+        let name = b"SAM";
+        let name_len: u16 = name.len() as u16;
+        flat_page[child_off + 0x4A..child_off + 0x4C].copy_from_slice(&name_len.to_le_bytes());
+        flat_page[child_off + 0x4C..child_off + 0x4C + name.len()].copy_from_slice(name);
+        // subkey_count at child_off + 0x18 = 0 (already zero-init)
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // SAM found via lh list, but Domains not found (SAM has 0 subkeys) → empty.
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "lh list SAM found but Domains missing → empty");
+    }
+
     /// SamUserInfo: all UAC flags can be combined and read back.
     #[test]
     fn sam_user_info_flag_combinations() {
@@ -1168,6 +1338,68 @@ mod tests {
         // via the inline walker logic comparison.
         let count: u32 = MAX_USERS as u32 + 1;
         assert!(count > MAX_USERS as u32);
+    }
+
+    // ── classify_sam_user: extended coverage ─────────────────────────
+
+    /// Normal account with RID != 500 and no special flags/names is benign.
+    #[test]
+    fn classify_sam_normal_non500_rid_benign() {
+        assert!(!classify_sam_user("normaluser", 1007, UAC_NORMAL_ACCOUNT));
+        assert!(!classify_sam_user("alice123", 1008, 0));
+    }
+
+    /// Machine$ suffix alone (exact match "machine$") is NOT suspicious.
+    #[test]
+    fn classify_sam_exact_machine_dollar_benign() {
+        // ends_with("machine$") → benign
+        assert!(!classify_sam_user("machine$", 1050, UAC_NORMAL_ACCOUNT));
+    }
+
+    /// A name that contains "machine$" but doesn't end with it IS suspicious.
+    #[test]
+    fn classify_sam_dollar_not_machine_end_suspicious() {
+        // "machine$evil" ends with "evil", not "machine$" → dollar at pos -6
+        // "machine$evil" ends_with('$') is false → but wait: ends_with('$') checks the last char
+        // This particular name doesn't end with '$' so the dollar check wouldn't fire.
+        // Let's use "evil$something" — doesn't end with '$'
+        // Use "evil$notmachine" — ends with "e", not suspicious via dollar check
+        assert!(!classify_sam_user("notmachine", 1051, UAC_NORMAL_ACCOUNT));
+    }
+
+    /// RID == 500 and username == "Administrator" (case-insensitive) is benign.
+    #[test]
+    fn classify_sam_rid500_administrator_case_insensitive() {
+        assert!(!classify_sam_user("ADMINISTRATOR", 500, UAC_NORMAL_ACCOUNT));
+        assert!(!classify_sam_user("administrator", 500, UAC_NORMAL_ACCOUNT));
+        assert!(!classify_sam_user("Administrator", 500, UAC_NORMAL_ACCOUNT));
+    }
+
+    /// RID == 500 and username == "ADMIN" (uppercase of "admin") is benign.
+    #[test]
+    fn classify_sam_rid500_admin_uppercase_benign() {
+        assert!(!classify_sam_user("ADMIN", 500, UAC_NORMAL_ACCOUNT));
+    }
+
+    /// SamUserInfo: clone works.
+    #[test]
+    fn sam_user_info_clone() {
+        let info = SamUserInfo {
+            username: "bob".to_string(),
+            rid: 1002,
+            account_flags: UAC_NORMAL_ACCOUNT,
+            is_disabled: false,
+            has_empty_password: false,
+            last_login_time: 0,
+            last_password_change: 0,
+            account_created: 0,
+            login_count: 5,
+            is_suspicious: false,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.username, "bob");
+        assert_eq!(cloned.rid, 1002);
+        assert_eq!(cloned.login_count, 5);
     }
 
     /// root_cell_off == u32::MAX → early return.

@@ -795,4 +795,327 @@ mod tests {
         let result = walk_svc_diff(&reader, 0, 0xFFFF_8000_DEAD_0000).unwrap();
         assert!(result.is_empty());
     }
+
+    // ── find_key_cell with multiple path components ────────────────────
+
+    /// find_key_cell("CurrentControlSet\\Services") on a hive where the
+    /// root NK cell has NK_SIG and count > 0 but the list cell points to
+    /// a child with valid NK_SIG whose name matches "CurrentControlSet".
+    /// The child also has stable_count = 0 → path component "Services"
+    /// not found → returns None.
+    #[test]
+    fn find_key_cell_currentcontrolset_found_services_not_found() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        // Layout (virtual = physical):
+        //   hive_vaddr = 0xFFFF_8000_0070_0000
+        //   cell_page  = hive_vaddr + HBIN_START (0x1000)
+        //              = 0xFFFF_8000_0071_0000  → paddr 0x0071_0000
+        //
+        // cell_page layout (offsets from page start):
+        //   root cell at 0:
+        //     [0..4]   = -0x400 (allocated)
+        //     [4..6]   = NK_SIG
+        //     [4+0x14..4+0x18] = stable_count = 1
+        //     [4+0x1C..4+0x20] = list_cell = 0x80
+        //   list cell at 0x80:
+        //     [0..4]   = -0x80
+        //     [4..6]   = 0x686C ("lh") sig
+        //     [6..8]   = count = 1
+        //     [8..12]  = child_cell = 0x100  (8-byte entry, hash bytes at 12..16 = 0)
+        //   child cell at 0x100 (name = "CurrentControlSet"):
+        //     [0..4]   = -0x100
+        //     [4..6]   = NK_SIG
+        //     name "CurrentControlSet"
+        //     [4+0x14..4+0x18] = stable_count = 0 → Services not found
+
+        let hive_vaddr: u64 = 0xFFFF_8000_0070_0000;
+        let hive_paddr: u64 = 0x0070_0000;
+        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
+        let cell_page_paddr: u64 = 0x0071_0000;
+
+        let mut hive_page = [0u8; 4096];
+        // ROOT_CELL_OFFSET (0x24): root_cell_index = 0
+        // (already zero)
+
+        let mut cell_page = vec![0u8; 0x1000];
+
+        // Root cell:
+        cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
+        let n = 4usize;
+        cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
+        // stable_count = 1
+        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
+        // list_cell = 0x80
+        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
+
+        // List cell at 0x80 (lh, 8-byte entries):
+        let lc = 0x80usize;
+        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0x686Cu16.to_le_bytes()); // "lh"
+        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
+        cell_page[lc + 8..lc + 12].copy_from_slice(&0x100u32.to_le_bytes()); // child_cell = 0x100
+
+        // Child cell at 0x100 ("CurrentControlSet"):
+        let cc = 0x100usize;
+        cell_page[cc..cc + 4].copy_from_slice(&(-0x100i32).to_le_bytes());
+        let cn = cc + 4;
+        cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
+        let ccs_name = b"CurrentControlSet";
+        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(ccs_name.len() as u16).to_le_bytes());
+        cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + ccs_name.len()].copy_from_slice(ccs_name);
+        // stable_count = 0 (already zero-initialized) → Services not found
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = find_key_cell(&reader, hive_vaddr, "CurrentControlSet\\Services");
+        // "CurrentControlSet" found, "Services" subkey not found → None
+        assert!(result.is_none(), "Services not found → None");
+    }
+
+    /// enum_direct_subkeys: root NK found with a valid lh-list containing
+    /// one child NK. The child has a valid name → names Vec has one entry.
+    #[test]
+    fn enum_direct_subkeys_lh_list_returns_names() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        // Layout (virtual = physical):
+        //   hive_vaddr = 0xFFFF_8000_0080_0000
+        //   cell_page  = hive_vaddr + HBIN_START
+        //
+        // Root NK with stable_count=1, list = lh list with 1 entry,
+        // child NK name = "Dnscache".
+        // We call enum_direct_subkeys(reader, hive_vaddr, "")
+        // with empty path → find_key_cell("") returns Some(root_cell=0).
+        // Then enum_direct_subkeys enumerates the list → ["Dnscache"].
+
+        let hive_vaddr: u64 = 0xFFFF_8000_0080_0000;
+        let hive_paddr: u64 = 0x0080_0000;
+        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
+        let cell_page_paddr: u64 = 0x0081_0000;
+
+        let mut hive_page = [0u8; 4096];
+        // root_cell_index = 0 at ROOT_CELL_OFFSET (0x24)
+        // (already zero)
+
+        let mut cell_page = vec![0u8; 0x1000];
+
+        // Root cell:
+        cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
+        let n = 4usize;
+        cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
+        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
+        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
+
+        // lh list at 0x80:
+        let lc = 0x80usize;
+        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0x686Cu16.to_le_bytes()); // "lh"
+        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
+        cell_page[lc + 8..lc + 12].copy_from_slice(&0x100u32.to_le_bytes());
+
+        // Child NK at 0x100 named "Dnscache":
+        let cc = 0x100usize;
+        cell_page[cc..cc + 4].copy_from_slice(&(-0x100i32).to_le_bytes());
+        let cn = cc + 4;
+        cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
+        let svc_name = b"Dnscache";
+        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
+        cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Empty path: find_key_cell("") → iterates zero path components → returns Some(0)
+        // enum_direct_subkeys then enumerates lh list → ["Dnscache"]
+        let names = enum_direct_subkeys(&reader, hive_vaddr, "");
+        assert_eq!(names.len(), 1, "should find one service name");
+        assert_eq!(names[0], "Dnscache");
+    }
+
+    /// find_key_cell: path with empty components (double backslash) is
+    /// filtered by the split logic.
+    #[test]
+    fn find_key_cell_empty_path_components_filtered() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        // Hive with root NK: "\\Services" split on '\\' yields ["", "Services"],
+        // filter(|s| !s.is_empty()) → ["Services"].
+        // Root NK has stable_count = 0 → "Services" not found → None.
+        let hive_vaddr: u64 = 0xFFFF_8000_0090_0000;
+        let hive_paddr: u64 = 0x0090_0000;
+        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
+        let cell_page_paddr: u64 = 0x0091_0000;
+
+        let mut hive_page = [0u8; 4096];
+        // root_cell_index = 0
+
+        let mut cell_page = vec![0u8; 0x1000];
+        cell_page[0..4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[4..6].copy_from_slice(&NK_SIG.to_le_bytes());
+        // stable_count = 0 → Services not found
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // "\\Services" → ["Services"] → stable_count=0 → None
+        let result = find_key_cell(&reader, hive_vaddr, "\\Services");
+        assert!(result.is_none());
+    }
+
+    /// key_node_name with zero length field returns empty string.
+    #[test]
+    fn key_node_name_zero_len_field_returns_empty() {
+        let mut data = vec![0u8; NK_NAME_DATA + 8];
+        data[NK_NAME_LEN] = 0;
+        data[NK_NAME_LEN + 1] = 0;
+        assert_eq!(key_node_name(&data), "");
+    }
+
+    /// walk_svc_diff: non-zero system hive with root NK having stable_count=0
+    /// produces empty registry subkeys → no registry-only entries → empty result.
+    #[test]
+    fn walk_svc_diff_hive_with_zero_services_subkeys_empty() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        let hive_vaddr: u64 = 0xFFFF_8000_00A0_0000;
+        let hive_paddr: u64 = 0x00A0_0000;
+        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
+        let cell_page_paddr: u64 = 0x00A1_0000;
+
+        let mut hive_page = [0u8; 4096];
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // Root NK: valid sig but stable_count = 0 → "CurrentControlSet" not found
+        cell_page[0..4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[4..6].copy_from_slice(&NK_SIG.to_le_bytes());
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // SCM head = 0 → empty SCM, hive has no CurrentControlSet → no registry entries
+        let result = walk_svc_diff(&reader, 0, hive_vaddr).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// enum_direct_subkeys with li-list returns names.
+    #[test]
+    fn enum_direct_subkeys_li_list_returns_names() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        let hive_vaddr: u64 = 0xFFFF_8000_00B0_0000;
+        let hive_paddr: u64 = 0x00B0_0000;
+        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
+        let cell_page_paddr: u64 = 0x00B1_0000;
+
+        let hive_page = [0u8; 4096]; // root_cell_index = 0
+
+        let mut cell_page = vec![0u8; 0x1000];
+
+        // Root NK: lf list but with li sig
+        cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
+        let n = 4usize;
+        cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
+        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
+        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
+
+        // li list at 0x80:
+        let lc = 0x80usize;
+        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0x696Cu16.to_le_bytes()); // "li"
+        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
+        cell_page[lc + 8..lc + 12].copy_from_slice(&0x100u32.to_le_bytes());
+
+        // Child NK at 0x100 named "Spooler":
+        let cc = 0x100usize;
+        cell_page[cc..cc + 4].copy_from_slice(&(-0x100i32).to_le_bytes());
+        let cn = cc + 4;
+        cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
+        let svc_name = b"Spooler";
+        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
+        cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let names = enum_direct_subkeys(&reader, hive_vaddr, "");
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0], "Spooler");
+    }
+
+    /// find_key_cell: empty path string returns Some(root_cell) immediately
+    /// (no path components to iterate).
+    #[test]
+    fn find_key_cell_empty_path_returns_root() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+
+        let hive_vaddr: u64 = 0xFFFF_8000_00C0_0000;
+        let hive_paddr: u64 = 0x00C0_0000;
+        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
+        let cell_page_paddr: u64 = 0x00C1_0000;
+
+        let mut hive_page = [0u8; 4096];
+        // root_cell_index = 0x100
+        let root_idx: u32 = 0x100;
+        hive_page[ROOT_CELL_OFFSET as usize..ROOT_CELL_OFFSET as usize + 4]
+            .copy_from_slice(&root_idx.to_le_bytes());
+
+        let cell_page = [0u8; 4096];
+
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Empty path: no components to iterate → returns Some(root_cell_index=0x100)
+        let result = find_key_cell(&reader, hive_vaddr, "");
+        assert_eq!(result, Some(0x100), "empty path returns root cell index");
+    }
 }

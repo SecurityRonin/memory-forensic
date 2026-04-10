@@ -2549,4 +2549,286 @@ mod tests {
         let result = read_key_class_name(&reader, 0x1000_0000, 0xDEAD_BEEF);
         assert!(result.is_empty());
     }
+
+    // ── Additional coverage: decrypt_hashed_boot_key edge cases ─────
+
+    /// decrypt_hashed_boot_key rev2 with F data = 0x80 bytes (exact minimum,
+    /// but not 0xA0) returns empty because the rev2 branch needs 0xA0 bytes.
+    #[test]
+    fn decrypt_hashed_boot_key_rev2_too_short_for_encrypted_data() {
+        let mut f_data = vec![0u8; 0x80]; // exactly 0x80, but rev2 needs 0xA0
+        f_data[0x68] = 0x02;
+        f_data[0x69] = 0x00;
+        let boot_key = vec![0u8; 16];
+        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
+        assert!(result.is_empty(), "rev2 with f_data.len()=0x80 (< 0xA0) → empty");
+    }
+
+    /// decrypt_hashed_boot_key rev3 with F data exactly 0x88 bytes (< 0x98) → empty.
+    #[test]
+    fn decrypt_hashed_boot_key_rev3_too_short() {
+        let mut f_data = vec![0u8; 0x88]; // needs 0x98
+        f_data[0x68] = 0x03;
+        f_data[0x69] = 0x00;
+        let boot_key = vec![0u8; 16];
+        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
+        assert!(result.is_empty(), "rev3 with f_data.len()=0x88 (< 0x98) → empty");
+    }
+
+    /// extract_hashes_from_v with nt_length >= 20 but offset out of bounds.
+    #[test]
+    fn extract_hashes_from_v_nt_offset_out_of_bounds() {
+        let mut v = vec![0u8; 0xCC + 64];
+        let hbk = vec![0xAAu8; 16];
+        // Set nt_offset = 0xFF00 (very large → nt_offset + 0xCC > v.len())
+        // nt_offset at V[0xA8..0xAC], nt_length at V[0xAC..0xB0]
+        v[0xA8..0xAC].copy_from_slice(&0xFF00u32.to_le_bytes());
+        v[0xAC..0xB0].copy_from_slice(&24u32.to_le_bytes()); // nt_length >= 20
+        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
+        // offset out of bounds → empty_nt
+        assert_eq!(nt, EMPTY_NT_HASH, "out-of-bounds nt_offset → EMPTY_NT_HASH");
+        assert_eq!(lm, EMPTY_LM_HASH);
+    }
+
+    /// decrypt_sam_hash_with_rid with empty input returns empty.
+    #[test]
+    fn decrypt_sam_hash_with_rid_empty_input() {
+        let result = decrypt_sam_hash_with_rid(&[], 500);
+        assert!(result.is_empty());
+    }
+
+    /// str_to_key produces different keys for different inputs.
+    #[test]
+    fn str_to_key_different_inputs_different_keys() {
+        let k1 = str_to_key(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
+        let k2 = str_to_key(&[0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]);
+        assert_ne!(k1, k2);
+    }
+
+    /// rid_to_des_keys for RID=0 both keys derived without panic.
+    #[test]
+    fn rid_to_des_keys_zero_rid() {
+        let (k1, k2) = rid_to_des_keys(0);
+        assert_eq!(k1.len(), 8);
+        assert_eq!(k2.len(), 8);
+    }
+
+    /// rc4_crypt with non-trivial key produces different output than input.
+    #[test]
+    fn rc4_crypt_transforms_data() {
+        let key = vec![0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                       0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+        let plaintext = vec![0x00u8; 32];
+        let ciphertext = rc4_crypt(&key, &plaintext);
+        // RC4 of all-zeros with a non-trivial key should produce non-zero output.
+        assert_ne!(ciphertext, plaintext);
+        assert_eq!(ciphertext.len(), plaintext.len());
+    }
+
+    /// aes128_decrypt_block applied to a block of known plaintext+key.
+    #[test]
+    fn aes128_decrypt_block_produces_output() {
+        let key = [0u8; 16];
+        let rks = aes128_key_expansion(&key);
+        let block = [0u8; 16];
+        let decrypted = aes128_decrypt_block(&block, &rks);
+        // Just verify it runs and produces 16 bytes without panic.
+        assert_eq!(decrypted.len(), 16);
+    }
+
+    /// gf_mul with both operands non-zero.
+    #[test]
+    fn gf_mul_known_values() {
+        // 0x02 * 0x02 = 0x04 in GF(2^8)
+        assert_eq!(gf_mul(2, 2), 4);
+        // 0x02 * 0x40 = 0x80 (no reduction needed)
+        assert_eq!(gf_mul(2, 0x40), 0x80);
+    }
+
+    /// HashdumpEntry struct fields accessible and clone works.
+    #[test]
+    fn hashdump_entry_clone_and_fields() {
+        let entry = HashdumpEntry {
+            username: "alice".to_string(),
+            rid: 1001,
+            lm_hash: EMPTY_LM_HASH.to_string(),
+            nt_hash: EMPTY_NT_HASH.to_string(),
+            is_suspicious: true,
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.username, "alice");
+        assert_eq!(cloned.rid, 1001);
+        assert!(cloned.is_suspicious);
+    }
+
+    /// EMPTY_NT_HASH and EMPTY_LM_HASH constants have expected lengths.
+    #[test]
+    fn empty_hash_constants_correct() {
+        assert_eq!(EMPTY_NT_HASH.len(), 32);
+        assert_eq!(EMPTY_LM_HASH.len(), 32);
+        assert_eq!(EMPTY_NT_HASH, "31d6cfe0d16ae931b73c59d7e0c089c0");
+        assert_eq!(EMPTY_LM_HASH, "aad3b435b51404eeaad3b435b51404ee");
+    }
+
+    /// MAX_USERS constant is within reasonable bounds.
+    #[test]
+    fn max_users_constant_reasonable() {
+        assert!(MAX_USERS > 0);
+        assert!(MAX_USERS <= 65536);
+    }
+
+    // ── Additional DES / crypto coverage ────────────────────────────
+
+    /// des_ecb_encrypt called directly produces 8 bytes.
+    #[test]
+    fn des_ecb_encrypt_produces_8_bytes() {
+        let key = [0u8; 8];
+        let data = [0u8; 8];
+        let out = des_ecb_encrypt(&key, &data);
+        assert_eq!(out.len(), 8);
+    }
+
+    /// des_ecb_encrypt and des_ecb_decrypt are inverses for arbitrary key/data.
+    #[test]
+    fn des_encrypt_decrypt_round_trip_all_zeros() {
+        let key = [0xFEu8; 8]; // parity bits cleared
+        let data = [0x12u8, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+        let enc = des_ecb_encrypt(&key, &data);
+        let dec = des_ecb_decrypt(&key, &enc);
+        assert_eq!(dec, data);
+    }
+
+    /// rid_to_des_keys for RID=500 (Administrator) produces known structure.
+    #[test]
+    fn rid_to_des_keys_admin_rid() {
+        let (k1, k2) = rid_to_des_keys(500);
+        // RID 500 = 0x000001F4: bytes [0xF4, 0x01, 0x00, 0x00]
+        // Both keys should have odd parity on all bytes.
+        for &b in &k1 {
+            assert_eq!(b.count_ones() % 2, 1, "k1 byte {b:#04x} should have odd parity");
+        }
+        for &b in &k2 {
+            assert_eq!(b.count_ones() % 2, 1, "k2 byte {b:#04x} should have odd parity");
+        }
+    }
+
+    /// decrypt_sam_hash_with_rid with 16-byte all-0xFF input produces 16 bytes.
+    #[test]
+    fn decrypt_sam_hash_with_rid_all_ff() {
+        let encrypted = [0xFFu8; 16];
+        let result = decrypt_sam_hash_with_rid(&encrypted, 1000);
+        assert_eq!(result.len(), 16);
+    }
+
+    /// aes_cbc_decrypt_simple with 32 bytes of data produces 32 bytes.
+    #[test]
+    fn aes_cbc_decrypt_simple_32_bytes() {
+        let key = [0xABu8; 16];
+        let iv = [0xCDu8; 16];
+        let data = [0xEFu8; 32];
+        let result = aes_cbc_decrypt_simple(&key, &iv, &data);
+        assert_eq!(result.len(), 32);
+    }
+
+    /// inv_mix_columns does not panic on any 16-byte input.
+    #[test]
+    fn inv_mix_columns_no_panic() {
+        let mut state = [0u8; 16];
+        for i in 0..16 {
+            state[i] = i as u8 * 17;
+        }
+        inv_mix_columns(&mut state);
+        // Just verify no panic and the output is 16 bytes.
+        assert_eq!(state.len(), 16);
+    }
+
+    /// gf_mul is commutative for small values.
+    #[test]
+    fn gf_mul_commutative() {
+        for a in 0u8..=15 {
+            for b in 0u8..=15 {
+                assert_eq!(gf_mul(a, b), gf_mul(b, a), "gf_mul({a},{b}) should be commutative");
+            }
+        }
+    }
+
+    /// extract_hashes_from_v with nt_length >= 20 and offset in bounds but
+    /// enc_start + 16 exceeds v_data → falls back to empty_nt.
+    #[test]
+    fn extract_hashes_from_v_enc_start_exceeds_data() {
+        let mut v = vec![0u8; 0xCC + 32];
+        let hbk = vec![0xAAu8; 16];
+        // Set nt_length = 24 (>= 20) at V[0xAC..0xB0]
+        // Set nt_offset = 0x00 → nt_offset_abs = 0x00 + 0xCC = 0xCC
+        // enc_start = 0xCC + 4 = 0xD0; 0xD0 + 16 = 0xE0 which should be <= v.len() = 0xCC+32=0xEC
+        // Wait: 0xCC + 32 = 0xEC, 0xD0 + 16 = 0xE0 <= 0xEC → this path would SUCCEED.
+        // We need enc_start + 16 > v.len():
+        // nt_offset = 0x10 → nt_offset_abs = 0xDC; enc_start = 0xE0; 0xE0 + 16 = 0xF0 > 0xEC → fails.
+        v[0xA8..0xAC].copy_from_slice(&0x10u32.to_le_bytes()); // nt_offset = 0x10
+        v[0xAC..0xB0].copy_from_slice(&24u32.to_le_bytes()); // nt_length = 24
+        // lm_length = 0 → empty lm
+        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
+        assert_eq!(nt, EMPTY_NT_HASH, "enc_start+16 > data len → EMPTY_NT_HASH");
+        assert_eq!(lm, EMPTY_LM_HASH);
+    }
+
+    /// resolve_flat_base with mapped hive but zero base_block pointer returns 0.
+    #[test]
+    fn resolve_flat_base_zero_base_block_returns_zero() {
+        let hive_vaddr: u64 = 0x0020_0000;
+        let hive_paddr: u64 = 0x0020_0000;
+
+        // Map hive page with base_block = 0 at offset 0x10
+        let hive_page = vec![0u8; 0x1000]; // all zeros → base_block = 0
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = resolve_flat_base(&reader, hive_vaddr);
+        assert_eq!(result, 0, "base_block=0 → resolve_flat_base returns 0");
+    }
+
+    /// resolve_flat_base with mapped hive, non-zero base_block, non-zero storage → returns storage.
+    #[test]
+    fn resolve_flat_base_nonzero_storage_returns_storage() {
+        let hive_vaddr: u64 = 0x0030_0000;
+        let hive_paddr: u64 = 0x0030_0000;
+        let base_block: u64 = 0x0031_0000;
+        let base_block_paddr: u64 = 0x0031_0000;
+        let storage_ptr: u64 = 0x0032_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&storage_ptr.to_le_bytes()); // non-zero storage
+
+        let bb_page = vec![0u8; 0x1000]; // base_block page (doesn't matter for this test)
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x600)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = resolve_flat_base(&reader, hive_vaddr);
+        assert_eq!(result, storage_ptr, "non-zero storage ptr → resolve_flat_base returns storage_ptr");
+    }
 }

@@ -862,6 +862,162 @@ mod tests {
         assert!(result.is_empty(), "zero storage ptr → fallback flat_base → root_cell=0 → empty");
     }
 
+    // ── Additional coverage: li-list in find_subkey_by_name ─────────
+
+    /// Hive with a root NK cell that has an `li`-format subkey list
+    /// with a single child named "Cache" → finds Cache, but then
+    /// val_count at Cache + 0x28 is 0 → returns empty Vec.
+    /// This exercises the `li` list branch (line ≈ 369) in find_subkey_by_name.
+    #[test]
+    fn walk_cached_creds_li_list_cache_found_no_values() {
+        use memf_core::test_builders::flags;
+
+        // Addresses (virtual = physical):
+        //   hive_vaddr   = 0x0070_0000
+        //   base_block   = 0x0071_0000
+        //   flat_base    = 0x0072_0000  (base_block + 0x1000, storage = 0)
+        //
+        // flat_base page layout:
+        //   root cell at root_cell_off = 0x20 → root_addr = flat_base + 0x24
+        //     subkey_count at +0x18 = 1
+        //     list_off at +0x20 = 0x80 (within flat_base page)
+        //   list cell at flat_base + 0x84 (= flat_base + 0x80 + 4):
+        //     sig = "li" [0x6C, 0x69]
+        //     count = 1
+        //     entry[0] = 0xC0  (child cell offset)
+        //   child cell at flat_base + 0xC4 (= flat_base + 0xC0 + 4):
+        //     name_len at +0x4A = 5 ("Cache")
+        //     name at +0x4C = b"Cache"
+        //   → find_subkey_by_name("Cache") returns cache_key = flat_base + 0xC4
+        //   Cache key: val_count at +0x28 = 0 → returns empty Vec
+
+        let hive_vaddr: u64 = 0x0070_0000;
+        let hive_paddr: u64 = 0x0070_0000;
+        let base_block: u64 = 0x0071_0000;
+        let base_block_paddr: u64 = 0x0071_0000;
+        let flat_base_paddr: u64 = 0x0072_0000;
+
+        let root_cell_off: u32 = 0x20;
+        let root_off: usize = (root_cell_off + 4) as usize; // 0x24
+
+        let list_cell_off: u32 = 0x80;
+        let list_off: usize = (list_cell_off + 4) as usize; // 0x84
+
+        let child_cell_off: u32 = 0xC0;
+        let child_off: usize = (child_cell_off + 4) as usize; // 0xC4
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+
+        // Root NK: subkey_count = 1, list_off = list_cell_off
+        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
+
+        // li list: sig = b"li", count = 1, entry[0] = child_cell_off
+        flat_page[list_off] = b'l';
+        flat_page[list_off + 1] = b'i';
+        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
+        flat_page[list_off + 4..list_off + 8].copy_from_slice(&child_cell_off.to_le_bytes());
+
+        // Cache NK: name = "Cache", val_count = 0
+        let name = b"Cache";
+        flat_page[child_off + 0x4A..child_off + 0x4C].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        flat_page[child_off + 0x4C..child_off + 0x4C + name.len()].copy_from_slice(name);
+        // val_count at child_off + 0x28 = 0 (zero-init)
+
+        let isf = make_cachedump_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // find_subkey_by_name uses li list, finds Cache, but val_count=0 → empty Vec.
+        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "li list Cache found but val_count=0 → empty");
+    }
+
+    /// Hive with lf list finding Cache key, Cache has val_count=1 but
+    /// val_list_addr = 0 (list cell not readable) → returns empty Vec.
+    #[test]
+    fn walk_cached_creds_cache_val_list_unreadable() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64 = 0x0080_0000;
+        let hive_paddr: u64 = 0x0080_0000;
+        let base_block: u64 = 0x0081_0000;
+        let base_block_paddr: u64 = 0x0081_0000;
+        let flat_base_paddr: u64 = 0x0082_0000;
+
+        let root_cell_off: u32 = 0x20;
+        let root_off: usize = (root_cell_off + 4) as usize;
+
+        let list_cell_off: u32 = 0x80;
+        let list_off: usize = (list_cell_off + 4) as usize;
+
+        let child_cell_off: u32 = 0xC0;
+        let child_off: usize = (child_cell_off + 4) as usize;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+
+        // Root NK with lf list:
+        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
+
+        // lf list:
+        flat_page[list_off] = b'l';
+        flat_page[list_off + 1] = b'f';
+        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
+        flat_page[list_off + 4..list_off + 8].copy_from_slice(&child_cell_off.to_le_bytes());
+
+        // Cache NK with val_count = 1, val_list_off = 0xFF00 (unreadable)
+        let name = b"Cache";
+        flat_page[child_off + 0x4A..child_off + 0x4C].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        flat_page[child_off + 0x4C..child_off + 0x4C + name.len()].copy_from_slice(name);
+        flat_page[child_off + 0x28..child_off + 0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count = 1
+        // val_list_off at child_off + 0x2C = 0xFF00 → flat_base + 0xFF00 + 4 = not mapped → 0
+        flat_page[child_off + 0x2C..child_off + 0x30].copy_from_slice(&0xFF00u32.to_le_bytes());
+
+        let isf = make_cachedump_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "val_list_addr=0 → empty Vec");
+    }
+
     /// walk_cached_credentials with root_cell_off = u32::MAX → early return.
     #[test]
     fn walk_cached_creds_root_cell_max_sentinel() {

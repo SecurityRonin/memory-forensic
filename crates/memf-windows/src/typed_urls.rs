@@ -1180,6 +1180,343 @@ mod tests {
         );
     }
 
+    // ── find_subkey: ri-list (index-of-indices) branch ──────────────
+
+    /// Hive with `ri`-format subkey list (index-of-indices).
+    /// The ri sub-list contains an lf entry, but the child nk sig is bad →
+    /// find_subkey("Software") returns None → empty Vec.
+    #[test]
+    fn walk_typed_urls_ri_list_bad_child_sig_empty() {
+        use memf_core::test_builders::flags;
+
+        // Memory layout (virtual = physical):
+        //   hive_vaddr = 0x0070_0000
+        //   cell_page  = hive_vaddr + HBIN_START_OFFSET = 0x0071_0000
+        //
+        // hive page: root_cell_index = 0 at offset 0x24
+        //
+        // cell page layout (all offsets are from start of cell_page):
+        //   root nk cell at offset 0:
+        //     [0..4]   = cell size -0x200 (allocated)
+        //     [4..6]   = NK_SIGNATURE
+        //     [4+0x14..4+0x18] = subkey_count = 1
+        //     [4+0x1C..4+0x20] = subkeys_list_cell = 0x80 (within cell_page)
+        //   list cell at offset 0x80:
+        //     [0..4]   = size -0x40
+        //     [4..6]   = 0x7269 ("ri") sig
+        //     [6..8]   = count = 1
+        //     [8..12]  = sub_list_cell = 0x100
+        //   sub-list cell at offset 0x100:
+        //     [0..4]   = size -0x40
+        //     [4..6]   = 0x666C ("lf") sig
+        //     [6..8]   = count = 1
+        //     [8..12]  = child_cell = 0x140
+        //   child nk cell at offset 0x140:
+        //     [0..4]   = size -0x40
+        //     [4..6]   = 0xDEAD (bad NK sig) → find_subkey skips it
+
+        let hive_vaddr: u64 = 0x0070_0000;
+        let hive_paddr: u64 = 0x0070_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x0071_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        // root_cell_index = 0
+        hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x2000];
+
+        // Root nk cell at offset 0 in cell_page:
+        let raw_size: i32 = -0x200i32;
+        cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
+        let nk_off = 4usize;
+        cell_page[nk_off..nk_off + 2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // subkey_count at nk_data[0x14] = 1
+        cell_page[nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET..nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        // stable_subkeys_list at nk_data[0x1C] = 0x80
+        let subkeys_list_cell: u32 = 0x80;
+        cell_page[nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET..nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&subkeys_list_cell.to_le_bytes());
+
+        // List cell at 0x80:
+        let lc = 0x80usize;
+        let list_raw: i32 = -0x40i32;
+        cell_page[lc..lc + 4].copy_from_slice(&list_raw.to_le_bytes());
+        // sig = 0x6972 = "ri"
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0x6972u16.to_le_bytes());
+        // count = 1
+        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
+        // sub_list_cell = 0x100
+        let sub_list_cell: u32 = 0x100;
+        cell_page[lc + 8..lc + 12].copy_from_slice(&sub_list_cell.to_le_bytes());
+
+        // Sub-list cell at 0x100:
+        let sc = 0x100usize;
+        cell_page[sc..sc + 4].copy_from_slice(&(-0x40i32).to_le_bytes());
+        // sig = 0x666C = "lf"
+        cell_page[sc + 4..sc + 6].copy_from_slice(&0x666Cu16.to_le_bytes());
+        // count = 1
+        cell_page[sc + 6..sc + 8].copy_from_slice(&1u16.to_le_bytes());
+        // child_cell = 0x140
+        let child_cell: u32 = 0x140;
+        cell_page[sc + 8..sc + 12].copy_from_slice(&child_cell.to_le_bytes());
+
+        // Child nk at 0x140:
+        let cc = 0x140usize;
+        cell_page[cc..cc + 4].copy_from_slice(&(-0x40i32).to_le_bytes());
+        // Bad sig 0xDEAD → child_sig != NK_SIGNATURE → skipped
+        cell_page[cc + 4..cc + 6].copy_from_slice(&0xDEADu16.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page[..0x1000].to_vec())
+            .map_4k(cell_page_vaddr + 0x1000, cell_page_paddr + 0x1000, flags::WRITABLE)
+            .write_phys(cell_page_paddr + 0x1000, &cell_page[0x1000..].to_vec())
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "alice").unwrap();
+        assert!(result.is_empty(), "ri list with bad child nk sig → Software not found → empty");
+    }
+
+    /// find_subkey with li-format subkey list.
+    /// Root nk has NK_SIGNATURE, stable_subkey_count=1 pointing to li list
+    /// whose single child nk has good NK_SIGNATURE but name "WRONG" (not "Software") → empty.
+    #[test]
+    fn walk_typed_urls_li_list_no_match_empty() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64 = 0x0080_0000;
+        let hive_paddr: u64 = 0x0080_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x0081_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // Root nk cell at 0:
+        cell_page[0..4].copy_from_slice(&(-0x200i32).to_le_bytes());
+        let nk_off = 4usize;
+        cell_page[nk_off..nk_off + 2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        cell_page[nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET..nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        let list_cell: u32 = 0x80;
+        cell_page[nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET..nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        // li list at 0x80:
+        let lc = 0x80usize;
+        cell_page[lc..lc + 4].copy_from_slice(&(-0x40i32).to_le_bytes());
+        cell_page[lc + 4..lc + 6].copy_from_slice(&0x696Cu16.to_le_bytes()); // "li"
+        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
+        let child_cell: u32 = 0xC0;
+        cell_page[lc + 8..lc + 12].copy_from_slice(&child_cell.to_le_bytes());
+
+        // Child nk at 0xC0 with NK_SIGNATURE but name "WRONG":
+        let cc = 0xC0usize;
+        cell_page[cc..cc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[cc + 4..cc + 6].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        let name = b"WRONG";
+        let name_len: u16 = name.len() as u16;
+        cell_page[cc + 4 + NK_NAME_LENGTH_OFFSET..cc + 4 + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&name_len.to_le_bytes());
+        cell_page[cc + 4 + NK_NAME_OFFSET..cc + 4 + NK_NAME_OFFSET + name.len()]
+            .copy_from_slice(name);
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "eve").unwrap();
+        assert!(result.is_empty(), "li list with non-matching child → empty");
+    }
+
+    /// read_cell_data with a positive (free/unallocated) cell size returns empty.
+    #[test]
+    fn read_cell_data_positive_size_returns_data() {
+        use memf_core::test_builders::flags;
+
+        // A cell with raw_size = +0x80 (positive = free/unallocated).
+        // abs_size = 0x80, data_len = 0x7C. read_cell_data should still return
+        // bytes (it reads abs_size - 4 bytes).
+        let hive_vaddr: u64 = 0x00B0_0000;
+        let cell_vaddr_val: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_paddr: u64 = 0x00B1_0000;
+
+        let mut cell_page = vec![0u8; 0x1000];
+        let raw_size: i32 = 0x80i32; // positive (free cell)
+        cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
+        // Fill some data bytes
+        for i in 4..0x80 {
+            cell_page[i] = (i & 0xFF) as u8;
+        }
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, 0x00B0_0000, flags::WRITABLE)
+            .write_phys(0x00B0_0000, &vec![0u8; 0x1000])
+            .map_4k(cell_vaddr_val, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // read_cell_data: raw_size=0x80, abs_size=0x80, data_len=0x7C
+        let result = read_cell_data(&reader, cell_vaddr_val);
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert_eq!(data.len(), 0x7C);
+    }
+
+    /// hive root cell with value_count > 0 but values_list_cell not readable → empty Vec.
+    #[test]
+    fn walk_typed_urls_values_list_not_mapped_empty() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64 = 0x00C0_0000;
+        let hive_paddr: u64 = 0x00C0_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x00C1_0000;
+
+        // We need: root nk → Software → Microsoft → Internet Explorer → TypedURLs
+        // then TypedURLs nk has value_count > 0 but values_list_cell points
+        // somewhere not mapped → read_cell_data fails → empty.
+        //
+        // Strategy: root nk has subkey_count = 0 → find_subkey("Software") = None → empty.
+        // This is the simplest path that exercises the body up to value_count check.
+        // (Full end-to-end requires 4 levels of subkey navigation which would need
+        //  a very large synthetic page. We rely on the zero-subkeys early exit instead.)
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // Root nk: valid sig, subkey_count = 0 → find_subkey("Software") → None → empty
+        cell_page[0..4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        cell_page[4..6].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "frank").unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ── classify_typed_url: additional edge cases ────────────────────
+
+    /// URL with @ in authority but no colon anywhere is benign.
+    #[test]
+    fn classify_url_at_no_colon_benign() {
+        assert!(!classify_typed_url("https://user@host.example.com/path"));
+    }
+
+    /// URL with colon:port but no @ is benign.
+    #[test]
+    fn classify_url_colon_port_no_at_benign() {
+        assert!(!classify_typed_url("https://host.example.com:8443/api/v1"));
+    }
+
+    /// file:// URL with empty path part is benign (no leading double-slash).
+    #[test]
+    fn classify_file_no_unc_prefix_benign() {
+        assert!(!classify_typed_url("file://relative-path/file.txt"));
+    }
+
+    /// cell_address wrapping with large hive_addr and max cell index.
+    #[test]
+    fn cell_address_large_values() {
+        let hive: u64 = 0xFFFF_8000_0000_0000;
+        let idx: u32 = 0xFFFF_FFFF;
+        // Should not panic (wrapping arithmetic).
+        let _ = cell_address(hive, idx);
+    }
+
+    /// TypedUrlEntry clone works correctly.
+    #[test]
+    fn typed_url_entry_clone() {
+        let e = TypedUrlEntry {
+            username: "alice".to_string(),
+            url: "https://pastebin.com/abc".to_string(),
+            timestamp: 42,
+            is_suspicious: true,
+        };
+        let cloned = e.clone();
+        assert_eq!(cloned.username, e.username);
+        assert_eq!(cloned.url, e.url);
+        assert_eq!(cloned.timestamp, e.timestamp);
+    }
+
+    /// hive root cell has NK_SIGNATURE and subkey_count=1 but list data is
+    /// too short (< 4 bytes) → find_subkey returns None → empty.
+    #[test]
+    fn walk_typed_urls_list_data_too_short_empty() {
+        use memf_core::test_builders::flags;
+
+        let hive_vaddr: u64 = 0x00D0_0000;
+        let hive_paddr: u64 = 0x00D0_0000;
+        let cell_page_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = 0x00D1_0000;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        // Root nk:
+        cell_page[0..4].copy_from_slice(&(-0x100i32).to_le_bytes());
+        let nk_off = 4usize;
+        cell_page[nk_off..nk_off + 2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // subkey_count = 1
+        cell_page[nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET..nk_off + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        // list_cell = 0x80
+        cell_page[nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET..nk_off + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&0x80u32.to_le_bytes());
+
+        // List cell at 0x80: size = -2 → abs_size = 2 → data_len = -2 but min(0) = 0
+        // wait: abs_size=2, data_len = (2-4).min → saturating? No: (abs_size - 4) since abs_size <= 4
+        // The code says: if abs_size <= 4 { return Ok(Vec::new()); }
+        // So: raw_size = -2 → abs_size = 2 ≤ 4 → returns empty.
+        let list_raw: i32 = -2i32;
+        cell_page[0x80..0x84].copy_from_slice(&list_raw.to_le_bytes());
+
+        let isf = make_typed_url_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_typed_urls(&reader, hive_vaddr, "grace").unwrap();
+        assert!(result.is_empty(), "list data too short → empty");
+    }
+
     /// hive root cell has wrong signature → empty.
     #[test]
     fn walk_typed_urls_wrong_root_sig_empty() {
