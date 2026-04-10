@@ -693,4 +693,189 @@ mod tests {
         // Actually 0x1000 >= 0 (base) but 0x1000 >= 0 (end) → outside → suspicious.
         assert!(classify_iat_hook(0x1000, 0, 0, "ntdll.dll"));
     }
+
+    // ── resolve_module and find_module_range coverage ─────────────────
+
+    /// resolve_module returns the module name whose range contains the addr.
+    #[test]
+    fn resolve_module_returns_correct_name() {
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (0x1000_0000, 0x1010_0000, "ntdll.dll".to_string()),
+            (0x2000_0000, 0x2020_0000, "kernel32.dll".to_string()),
+        ];
+        assert_eq!(resolve_module(0x1005_0000, &ranges), "ntdll.dll");
+        assert_eq!(resolve_module(0x2010_0000, &ranges), "kernel32.dll");
+    }
+
+    /// resolve_module returns empty string when no range contains the addr.
+    #[test]
+    fn resolve_module_no_match_returns_empty() {
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (0x1000_0000, 0x1010_0000, "ntdll.dll".to_string()),
+        ];
+        // Address below the range
+        assert_eq!(resolve_module(0x0FFF_FFFF, &ranges), "");
+        // Address at or above end (exclusive)
+        assert_eq!(resolve_module(0x1010_0000, &ranges), "");
+        // Empty ranges
+        assert_eq!(resolve_module(0x1005_0000, &[]), "");
+    }
+
+    /// resolve_module returns the first matching module when ranges overlap.
+    #[test]
+    fn resolve_module_first_match_wins() {
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (0x1000_0000, 0x2000_0000, "first.dll".to_string()),
+            (0x1000_0000, 0x2000_0000, "second.dll".to_string()),
+        ];
+        assert_eq!(resolve_module(0x1500_0000, &ranges), "first.dll");
+    }
+
+    /// find_module_range returns base and size for a matching module name.
+    #[test]
+    fn find_module_range_found() {
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (0x7FF8_0000_0000, 0x7FF8_0010_0000, "KERNEL32.DLL".to_string()),
+        ];
+        // Case-insensitive lookup
+        let result = find_module_range("kernel32.dll", &ranges);
+        assert!(result.is_some());
+        let (base, size) = result.unwrap();
+        assert_eq!(base, 0x7FF8_0000_0000);
+        assert_eq!(size, 0x0010_0000);
+    }
+
+    /// find_module_range returns None when the name is not present.
+    #[test]
+    fn find_module_range_not_found() {
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (0x7FF8_0000_0000, 0x7FF8_0010_0000, "kernel32.dll".to_string()),
+        ];
+        assert!(find_module_range("ntdll.dll", &ranges).is_none());
+        assert!(find_module_range("kernel32.dll", &[]).is_none());
+    }
+
+    /// find_module_range trims whitespace from the query name.
+    #[test]
+    fn find_module_range_trims_whitespace() {
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (0x1000, 0x2000, "ntdll.dll".to_string()),
+        ];
+        let result = find_module_range("  ntdll.dll  ", &ranges);
+        assert!(result.is_some());
+    }
+
+    /// parse_module_imports rejects headers that are too short (< 0x40 bytes).
+    #[test]
+    fn parse_module_imports_short_header_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map only 0x10 bytes — too short for a DOS header (< 0x40).
+        let image_base: u64 = 0x0010_0000;
+        let image_paddr: u64 = 0x0010_0000;
+        let short_header = vec![0x4D, 0x5A, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]; // "MZ" + 6 zeros
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(image_base, image_paddr, flags::WRITABLE)
+            .write_phys(image_paddr, &short_header)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let ranges: Vec<(u64, u64, String)> = vec![];
+        let result = parse_module_imports(&reader, image_base, "test.dll", &ranges, 1, "test", 100);
+        assert!(result.is_empty(), "short header (<0x40) should return empty");
+    }
+
+    /// parse_module_imports rejects a header without PE\0\0 signature.
+    #[test]
+    fn parse_module_imports_bad_pe_signature_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let image_base: u64 = 0x0011_0000;
+        let image_paddr: u64 = 0x0011_0000;
+
+        // DOS header: MZ at [0], e_lfanew at [0x3C] = 0x40 (within 1024 bytes)
+        let mut header = vec![0u8; 1024];
+        header[0] = 0x4D; // M
+        header[1] = 0x5A; // Z
+        header[0x3C] = 0x40; // e_lfanew = 64
+        // At offset 0x40: write "XX\0\0" instead of "PE\0\0"
+        header[0x40] = b'X';
+        header[0x41] = b'X';
+        header[0x42] = 0;
+        header[0x43] = 0;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(image_base, image_paddr, flags::WRITABLE)
+            .write_phys(image_paddr, &header[..4096.min(header.len())])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let ranges: Vec<(u64, u64, String)> = vec![];
+        let result = parse_module_imports(&reader, image_base, "test.dll", &ranges, 1, "test", 100);
+        assert!(result.is_empty(), "bad PE signature should return empty");
+    }
+
+    /// parse_module_imports rejects when import_rva == 0.
+    #[test]
+    fn parse_module_imports_zero_import_rva_returns_empty() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let image_base: u64 = 0x0012_0000;
+        let image_paddr: u64 = 0x0012_0000;
+
+        // Build a minimal valid PE32+ header with import_rva = 0.
+        let mut header = vec![0u8; 1024];
+        // DOS header
+        header[0] = 0x4D; // M
+        header[1] = 0x5A; // Z
+        let e_lfanew: u32 = 0x40;
+        header[0x3C..0x40].copy_from_slice(&e_lfanew.to_le_bytes());
+        // PE signature
+        header[0x40] = b'P';
+        header[0x41] = b'E';
+        header[0x42] = 0;
+        header[0x43] = 0;
+        // COFF header (20 bytes) starts at 0x44
+        // Optional header starts at 0x44 + 20 = 0x58
+        // opt_magic = 0x020B (PE32+) at 0x58
+        header[0x58] = 0x0B;
+        header[0x59] = 0x02;
+        // import_dir for PE32+: opt_off + 120 = 0x58 + 0x78 = 0xD0
+        // import_rva = 0, import_size = 0 (zeros already)
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(image_base, image_paddr, flags::WRITABLE)
+            .write_phys(image_paddr, &header)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let ranges: Vec<(u64, u64, String)> = vec![];
+        let result = parse_module_imports(&reader, image_base, "test.dll", &ranges, 1, "test", 100);
+        assert!(result.is_empty(), "zero import_rva should return empty");
+    }
 }

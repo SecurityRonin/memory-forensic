@@ -756,4 +756,282 @@ mod tests {
         assert!(MAX_HISTORY_ENTRIES > 0);
         assert!(MAX_COMMANDS_PER_HISTORY > 0);
     }
+
+    // ---------------------------------------------------------------
+    // Private helper function coverage (read_ptr, read_u32, read_u16,
+    // read_utf16_string, walk_history_list, scan_for_console_info)
+    // ---------------------------------------------------------------
+
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    fn make_minimal_reader() -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::new()
+            .add_struct("_PEB", 0x400)
+            .add_field("_PEB", "ProcessHeap", 0x30, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// read_ptr returns 0 when the address is not mapped.
+    #[test]
+    fn read_ptr_unmapped_returns_zero() {
+        let reader = make_minimal_reader();
+        assert_eq!(read_ptr(&reader, 0xDEAD_BEEF_0000), 0);
+    }
+
+    /// read_ptr returns the correct u64 from mapped memory.
+    #[test]
+    fn read_ptr_mapped_returns_value() {
+        let vaddr: u64 = 0x0010_0000;
+        let paddr: u64 = 0x0010_0000;
+        let value: u64 = 0x1234_5678_ABCD_EF00;
+        let mut page = vec![0u8; 0x1000];
+        page[0..8].copy_from_slice(&value.to_le_bytes());
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(read_ptr(&reader, vaddr), value);
+    }
+
+    /// read_u32 returns 0 when unmapped and correct value when mapped.
+    #[test]
+    fn read_u32_mapped_and_unmapped() {
+        let vaddr: u64 = 0x0020_0000;
+        let paddr: u64 = 0x0020_0000;
+        let value: u32 = 0xDEAD_BEEF;
+        let mut page = vec![0u8; 0x1000];
+        page[0..4].copy_from_slice(&value.to_le_bytes());
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(read_u32(&reader, vaddr), value);
+        assert_eq!(read_u32(&reader, 0xFFFF_8000_DEAD_0000), 0);
+    }
+
+    /// read_u16 returns 0 when unmapped and correct value when mapped.
+    #[test]
+    fn read_u16_mapped_and_unmapped() {
+        let vaddr: u64 = 0x0030_0000;
+        let paddr: u64 = 0x0030_0000;
+        let value: u16 = 0x1234;
+        let mut page = vec![0u8; 0x1000];
+        page[0..2].copy_from_slice(&value.to_le_bytes());
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(read_u16(&reader, vaddr), value);
+        assert_eq!(read_u16(&reader, 0xFFFF_8000_DEAD_0000), 0);
+    }
+
+    /// read_utf16_string decodes UTF-16LE correctly.
+    #[test]
+    fn read_utf16_string_decodes_correctly() {
+        let vaddr: u64 = 0x0040_0000;
+        let paddr: u64 = 0x0040_0000;
+
+        // "Hello" in UTF-16LE
+        let s = "Hello";
+        let utf16: Vec<u8> = s
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
+
+        let mut page = vec![0u8; 0x1000];
+        page[..utf16.len()].copy_from_slice(&utf16);
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_utf16_string(&reader, vaddr, utf16.len());
+        assert_eq!(result, "Hello");
+    }
+
+    /// read_utf16_string returns empty string when unmapped.
+    #[test]
+    fn read_utf16_string_unmapped_returns_empty() {
+        let reader = make_minimal_reader();
+        assert_eq!(read_utf16_string(&reader, 0xDEAD_BEEF_0000, 20), "");
+    }
+
+    /// walk_history_list returns empty when current == list_head (empty circular list).
+    #[test]
+    fn walk_history_list_empty_circular_returns_empty() {
+        let vaddr: u64 = 0x0050_0000;
+        let paddr: u64 = 0x0050_0000;
+
+        // list_head points to itself (empty list): Flink == list_head
+        let mut page = vec![0u8; 0x1000];
+        page[0..8].copy_from_slice(&vaddr.to_le_bytes()); // Flink == list_head
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_history_list(&reader, vaddr, 0);
+        assert!(entries.is_empty(), "empty circular list should produce no entries");
+    }
+
+    /// walk_history_list terminates when it encounters a pointer it has already seen (cycle detection).
+    #[test]
+    fn walk_history_list_cycle_detection_stops() {
+        // Create a list where Flink @ addr A → addr B → addr A (cycle)
+        // list_head = 0x0060_0000; entry A = 0x0061_0000; entry B = 0x0062_0000
+        // list_head Flink → entry_a; entry_a Flink → entry_b; entry_b Flink → entry_a (cycle)
+        let list_head: u64 = 0x0060_0000;
+        let entry_a: u64 = 0x0061_0000;
+        let entry_b: u64 = 0x0062_0000;
+
+        let mut head_page = vec![0u8; 0x1000];
+        head_page[0..8].copy_from_slice(&entry_a.to_le_bytes()); // Flink
+
+        let mut page_a = vec![0u8; 0x1000];
+        page_a[0..8].copy_from_slice(&entry_b.to_le_bytes()); // Flink
+
+        let mut page_b = vec![0u8; 0x1000];
+        page_b[0..8].copy_from_slice(&entry_a.to_le_bytes()); // Flink → cycle back to A
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_head, list_head, flags::WRITABLE)
+            .write_phys(list_head, &head_page)
+            .map_4k(entry_a, entry_a, flags::WRITABLE)
+            .write_phys(entry_a, &page_a)
+            .map_4k(entry_b, entry_b, flags::WRITABLE)
+            .write_phys(entry_b, &page_b)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // With list_entry_off=0: hist_addr = entry_a - 0 = entry_a
+        let entries = walk_history_list(&reader, list_head, 0);
+        // Should contain exactly 2 entries (A and B), then stop due to cycle.
+        assert_eq!(entries.len(), 2, "cycle detection should yield exactly 2 entries");
+    }
+
+    /// walk_history_list terminates at null pointer (read_ptr returns 0).
+    #[test]
+    fn walk_history_list_null_flink_stops() {
+        let list_head: u64 = 0x0070_0000;
+        let entry_a: u64 = 0x0071_0000;
+
+        let mut head_page = vec![0u8; 0x1000];
+        head_page[0..8].copy_from_slice(&entry_a.to_le_bytes()); // Flink → entry_a
+
+        let mut page_a = vec![0u8; 0x1000];
+        page_a[0..8].copy_from_slice(&0u64.to_le_bytes()); // Flink = null → stop
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_head, list_head, flags::WRITABLE)
+            .write_phys(list_head, &head_page)
+            .map_4k(entry_a, entry_a, flags::WRITABLE)
+            .write_phys(entry_a, &page_a)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_history_list(&reader, list_head, 0);
+        assert_eq!(entries.len(), 1, "null Flink should stop after 1 entry");
+    }
+
+    /// scan_for_console_info returns empty when the heap area cannot be read.
+    #[test]
+    fn scan_for_console_info_unreadable_heap_returns_empty() {
+        let reader = make_minimal_reader();
+        let found = scan_for_console_info(&reader, 0xDEAD_BEEF_0000, 0x40);
+        assert!(found.is_empty());
+    }
+
+    /// scan_for_console_info returns empty when hist_off + 16 > data.len().
+    #[test]
+    fn scan_for_console_info_hist_off_too_large_returns_empty() {
+        let vaddr: u64 = 0x0080_0000;
+        let paddr: u64 = 0x0080_0000;
+        // Write just 8 bytes — any hist_list_off >= 0 will fail the check
+        // when hist_off + 16 > 8.
+        let page_data = vec![0xFFu8; 8];
+
+        let isf = IsfBuilder::new().add_struct("_PEB", 0x100).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        // hist_list_off = 0, but SCAN_WINDOW_SIZE = 512KB — read_bytes will only
+        // return 8 bytes (or fail). Either way hist_off + 16 = 16 > 8 → empty.
+        let found = scan_for_console_info(&reader, vaddr, 0);
+        assert!(found.is_empty(), "hist_off + 16 > data.len() should return empty");
+    }
+
+    // ---------------------------------------------------------------
+    // Additional classify_console_command edge cases
+    // ---------------------------------------------------------------
+
+    /// Token with non-base64 char (backslash) is not flagged even if long.
+    #[test]
+    fn classify_long_token_with_backslash_benign() {
+        // 90-char token containing backslash — not pure base64.
+        let token: String = "a".repeat(40) + r"\" + &"b".repeat(49);
+        assert!(!classify_console_command(&token));
+    }
+
+    /// Token with '+' and '/' characters is base64-like when >80 chars.
+    #[test]
+    fn classify_base64_with_plus_slash_suspicious() {
+        // Alternate '+' and '/' in a >80-char token
+        let token: String = (0..81).map(|i| if i % 2 == 0 { '+' } else { '/' }).collect();
+        let cmd = format!("run {}", token);
+        assert!(classify_console_command(&cmd));
+    }
+
+    /// Token with '=' padding characters is base64-like when >80 chars.
+    #[test]
+    fn classify_base64_with_equals_suspicious() {
+        let token: String = "A".repeat(79) + "==";
+        let cmd = format!("run {}", token);
+        assert!(classify_console_command(&cmd));
+    }
 }

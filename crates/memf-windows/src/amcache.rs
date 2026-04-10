@@ -996,6 +996,208 @@ mod tests {
         assert!(result.is_empty(), "bad NK_SIGNATURE → empty Vec");
     }
 
+    // ── read_cell_data unit tests ─────────────────────────────────────
+
+    /// read_cell_data returns None for cell_index == 0.
+    #[test]
+    fn read_cell_data_zero_index_returns_none() {
+        let reader = make_empty_reader();
+        assert!(read_cell_data(&reader, 0x0020_0000, 0, 256).is_none());
+    }
+
+    /// read_cell_data returns None for cell_index == 0xFFFF_FFFF.
+    #[test]
+    fn read_cell_data_sentinel_index_returns_none() {
+        let reader = make_empty_reader();
+        assert!(read_cell_data(&reader, 0x0020_0000, 0xFFFF_FFFF, 256).is_none());
+    }
+
+    /// read_cell_data returns None when the cell address is unmapped.
+    #[test]
+    fn read_cell_data_unmapped_returns_none() {
+        let reader = make_empty_reader();
+        assert!(read_cell_data(&reader, 0xDEAD_BEEF_0000, 0x100, 256).is_none());
+    }
+
+    /// read_cell_data returns None when raw_size yields data_size == 0.
+    #[test]
+    fn read_cell_data_zero_size_returns_none() {
+        let hive_base: u64 = 0x0050_0000;
+        let hive_paddr: u64 = 0x0050_0000;
+        let cell_index: u32 = 0x100;
+        let cell_vaddr = hive_base + HBIN_START_OFFSET + cell_index as u64;
+
+        // Allocate a page at hive_base (needed) and cell page.
+        let mut hbin_page = vec![0u8; 0x1000];
+        let cell_off = (cell_index as usize) % 0x1000;
+        // raw_size = -4: absolute = 4, data_size = 4 - 4 = 0 → None
+        let raw_size: i32 = -4i32;
+        hbin_page[cell_off..cell_off + 4].copy_from_slice(&raw_size.to_le_bytes());
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_base, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &vec![0u8; 0x1000])
+            .map_4k(cell_vaddr & !0xFFF, cell_vaddr & !0xFFF, flags::WRITABLE)
+            .write_phys(cell_vaddr & !0xFFF, &hbin_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert!(read_cell_data(&reader, hive_base, cell_index, 256).is_none());
+    }
+
+    /// read_cell_data returns data when everything is valid.
+    #[test]
+    fn read_cell_data_valid_returns_data() {
+        let hive_base: u64 = 0x0060_0000;
+        let hive_paddr: u64 = 0x0060_0000;
+        let cell_index: u32 = 0x100;
+        let cell_vaddr = hive_base + HBIN_START_OFFSET + cell_index as u64;
+
+        let mut hbin_page = vec![0u8; 0x1000];
+        let cell_off = (cell_index as usize) % 0x1000;
+        // raw_size = -20: absolute = 20, data_size = 16
+        let raw_size: i32 = -20i32;
+        hbin_page[cell_off..cell_off + 4].copy_from_slice(&raw_size.to_le_bytes());
+        // Place NK_SIGNATURE bytes in the data area
+        let data_off = cell_off + 4;
+        hbin_page[data_off] = 0x6E; // 'n'
+        hbin_page[data_off + 1] = 0x6B; // 'k'
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_base, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &vec![0u8; 0x1000])
+            .map_4k(cell_vaddr & !0xFFF, cell_vaddr & !0xFFF, flags::WRITABLE)
+            .write_phys(cell_vaddr & !0xFFF, &hbin_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let data = read_cell_data(&reader, hive_base, cell_index, 256);
+        assert!(data.is_some());
+        let d = data.unwrap();
+        assert!(d.len() >= 2);
+        assert_eq!(d[0], 0x6E);
+        assert_eq!(d[1], 0x6B);
+    }
+
+    // ── read_value_u64 REG_DWORD and unknown type ─────────────────────
+
+    /// read_value_u64 returns 0 when vk_data is shorter than VK_NAME_OFFSET.
+    #[test]
+    fn read_value_u64_short_data_returns_zero() {
+        let reader = make_empty_reader();
+        let short = vec![0u8; 4]; // VK_NAME_OFFSET = 0x14 > 4
+        assert_eq!(read_value_u64(&reader, 0, &short), 0);
+    }
+
+    /// read_value_u64 with REG_DWORD inline value returns u32 widened to u64.
+    #[test]
+    fn read_value_u64_reg_dword_inline() {
+        let reader = make_empty_reader();
+        let mut vk = vec![0u8; 0x20];
+        // value_type = REG_DWORD (4) at VK_TYPE_OFFSET (0x0C)
+        vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&(REG_DWORD as u32).to_le_bytes());
+        // data_length = 0x8000_0004 (inline, 4 bytes) at VK_DATA_LENGTH_OFFSET (0x04)
+        let inline_len: u32 = 0x8000_0004;
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&inline_len.to_le_bytes());
+        // Inline data at VK_DATA_OFFSET (0x08): value = 0x0000_0042
+        let value: u32 = 0x42;
+        vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4].copy_from_slice(&value.to_le_bytes());
+
+        assert_eq!(read_value_u64(&reader, 0, &vk), 0x42u64);
+    }
+
+    /// read_value_u64 with unknown type returns 0.
+    #[test]
+    fn read_value_u64_unknown_type_returns_zero() {
+        let reader = make_empty_reader();
+        let mut vk = vec![0u8; 0x20];
+        // value_type = 99 (unknown) at VK_TYPE_OFFSET
+        vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&99u32.to_le_bytes());
+        // data_length inline = 4 bytes
+        let inline_len: u32 = 0x8000_0004;
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&inline_len.to_le_bytes());
+
+        assert_eq!(read_value_u64(&reader, 0, &vk), 0);
+    }
+
+    // ── read_value_string inline data path ───────────────────────────
+
+    /// read_value_string returns empty when vk_data is shorter than VK_NAME_OFFSET.
+    #[test]
+    fn read_value_string_short_data_returns_empty() {
+        let reader = make_empty_reader();
+        let short = vec![0u8; 4];
+        assert_eq!(read_value_string(&reader, 0, &short), "");
+    }
+
+    /// read_value_string returns empty when data_length is 0.
+    #[test]
+    fn read_value_string_zero_length_returns_empty() {
+        let reader = make_empty_reader();
+        let vk = vec![0u8; 0x20];
+        // data_length = 0 → early return
+        assert_eq!(read_value_string(&reader, 0, &vk), "");
+    }
+
+    /// read_value_string decodes inline UTF-16LE correctly (2 bytes for 'A').
+    #[test]
+    fn read_value_string_inline_utf16() {
+        let reader = make_empty_reader();
+        let mut vk = vec![0u8; 0x20];
+        // 'A' in UTF-16LE = [0x41, 0x00]
+        // data_length = 0x8000_0002 (inline, 2 bytes)
+        let inline_len: u32 = 0x8000_0002;
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&inline_len.to_le_bytes());
+        // Inline data at VK_DATA_OFFSET (0x08)
+        vk[VK_DATA_OFFSET] = 0x41;
+        vk[VK_DATA_OFFSET + 1] = 0x00;
+
+        let result = read_value_string(&reader, 0, &vk);
+        assert_eq!(result, "A");
+    }
+
+    // ── find_value: no values → returns None ─────────────────────────
+
+    /// find_value returns None when key_data is too short.
+    #[test]
+    fn find_value_short_key_data_returns_none() {
+        let reader = make_empty_reader();
+        let short = vec![0u8; 4]; // NK_VALUES_LIST_OFFSET + 4 = 0x2C
+        assert!(find_value(&reader, 0, &short, "LowerCaseLongPath").is_none());
+    }
+
+    /// find_value returns None when value_count is 0.
+    #[test]
+    fn find_value_zero_count_returns_none() {
+        let reader = make_empty_reader();
+        let key_data = vec![0u8; 0x40]; // value_count at NK_VALUE_COUNT_OFFSET = 0
+        assert!(find_value(&reader, 0, &key_data, "LowerCaseLongPath").is_none());
+    }
+
+    // ── find_subkey: no subkeys → returns None ────────────────────────
+
+    /// find_subkey returns None when parent_data is too short.
+    #[test]
+    fn find_subkey_short_parent_data_returns_none() {
+        let reader = make_empty_reader();
+        let short = vec![0u8; 4]; // NK_STABLE_SUBKEYS_LIST_OFFSET + 4 = 0x20
+        assert!(find_subkey(&reader, 0, &short, "InventoryApplicationFile").is_none());
+    }
+
+    /// find_subkey returns None when subkey_count is 0.
+    #[test]
+    fn find_subkey_zero_count_returns_none() {
+        let reader = make_empty_reader();
+        let parent_data = vec![0u8; 0x30]; // subkey_count at NK_STABLE_SUBKEY_COUNT_OFFSET = 0
+        assert!(find_subkey(&reader, 0, &parent_data, "InventoryApplicationFile").is_none());
+    }
+
     /// Mapped hive; root cell has NK_SIGNATURE but no InventoryApplicationFile
     /// or Root subkey → walk returns empty Vec.
     #[test]
