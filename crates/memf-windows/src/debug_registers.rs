@@ -577,6 +577,112 @@ mod tests {
         assert!(classify_debug_registers(dr0, dr1, dr2, dr3, dr7));
     }
 
+    /// walk_debug_registers with a real EPROCESS+KTHREAD+TrapFrame detects suspicious DR.
+    ///
+    /// Covers walk_debug_registers lines 169-206 (walk body: token read,
+    /// thread walk, debug reg read, classify, push, results).
+    ///
+    /// Layout: one process "hook.exe" with one thread whose TrapFrame has
+    /// DR0=0xDEAD_0001 and DR7=0x01 (local enable bit 0 → suspicious).
+    #[test]
+    fn walk_debug_registers_suspicious_thread_detected() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Addresses (paddr < 0x00FF_FFFF)
+        let head_vaddr:   u64 = 0xFFFF_8000_0100_0000;
+        let head_paddr:   u64 = 0x0010_0000;
+        let eproc_vaddr:  u64 = 0xFFFF_8000_0110_0000;
+        let eproc_paddr:  u64 = 0x0011_0000;
+        let kthread_vaddr:u64 = 0xFFFF_8000_0120_0000;
+        let kthread_paddr:u64 = 0x0012_0000;
+        let trap_vaddr:   u64 = 0xFFFF_8000_0130_0000;
+        let trap_paddr:   u64 = 0x0013_0000;
+
+        // process list head: Flink → eproc+0x448
+        let eproc_links_vaddr = eproc_vaddr + 0x448;
+        let mut head_page = vec![0u8; 0x100];
+        head_page[0..8].copy_from_slice(&eproc_links_vaddr.to_le_bytes());
+        head_page[8..16].copy_from_slice(&eproc_links_vaddr.to_le_bytes());
+
+        // kthread.ThreadListEntry at +0x2F8
+        let kthread_entry_vaddr = kthread_vaddr + 0x2F8;
+        // thread list head at eproc+0x30
+        let thread_list_head_vaddr = eproc_vaddr + 0x30;
+
+        // eproc page
+        let mut eproc_page = vec![0u8; 0x1000];
+        // _KPROCESS.DirectoryTableBase at +0x28
+        eproc_page[0x28..0x30].copy_from_slice(&(eproc_paddr as u64).to_le_bytes());
+        // _KPROCESS.ThreadListHead.Flink at +0x30 → kthread+0x2F8
+        eproc_page[0x30..0x38].copy_from_slice(&kthread_entry_vaddr.to_le_bytes());
+        eproc_page[0x38..0x40].copy_from_slice(&kthread_entry_vaddr.to_le_bytes());
+        // UniqueProcessId at +0x440
+        eproc_page[0x440..0x448].copy_from_slice(&100u64.to_le_bytes());
+        // ActiveProcessLinks.Flink at +0x448 → head (sentinel)
+        eproc_page[0x448..0x450].copy_from_slice(&head_vaddr.to_le_bytes());
+        eproc_page[0x450..0x458].copy_from_slice(&head_vaddr.to_le_bytes());
+        // Token at +0x4B8 = 0 (masked to 0 → skip in getsids, ok for debug_registers)
+        // InheritedFromUniqueProcessId at +0x540 = 0
+        // Peb at +0x550 = 0
+        // ImageFileName at +0x5A8
+        let img = b"hook.exe\0";
+        eproc_page[0x5A8..0x5A8 + img.len()].copy_from_slice(img);
+
+        // kthread page
+        let mut kthread_page = vec![0u8; 0x800];
+        // ThreadListEntry.Flink at +0x2F8 → thread_list_head (sentinel)
+        kthread_page[0x2F8..0x300].copy_from_slice(&thread_list_head_vaddr.to_le_bytes());
+        kthread_page[0x300..0x308].copy_from_slice(&thread_list_head_vaddr.to_le_bytes());
+        // TrapFrame pointer at +0x90 (DEFAULT_KTHREAD_TRAP_FRAME = 0x90)
+        kthread_page[0x90..0x98].copy_from_slice(&trap_vaddr.to_le_bytes());
+        // Teb at +0xF0 = 0
+        // Process at +0x220 = eproc_vaddr
+        kthread_page[0x220..0x228].copy_from_slice(&eproc_vaddr.to_le_bytes());
+        // Cid.UniqueThread at +0x620+8 = +0x628 = TID 200
+        kthread_page[0x620..0x628].copy_from_slice(&100u64.to_le_bytes()); // UniqueProcess
+        kthread_page[0x628..0x630].copy_from_slice(&200u64.to_le_bytes()); // UniqueThread
+        // Win32StartAddress at +0x680
+        kthread_page[0x680..0x688].copy_from_slice(&0xDEAD_0000u64.to_le_bytes());
+        // CreateTime at +0x688 = 0
+
+        // trap frame page (DEFAULT offsets: DR0@0, DR1@8, ..., DR7@0x28)
+        let mut trap_page = vec![0u8; 0x100];
+        // DR0 = 0xDEAD_0001 (non-zero → breakpoint address)
+        trap_page[0x00..0x08].copy_from_slice(&0xDEAD_0001u64.to_le_bytes());
+        // DR7 = 0x01 (local enable bit 0 → L0 set → DR0 active)
+        trap_page[0x28..0x30].copy_from_slice(&0x01u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(head_vaddr,    head_paddr,    flags::WRITABLE)
+            .write_phys(head_paddr, &head_page)
+            .map_4k(eproc_vaddr,   eproc_paddr,   flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_page)
+            .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
+            .write_phys(kthread_paddr, &kthread_page)
+            .map_4k(trap_vaddr,    trap_paddr,    flags::WRITABLE)
+            .write_phys(trap_paddr, &trap_page)
+            .build();
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_debug_registers(&reader, head_vaddr).unwrap();
+        assert_eq!(results.len(), 1, "should find one suspicious thread");
+        let info = &results[0];
+        assert_eq!(info.pid, 100);
+        assert_eq!(info.tid, 200);
+        assert_eq!(info.process_name, "hook.exe");
+        assert_eq!(info.dr0, 0xDEAD_0001);
+        assert_eq!(info.dr7, 0x01);
+        assert!(info.is_suspicious, "DR0 active with L0 enable bit set → suspicious");
+    }
+
     /// walk_debug_registers with unreadable process list head returns empty (graceful degradation).
     #[test]
     fn walk_debug_registers_unreadable_head_returns_empty() {
