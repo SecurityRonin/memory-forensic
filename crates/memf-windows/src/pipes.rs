@@ -276,6 +276,64 @@ mod tests {
     // walk_named_pipes tests
     // ─────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────
+    // is_guid_like tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_guid_like_valid_guid() {
+        // Standard GUID format
+        assert!(is_guid_like("deadbeef-1234-5678-abcd-0123456789ab"));
+        // All uppercase hex digits are also valid (lowercased before call in classify_pipe,
+        // but is_guid_like itself checks the string as given)
+        assert!(is_guid_like("DEADBEEF-1234-5678-ABCD-0123456789AB"));
+    }
+
+    #[test]
+    fn is_guid_like_wrong_length() {
+        // Too short (35 chars)
+        assert!(!is_guid_like("deadbeef-1234-5678-abcd-0123456789a"));
+        // Too long (37 chars)
+        assert!(!is_guid_like("deadbeef-1234-5678-abcd-0123456789abc"));
+        // Empty string
+        assert!(!is_guid_like(""));
+    }
+
+    #[test]
+    fn is_guid_like_wrong_hyphen_positions() {
+        // Hyphen at wrong position (position 7 instead of 8)
+        assert!(!is_guid_like("deadbee-f1234-5678-abcd-0123456789ab"));
+    }
+
+    #[test]
+    fn is_guid_like_non_hex_chars() {
+        // 'z' is not a hex digit
+        assert!(!is_guid_like("deadbeef-1234-5678-abcd-0123456789az"));
+    }
+
+    #[test]
+    fn is_guid_like_missing_hyphens() {
+        // All hex digits, correct length but no hyphens
+        assert!(!is_guid_like("deadbeef12345678abcd0123456789ab__"));
+    }
+
+    #[test]
+    fn classify_pipe_guid_like_uppercase_roundtrip() {
+        // classify_pipe lowercases before calling is_guid_like
+        let reason = classify_pipe("DEADBEEF-1234-5678-ABCD-0123456789AB").unwrap();
+        assert!(reason.contains("GUID"), "uppercase GUID should be flagged: {reason}");
+    }
+
+    #[test]
+    fn classify_pipe_non_guid_36_chars() {
+        // 36 chars but with non-hex / wrong hyphen placement → not GUID → not suspicious
+        let name = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"; // x is not hex
+        assert!(
+            classify_pipe(name).is_none(),
+            "non-hex GUID-length string should not be suspicious"
+        );
+    }
+
     #[test]
     fn walk_named_pipes_no_symbol() {
         // Build a reader with NO symbols at all — the ISF preset does

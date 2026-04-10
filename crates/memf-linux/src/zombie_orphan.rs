@@ -210,7 +210,7 @@ pub fn walk_zombie_orphan<P: PhysicalMemoryProvider>(
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::{PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;

@@ -439,8 +439,8 @@ mod tests {
         let isf = IsfBuilder::new()
             .add_symbol("init_task", sym_vaddr)
             .add_struct("task_struct", 0x400)
-            .add_field("task_struct", "tasks", tasks_offset as usize, "pointer")
-            .add_field("task_struct", "perf_event_ctxp", ctxp_offset as usize, "pointer")
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "perf_event_ctxp", ctxp_offset, "pointer")
             .add_field("task_struct", "pid", 0x30, "unsigned int")
             .add_field("task_struct", "comm", 0x38, "char")
             .build_json();
