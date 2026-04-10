@@ -380,4 +380,223 @@ mod tests {
         let result = walk_pam_hooks(&reader).unwrap();
         assert!(result.is_empty());
     }
+
+    // ---------------------------------------------------------------------------
+    // scan_process_pam: non-null mm, VMA list with vm_file pointing to a PAM lib
+    // from a non-system path → triggers read_dentry_name and classify_pam_hook.
+    //
+    // Memory layout (all physical addresses < 16 MB):
+    //   task page @ paddr 0x0200_0000 (vaddr 0xFFFF_D800_0200_0000)
+    //   mm page   @ paddr 0x0201_0000
+    //   vma page  @ paddr 0x0202_0000
+    //   file page @ paddr 0x0203_0000
+    //   dentry page @ paddr 0x0204_0000  (pointed to by f_path field directly)
+    //   name page @ paddr 0x0205_0000
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn walk_pam_hooks_detects_suspicious_pam_lib() {
+        use memf_core::object_reader::ObjectReader;
+
+        let task_vaddr: u64 = 0xFFFF_D800_0200_0000;
+        let mm_vaddr: u64 = 0xFFFF_D800_0201_0000;
+        let vma_vaddr: u64 = 0xFFFF_D800_0202_0000;
+        let file_vaddr: u64 = 0xFFFF_D800_0203_0000;
+        let dentry_vaddr: u64 = 0xFFFF_D800_0204_0000;
+        let name_vaddr: u64 = 0xFFFF_D800_0205_0000;
+
+        let task_paddr: u64 = 0x030_000;
+        let mm_paddr: u64 = 0x031_000;
+        let vma_paddr: u64 = 0x032_000;
+        let file_paddr: u64 = 0x033_000;
+        let dentry_paddr: u64 = 0x034_000;
+        let name_paddr: u64 = 0x035_000;
+
+        // Offsets
+        let tasks_offset: u64 = 8;
+        let task_comm_offset: u64 = 24;
+        let task_mm_offset: u64 = 40;
+        let task_pid_offset: u64 = 0;
+
+        // mm_struct.mmap at offset 0
+        let mm_mmap_offset: u64 = 0;
+        // vm_area_struct: vm_next@0, vm_file@16
+        let vma_vm_next_offset: u64 = 0;
+        let vma_vm_file_offset: u64 = 16;
+        // file.f_path at offset 0; read_dentry_name reads file.f_path (pointer) → dentry
+        // pam_hooks' read_dentry_name: reads file.f_path (via read_field → u64 pointer to dentry),
+        // then dentry.d_name (via read_field → u64 pointer to char string).
+        let file_fpath_offset: u64 = 0;
+        let dentry_dname_offset: u64 = 0;
+
+        // Build task page
+        let mut task_page = [0u8; 4096];
+        task_page[task_pid_offset as usize..task_pid_offset as usize + 4]
+            .copy_from_slice(&5000u32.to_le_bytes());
+        let list_self = task_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        task_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        task_page[task_comm_offset as usize..task_comm_offset as usize + 4]
+            .copy_from_slice(b"sshd");
+        task_page[task_mm_offset as usize..task_mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        // Build mm_struct: mmap = vma_vaddr
+        let mut mm_page = [0u8; 4096];
+        mm_page[mm_mmap_offset as usize..mm_mmap_offset as usize + 8]
+            .copy_from_slice(&vma_vaddr.to_le_bytes());
+
+        // Build VMA: vm_next=0 (end of list), vm_file=file_vaddr
+        let mut vma_page = [0u8; 4096];
+        vma_page[vma_vm_next_offset as usize..vma_vm_next_offset as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes()); // no next VMA
+        vma_page[vma_vm_file_offset as usize..vma_vm_file_offset as usize + 8]
+            .copy_from_slice(&file_vaddr.to_le_bytes());
+
+        // Build file page: f_path (offset 0) = dentry_vaddr
+        // pam_hooks::read_dentry_name reads:
+        //   f_path_dentry = reader.read_field(file_ptr, "file", "f_path") → dentry_vaddr
+        //   name_ptr = reader.read_field(f_path_dentry, "dentry", "d_name") → name_vaddr
+        let mut file_page = [0u8; 4096];
+        file_page[file_fpath_offset as usize..file_fpath_offset as usize + 8]
+            .copy_from_slice(&dentry_vaddr.to_le_bytes());
+
+        // Build dentry page: d_name (offset 0) = name_vaddr
+        let mut dentry_page = [0u8; 4096];
+        dentry_page[dentry_dname_offset as usize..dentry_dname_offset as usize + 8]
+            .copy_from_slice(&name_vaddr.to_le_bytes());
+
+        // Build name page: "/tmp/libpam_rootkit.so\0"
+        let libname = b"/tmp/libpam_rootkit.so\0";
+        let mut name_page = [0u8; 4096];
+        name_page[..libname.len()].copy_from_slice(libname);
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", task_pid_offset, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", task_comm_offset, "char")
+            .add_field("task_struct", "mm", task_mm_offset, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("mm_struct", 256)
+            .add_field("mm_struct", "mmap", mm_mmap_offset, "pointer")
+            .add_struct("vm_area_struct", 256)
+            .add_field("vm_area_struct", "vm_next", vma_vm_next_offset, "pointer")
+            .add_field("vm_area_struct", "vm_file", vma_vm_file_offset, "pointer")
+            .add_struct("file", 256)
+            .add_field("file", "f_path", file_fpath_offset, "pointer")
+            .add_struct("dentry", 256)
+            .add_field("dentry", "d_name", dentry_dname_offset, "pointer")
+            .add_symbol("init_task", task_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptflags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, ptflags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .map_4k(file_vaddr, file_paddr, ptflags::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .map_4k(dentry_vaddr, dentry_paddr, ptflags::WRITABLE)
+            .write_phys(dentry_paddr, &dentry_page)
+            .map_4k(name_vaddr, name_paddr, ptflags::WRITABLE)
+            .write_phys(name_paddr, &name_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_pam_hooks(&reader).expect("walk should not error");
+        assert_eq!(result.len(), 1, "should detect exactly one suspicious PAM entry");
+        let entry = &result[0];
+        assert_eq!(entry.pid, 5000);
+        assert!(entry.is_suspicious, "non-system PAM path must be suspicious");
+        assert!(!entry.is_system_path, "path must not be considered a system path");
+        assert!(
+            entry.library_path.contains("pam"),
+            "library_path should contain 'pam'"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_process_pam: vm_file == 0 → VMA skipped (covers the vm_file==0 branch)
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn walk_pam_hooks_null_vm_file_skipped() {
+        use memf_core::object_reader::ObjectReader;
+
+        let task_vaddr: u64 = 0xFFFF_D900_0200_0000;
+        let mm_vaddr: u64 = 0xFFFF_D900_0201_0000;
+        let vma_vaddr: u64 = 0xFFFF_D900_0202_0000;
+
+        let task_paddr: u64 = 0x036_000;
+        let mm_paddr: u64 = 0x037_000;
+        let vma_paddr: u64 = 0x038_000;
+
+        let tasks_offset: u64 = 8;
+        let task_mm_offset: u64 = 40;
+
+        let mut task_page = [0u8; 4096];
+        task_page[0..4].copy_from_slice(&6000u32.to_le_bytes());
+        let list_self = task_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&list_self.to_le_bytes());
+        task_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
+            .copy_from_slice(&list_self.to_le_bytes());
+        task_page[task_mm_offset as usize..task_mm_offset as usize + 8]
+            .copy_from_slice(&mm_vaddr.to_le_bytes());
+
+        let mut mm_page = [0u8; 4096];
+        mm_page[0..8].copy_from_slice(&vma_vaddr.to_le_bytes());
+
+        // VMA with vm_file = 0 (anonymous mapping)
+        let mut vma_page = [0u8; 4096];
+        vma_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // vm_next = 0
+        vma_page[16..24].copy_from_slice(&0u64.to_le_bytes()); // vm_file = 0
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 256)
+            .add_field("task_struct", "pid", 0u64, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 24u64, "char")
+            .add_field("task_struct", "mm", task_mm_offset, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("mm_struct", 256)
+            .add_field("mm_struct", "mmap", 0u64, "pointer")
+            .add_struct("vm_area_struct", 256)
+            .add_field("vm_area_struct", "vm_next", 0u64, "pointer")
+            .add_field("vm_area_struct", "vm_file", 16u64, "pointer")
+            .add_struct("file", 256)
+            .add_field("file", "f_path", 0u64, "pointer")
+            .add_struct("dentry", 256)
+            .add_field("dentry", "d_name", 0u64, "pointer")
+            .add_symbol("init_task", task_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptflags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, ptflags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
+            ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_pam_hooks(&reader).expect("walk should not error");
+        assert!(result.is_empty(), "anonymous VMA (vm_file==0) should produce no PAM findings");
+    }
 }

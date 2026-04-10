@@ -469,4 +469,155 @@ mod tests {
             "self-pointing tasks list with null ctx_ptr → no perf events"
         );
     }
+
+    // --- walk_perf_events: non-null ctx_ptr, missing pinned_groups field → continues ---
+    // Exercises the `continue` branch in the group_field loop when
+    // perf_event_context.pinned_groups/flexible_groups offset is absent.
+    #[test]
+    fn walk_perf_events_missing_group_field_offsets_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+
+        let task_vaddr: u64 = 0xFFFF_8800_0030_0000;
+        let ctx_vaddr: u64 = 0xFFFF_8800_0031_0000;
+
+        let task_paddr: u64 = 0x041_000;
+        let ctx_paddr: u64 = 0x042_000;
+
+        let tasks_offset: u64 = 0x10;
+        let ctxp_offset: u64 = 0x20;
+        let pid_offset: u64 = 0x30;
+        let comm_offset: u64 = 0x38;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", task_vaddr)
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "perf_event_ctxp", ctxp_offset, "pointer")
+            .add_field("task_struct", "pid", pid_offset, "unsigned int")
+            .add_field("task_struct", "comm", comm_offset, "char")
+            // perf_event_context has NO pinned_groups or flexible_groups fields
+            // → the inner loop continues immediately for both field names
+            .add_struct("perf_event_context", 0x200)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // init_task page: self-pointing tasks, ctxp = ctx_vaddr
+        let mut task_page = [0u8; 4096];
+        let self_ptr = task_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[ctxp_offset as usize..ctxp_offset as usize + 8]
+            .copy_from_slice(&ctx_vaddr.to_le_bytes());
+        task_page[pid_offset as usize..pid_offset as usize + 4]
+            .copy_from_slice(&777u32.to_le_bytes());
+
+        // ctx page: all zeros (no events)
+        let ctx_page = [0u8; 4096];
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(ctx_vaddr, ctx_paddr, ptf::WRITABLE)
+            .write_phys(ctx_paddr, &ctx_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_perf_events(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "missing group field offsets → inner loop continues → no events"
+        );
+    }
+
+    // --- walk_perf_events: non-null ctx_ptr, pinned_groups present, empty group list ---
+    // Exercises reading head_addr + first_event_list, then breaking because
+    // cursor == head_addr immediately (self-pointing or zero list head).
+    #[test]
+    fn walk_perf_events_empty_group_list_returns_empty() {
+        use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
+
+        let task_vaddr: u64 = 0xFFFF_8800_0032_0000;
+        let ctx_vaddr: u64 = 0xFFFF_8800_0033_0000;
+
+        let task_paddr: u64 = 0x043_000;
+        let ctx_paddr: u64 = 0x044_000;
+
+        let tasks_offset: u64 = 0x10;
+        let ctxp_offset: u64 = 0x20;
+        let pid_offset: u64 = 0x30;
+        let comm_offset: u64 = 0x38;
+
+        // perf_event_context: pinned_groups@0x10, flexible_groups@0x18
+        let pinned_offset: u64 = 0x10;
+        let flexible_offset: u64 = 0x18;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", task_vaddr)
+            .add_struct("task_struct", 0x400)
+            .add_field("task_struct", "tasks", tasks_offset, "pointer")
+            .add_field("task_struct", "perf_event_ctxp", ctxp_offset, "pointer")
+            .add_field("task_struct", "pid", pid_offset, "unsigned int")
+            .add_field("task_struct", "comm", comm_offset, "char")
+            .add_struct("perf_event_context", 0x200)
+            .add_field("perf_event_context", "pinned_groups", pinned_offset, "list_head")
+            .add_field("perf_event_context", "flexible_groups", flexible_offset, "list_head")
+            .add_struct("perf_event", 0x200)
+            .add_field("perf_event", "group_entry", 0u64, "list_head")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut task_page = [0u8; 4096];
+        let self_ptr = task_vaddr + tasks_offset;
+        task_page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&self_ptr.to_le_bytes());
+        task_page[ctxp_offset as usize..ctxp_offset as usize + 8]
+            .copy_from_slice(&ctx_vaddr.to_le_bytes());
+        task_page[pid_offset as usize..pid_offset as usize + 4]
+            .copy_from_slice(&888u32.to_le_bytes());
+
+        // ctx page: pinned_groups list head points to itself (empty list)
+        let pinned_head = ctx_vaddr + pinned_offset;
+        let flexible_head = ctx_vaddr + flexible_offset;
+        let mut ctx_page = [0u8; 4096];
+        ctx_page[pinned_offset as usize..pinned_offset as usize + 8]
+            .copy_from_slice(&pinned_head.to_le_bytes());
+        ctx_page[flexible_offset as usize..flexible_offset as usize + 8]
+            .copy_from_slice(&flexible_head.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(ctx_vaddr, ctx_paddr, ptf::WRITABLE)
+            .write_phys(ctx_paddr, &ctx_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_perf_events(&reader).unwrap();
+        assert!(
+            result.is_empty(),
+            "self-pointing group list (empty) → no perf events enumerated"
+        );
+    }
+
+    // --- walk_perf_events: PerfEventInfo serialization ---
+    #[test]
+    fn perf_event_info_serializes() {
+        let info = PerfEventInfo {
+            pid: 12,
+            comm: "spy".to_string(),
+            event_type: 4,
+            event_type_name: "RAW".to_string(),
+            config: 0xDEAD,
+            sample_period: 1000,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":12"));
+        assert!(json.contains("RAW"));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
 }
