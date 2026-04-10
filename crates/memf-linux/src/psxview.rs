@@ -184,6 +184,71 @@ mod tests {
     }
 
     #[test]
+    fn walk_psxview_multiple_tasks_in_list() {
+        // Tests lines 47-57: loop body processes a second task in the task list.
+        let init_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let init_paddr: u64 = 0x0090_0000;
+        let task2_vaddr: u64 = 0xFFFF_8000_0021_0000;
+        let task2_paddr: u64 = 0x0091_0000;
+
+        let mut init_data = vec![0u8; 4096];
+        // pid = 1
+        init_data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // tasks.next = task2.tasks (offset 16)
+        let task2_tasks = task2_vaddr + 16;
+        init_data[16..24].copy_from_slice(&task2_tasks.to_le_bytes());
+        // tasks.prev = task2.tasks (circular)
+        init_data[24..32].copy_from_slice(&task2_tasks.to_le_bytes());
+        init_data[32..38].copy_from_slice(b"init\0\0");
+
+        let mut task2_data = vec![0u8; 4096];
+        // pid = 2
+        task2_data[0..4].copy_from_slice(&2u32.to_le_bytes());
+        // tasks.next = init.tasks (completes the circle)
+        let init_tasks = init_vaddr + 16;
+        task2_data[16..24].copy_from_slice(&init_tasks.to_le_bytes());
+        task2_data[24..32].copy_from_slice(&init_tasks.to_le_bytes());
+        task2_data[32..36].copy_from_slice(b"sh\0\0");
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "state", 4, "long")
+            .add_field("task_struct", "tasks", 16, "list_head")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, ptflags::WRITABLE)
+            .write_phys(init_paddr, &init_data)
+            .map_4k(task2_vaddr, task2_paddr, ptflags::WRITABLE)
+            .write_phys(task2_paddr, &task2_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_psxview(&reader).unwrap();
+
+        // Should have init_task + task2
+        assert_eq!(results.len(), 2, "expected two tasks: init + task2");
+
+        // Both should have correct visibility flags
+        let init_entry = results.iter().find(|r| r.pid == 1).expect("init_task missing");
+        assert!(init_entry.in_task_list);
+        assert!(init_entry.in_pid_hash);
+
+        let task2_entry = results.iter().find(|r| r.pid == 2).expect("task2 missing");
+        assert!(task2_entry.in_task_list);
+        assert!(task2_entry.in_pid_hash);
+        assert_eq!(task2_entry.comm, "sh");
+    }
+
+    #[test]
     fn psxview_entries_have_correct_visibility_flags() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;

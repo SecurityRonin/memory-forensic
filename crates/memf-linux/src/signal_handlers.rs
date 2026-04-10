@@ -266,6 +266,142 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    // -----------------------------------------------------------------------
+    // signal_name: cover all branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn signal_name_all_known() {
+        // Covers lines 46-57 (all match arms in signal_name)
+        assert_eq!(signal_name(1),  "SIGHUP");
+        assert_eq!(signal_name(2),  "SIGINT");
+        assert_eq!(signal_name(3),  "SIGQUIT");
+        assert_eq!(signal_name(6),  "SIGABRT");
+        assert_eq!(signal_name(9),  "SIGKILL");
+        assert_eq!(signal_name(10), "SIGUSR1");
+        assert_eq!(signal_name(11), "SIGSEGV");
+        assert_eq!(signal_name(12), "SIGUSR2");
+        assert_eq!(signal_name(13), "SIGPIPE");
+        assert_eq!(signal_name(14), "SIGALRM");
+        assert_eq!(signal_name(15), "SIGTERM");
+        assert_eq!(signal_name(17), "SIGCHLD");
+        assert_eq!(signal_name(99), "UNKNOWN");
+    }
+
+    #[test]
+    fn handler_type_custom_address() {
+        // Covers line 71 (custom address branch in handler_type)
+        let addr: u64 = 0xFFFF_8000_DEAD_BEEF;
+        let result = handler_type(addr);
+        assert!(result.starts_with("0x"), "custom handler must be hex-formatted");
+        assert_eq!(result, format!("0x{:016x}", addr));
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_signal_handlers: graceful degradation branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_missing_tasks_field_returns_empty() {
+        // init_task present but task_struct.tasks missing → empty (line 123)
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_8800_0000_0000)
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "int");
+        // tasks intentionally absent
+        let reader = make_reader(&isf, PageTableBuilder::new());
+
+        let result = walk_signal_handlers(&reader).unwrap();
+        assert!(result.is_empty(), "missing tasks field → empty");
+    }
+
+    #[test]
+    fn walk_missing_action_field_returns_empty() {
+        // init_task + tasks present but sighand_struct.action missing → empty (line 129)
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_8800_0001_0000)
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "int")
+            .add_field("task_struct", "tasks", 16u64, "list_head");
+        // sighand_struct.action absent
+        let reader = make_reader(&isf, PageTableBuilder::new());
+
+        let result = walk_signal_handlers(&reader).unwrap();
+        assert!(result.is_empty(), "missing sighand_struct.action → empty");
+    }
+
+    #[test]
+    fn walk_missing_k_sigaction_size_returns_empty() {
+        // action present but k_sigaction struct absent → empty (line 135)
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", 0xFFFF_8800_0002_0000)
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "int")
+            .add_field("task_struct", "tasks", 16u64, "list_head")
+            .add_struct("sighand_struct", 256)
+            .add_field("sighand_struct", "action", 0u64, "pointer");
+        // k_sigaction struct absent → struct_size returns None
+        let reader = make_reader(&isf, PageTableBuilder::new());
+
+        let result = walk_signal_handlers(&reader).unwrap();
+        assert!(result.is_empty(), "missing k_sigaction size → empty");
+    }
+
+    #[test]
+    fn walk_sighand_null_skips_task() {
+        // task has sighand == 0 → task is skipped (line 162-163)
+        let init_task_vaddr: u64 = 0xFFFF_8800_0003_0000;
+        let init_task_paddr: u64 = 0x0030_0000;
+        let tasks_offset: u64 = 16;
+        let pid_offset: u64 = 0;
+        let sighand_offset: u64 = 48;
+        let action_offset: u64 = 0;
+        let k_sigaction_sz: u64 = 32;
+
+        let mut page = [0u8; 4096];
+        // pid = 42
+        page[pid_offset as usize..pid_offset as usize + 4].copy_from_slice(&42u32.to_le_bytes());
+        // tasks self-pointing
+        let tasks_self = init_task_vaddr + tasks_offset;
+        page[tasks_offset as usize..tasks_offset as usize + 8]
+            .copy_from_slice(&tasks_self.to_le_bytes());
+        // comm = "nullhand"
+        page[32..40].copy_from_slice(b"nullhand");
+        // sighand = 0 → skip
+        page[sighand_offset as usize..sighand_offset as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_task", init_task_vaddr)
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", pid_offset, "int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "sighand", sighand_offset, "pointer")
+            .add_struct("sighand_struct", 256)
+            .add_field("sighand_struct", "action", action_offset, "pointer")
+            .add_struct("k_sigaction", k_sigaction_sz)
+            .add_struct("sigaction", k_sigaction_sz)
+            .add_field("sigaction", "sa_handler", 0u64, "pointer");
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(init_task_vaddr, init_task_paddr, flags::WRITABLE)
+            .write_phys(init_task_paddr, &page);
+        let reader = make_reader(&isf, ptb);
+
+        let result = walk_signal_handlers(&reader).unwrap();
+        assert!(result.is_empty(), "sighand == 0 → task skipped, no suspicious entries");
+    }
+
     #[test]
     fn walk_sigterm_ignored_detected() {
         // Set up a single process with SIGTERM handler set to SIG_IGN (1).

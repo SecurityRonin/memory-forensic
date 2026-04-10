@@ -253,6 +253,174 @@ mod tests {
     }
 
     #[test]
+    fn walk_container_escape_missing_tasks_field_returns_empty() {
+        // Covers line 56: init_task present but task_struct.tasks field absent → Ok(vec![])
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks field absent
+            .add_symbol("init_task", 0xFFFF_8000_0020_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_container_escape(&reader).unwrap();
+        assert!(result.is_empty(), "missing tasks field → graceful empty");
+    }
+
+    #[test]
+    fn walk_container_escape_nsproxy_read_fails_returns_empty() {
+        // Covers line 62: nsproxy field missing in ISF → read_field returns Err → Ok(vec![])
+        // We have init_task, tasks field, but no nsproxy field → read_field fails → Ok([])
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 16, "list_head")
+            // nsproxy field intentionally absent → read_field("task_struct", "nsproxy") fails
+            .add_symbol("init_task", 0xFFFF_8000_0025_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_container_escape(&reader).unwrap();
+        assert!(result.is_empty(), "missing nsproxy field → graceful empty");
+    }
+
+    #[test]
+    fn walk_container_escape_init_nsproxy_zero_empty_list() {
+        // Covers lines 69 (init_nsproxy == 0 → init_mnt_ns = 0) and
+        // line 102 in check_task_namespace (init_mnt_ns == 0 → None).
+        let init_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let init_paddr: u64 = 0x0092_0000;
+
+        let mut page = [0u8; 4096];
+        // pid = 1
+        page[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // tasks self-pointing
+        let tasks_self = init_vaddr + 16;
+        page[16..24].copy_from_slice(&tasks_self.to_le_bytes());
+        page[24..32].copy_from_slice(&tasks_self.to_le_bytes());
+        page[32..36].copy_from_slice(b"init");
+        // nsproxy = 0 → init_mnt_ns will be 0
+        page[48..56].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 16, "list_head")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "nsproxy", 48, "pointer")
+            .add_struct("nsproxy", 64)
+            .add_field("nsproxy", "mnt_ns", 0, "pointer")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, ptflags::WRITABLE)
+            .write_phys(init_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_container_escape(&reader).unwrap();
+        assert!(result.is_empty(), "init_nsproxy == 0 → init_mnt_ns = 0 → no findings");
+    }
+
+    #[test]
+    fn walk_container_escape_namespace_mismatch_detected() {
+        // Covers lines 79, 102-117: a task with a different mnt_ns than init is detected.
+        const INIT_VADDR: u64 = 0xFFFF_8000_0040_0000;
+        const NSP_INIT_VADDR: u64 = 0xFFFF_8000_0041_0000;
+        const TASK2_VADDR: u64 = 0xFFFF_8000_0042_0000;
+        const NSP_TASK2_VADDR: u64 = 0xFFFF_8000_0043_0000;
+
+        let init_paddr: u64 = 0x0093_0000;
+        let nsp_init_paddr: u64 = 0x0094_0000;
+        let task2_paddr: u64 = 0x0095_0000;
+        let nsp_task2_paddr: u64 = 0x0096_0000;
+
+        // init_task: nsproxy → NSP_INIT_VADDR, tasks → task2
+        let mut init_data = vec![0u8; 4096];
+        init_data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        init_data[16..24].copy_from_slice(&(TASK2_VADDR + 16).to_le_bytes());
+        init_data[24..32].copy_from_slice(&(TASK2_VADDR + 16).to_le_bytes());
+        init_data[32..39].copy_from_slice(b"systemd");
+        init_data[48..56].copy_from_slice(&NSP_INIT_VADDR.to_le_bytes());
+
+        // nsproxy for init: mnt_ns = 0xAAAA_0000 (host namespace)
+        let mut nsp_init = vec![0u8; 4096];
+        nsp_init[0..8].copy_from_slice(&0xAAAA_0000u64.to_le_bytes());
+
+        // task2: nsproxy → NSP_TASK2_VADDR, different mnt_ns → detected
+        let mut task2_data = vec![0u8; 4096];
+        task2_data[0..4].copy_from_slice(&2u32.to_le_bytes());
+        task2_data[16..24].copy_from_slice(&(INIT_VADDR + 16).to_le_bytes());
+        task2_data[24..32].copy_from_slice(&(INIT_VADDR + 16).to_le_bytes());
+        task2_data[32..37].copy_from_slice(b"bash\0");
+        task2_data[48..56].copy_from_slice(&NSP_TASK2_VADDR.to_le_bytes());
+
+        // nsproxy for task2: mnt_ns = 0xBBBB_0000 (different → container escape)
+        let mut nsp_task2 = vec![0u8; 4096];
+        nsp_task2[0..8].copy_from_slice(&0xBBBB_0000u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 16, "list_head")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "nsproxy", 48, "pointer")
+            .add_struct("nsproxy", 64)
+            .add_field("nsproxy", "mnt_ns", 0, "pointer")
+            .add_symbol("init_task", INIT_VADDR)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(INIT_VADDR, init_paddr, ptflags::WRITABLE)
+            .write_phys(init_paddr, &init_data)
+            .map_4k(NSP_INIT_VADDR, nsp_init_paddr, ptflags::WRITABLE)
+            .write_phys(nsp_init_paddr, &nsp_init)
+            .map_4k(TASK2_VADDR, task2_paddr, ptflags::WRITABLE)
+            .write_phys(task2_paddr, &task2_data)
+            .map_4k(NSP_TASK2_VADDR, nsp_task2_paddr, ptflags::WRITABLE)
+            .write_phys(nsp_task2_paddr, &nsp_task2)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_container_escape(&reader).unwrap();
+        assert_eq!(result.len(), 1, "exactly one namespace mismatch expected");
+        assert_eq!(result[0].pid, 2);
+        assert_eq!(result[0].comm, "bash");
+        assert_eq!(result[0].indicator, "namespace_mismatch");
+        assert!(result[0].is_suspicious);
+    }
+
+    #[test]
+    fn classify_container_escape_kthread_prefix_not_suspicious() {
+        // Covers: kthread prefix in KERNEL_THREAD_COMMS
+        assert!(!classify_container_escape("kthread_worker", "namespace_mismatch"));
+        assert!(!classify_container_escape("ksoftirqd/0", "namespace_mismatch"));
+        assert!(!classify_container_escape("rcu_sched", "namespace_mismatch"));
+    }
+
+    #[test]
     fn walk_container_escape_single_namespace_returns_empty() {
         let reader = make_same_namespace_reader();
         let result = walk_container_escape(&reader).unwrap();

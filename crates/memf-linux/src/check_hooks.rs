@@ -244,6 +244,97 @@ mod tests {
     }
 
     #[test]
+    fn detects_indirect_jmp_hook() {
+        // Covers lines 91-93: FF 25 xx xx xx xx (absolute indirect JMP [rip+disp32])
+        let mut prologue = vec![0u8; 4096];
+        prologue[0] = 0xFF;
+        prologue[1] = 0x25;
+        // offset = 0 → target = func_addr + 6 + 0 = func_addr + 6
+        prologue[2..6].copy_from_slice(&0i32.to_le_bytes());
+
+        let func_vaddr: u64 = 0xFFFF_8000_0002_0000;
+        let func_paddr: u64 = 0x0081_0000;
+        let stext: u64 = 0xFFFF_8000_0000_0000;
+        let etext: u64 = 0xFFFF_8000_00FF_FFFF;
+
+        let reader = make_test_reader(
+            &prologue,
+            func_vaddr,
+            func_paddr,
+            stext,
+            etext,
+            &[("sys_write", func_vaddr)],
+        );
+        let results = check_inline_hooks(&reader).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].hook_type, "jmp_indirect");
+        assert!(results[0].suspicious, "jmp_indirect hook must be suspicious");
+        // target = func_addr + 6 + 0 (offset) = 0xFFFF_8000_0002_0006
+        assert_eq!(results[0].target, Some(func_vaddr + 6));
+    }
+
+    #[test]
+    fn skips_symbol_with_unreadable_prologue() {
+        // Covers line 55: symbol present but read_bytes fails → skip
+        // We add a function symbol that points to an unmapped address.
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
+            // sys_read points to unmapped memory → read_bytes fails
+            .add_symbol("sys_read", 0xFFFF_DEAD_0000_0000)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = check_inline_hooks(&reader).unwrap();
+        // Symbol is present but page is not mapped → read_bytes fails → entry skipped
+        assert!(results.is_empty(), "unreadable prologue should be skipped");
+    }
+
+    #[test]
+    fn detects_rel_jmp_hook_outside_text_region() {
+        // Cover: hook_type == "none" but target outside text range = suspicious
+        // Use a JMP that lands outside [stext, etext]
+        let mut prologue = vec![0u8; 4096];
+        prologue[0] = 0xE9;
+        // A large positive offset that lands outside etext
+        prologue[1..5].copy_from_slice(&0x0FFF_0000i32.to_le_bytes());
+
+        let func_vaddr: u64 = 0xFFFF_8000_0003_0000;
+        let func_paddr: u64 = 0x0082_0000;
+        let stext: u64 = 0xFFFF_8000_0000_0000;
+        let etext: u64 = 0xFFFF_8000_0005_0000; // small range
+
+        let reader = make_test_reader(
+            &prologue,
+            func_vaddr,
+            func_paddr,
+            stext,
+            etext,
+            &[("vfs_read", func_vaddr)],
+        );
+        let results = check_inline_hooks(&reader).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].hook_type, "jmp_rel32");
+        assert!(results[0].suspicious, "JMP to outside text region must be suspicious");
+    }
+
+    #[test]
+    fn analyze_prologue_short_bytes_returns_none() {
+        // Covers line 79: bytes.len() < PROLOGUE_SIZE → ("none", None)
+        let short = [0x55u8; 4]; // only 4 bytes, need 16
+        let (hook_type, target) = analyze_prologue(&short, 0xFFFF_8000_0001_0000);
+        assert_eq!(hook_type, "none");
+        assert_eq!(target, None);
+    }
+
+    #[test]
     fn skips_missing_symbols() {
         // If sys_read symbol is missing, just skip it (no error)
         let isf = IsfBuilder::new()

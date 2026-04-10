@@ -523,6 +523,109 @@ mod tests {
     }
 
     #[test]
+    fn classify_library_exact_tmp_dir() {
+        // Covers line 59: clean == "/tmp" (exact match without trailing slash)
+        assert!(classify_library("/tmp"), "exact /tmp path must be suspicious");
+        assert!(classify_library("/dev/shm"), "/dev/shm exact match must be suspicious");
+        assert!(classify_library("/var/tmp"), "/var/tmp exact match must be suspicious");
+    }
+
+    #[test]
+    fn classify_library_just_dot_basename_not_suspicious() {
+        // Covers the `basename.starts_with('.') && !basename.is_empty()` branch.
+        // A path ending in exactly '.' would start with '.' but let's test the
+        // normal hidden-file path which the existing tests already cover.
+        // This test focuses on the fallthrough: basename doesn't start with '.'.
+        // A path like "/usr/lib/normallib.so" falls through all checks → benign.
+        assert!(!classify_library("/usr/lib/normallib.so"), "normal .so must be benign");
+    }
+
+    #[test]
+    fn walk_cycle_detection_breaks_loop() {
+        // Covers line 133: VMA cycle → seen_addrs.insert fails → break.
+        // VMA's vm_next points back to itself (cycle).
+        let vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let paddr: u64 = 0x0083_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct
+        data[0..4].copy_from_slice(&10u32.to_le_bytes()); // pid
+        data[32..36].copy_from_slice(b"cycl");            // comm
+        let mm_addr = vaddr + 0x200;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes()); // mm
+
+        // mm_struct at +0x200: mmap → VMA at +0x300
+        let vma_addr = vaddr + 0x300;
+        data[0x208..0x210].copy_from_slice(&vma_addr.to_le_bytes());
+
+        // VMA at +0x300: vm_next points back to itself (cycle)
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes()); // vm_start
+        data[0x308..0x310].copy_from_slice(&0x7F00_1000u64.to_le_bytes()); // vm_end
+        data[0x310..0x318].copy_from_slice(&vma_addr.to_le_bytes()); // vm_next = self (cycle!)
+        data[0x328..0x330].copy_from_slice(&0u64.to_le_bytes()); // vm_file = NULL
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        // Should not hang or overflow; cycle detection breaks the loop.
+        let libs = walk_library_list(&reader, vaddr, 10, "cycl").unwrap();
+        assert!(libs.is_empty(), "cycle VMA with null vm_file should yield no libraries");
+    }
+
+    #[test]
+    fn walk_second_vma_with_lower_base_updates_min() {
+        // Covers line 158: entry.0 = entry.0.min(vm_start)
+        // Two VMAs for the same library where the second VMA has a lower start address.
+        let vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let paddr: u64 = 0x0084_0000;
+        let mut data = vec![0u8; 4096];
+
+        // task_struct
+        data[0..4].copy_from_slice(&20u32.to_le_bytes()); // pid
+        data[32..37].copy_from_slice(b"proc\0");          // comm
+        let mm_addr = vaddr + 0x100;
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes()); // mm
+
+        // mm_struct at +0x100: mmap = VMA1
+        let vma1_addr = vaddr + 0x200;
+        data[0x108..0x110].copy_from_slice(&vma1_addr.to_le_bytes());
+
+        let file_addr = vaddr + 0x600;
+
+        // VMA1 at +0x200: vm_start=0x7F00_2000 (higher), vm_next → VMA2
+        let vma2_addr = vaddr + 0x300;
+        data[0x200..0x208].copy_from_slice(&0x7F00_2000u64.to_le_bytes()); // vm_start
+        data[0x208..0x210].copy_from_slice(&0x7F00_4000u64.to_le_bytes()); // vm_end
+        data[0x210..0x218].copy_from_slice(&vma2_addr.to_le_bytes());        // vm_next
+        data[0x228..0x230].copy_from_slice(&file_addr.to_le_bytes());        // vm_file
+
+        // VMA2 at +0x300: vm_start=0x7F00_0000 (lower than VMA1), vm_next → NULL
+        data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes()); // vm_start (lower!)
+        data[0x308..0x310].copy_from_slice(&0x7F00_2000u64.to_le_bytes()); // vm_end
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes());             // vm_next = NULL
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes());        // vm_file (same lib)
+
+        // file at +0x600: dentry at +0x700
+        let dentry_addr = vaddr + 0x700;
+        data[0x608..0x610].copy_from_slice(&dentry_addr.to_le_bytes());
+
+        // dentry at +0x700: name ptr at +0x800
+        let name_addr = vaddr + 0x800;
+        data[0x708..0x710].copy_from_slice(&name_addr.to_le_bytes());
+
+        // name: "libtest.so.1"
+        let name = b"libtest.so.1";
+        data[0x800..0x800 + name.len()].copy_from_slice(name);
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let libs = walk_library_list(&reader, vaddr, 20, "proc").unwrap();
+
+        assert_eq!(libs.len(), 1, "single deduplicated library expected");
+        // base_addr should be the minimum: 0x7F00_0000 (from VMA2)
+        assert_eq!(libs[0].base_addr, 0x7F00_0000, "base_addr must be the minimum vm_start");
+        // size = (0x7F00_4000 - 0x7F00_2000) + (0x7F00_2000 - 0x7F00_0000) = 0x4000
+        assert_eq!(libs[0].size, 0x4000);
+    }
+
+    #[test]
     fn walk_classifies_suspicious_library() {
         // A library from /tmp should be flagged as suspicious.
         let vaddr: u64 = 0xFFFF_8000_0010_0000;

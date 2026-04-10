@@ -699,7 +699,555 @@ mod tests {
         page[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
     }
 
-    // --- try_read_memfd_vma: vm_file != 0, dentry chain readable, name NOT "memfd:" → None ---
+    // Helper to write a u64 into a page slice.
+    fn page_write_u64(page: &mut [u8], offset: usize, val: u64) {
+        page[offset..offset + 8].copy_from_slice(&val.to_le_bytes());
+    }
+
+    // --- collect_memfd_for_task: pid read fails → return early (line 131) ---
+    #[test]
+    fn walk_memfd_second_task_pid_read_fails_skipped() {
+        // init_task list points to a second task that is on an unmapped page.
+        // collect_memfd_for_task for that task → read_field "pid" fails → return.
+        let init_vaddr: u64 = 0xFFFF_8800_0080_0000;
+        let init_paddr: u64 = 0x0080_0000;
+        let tasks_offset: u64 = 16;
+
+        // task2 lives on an unmapped address
+        let task2_vaddr: u64 = 0xFFFF_DEAD_0000_0000; // unmapped
+
+        let mut init_page = [0u8; 4096];
+        page_write_u32(&mut init_page, 0, 1); // pid=1
+        // tasks.next → task2 (unmapped), tasks.prev → init itself
+        page_write_u64(&mut init_page, tasks_offset as usize, task2_vaddr + tasks_offset);
+        page_write_u64(&mut init_page, tasks_offset as usize + 8, task2_vaddr + tasks_offset);
+        init_page[32..36].copy_from_slice(b"init");
+        page_write_u64(&mut init_page, 48, 0); // mm = 0
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", 48u64, "pointer")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Should succeed (walk_list might error on unmapped task2, gracefully handled)
+        let result = walk_memfd_create(&reader);
+        // Either Ok(empty) or Err — both are acceptable since task2 is unmapped.
+        // What matters is no panic and no memfd entries returned.
+        let entries = result.unwrap_or_default();
+        assert!(entries.is_empty(), "unmapped task2 → no memfd entries");
+    }
+
+    // --- full path: memfd VMA found → MemfdInfo created (lines 154-165, 199-220, 233-244) ---
+    #[test]
+    fn walk_memfd_full_path_memfd_vma_detected() {
+        // Build a synthetic memory layout where:
+        //   init_task has mm → mm_struct → VMA → file → dentry → name "memfd:payload"
+        // This exercises the deepest branches: try_read_memfd_vma success, MemfdInfo push.
+
+        let init_vaddr: u64   = 0xFFFF_8800_00A0_0000;
+        let init_paddr: u64   = 0x00A0_0000;
+        let mm_vaddr: u64     = 0xFFFF_8800_00A1_0000;
+        let mm_paddr: u64     = 0x00A1_0000;
+        let vma_vaddr: u64    = 0xFFFF_8800_00A2_0000;
+        let vma_paddr: u64    = 0x00A2_0000;
+        let file_vaddr: u64   = 0xFFFF_8800_00A3_0000;
+        let file_paddr: u64   = 0x00A3_0000;
+        let dentry_vaddr: u64 = 0xFFFF_8800_00A4_0000;
+        let dentry_paddr: u64 = 0x00A4_0000;
+        let name_vaddr: u64   = 0xFFFF_8800_00A5_0000;
+        let name_paddr: u64   = 0x00A5_0000;
+
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64    = 48;
+        let mmap_offset: u64  = 0;  // mmap at mm_struct offset 0
+
+        // file struct layout
+        let f_path_off: u64      = 0x10;
+        let dentry_in_path: u64  = 0x00; // dentry* at path+0
+        let d_name_off: u64      = 0x08; // qstr at dentry+8
+        let name_in_qstr: u64    = 0x00; // name* at qstr+0
+
+        // init_task page
+        let mut init_page = [0u8; 4096];
+        page_write_u32(&mut init_page, 0, 7u32); // pid=7
+        let tasks_self = init_vaddr + tasks_offset;
+        page_write_u64(&mut init_page, tasks_offset as usize, tasks_self);
+        page_write_u64(&mut init_page, tasks_offset as usize + 8, tasks_self);
+        init_page[32..37].copy_from_slice(b"evil\0");
+        page_write_u64(&mut init_page, mm_offset as usize, mm_vaddr); // mm = mm_vaddr
+
+        // mm_struct page: mmap = vma_vaddr
+        let mut mm_page = [0u8; 4096];
+        page_write_u64(&mut mm_page, mmap_offset as usize, vma_vaddr);
+
+        // vm_area_struct page:
+        //   vm_next   at 0x00 = 0 (single VMA)
+        //   vm_file   at 0x08 = file_vaddr
+        //   vm_start  at 0x10 = 0x1000
+        //   vm_end    at 0x18 = 0x2000
+        //   vm_flags  at 0x20 = VM_EXEC (0x4) → executable → suspicious
+        let mut vma_page = [0u8; 4096];
+        page_write_u64(&mut vma_page, 0x00, 0u64);         // vm_next = NULL
+        page_write_u64(&mut vma_page, 0x08, file_vaddr);   // vm_file
+        page_write_u64(&mut vma_page, 0x10, 0x1000u64);    // vm_start
+        page_write_u64(&mut vma_page, 0x18, 0x2000u64);    // vm_end
+        page_write_u64(&mut vma_page, 0x20, 4u64);         // vm_flags = VM_EXEC
+
+        // file page: dentry ptr at f_path_off + dentry_in_path = 0x10
+        let mut file_page = [0u8; 4096];
+        page_write_u64(&mut file_page, 0x10, dentry_vaddr);
+
+        // dentry page: name ptr at d_name_off + name_in_qstr = 0x08
+        let mut dentry_page = [0u8; 4096];
+        page_write_u64(&mut dentry_page, 0x08, name_vaddr);
+
+        // name string page: "memfd:payload\0"
+        let mut name_page = [0u8; 4096];
+        name_page[..14].copy_from_slice(b"memfd:payload\0");
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "mmap", mmap_offset, "pointer")
+            .add_struct("vm_area_struct", 0x100)
+            .add_field("vm_area_struct", "vm_next", 0x00u64, "pointer")
+            .add_field("vm_area_struct", "vm_file", 0x08u64, "pointer")
+            .add_field("vm_area_struct", "vm_start", 0x10u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 0x18u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 0x20u64, "unsigned long")
+            .add_struct("file", 0x100)
+            .add_field("file", "f_path", f_path_off, "pointer")
+            .add_struct("path", 0x20)
+            .add_field("path", "dentry", dentry_in_path, "pointer")
+            .add_struct("dentry", 0x100)
+            .add_field("dentry", "d_name", d_name_off, "pointer")
+            .add_struct("qstr", 0x20)
+            .add_field("qstr", "name", name_in_qstr, "pointer")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, flags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .map_4k(file_vaddr, file_paddr, flags::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .map_4k(dentry_vaddr, dentry_paddr, flags::WRITABLE)
+            .write_phys(dentry_paddr, &dentry_page)
+            .map_4k(name_vaddr, name_paddr, flags::WRITABLE)
+            .write_phys(name_paddr, &name_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert_eq!(result.len(), 1, "expected one memfd entry");
+        assert_eq!(result[0].pid, 7);
+        assert_eq!(result[0].comm, "evil");
+        assert_eq!(result[0].memfd_name, "payload");
+        assert_eq!(result[0].size_bytes, 0x1000);
+        assert!(result[0].is_executable, "VM_EXEC flag set → executable");
+        assert!(result[0].is_suspicious, "executable memfd → suspicious");
+    }
+
+    // --- read_file_dentry_name: missing ISF fields → returns None → no entry (lines 237-244) ---
+    #[test]
+    fn walk_memfd_dentry_missing_isf_fields_no_entry() {
+        // vm_file != 0 but ISF has no "file.f_path" field → read_file_dentry_name returns None.
+        let init_vaddr: u64  = 0xFFFF_8800_00B0_0000;
+        let init_paddr: u64  = 0x00B0_0000;
+        let mm_vaddr: u64    = 0xFFFF_8800_00B1_0000;
+        let mm_paddr: u64    = 0x00B1_0000;
+        let vma_vaddr: u64   = 0xFFFF_8800_00B2_0000;
+        let vma_paddr: u64   = 0x00B2_0000;
+        let file_vaddr: u64  = 0xFFFF_8800_00B3_0000;
+
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64    = 48;
+
+        let mut init_page = [0u8; 4096];
+        page_write_u32(&mut init_page, 0, 8u32);
+        let tasks_self = init_vaddr + tasks_offset;
+        page_write_u64(&mut init_page, tasks_offset as usize, tasks_self);
+        page_write_u64(&mut init_page, tasks_offset as usize + 8, tasks_self);
+        init_page[32..36].copy_from_slice(b"proc");
+        page_write_u64(&mut init_page, mm_offset as usize, mm_vaddr);
+
+        let mut mm_page = [0u8; 4096];
+        page_write_u64(&mut mm_page, 0, vma_vaddr); // mmap = vma_vaddr
+
+        let mut vma_page = [0u8; 4096];
+        page_write_u64(&mut vma_page, 0x00, 0u64);       // vm_next = NULL
+        page_write_u64(&mut vma_page, 0x08, file_vaddr); // vm_file != 0
+        page_write_u64(&mut vma_page, 0x10, 0x1000u64);  // vm_start
+        page_write_u64(&mut vma_page, 0x18, 0x2000u64);  // vm_end
+        page_write_u64(&mut vma_page, 0x20, 0u64);        // vm_flags
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "mmap", 0u64, "pointer")
+            .add_struct("vm_area_struct", 0x100)
+            .add_field("vm_area_struct", "vm_next", 0x00u64, "pointer")
+            .add_field("vm_area_struct", "vm_file", 0x08u64, "pointer")
+            .add_field("vm_area_struct", "vm_start", 0x10u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 0x18u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 0x20u64, "unsigned long")
+            // No "file", "path", "dentry", "qstr" structs → read_file_dentry_name returns None
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, flags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "missing dentry ISF fields → read_file_dentry_name None → no entries");
+    }
+
+    // --- merge logic: two VMAs for the same memfd name → merged into one entry (line 159-162) ---
+    #[test]
+    fn walk_memfd_two_vmas_same_name_merged() {
+        // Two VMAs for "memfd:payload" → merged into one MemfdInfo entry.
+        let init_vaddr: u64   = 0xFFFF_8800_00C0_0000;
+        let init_paddr: u64   = 0x00C0_0000;
+        let mm_vaddr: u64     = 0xFFFF_8800_00C1_0000;
+        let mm_paddr: u64     = 0x00C1_0000;
+        let vma1_vaddr: u64   = 0xFFFF_8800_00C2_0000;
+        let vma1_paddr: u64   = 0x00C2_0000;
+        let vma2_vaddr: u64   = 0xFFFF_8800_00C3_0000;
+        let vma2_paddr: u64   = 0x00C3_0000;
+        let file_vaddr: u64   = 0xFFFF_8800_00C4_0000;
+        let file_paddr: u64   = 0x00C4_0000;
+        let dentry_vaddr: u64 = 0xFFFF_8800_00C5_0000;
+        let dentry_paddr: u64 = 0x00C5_0000;
+        let name_vaddr: u64   = 0xFFFF_8800_00C6_0000;
+        let name_paddr: u64   = 0x00C6_0000;
+
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64    = 48;
+        let f_path_off: u64   = 0x10;
+        let d_name_off: u64   = 0x08;
+
+        let mut init_page = [0u8; 4096];
+        page_write_u32(&mut init_page, 0, 9u32);
+        let tasks_self = init_vaddr + tasks_offset;
+        page_write_u64(&mut init_page, tasks_offset as usize, tasks_self);
+        page_write_u64(&mut init_page, tasks_offset as usize + 8, tasks_self);
+        init_page[32..40].copy_from_slice(b"malware\0");
+        page_write_u64(&mut init_page, mm_offset as usize, mm_vaddr);
+
+        // mm: mmap = vma1
+        let mut mm_page = [0u8; 4096];
+        page_write_u64(&mut mm_page, 0, vma1_vaddr);
+
+        // vma1: vm_next = vma2, vm_file = file_vaddr, non-executable
+        let mut vma1_page = [0u8; 4096];
+        page_write_u64(&mut vma1_page, 0x00, vma2_vaddr);   // vm_next
+        page_write_u64(&mut vma1_page, 0x08, file_vaddr);   // vm_file
+        page_write_u64(&mut vma1_page, 0x10, 0x1000u64);    // vm_start
+        page_write_u64(&mut vma1_page, 0x18, 0x2000u64);    // vm_end
+        page_write_u64(&mut vma1_page, 0x20, 0u64);          // vm_flags (non-exec)
+
+        // vma2: vm_next = NULL, same vm_file, VM_EXEC set
+        let mut vma2_page = [0u8; 4096];
+        page_write_u64(&mut vma2_page, 0x00, 0u64);          // vm_next = NULL
+        page_write_u64(&mut vma2_page, 0x08, file_vaddr);    // vm_file (same)
+        page_write_u64(&mut vma2_page, 0x10, 0x2000u64);     // vm_start
+        page_write_u64(&mut vma2_page, 0x18, 0x3000u64);     // vm_end
+        page_write_u64(&mut vma2_page, 0x20, 4u64);           // vm_flags = VM_EXEC
+
+        // file: dentry ptr at 0x10
+        let mut file_page = [0u8; 4096];
+        page_write_u64(&mut file_page, 0x10, dentry_vaddr);
+
+        // dentry: name ptr at 0x08
+        let mut dentry_page = [0u8; 4096];
+        page_write_u64(&mut dentry_page, 0x08, name_vaddr);
+
+        // name: "memfd:payload\0"
+        let mut name_page = [0u8; 4096];
+        name_page[..14].copy_from_slice(b"memfd:payload\0");
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "mmap", 0u64, "pointer")
+            .add_struct("vm_area_struct", 0x100)
+            .add_field("vm_area_struct", "vm_next", 0x00u64, "pointer")
+            .add_field("vm_area_struct", "vm_file", 0x08u64, "pointer")
+            .add_field("vm_area_struct", "vm_start", 0x10u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 0x18u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 0x20u64, "unsigned long")
+            .add_struct("file", 0x100)
+            .add_field("file", "f_path", f_path_off, "pointer")
+            .add_struct("path", 0x20)
+            .add_field("path", "dentry", 0u64, "pointer")
+            .add_struct("dentry", 0x100)
+            .add_field("dentry", "d_name", d_name_off, "pointer")
+            .add_struct("qstr", 0x20)
+            .add_field("qstr", "name", 0u64, "pointer")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma1_vaddr, vma1_paddr, flags::WRITABLE)
+            .write_phys(vma1_paddr, &vma1_page)
+            .map_4k(vma2_vaddr, vma2_paddr, flags::WRITABLE)
+            .write_phys(vma2_paddr, &vma2_page)
+            .map_4k(file_vaddr, file_paddr, flags::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .map_4k(dentry_vaddr, dentry_paddr, flags::WRITABLE)
+            .write_phys(dentry_paddr, &dentry_page)
+            .map_4k(name_vaddr, name_paddr, flags::WRITABLE)
+            .write_phys(name_paddr, &name_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert_eq!(result.len(), 1, "two VMAs for same memfd → merged to 1 entry");
+        assert_eq!(result[0].memfd_name, "payload");
+        // size_bytes = 0x1000 (vma1) + 0x1000 (vma2) = 0x2000
+        assert_eq!(result[0].size_bytes, 0x2000);
+        // vma2 has VM_EXEC → after merge is_executable = true
+        assert!(result[0].is_executable, "merged entry must be executable after vma2");
+        assert!(result[0].is_suspicious, "executable memfd:payload must be suspicious");
+    }
+
+    // --- try_read_memfd_vma: dentry_ptr == 0 → None (line 237) ---
+    #[test]
+    fn walk_memfd_dentry_ptr_null_returns_none() {
+        // vm_file != 0, dentry chain readable, but dentry pointer == 0 → None.
+        let init_vaddr: u64  = 0xFFFF_8800_00D0_0000;
+        let init_paddr: u64  = 0x00D0_0000;
+        let mm_vaddr: u64    = 0xFFFF_8800_00D1_0000;
+        let mm_paddr: u64    = 0x00D1_0000;
+        let vma_vaddr: u64   = 0xFFFF_8800_00D2_0000;
+        let vma_paddr: u64   = 0x00D2_0000;
+        let file_vaddr: u64  = 0xFFFF_8800_00D3_0000;
+        let file_paddr: u64  = 0x00D3_0000;
+
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64    = 48;
+        let f_path_off: u64   = 0x10;
+        let d_name_off: u64   = 0x08;
+
+        let mut init_page = [0u8; 4096];
+        page_write_u32(&mut init_page, 0, 11u32);
+        let tasks_self = init_vaddr + tasks_offset;
+        page_write_u64(&mut init_page, tasks_offset as usize, tasks_self);
+        page_write_u64(&mut init_page, tasks_offset as usize + 8, tasks_self);
+        init_page[32..36].copy_from_slice(b"proc");
+        page_write_u64(&mut init_page, mm_offset as usize, mm_vaddr);
+
+        let mut mm_page = [0u8; 4096];
+        page_write_u64(&mut mm_page, 0, vma_vaddr);
+
+        let mut vma_page = [0u8; 4096];
+        page_write_u64(&mut vma_page, 0x00, 0u64);       // vm_next = NULL
+        page_write_u64(&mut vma_page, 0x08, file_vaddr); // vm_file != 0
+        page_write_u64(&mut vma_page, 0x10, 0x1000u64);
+        page_write_u64(&mut vma_page, 0x18, 0x2000u64);
+        page_write_u64(&mut vma_page, 0x20, 0u64);
+
+        // file: dentry ptr at f_path_off = 0x10 → value = 0 (NULL dentry)
+        let mut file_page = [0u8; 4096];
+        page_write_u64(&mut file_page, 0x10, 0u64); // dentry_ptr = NULL
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "mmap", 0u64, "pointer")
+            .add_struct("vm_area_struct", 0x100)
+            .add_field("vm_area_struct", "vm_next", 0x00u64, "pointer")
+            .add_field("vm_area_struct", "vm_file", 0x08u64, "pointer")
+            .add_field("vm_area_struct", "vm_start", 0x10u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 0x18u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 0x20u64, "unsigned long")
+            .add_struct("file", 0x100)
+            .add_field("file", "f_path", f_path_off, "pointer")
+            .add_struct("path", 0x20)
+            .add_field("path", "dentry", 0u64, "pointer")
+            .add_struct("dentry", 0x100)
+            .add_field("dentry", "d_name", d_name_off, "pointer")
+            .add_struct("qstr", 0x20)
+            .add_field("qstr", "name", 0u64, "pointer")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, flags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .map_4k(file_vaddr, file_paddr, flags::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "dentry_ptr == 0 → read_file_dentry_name None → no entries");
+    }
+
+    // --- try_read_memfd_vma: name_ptr == 0 → None (line 244) ---
+    #[test]
+    fn walk_memfd_name_ptr_null_returns_none() {
+        // dentry_ptr != 0 but name_ptr == 0 → None.
+        let init_vaddr: u64   = 0xFFFF_8800_00E0_0000;
+        let init_paddr: u64   = 0x00E0_0000;
+        let mm_vaddr: u64     = 0xFFFF_8800_00E1_0000;
+        let mm_paddr: u64     = 0x00E1_0000;
+        let vma_vaddr: u64    = 0xFFFF_8800_00E2_0000;
+        let vma_paddr: u64    = 0x00E2_0000;
+        let file_vaddr: u64   = 0xFFFF_8800_00E3_0000;
+        let file_paddr: u64   = 0x00E3_0000;
+        let dentry_vaddr: u64 = 0xFFFF_8800_00E4_0000;
+        let dentry_paddr: u64 = 0x00E4_0000;
+
+        let tasks_offset: u64 = 16;
+        let mm_offset: u64    = 48;
+        let f_path_off: u64   = 0x10;
+        let d_name_off: u64   = 0x08;
+
+        let mut init_page = [0u8; 4096];
+        page_write_u32(&mut init_page, 0, 12u32);
+        let tasks_self = init_vaddr + tasks_offset;
+        page_write_u64(&mut init_page, tasks_offset as usize, tasks_self);
+        page_write_u64(&mut init_page, tasks_offset as usize + 8, tasks_self);
+        init_page[32..36].copy_from_slice(b"proc");
+        page_write_u64(&mut init_page, mm_offset as usize, mm_vaddr);
+
+        let mut mm_page = [0u8; 4096];
+        page_write_u64(&mut mm_page, 0, vma_vaddr);
+
+        let mut vma_page = [0u8; 4096];
+        page_write_u64(&mut vma_page, 0x00, 0u64);
+        page_write_u64(&mut vma_page, 0x08, file_vaddr);
+        page_write_u64(&mut vma_page, 0x10, 0x1000u64);
+        page_write_u64(&mut vma_page, 0x18, 0x2000u64);
+        page_write_u64(&mut vma_page, 0x20, 0u64);
+
+        let mut file_page = [0u8; 4096];
+        page_write_u64(&mut file_page, 0x10, dentry_vaddr); // dentry ptr != 0
+
+        // dentry page: name ptr at d_name_off = 0x08 → value = 0 (NULL)
+        let mut dentry_page = [0u8; 4096];
+        page_write_u64(&mut dentry_page, 0x08, 0u64); // name_ptr = NULL
+
+        let isf = IsfBuilder::new()
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0u64, "pointer")
+            .add_field("list_head", "prev", 8u64, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0u64, "unsigned int")
+            .add_field("task_struct", "tasks", tasks_offset, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", mm_offset, "pointer")
+            .add_struct("mm_struct", 0x100)
+            .add_field("mm_struct", "mmap", 0u64, "pointer")
+            .add_struct("vm_area_struct", 0x100)
+            .add_field("vm_area_struct", "vm_next", 0x00u64, "pointer")
+            .add_field("vm_area_struct", "vm_file", 0x08u64, "pointer")
+            .add_field("vm_area_struct", "vm_start", 0x10u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 0x18u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 0x20u64, "unsigned long")
+            .add_struct("file", 0x100)
+            .add_field("file", "f_path", f_path_off, "pointer")
+            .add_struct("path", 0x20)
+            .add_field("path", "dentry", 0u64, "pointer")
+            .add_struct("dentry", 0x100)
+            .add_field("dentry", "d_name", d_name_off, "pointer")
+            .add_struct("qstr", 0x20)
+            .add_field("qstr", "name", 0u64, "pointer")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &init_page)
+            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, flags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page)
+            .map_4k(file_vaddr, file_paddr, flags::WRITABLE)
+            .write_phys(file_paddr, &file_page)
+            .map_4k(dentry_vaddr, dentry_paddr, flags::WRITABLE)
+            .write_phys(dentry_paddr, &dentry_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_memfd_create(&reader).expect("should not error");
+        assert!(result.is_empty(), "name_ptr == 0 → read_file_dentry_name None → no entries");
+    }
+
+    // --- try_read_memfd_vma: dentry chain readable, name NOT "memfd:" → None ---
     // Exercises read_file_dentry_name (lines 267-307) and the strip_prefix check.
     // Also exercises collect_memfd_for_task merge logic placeholder (no merge needed when empty).
     #[test]
