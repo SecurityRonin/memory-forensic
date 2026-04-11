@@ -439,38 +439,6 @@ mod tests {
         assert!(desktops.is_empty());
     }
 
-    /// Helper: build ISF with grpWinStaList symbol and required structs including _UNICODE_STRING.
-    /// Layout chosen to avoid field overlap:
-    ///   _WINSTATION_OBJECT.Name   @ 0x10 (_UNICODE_STRING = 16 bytes: 0x10..0x20)
-    ///   _WINSTATION_OBJECT.dwSessionId @ 0x20
-    ///   _WINSTATION_OBJECT.rpwinstaNext @ 0x28
-    ///   _WINSTATION_OBJECT.rpdeskList   @ 0x30
-    ///
-    ///   tagDESKTOP.Name        @ 0x10 (_UNICODE_STRING = 16 bytes: 0x10..0x20)
-    ///   tagDESKTOP.pheapDesktop @ 0x20  (placed AFTER the Name _UNICODE_STRING)
-    ///   tagDESKTOP.rpdeskNext   @ 0x28
-    ///   tagDESKTOP.dwThreadCount @ 0x30
-    fn make_winsta_isf(list_vaddr: u64) -> IsfResolver {
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 64)
-            .add_field("_WINSTATION_OBJECT", "Name", 0x10, "_UNICODE_STRING")
-            .add_field("_WINSTATION_OBJECT", "dwSessionId", 0x20, "unsigned long")
-            .add_field("_WINSTATION_OBJECT", "rpwinstaNext", 0x28, "pointer")
-            .add_field("_WINSTATION_OBJECT", "rpdeskList", 0x30, "pointer")
-            .add_struct("tagDESKTOP", 64)
-            .add_field("tagDESKTOP", "Name", 0x10, "_UNICODE_STRING")
-            .add_field("tagDESKTOP", "pheapDesktop", 0x20, "pointer")
-            .add_field("tagDESKTOP", "rpdeskNext", 0x28, "pointer")
-            .add_field("tagDESKTOP", "dwThreadCount", 0x30, "unsigned long")
-            .add_struct("_UNICODE_STRING", 16)
-            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
-            .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
-            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
-            .add_symbol("grpWinStaList", list_vaddr)
-            .build_json();
-        IsfResolver::from_value(&isf).unwrap()
-    }
-
     /// Helper: write a _UNICODE_STRING block into a page buffer.
     /// Layout: Length(u16) at off, MaxLength(u16) at off+2, Buffer(u64) at off+8.
     /// The UTF-16LE string data is placed at str_off within the same page.

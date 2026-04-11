@@ -199,11 +199,11 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
                     hook_count += 1;
 
                     // Read hook type
-                    let iHook_raw: u32 = reader
+                    let i_hook_raw: u32 = reader
                         .read_bytes(hook_addr + hook_type_off, 4)
                         .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))
                         .unwrap_or(0xFFFF_FFFF);
-                    let hook_type = hook_type_name(iHook_raw);
+                    let hook_type = hook_type_name(i_hook_raw);
 
                     // Read proc address
                     let hook_proc_addr: u64 = reader
@@ -308,7 +308,7 @@ fn extract_pid_from_threadinfo<P: PhysicalMemoryProvider>(
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;

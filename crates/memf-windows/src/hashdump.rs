@@ -3178,7 +3178,7 @@ mod tests {
         // Correction: Account has Users as a subkey, but we need to put users_off in the list.
         // Use a lf list for Account's subkeys pointing to users_off:
         // Actually write_nk puts list_off at +0x20 (subkey list offset), so let's use acct_list:
-        let acct_list_off: u32 = 0x170 + 0x30; // reuse some space: 0x1A0 but let's use a fresh offset
+        let _acct_list_off: u32 = 0x170 + 0x30; // reuse some space: 0x1A0 but let's use a fresh offset
         // Recalculate to avoid overlap: set acct's subkey list at a distinct offset
         // Note: write_nk already wrote acct_off + 0x20 = users_off (wrong, that's the NK cell!)
         // Let me use a dedicated list cell for Account's subkeys.

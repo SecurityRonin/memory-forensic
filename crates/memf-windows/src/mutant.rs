@@ -184,29 +184,12 @@ mod tests {
     const OBP_ROOT_DIR_OBJ_VADDR: u64 = 0xFFFFF805_5A4A0000;
     const OB_TYPE_INDEX_TABLE_VADDR: u64 = 0xFFFFF805_5A490000;
 
-    // _OBJECT_HEADER offsets (from preset)
-    const OBJ_HEADER_TYPE_INDEX: u64 = 0x18;
-    const OBJ_HEADER_INFO_MASK: u64 = 0x1a;
-    const OBJ_HEADER_BODY: u64 = 0x30;
-
-    // _OBJECT_HEADER_NAME_INFO size (from preset)
-    const NAME_INFO_SIZE: u64 = 0x20;
-    // _OBJECT_HEADER_NAME_INFO.Name offset
-    const NAME_INFO_NAME: u64 = 0x10;
-
     // _KMUTANT offsets (from preset)
     const KMUTANT_OWNER_THREAD: u64 = 0x28;
     const KMUTANT_ABANDONED: u64 = 0x30;
 
     // _ETHREAD.Cid offset (from preset)
     const ETHREAD_CID: u64 = 0x620;
-    // _CLIENT_ID offsets
-    const CID_UNIQUE_PROCESS: u64 = 0x0;
-    const CID_UNIQUE_THREAD: u64 = 0x8;
-
-    // _OBJECT_TYPE.Name offset
-    const OBJ_TYPE_NAME: u64 = 0x10;
-
     fn utf16le(s: &str) -> Vec<u8> {
         s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
     }
@@ -256,55 +239,6 @@ mod tests {
         let (cr3, mem) = ptb.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         ObjectReader::new(vas, Box::new(resolver))
-    }
-
-    /// Write a `_UNICODE_STRING` into physical memory at `unistr_paddr`,
-    /// with the UTF-16LE payload at `str_paddr` mapped at `str_vaddr`.
-    fn write_unicode_string(
-        ptb: PageTableBuilder,
-        unistr_paddr: u64,
-        str_vaddr: u64,
-        str_paddr: u64,
-        text: &str,
-    ) -> PageTableBuilder {
-        let encoded = utf16le(text);
-        let len = encoded.len() as u16;
-        let mut unistr_buf = vec![0u8; 16];
-        unistr_buf[0..2].copy_from_slice(&len.to_le_bytes());   // Length
-        unistr_buf[2..4].copy_from_slice(&len.to_le_bytes());   // MaximumLength
-        unistr_buf[8..16].copy_from_slice(&str_vaddr.to_le_bytes()); // Buffer
-
-        let mut str_buf = vec![0u8; 4096];
-        str_buf[..encoded.len()].copy_from_slice(&encoded);
-
-        ptb.write_phys(unistr_paddr, &unistr_buf)
-           .write_phys(str_paddr, &str_buf)
-    }
-
-    /// Write an `_OBJECT_TYPE` at `type_paddr` whose `Name` field is a
-    /// `_UNICODE_STRING` at offset 0x10 pointing to `str_vaddr`.
-    fn write_object_type(
-        ptb: PageTableBuilder,
-        type_vaddr: u64,
-        type_paddr: u64,
-        str_vaddr: u64,
-        str_paddr: u64,
-        type_name: &str,
-    ) -> PageTableBuilder {
-        let mut type_page = vec![0u8; 4096];
-        // _OBJECT_TYPE.Name (_UNICODE_STRING) at offset 0x10
-        let encoded = utf16le(type_name);
-        let len = encoded.len() as u16;
-        type_page[0x10..0x12].copy_from_slice(&len.to_le_bytes());
-        type_page[0x12..0x14].copy_from_slice(&len.to_le_bytes());
-        type_page[0x18..0x20].copy_from_slice(&str_vaddr.to_le_bytes());
-
-        let mut str_page = vec![0u8; 4096];
-        str_page[..encoded.len()].copy_from_slice(&encoded);
-
-        ptb.map_4k(type_vaddr, type_paddr, flags::WRITABLE)
-           .write_phys(type_paddr, &type_page)
-           .write_phys(str_paddr, &str_page)
     }
 
     /// Write a named object (name_info + header + body) at `base_vaddr/base_paddr`.

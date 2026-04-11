@@ -16,7 +16,6 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::process;
 use crate::unicode::read_unicode_string;
 
 /// A single command extracted from a console history buffer.
@@ -965,8 +964,6 @@ mod tests {
         const PS_PADDR:   u64 = 0x0019_0000;
         const EPROC_VADDR:u64 = 0xFFFF_8000_0018_0000;
         const EPROC_PADDR:u64 = 0x0018_0000;
-        const KPROC_VADDR:u64 = EPROC_VADDR; // Pcb at offset 0
-
         // Minimal ISF for process walk
         let isf = IsfBuilder::new()
             .add_struct("_LIST_ENTRY", 16)

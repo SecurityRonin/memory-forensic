@@ -369,44 +369,6 @@ mod tests {
         s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
     }
 
-    /// Write a minimal named-object block into `buf` at `obj_page_offset`.
-    /// String data is placed at `str_offset` (must be within same buf/page).
-    /// Returns the virtual address of the object body (+0x50 from obj start).
-    fn write_obj(
-        buf: &mut Vec<u8>,
-        obj_page_offset: usize,
-        page_vaddr: u64,
-        name: &str,
-        str_offset: usize,
-    ) -> u64 {
-        let name_bytes = utf16le(name);
-        let name_len = name_bytes.len() as u16;
-        // str_offset is within the same page — compute its vaddr accordingly
-        let str_vaddr = page_vaddr + str_offset as u64;
-        // _OBJECT_HEADER_NAME_INFO.Name (_UNICODE_STRING) at obj_page_offset + 0x10
-        buf[obj_page_offset + 0x10..obj_page_offset + 0x12].copy_from_slice(&name_len.to_le_bytes());
-        buf[obj_page_offset + 0x12..obj_page_offset + 0x14].copy_from_slice(&name_len.to_le_bytes());
-        buf[obj_page_offset + 0x18..obj_page_offset + 0x20].copy_from_slice(&str_vaddr.to_le_bytes());
-        // _OBJECT_HEADER at +0x20: InfoMask at +0x1a = 0x02 (has NAME_INFO)
-        buf[obj_page_offset + 0x20 + 0x1a] = 0x02;
-        // Write the name string at str_offset within buf
-        buf[str_offset..str_offset + name_bytes.len()].copy_from_slice(&name_bytes);
-        // Body is at obj_page_offset + 0x50
-        page_vaddr + obj_page_offset as u64 + 0x50
-    }
-
-    /// Write an `_OBJECT_DIRECTORY_ENTRY` at `entry_offset` in `buf`.
-    fn write_entry(buf: &mut Vec<u8>, entry_offset: usize, chain_link: u64, object_body: u64) {
-        buf[entry_offset..entry_offset + 8].copy_from_slice(&chain_link.to_le_bytes());
-        buf[entry_offset + 8..entry_offset + 16].copy_from_slice(&object_body.to_le_bytes());
-    }
-
-    /// Set bucket `bucket_idx` of a directory page at `dir_page_offset` in `buf`.
-    fn set_bucket_ptr(buf: &mut Vec<u8>, dir_page_offset: usize, bucket_idx: usize, entry_vaddr: u64) {
-        let off = dir_page_offset + bucket_idx * 8;
-        buf[off..off + 8].copy_from_slice(&entry_vaddr.to_le_bytes());
-    }
-
     /// walk_named_pipes: full two-level directory traversal.
     ///
     /// Layout uses page-aligned body addresses: each object's body sits at offset 0
