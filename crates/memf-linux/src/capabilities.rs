@@ -42,7 +42,7 @@ const SUSPICIOUS_CAPS: &[(u64, &str)] = &[
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProcessCapabilities {
     /// Process ID.
-    pub pid: u32,
+    pub pid: u64,
     /// Process command name.
     pub name: String,
     /// Bitmask of effective capabilities.
@@ -158,7 +158,7 @@ fn read_process_caps<P: PhysicalMemoryProvider>(
     let (is_suspicious, suspicious_caps) = classify_capabilities(effective, uid);
 
     Ok(ProcessCapabilities {
-        pid: proc.pid as u32,
+        pid: proc.pid,
         name: proc.comm.clone(),
         effective,
         permitted,

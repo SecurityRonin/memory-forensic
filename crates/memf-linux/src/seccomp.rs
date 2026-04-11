@@ -20,7 +20,7 @@ use crate::{ProcessInfo, Result};
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SeccompInfo {
     /// Process ID.
-    pub pid: u32,
+    pub pid: u64,
     /// Process command name.
     pub comm: String,
     /// Seccomp mode: 0 = disabled, 1 = strict, 2 = filter.
@@ -81,11 +81,11 @@ pub fn walk_seccomp_profiles<P: PhysicalMemoryProvider>(
 
         // Count filters in the chain if mode == 2 (filter) and symbols exist.
         let filter_count = if seccomp_mode == 2 {
-            if let (Some(_filter_off), Some(prev_off)) = (filter_field_offset, prev_field_offset) {
+            if let (Some(_filter_off), Some(_prev_off)) = (filter_field_offset, prev_field_offset) {
                 let filter_ptr: u64 = reader
                     .read_field(seccomp_base, "seccomp", "filter")
                     .unwrap_or(0);
-                count_filter_chain(reader, filter_ptr, prev_off)?
+                count_filter_chain(reader, filter_ptr)?
             } else {
                 // We know mode is filter but can't walk the chain.
                 0
@@ -97,7 +97,7 @@ pub fn walk_seccomp_profiles<P: PhysicalMemoryProvider>(
         let is_unconfined = seccomp_mode == 0;
 
         results.push(SeccompInfo {
-            pid: proc.pid as u32,
+            pid: proc.pid,
             comm: proc.comm.clone(),
             seccomp_mode,
             filter_count,
@@ -112,7 +112,6 @@ pub fn walk_seccomp_profiles<P: PhysicalMemoryProvider>(
 fn count_filter_chain<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     first_filter: u64,
-    _prev_offset: u64,
 ) -> Result<u32> {
     if first_filter == 0 {
         return Ok(0);

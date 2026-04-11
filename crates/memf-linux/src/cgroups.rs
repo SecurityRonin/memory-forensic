@@ -15,7 +15,7 @@ use crate::{ProcessInfo, Result};
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CgroupInfo {
     /// Process ID.
-    pub pid: u32,
+    pub pid: u64,
     /// Process command name (from `task_struct.comm`).
     pub comm: String,
     /// Full cgroup path (e.g., "/docker/abc123.../").
@@ -65,7 +65,7 @@ pub fn classify_cgroup(path: &str) -> (bool, String) {
 ///   the process escaped its cgroup namespace.
 /// - Cgroup path contains `"privileged"`: indicates a privileged container
 ///   which weakens isolation boundaries.
-fn is_suspicious_cgroup(path: &str, pid: u32) -> bool {
+fn is_suspicious_cgroup(path: &str, pid: u64) -> bool {
     // Root cgroup for non-init process suggests escape.
     if path == "/" && pid != 1 {
         return true;
@@ -173,13 +173,13 @@ pub fn walk_cgroups<P: PhysicalMemoryProvider>(
         };
 
         let (is_containerized, container_id) = classify_cgroup(&cgroup_path);
-        let is_suspicious = is_suspicious_cgroup(&cgroup_path, proc.pid as u32);
+        let is_suspicious = is_suspicious_cgroup(&cgroup_path, proc.pid);
 
         // Controllers: use empty string — would require walking cgroup_subsys array.
         let controllers = String::new();
 
         results.push(CgroupInfo {
-            pid: proc.pid as u32,
+            pid: proc.pid,
             comm: proc.comm.clone(),
             cgroup_path,
             controllers,
