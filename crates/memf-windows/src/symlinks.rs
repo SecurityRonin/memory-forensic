@@ -246,7 +246,7 @@ fn resolve_type_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ob_type_table: Option<u64>,
     type_index: u8,
-    body_offset: u64,
+    _body_offset: u64,
 ) -> Option<String> {
     let table = ob_type_table?;
 
