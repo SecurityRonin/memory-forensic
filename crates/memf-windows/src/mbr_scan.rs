@@ -33,82 +33,21 @@ pub struct MbrInfo {
 /// (`0x90`) or a bare `CLI` (`0xFA`) not followed by a recognised pattern
 /// is considered suspicious.
 pub fn classify_mbr(bootstrap_bytes: &[u8]) -> bool {
-    if bootstrap_bytes.len() < 4 {
-        return false;
+        todo!()
     }
-    matches!(bootstrap_bytes[0], 0xFA | 0x90)
-        && !matches!(
-            &bootstrap_bytes[..3],
-            [0xFA, 0x33, 0xC0] | [0xFA, 0x31, 0xC0]
-        )
-}
 
 /// Walk the first 64 KB of physical memory for MBR/VBR candidates.
 ///
 /// Returns an empty `Vec` when the `MmSystemRangeStart` symbol is absent
 /// (graceful degradation).
 pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<MbrInfo>> {
-    // Graceful degradation: require MmSystemRangeStart symbol.
-    if reader
-        .symbols()
-        .symbol_address("MmSystemRangeStart")
-        .is_none()
-    {
-        return Ok(Vec::new());
+        todo!()
     }
-
-    let mut results = Vec::new();
-    // Scan every 512-byte aligned block in the first 64 KB.
-    let mut offset: u64 = 0;
-    while offset + 512 <= 65536 {
-        let sector = match reader.read_bytes(offset, 512) {
-            Ok(b) => b,
-            Err(_) => {
-                offset += 512;
-                continue;
-            }
-        };
-
-        // Check for the MBR/VBR magic bytes at offset 510.
-        let has_valid_magic = sector[510] == 0x55 && sector[511] == 0xAA;
-        if !has_valid_magic {
-            offset += 512;
-            continue;
-        }
-
-        // MBR disk signature lives at offset 0x1B8.
-        let signature =
-            u32::from_le_bytes([sector[0x1B8], sector[0x1B9], sector[0x1BA], sector[0x1BB]]);
-
-        // Partition table entry 0 boot indicator is at offset 0x1BE.
-        let boot_indicator = sector[0x1BE];
-
-        // Bootstrap code is the first 440 bytes.
-        let bootstrap = &sector[..440.min(sector.len())];
-        let is_suspicious = classify_mbr(bootstrap);
-        let bootstrap_hash = sha256_hex(bootstrap);
-
-        results.push(MbrInfo {
-            physical_offset: offset,
-            signature,
-            boot_indicator,
-            has_valid_magic,
-            is_suspicious,
-            bootstrap_hash,
-        });
-
-        offset += 512;
-    }
-
-    Ok(results)
-}
 
 /// Compute the SHA-256 digest of `data` and return it as a lowercase hex string.
 fn sha256_hex(data: &[u8]) -> String {
-    // Pure-Rust SHA-256 — no external crate dependency.
-    let digest = sha256(data);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
+        todo!()
+    }
 
 /// Minimal pure-Rust SHA-256 implementation (no external deps).
 fn sha256(data: &[u8]) -> [u8; 32] {
@@ -214,90 +153,55 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn make_reader_no_symbols() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
-        let isf = IsfBuilder::new().build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let page_paddr: u64 = 0x0080_0000;
-        let ptb = PageTableBuilder::new()
-            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
-            .write_phys(page_paddr, &[0u8; 16]);
-        let (cr3, mem) = ptb.build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     /// A NOP-sled first byte (`0x90`) that is not a known-good pattern is suspicious.
     #[test]
     fn classify_nop_sled_suspicious() {
-        let bootstrap = [0x90u8, 0x00, 0x00, 0x00];
-        assert!(classify_mbr(&bootstrap));
+        todo!()
     }
 
     /// Windows MBR (`FA 33 C0 ...`) must NOT be flagged suspicious.
     #[test]
     fn classify_windows_mbr_not_suspicious() {
-        let bootstrap = [0xFAu8, 0x33, 0xC0, 0x8E];
-        assert!(!classify_mbr(&bootstrap));
+        todo!()
     }
 
     /// When `MmSystemRangeStart` symbol is absent the walker returns empty.
     #[test]
     fn walk_mbr_scan_no_symbol_returns_empty() {
-        let reader = make_reader_no_symbols();
-        let results = walk_mbr_scan(&reader).unwrap();
-        assert!(results.is_empty());
+        todo!()
     }
 
     /// Windows MBR with FA 31 C0 variant is also not suspicious.
     #[test]
     fn classify_windows_mbr_fa31c0_not_suspicious() {
-        let bootstrap = [0xFAu8, 0x31, 0xC0, 0xD0];
-        assert!(!classify_mbr(&bootstrap));
+        todo!()
     }
 
     /// A bootstrap starting with 0xFA followed by an unknown byte is suspicious.
     #[test]
     fn classify_fa_unknown_suspicious() {
-        let bootstrap = [0xFAu8, 0x00, 0x00, 0x00];
-        assert!(classify_mbr(&bootstrap));
+        todo!()
     }
 
     /// classify_mbr with fewer than 4 bytes returns false (too short to classify).
     #[test]
     fn classify_mbr_too_short_not_suspicious() {
-        assert!(!classify_mbr(&[]));
-        assert!(!classify_mbr(&[0x90]));
-        assert!(!classify_mbr(&[0xFA, 0x33]));
-        assert!(!classify_mbr(&[0xFA, 0x33, 0xC0]));
+        todo!()
     }
 
     /// classify_mbr with a first byte other than 0xFA or 0x90 returns false.
     #[test]
     fn classify_mbr_other_first_byte_not_suspicious() {
-        let bootstrap = [0xEB, 0x63, 0x00, 0x00]; // GRUB-like
-        assert!(!classify_mbr(&bootstrap));
-
-        let bootstrap2 = [0x33, 0xC0, 0x8E, 0xD0];
-        assert!(!classify_mbr(&bootstrap2));
+        todo!()
     }
 
     /// MbrInfo serializes to JSON correctly.
     #[test]
     fn mbr_info_serializes() {
-        let info = MbrInfo {
-            physical_offset: 0,
-            signature: 0xABCD1234,
-            boot_indicator: 0x80,
-            has_valid_magic: true,
-            is_suspicious: false,
-            bootstrap_hash: "deadbeef".to_string(),
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("physical_offset"));
-        assert!(json.contains("bootstrap_hash"));
-        assert!(json.contains("deadbeef"));
+        todo!()
     }
 
     /// Walker with MmSystemRangeStart symbol AND a mapped sector at virtual offset 0
@@ -309,81 +213,13 @@ mod tests {
     /// bootstrap (FA 33 C0) so is_suspicious == false.
     #[test]
     fn walk_mbr_scan_finds_sector_with_valid_magic() {
-        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
-
-        // MmSystemRangeStart symbol is required; value doesn't matter for scan logic.
-        let isf = IsfBuilder::new()
-            .add_symbol("MmSystemRangeStart", 0xFFFF_8000_0000_0000u64)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        // Build a 512-byte sector in a 4096-byte page at virtual address 0.
-        let mut first_phys_page = [0u8; 4096];
-        // Windows MBR bootstrap: FA 33 C0 ...
-        first_phys_page[0] = 0xFA;
-        first_phys_page[1] = 0x33;
-        first_phys_page[2] = 0xC0;
-        // MBR magic at sector offset 510.
-        first_phys_page[510] = 0x55;
-        first_phys_page[511] = 0xAA;
-        // Disk signature at offset 0x1B8.
-        first_phys_page[0x1B8] = 0xAB;
-        first_phys_page[0x1B9] = 0xCD;
-        first_phys_page[0x1BA] = 0xEF;
-        first_phys_page[0x1BB] = 0x01;
-        // Boot indicator at 0x1BE.
-        first_phys_page[0x1BE] = 0x80;
-
-        // Map only vaddr 0..0x1000 at a safe physical address (well below 16 MB).
-        // Sectors in subsequent pages will fail to read and be skipped — that's fine.
-        let page_paddr: u64 = 0x0010_0000; // 1 MB — safely within the 16 MB limit
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(0, page_paddr, flags::WRITABLE)
-            .write_phys(page_paddr, &first_phys_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = walk_mbr_scan(&reader).unwrap_or_default();
-        // Should find the MBR entry at offset 0.
-        assert!(!results.is_empty(), "should find the sector with 0x55AA magic");
-        let mbr = &results[0];
-        assert_eq!(mbr.physical_offset, 0);
-        assert!(mbr.has_valid_magic);
-        assert!(!mbr.is_suspicious, "Windows FA 33 C0 MBR should not be suspicious");
-        assert_eq!(mbr.signature, 0x01EF_CDAB); // little-endian [AB CD EF 01]
-        assert_eq!(mbr.boot_indicator, 0x80);
-        assert_eq!(mbr.bootstrap_hash.len(), 64); // SHA-256 hex = 64 chars
+        todo!()
     }
 
     /// Walker with MmSystemRangeStart symbol but no readable physical memory
     /// at offset 0 returns an empty results set (no valid magic bytes found).
     #[test]
     fn walk_mbr_scan_with_symbol_no_valid_sector() {
-        use memf_core::test_builders::SyntheticPhysMem;
-
-        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let page_paddr: u64 = 0x0080_0000;
-
-        // Build ISF with MmSystemRangeStart symbol pointing somewhere.
-        let isf = IsfBuilder::new()
-            .add_symbol("MmSystemRangeStart", 0xFFFF_8000_0000_0000u64)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
-            .write_phys(page_paddr, &[0u8; 16]);
-        let (cr3, mem) = ptb.build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        // Physical memory at offset 0..65536 is not mapped, so all reads fail →
-        // walker skips every sector → empty results.
-        let results = walk_mbr_scan(&reader).unwrap();
-        assert!(results.is_empty(), "No valid 0x55AA magic → empty results");
+        todo!()
     }
 }
