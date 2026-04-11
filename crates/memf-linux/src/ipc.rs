@@ -95,42 +95,36 @@ pub fn walk_shm_segments<P: PhysicalMemoryProvider>(
     // shmid_kernel (single-entry case) or iterate an array. In a real
     // kernel the IDR/XArray is a radix tree, but for forensic enumeration
     // we read the in_use count and walk sequential entries.
-    let mut addr = first_entry;
-    for _ in 0..in_use.min(MAX_IPC_IDS as u32) {
-        if addr == 0 {
-            break;
-        }
+    // IPC objects are stored in an XArray/IDR radix tree, not contiguous memory.
+    // A full radix tree traversal would require walking the XArray node tree.
+    // For now, only the first IPC object is recovered.
+    // TODO: implement XArray traversal for full IPC enumeration
+    let addr = first_entry;
 
-        let shm_perm_offset = reader
-            .symbols()
-            .field_offset("shmid_kernel", "shm_perm")
-            .unwrap_or(0);
-        let perm_base = addr + shm_perm_offset;
+    let shm_perm_offset = reader
+        .symbols()
+        .field_offset("shmid_kernel", "shm_perm")
+        .unwrap_or(0);
+    let perm_base = addr + shm_perm_offset;
 
-        let key: u32 = reader.read_field(perm_base, "kern_ipc_perm", "key")?;
-        let id: u32 = reader.read_field(perm_base, "kern_ipc_perm", "id")?;
-        let mode: u32 = reader.read_field(perm_base, "kern_ipc_perm", "mode")?;
+    let key: u32 = reader.read_field(perm_base, "kern_ipc_perm", "key")?;
+    let id: u32 = reader.read_field(perm_base, "kern_ipc_perm", "id")?;
+    let mode: u32 = reader.read_field(perm_base, "kern_ipc_perm", "mode")?;
 
-        let size: u64 = reader.read_field(addr, "shmid_kernel", "shm_segsz")?;
-        let cprid: u32 = reader.read_field(addr, "shmid_kernel", "shm_cprid")?;
-        let lprid: u32 = reader.read_field(addr, "shmid_kernel", "shm_lprid")?;
-        let nattch: u32 = reader.read_field(addr, "shmid_kernel", "shm_nattch")?;
+    let size: u64 = reader.read_field(addr, "shmid_kernel", "shm_segsz")?;
+    let cprid: u32 = reader.read_field(addr, "shmid_kernel", "shm_cprid")?;
+    let lprid: u32 = reader.read_field(addr, "shmid_kernel", "shm_lprid")?;
+    let nattch: u32 = reader.read_field(addr, "shmid_kernel", "shm_nattch")?;
 
-        segments.push(IpcShmInfo {
-            key,
-            shmid: id,
-            size,
-            owner_pid: lprid,
-            creator_pid: cprid,
-            permissions: mode,
-            num_attaches: nattch,
-        });
-
-        // In a real radix tree walk we'd advance to the next slot; for
-        // the simplified model each entry is contiguous after the struct.
-        let entry_size = reader.symbols().struct_size("shmid_kernel").unwrap_or(128);
-        addr += entry_size;
-    }
+    segments.push(IpcShmInfo {
+        key,
+        shmid: id,
+        size,
+        owner_pid: lprid,
+        creator_pid: cprid,
+        permissions: mode,
+        num_attaches: nattch,
+    });
 
     Ok(segments)
 }
@@ -179,42 +173,38 @@ pub fn walk_semaphores<P: PhysicalMemoryProvider>(
         return Ok(semaphores);
     }
 
-    let mut addr = first_entry;
-    for _ in 0..in_use.min(MAX_IPC_IDS as u32) {
-        if addr == 0 {
-            break;
-        }
+    // IPC objects are stored in an XArray/IDR radix tree, not contiguous memory.
+    // A full radix tree traversal would require walking the XArray node tree.
+    // For now, only the first IPC object is recovered.
+    // TODO: implement XArray traversal for full IPC enumeration
+    let addr = first_entry;
 
-        let sem_perm_offset = reader
-            .symbols()
-            .field_offset("sem_array", "sem_perm")
-            .unwrap_or(0);
-        let perm_base = addr + sem_perm_offset;
+    let sem_perm_offset = reader
+        .symbols()
+        .field_offset("sem_array", "sem_perm")
+        .unwrap_or(0);
+    let perm_base = addr + sem_perm_offset;
 
-        let key: u32 = reader.read_field(perm_base, "kern_ipc_perm", "key")?;
-        let id: u32 = reader.read_field(perm_base, "kern_ipc_perm", "id")?;
-        let mode: u32 = reader.read_field(perm_base, "kern_ipc_perm", "mode")?;
+    let key: u32 = reader.read_field(perm_base, "kern_ipc_perm", "key")?;
+    let id: u32 = reader.read_field(perm_base, "kern_ipc_perm", "id")?;
+    let mode: u32 = reader.read_field(perm_base, "kern_ipc_perm", "mode")?;
 
-        let nsems: u32 = reader.read_field(addr, "sem_array", "sem_nsems")?;
-        // sem_array doesn't have a direct PID field; use the permission's
-        // creator UID as a proxy. For real forensic use, the sem_otime
-        // / sem_ctime fields would be more relevant. We read shm_lprid-style
-        // owner info if available, falling back to 0.
-        let owner_pid: u32 = reader
-            .read_field(addr, "sem_array", "sem_otime_high")
-            .unwrap_or(0);
+    let nsems: u32 = reader.read_field(addr, "sem_array", "sem_nsems")?;
+    // sem_array doesn't have a direct PID field; use the permission's
+    // creator UID as a proxy. For real forensic use, the sem_otime
+    // / sem_ctime fields would be more relevant. We read shm_lprid-style
+    // owner info if available, falling back to 0.
+    let owner_pid: u32 = reader
+        .read_field(addr, "sem_array", "sem_otime_high")
+        .unwrap_or(0);
 
-        semaphores.push(IpcSemInfo {
-            key,
-            semid: id,
-            num_sems: nsems,
-            owner_pid,
-            permissions: mode,
-        });
-
-        let entry_size = reader.symbols().struct_size("sem_array").unwrap_or(128);
-        addr += entry_size;
-    }
+    semaphores.push(IpcSemInfo {
+        key,
+        semid: id,
+        num_sems: nsems,
+        owner_pid,
+        permissions: mode,
+    });
 
     Ok(semaphores)
 }
@@ -651,6 +641,124 @@ mod tests {
         assert!(dbg.contains("num_sems"));
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"semid\":7"));
+    }
+
+    // -----------------------------------------------------------------------
+    // in_use > 1: verify no crash and exactly one entry is returned.
+    // The XArray/IDR radix tree cannot be walked contiguously; only the first
+    // entry (pointed to by xa_head) is recovered.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_shm_in_use_gt1_returns_one_entry() {
+        // in_use = 5 but only one shmid_kernel is actually reachable via xa_head.
+        // The function must return exactly 1 entry without panicking or reading
+        // out-of-bounds memory.
+        let vaddr: u64 = 0xFFFF_8800_00E0_0000;
+        let paddr: u64 = 0x00E0_0000;
+        let mut data = vec![0u8; 4096];
+
+        data[0..4].copy_from_slice(&5u32.to_le_bytes()); // in_use = 5
+
+        let shm_kernel_addr = vaddr + 0x200;
+        data[8..16].copy_from_slice(&shm_kernel_addr.to_le_bytes()); // xa_head → one shmid_kernel
+
+        // shmid_kernel at offset 0x200
+        let base = 0x200usize;
+        data[base..base + 4].copy_from_slice(&0x1234u32.to_le_bytes()); // key
+        data[base + 4..base + 8].copy_from_slice(&99u32.to_le_bytes()); // id
+        data[base + 8..base + 12].copy_from_slice(&0o644u32.to_le_bytes()); // mode
+        data[base + 64..base + 72].copy_from_slice(&8192u64.to_le_bytes()); // shm_segsz
+        data[base + 72..base + 76].copy_from_slice(&500u32.to_le_bytes()); // shm_cprid
+        data[base + 76..base + 80].copy_from_slice(&501u32.to_le_bytes()); // shm_lprid
+        data[base + 80..base + 84].copy_from_slice(&1u32.to_le_bytes()); // shm_nattch
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            .add_field("ipc_ids", "in_use", 0, "unsigned int")
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_struct("idr", 32)
+            .add_field("idr", "idr_rt", 0, "radix_tree_root")
+            .add_struct("radix_tree_root", 16)
+            .add_field("radix_tree_root", "xa_head", 0, "pointer")
+            .add_struct("kern_ipc_perm", 64)
+            .add_field("kern_ipc_perm", "key", 0, "unsigned int")
+            .add_field("kern_ipc_perm", "id", 4, "unsigned int")
+            .add_field("kern_ipc_perm", "mode", 8, "unsigned int")
+            .add_struct("shmid_kernel", 128)
+            .add_field("shmid_kernel", "shm_perm", 0, "kern_ipc_perm")
+            .add_field("shmid_kernel", "shm_segsz", 64, "unsigned long")
+            .add_field("shmid_kernel", "shm_cprid", 72, "unsigned int")
+            .add_field("shmid_kernel", "shm_lprid", 76, "unsigned int")
+            .add_field("shmid_kernel", "shm_nattch", 80, "unsigned int")
+            .add_symbol("shm_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_shm_segments(&reader).unwrap();
+        // Must return exactly 1 — XArray radix tree is not walked contiguously.
+        assert_eq!(result.len(), 1, "in_use=5 but only first xa_head entry is recoverable");
+        assert_eq!(result[0].key, 0x1234);
+    }
+
+    #[test]
+    fn walk_sem_in_use_gt1_returns_one_entry() {
+        // in_use = 3 but only one sem_array is reachable via xa_head.
+        let vaddr: u64 = 0xFFFF_8800_00D0_0000;
+        let paddr: u64 = 0x00D8_0000;
+        let mut data = vec![0u8; 4096];
+
+        data[0..4].copy_from_slice(&3u32.to_le_bytes()); // in_use = 3
+
+        let sem_array_addr = vaddr + 0x200;
+        data[8..16].copy_from_slice(&sem_array_addr.to_le_bytes()); // xa_head → one sem_array
+
+        let base = 0x200usize;
+        data[base..base + 4].copy_from_slice(&0xABCDu32.to_le_bytes()); // key
+        data[base + 4..base + 8].copy_from_slice(&55u32.to_le_bytes()); // id
+        data[base + 8..base + 12].copy_from_slice(&0o700u32.to_le_bytes()); // mode
+        data[base + 64..base + 68].copy_from_slice(&2u32.to_le_bytes()); // sem_nsems
+        data[base + 68..base + 72].copy_from_slice(&0u32.to_le_bytes()); // sem_otime_high
+
+        let isf = IsfBuilder::new()
+            .add_struct("ipc_ids", 64)
+            .add_field("ipc_ids", "in_use", 0, "unsigned int")
+            .add_field("ipc_ids", "ipcs_idr", 8, "idr")
+            .add_struct("idr", 32)
+            .add_field("idr", "idr_rt", 0, "radix_tree_root")
+            .add_struct("radix_tree_root", 16)
+            .add_field("radix_tree_root", "xa_head", 0, "pointer")
+            .add_struct("kern_ipc_perm", 64)
+            .add_field("kern_ipc_perm", "key", 0, "unsigned int")
+            .add_field("kern_ipc_perm", "id", 4, "unsigned int")
+            .add_field("kern_ipc_perm", "mode", 8, "unsigned int")
+            .add_struct("sem_array", 128)
+            .add_field("sem_array", "sem_perm", 0, "kern_ipc_perm")
+            .add_field("sem_array", "sem_nsems", 64, "unsigned int")
+            .add_field("sem_array", "sem_otime_high", 68, "unsigned int")
+            .add_symbol("sem_ids", vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_semaphores(&reader).unwrap();
+        // Must return exactly 1 — XArray radix tree is not walked contiguously.
+        assert_eq!(result.len(), 1, "in_use=3 but only first xa_head entry is recoverable");
+        assert_eq!(result[0].key, 0xABCD);
+        assert_eq!(result[0].semid, 55);
     }
 
     #[test]

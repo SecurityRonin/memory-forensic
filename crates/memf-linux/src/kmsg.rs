@@ -93,31 +93,30 @@ pub fn walk_kmsg<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<
 
 /// Parse raw `printk_log` record bytes into a `KmsgEntry`.
 ///
-/// `printk_log` header layout (kernel 3.x+):
-///   +0:  len (u16)       — total record length including header
-///   +2:  text_len (u16)  — byte length of the text
-///   +4:  dict_len (u16)  — byte length of the dict
-///   +6:  facility (u8)
-///   +7:  flags_level (u8) — log level in low 3 bits
-///   +8:  ts_nsec (u64)
-///   +16: seq (u64)
+/// `printk_log` header layout (kernel 3.x+, matches `struct printk_log`):
+///   +0:  ts_nsec   (u64) — timestamp in nanoseconds since boot
+///   +8:  len       (u16) — total record length including header
+///   +10: text_len  (u16) — byte length of the text
+///   +12: dict_len  (u16) — byte length of the dict
+///   +14: facility  (u8)
+///   +15: level     (u8)  — log level (0=EMERG..7=DEBUG)
 ///
-/// Text immediately follows the 24-byte header.
+/// Text immediately follows the 16-byte header.
 pub fn parse_printk_record(data: &[u8], offset: usize) -> Option<(KmsgEntry, usize)> {
-    const HDR_LEN: usize = 24;
+    const HDR_LEN: usize = 16;
     if offset + HDR_LEN > data.len() {
         return None;
     }
     let hdr = &data[offset..];
-    let len = u16::from_le_bytes([hdr[0], hdr[1]]) as usize;
+    let ts_nsec = u64::from_le_bytes(hdr[0..8].try_into().ok()?);
+    let len = u16::from_le_bytes([hdr[8], hdr[9]]) as usize;
     if len == 0 || offset + len > data.len() {
         return None;
     }
-    let text_len = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
-    let flags_level = hdr[7];
-    let level = flags_level & 0x07;
-    let ts_nsec = u64::from_le_bytes(hdr[8..16].try_into().ok()?);
-    let seq = u64::from_le_bytes(hdr[16..24].try_into().ok()?);
+    let text_len = u16::from_le_bytes([hdr[10], hdr[11]]) as usize;
+    let level = hdr[15] & 0x07;
+    // seq is not present in the 16-byte printk_log header; use 0 as placeholder.
+    let seq: u64 = 0;
 
     let text_start = offset + HDR_LEN;
     let text_end = (text_start + text_len).min(offset + len);
@@ -129,7 +128,7 @@ pub fn parse_printk_record(data: &[u8], offset: usize) -> Option<(KmsgEntry, usi
 
     Some((
         KmsgEntry {
-            sequence: seq,
+            sequence: seq, // always 0; printk_log 16-byte header has no seq field
             timestamp_ns: ts_nsec,
             level,
             text,
@@ -187,26 +186,26 @@ mod tests {
     }
 
     // RED test: parse_printk_record parses a synthetic record correctly.
+    // Header layout (16 bytes): ts_nsec@0, len@8, text_len@10, dict_len@12,
+    //                           facility@14, level@15
     #[test]
     fn parse_printk_record_extracts_text() {
         let text = b"Linux version 5.15.0";
         let text_len = text.len() as u16;
-        let total_len: u16 = 24 + text_len; // header + text
+        let total_len: u16 = 16 + text_len; // 16-byte header + text
         let ts_nsec: u64 = 123_456_789;
-        let seq: u64 = 42;
 
         let mut record = vec![0u8; total_len as usize];
-        record[0..2].copy_from_slice(&total_len.to_le_bytes());
-        record[2..4].copy_from_slice(&text_len.to_le_bytes());
-        record[4..6].copy_from_slice(&0u16.to_le_bytes()); // dict_len = 0
-        record[6] = 0; // facility
-        record[7] = 6; // flags_level: level 6 (INFO)
-        record[8..16].copy_from_slice(&ts_nsec.to_le_bytes());
-        record[16..24].copy_from_slice(&seq.to_le_bytes());
-        record[24..24 + text.len()].copy_from_slice(text);
+        record[0..8].copy_from_slice(&ts_nsec.to_le_bytes()); // ts_nsec
+        record[8..10].copy_from_slice(&total_len.to_le_bytes()); // len
+        record[10..12].copy_from_slice(&text_len.to_le_bytes()); // text_len
+        record[12..14].copy_from_slice(&0u16.to_le_bytes()); // dict_len = 0
+        record[14] = 0; // facility
+        record[15] = 6; // level 6 (INFO)
+        record[16..16 + text.len()].copy_from_slice(text);
 
         let (entry, consumed) = parse_printk_record(&record, 0).unwrap();
-        assert_eq!(entry.sequence, seq);
+        assert_eq!(entry.sequence, 0, "seq is always 0 in 16-byte layout");
         assert_eq!(entry.timestamp_ns, ts_nsec);
         assert_eq!(entry.level, 6);
         assert_eq!(entry.text, "Linux version 5.15.0");
@@ -215,6 +214,8 @@ mod tests {
     }
 
     // RED test: walk_kmsg with symbol and mapped buffer returns entries.
+    // Header layout (16 bytes): ts_nsec@0, len@8, text_len@10, dict_len@12,
+    //                           facility@14, level@15
     #[test]
     fn walk_kmsg_with_symbol_returns_entries() {
         use memf_core::test_builders::flags;
@@ -222,18 +223,17 @@ mod tests {
         // Build a minimal ring buffer with one record.
         let msg = b"rootkit module loaded";
         let text_len = msg.len() as u16;
-        let total_len: u16 = 24 + text_len;
+        let total_len: u16 = 16 + text_len; // 16-byte header
         let buf_len: u32 = 4096;
 
         let mut ring_buf = vec![0u8; buf_len as usize];
-        ring_buf[0..2].copy_from_slice(&total_len.to_le_bytes());
-        ring_buf[2..4].copy_from_slice(&text_len.to_le_bytes());
-        ring_buf[4..6].copy_from_slice(&0u16.to_le_bytes());
-        ring_buf[6] = 0;
-        ring_buf[7] = 4; // KERN_WARNING
-        ring_buf[8..16].copy_from_slice(&1_000_000u64.to_le_bytes());
-        ring_buf[16..24].copy_from_slice(&1u64.to_le_bytes()); // seq = 1
-        ring_buf[24..24 + msg.len()].copy_from_slice(msg);
+        ring_buf[0..8].copy_from_slice(&1_000_000u64.to_le_bytes()); // ts_nsec
+        ring_buf[8..10].copy_from_slice(&total_len.to_le_bytes()); // len
+        ring_buf[10..12].copy_from_slice(&text_len.to_le_bytes()); // text_len
+        ring_buf[12..14].copy_from_slice(&0u16.to_le_bytes()); // dict_len
+        ring_buf[14] = 0; // facility
+        ring_buf[15] = 4; // KERN_WARNING
+        ring_buf[16..16 + msg.len()].copy_from_slice(msg);
 
         let buf_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let buf_paddr: u64 = 0x0082_0000;

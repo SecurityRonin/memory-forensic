@@ -23,6 +23,10 @@ pub struct KernelTimerInfo {
     /// Callback function address.
     pub function: u64,
     /// Whether timer re-arms itself (periodic).
+    ///
+    /// Currently always `false`. Accurate detection requires reading
+    /// `timer_list.flags` and testing against `TIMER_DEFERRABLE`/re-arm bits,
+    /// which is not yet supported in the ISF profile walker.
     pub is_periodic: bool,
     /// Heuristic flag: callback outside kernel text.
     pub is_suspicious: bool,
@@ -119,7 +123,12 @@ pub fn walk_kernel_timers<P: PhysicalMemoryProvider>(
                 address: timer_addr,
                 expires,
                 function,
-                is_periodic: false, // Would require tracking re-arm; default to false
+                // TODO: set is_periodic from timer_list.flags (TIMER_DEFERRABLE / re-arm
+                // detection) once timer flags support is added to the ISF profile.
+                // Always false until then — the kernel's timer_list.flags field would
+                // need to be read and tested against the TIMER_PINNED/TIMER_DEFERRABLE
+                // bitmask to identify timers that re-arm themselves (periodic).
+                is_periodic: false,
                 is_suspicious,
             });
         }
