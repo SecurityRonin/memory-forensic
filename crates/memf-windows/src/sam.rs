@@ -1906,4 +1906,426 @@ mod tests {
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
         assert!(result.is_empty(), "invalid hex RID name should be skipped");
     }
+
+    // ── Extended deep hive: Names subkey + F value ──────────────────────
+    //
+    // These tests build on build_deep_hive but extend the flat page to include:
+    //  - A Names NK under Users (so find_name_for_rid is called)
+    //  - A username NK under Names (so the RID→username lookup can succeed)
+    //  - A value list + VK "F" cell + data cell for the RID key
+    //    (so read_f_value enters its scan loop)
+    //
+    // Layout of additional cells (beyond the 0x020–0x364 used in build_deep_hive):
+    //   names_cell_off = 0x380   names NK (name="Names", 1 subkey)
+    //   names_list_off = 0x3C0   lf list for Names subkey
+    //   uname_cell_off = 0x400   username NK (name matches RID=500)
+    //   uname_vlist_off= 0x440   value list cell for username NK (1 entry)
+    //   uname_vk_off   = 0x480   VK cell (default value, type=RID=500=0x1F4)
+    //   rid_vlist_off  = 0x4C0   value list cell for RID key (1 entry → F vk)
+    //   f_vk_off       = 0x500   VK cell (NameLength=1, Name[0]='F', data_len=0x38)
+    //   f_data_off     = 0x540   data cell (0x38 bytes of FILETIME + flags data)
+    //   All within a single 4 KB page.
+
+    fn build_extended_hive(flat_page: &mut Vec<u8>) {
+        // First lay down the standard 5-level chain.
+        build_deep_hive(flat_page);
+
+        // === Additional cell offsets ===
+        let names_cell_off: u32 = 0x380;
+        let names_list_off: u32 = 0x3C0;
+        let uname_cell_off: u32 = 0x400;
+        let uname_vlist_off: u32 = 0x440; // value list for username NK
+        let uname_vk_off: u32 = 0x480;    // VK for username NK (type = RID)
+        let rid_vlist_off: u32 = 0x4C0;   // value list for RID NK
+        let f_vk_off: u32 = 0x500;        // VK "F" cell
+        let f_data_off: u32 = 0x540;      // F value data cell
+
+        let addr = |off: u32| (off + 4) as usize;
+
+        // ── Users NK (at cell_off=0x280) needs Names subkey ──
+        // Increase subkey_count from 1 (RID key) to 2 (RID key + Names)
+        // and update the users lf list to hold both entries.
+        // BUT: modifying users_list to add Names entry would require
+        // rewriting the list with count=2 and two entries.
+        // Simpler approach: use a *separate* hive where Users has 1 RID child
+        // plus a Names subkey accessible at users_key + some other mechanism.
+        // Actually, find_name_for_rid is called with names_key returned by
+        // find_subkey_by_name(reader, flat_base, users_key, "Names").
+        // So we need the users lf list to also point to a Names NK.
+        //
+        // Override the users lf list (at users_list_off=0x2E0, addr=0x2E4):
+        //  - Change count from 1 to 2
+        //  - Add Names cell entry at [1] = names_cell_off
+        let ulo = addr(0x2E0); // users lf list addr offset
+        flat_page[ulo + 2..ulo + 4].copy_from_slice(&2u16.to_le_bytes()); // count=2
+        // entry[0] already = rid_cell_off (0x320)
+        // entry[1] = names_cell_off (lf entry = 8 bytes)
+        flat_page[ulo + 12..ulo + 16].copy_from_slice(&names_cell_off.to_le_bytes());
+
+        // Also bump Users NK subkey_count to 2.
+        let uo = addr(0x280);
+        flat_page[uo + 0x18..uo + 0x1C].copy_from_slice(&2u32.to_le_bytes());
+
+        // ── Names NK: name="Names", 1 subkey → uname_cell_off ──
+        let no = addr(names_cell_off);
+        flat_page[no + 0x18..no + 0x1C].copy_from_slice(&1u32.to_le_bytes());
+        flat_page[no + 0x20..no + 0x24].copy_from_slice(&names_list_off.to_le_bytes());
+        flat_page[no + 0x4A..no + 0x4C].copy_from_slice(&5u16.to_le_bytes()); // len("Names")=5
+        flat_page[no + 0x4C..no + 0x4C + 5].copy_from_slice(b"Names");
+
+        // Names lf list: sig="lf", count=1, entry[0]=uname_cell_off
+        let nlo = addr(names_list_off);
+        flat_page[nlo] = b'l';
+        flat_page[nlo + 1] = b'f';
+        flat_page[nlo + 2..nlo + 4].copy_from_slice(&1u16.to_le_bytes());
+        flat_page[nlo + 4..nlo + 8].copy_from_slice(&uname_cell_off.to_le_bytes());
+
+        // ── Username NK: name="Administrator" (matches RID 500 via VK type field) ──
+        // val_count=1 at +0x28, val_list_off=uname_vlist_off at +0x2C
+        let uno = addr(uname_cell_off);
+        let uname = b"Administrator";
+        flat_page[uno + 0x4A..uno + 0x4C].copy_from_slice(&(uname.len() as u16).to_le_bytes());
+        flat_page[uno + 0x4C..uno + 0x4C + uname.len()].copy_from_slice(uname);
+        flat_page[uno + 0x28..uno + 0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count=1
+        flat_page[uno + 0x2C..uno + 0x30].copy_from_slice(&uname_vlist_off.to_le_bytes());
+
+        // Value list cell for username NK: one entry → uname_vk_off
+        let uvlo = addr(uname_vlist_off);
+        flat_page[uvlo..uvlo + 4].copy_from_slice(&uname_vk_off.to_le_bytes());
+
+        // VK for username NK: type=500 (=0x1F4, the RID), NameLength=0 (default value)
+        // VK layout: sig[0x0]=0x76 'v', sig[0x1]=0x6B 'k',
+        //   NameLength at 0x02 (u16), DataLength at 0x08 (u32), DataOffset at 0x0C (u32),
+        //   Type at 0x10 (u32), Name at 0x18.
+        let uvko = addr(uname_vk_off);
+        flat_page[uvko] = b'v';
+        flat_page[uvko + 1] = b'k';
+        flat_page[uvko + 2..uvko + 4].copy_from_slice(&0u16.to_le_bytes()); // NameLength=0
+        flat_page[uvko + 0x10..uvko + 0x14].copy_from_slice(&500u32.to_le_bytes()); // type=RID=500
+
+        // ── RID NK (at 0x320): add val_count=1 and val_list → F VK ──
+        let rido = addr(0x320);
+        flat_page[rido + 0x28..rido + 0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count=1
+        flat_page[rido + 0x2C..rido + 0x30].copy_from_slice(&rid_vlist_off.to_le_bytes());
+
+        // Value list cell for RID NK: one entry → f_vk_off
+        let rvlo = addr(rid_vlist_off);
+        flat_page[rvlo..rvlo + 4].copy_from_slice(&f_vk_off.to_le_bytes());
+
+        // VK "F" cell: NameLength=1, Name[0]='F', DataLength=0x38 (>=0x38), DataOffset=f_data_off
+        let fvko = addr(f_vk_off);
+        flat_page[fvko] = b'v';
+        flat_page[fvko + 1] = b'k';
+        flat_page[fvko + 2..fvko + 4].copy_from_slice(&1u16.to_le_bytes()); // NameLength=1
+        flat_page[fvko + 0x08..fvko + 0x0C].copy_from_slice(&0x38u32.to_le_bytes()); // DataLength=0x38
+        flat_page[fvko + 0x0C..fvko + 0x10].copy_from_slice(&f_data_off.to_le_bytes()); // DataOffset
+        flat_page[fvko + 0x10..fvko + 0x14].copy_from_slice(&0u32.to_le_bytes()); // type=0
+        flat_page[fvko + 0x18] = b'F'; // Name[0]='F'
+
+        // F data cell: 0x38 bytes with timestamps and flags
+        // Offsets within data cell (relative to data addr, not cell_off):
+        //   +0x08: last_login   (FILETIME)
+        //   +0x18: last_pw      (FILETIME)
+        //   +0x20: created      (FILETIME)
+        //   +0x30: flags        (u16)
+        //   +0x38: login_count  (u16) — note: 0x38 bytes means this is at byte 56 from data start
+        // But data_len = 0x38 means indices 0..0x38, so login_count at +0x38 is PAST the end.
+        // read_f_value reads login_count at data_addr + 0x38 (the 57th byte).
+        // Provide 0x40 bytes to be safe.
+        let fdo = addr(f_data_off);
+        let last_login: u64 = 132_000_000_000_000_000u64;
+        let last_pw: u64 = 131_500_000_000_000_000u64;
+        let created: u64 = 130_000_000_000_000_000u64;
+        let flags: u16 = UAC_NORMAL_ACCOUNT as u16;
+        let login_cnt: u16 = 7u16;
+        flat_page[fdo + 0x08..fdo + 0x10].copy_from_slice(&last_login.to_le_bytes());
+        flat_page[fdo + 0x18..fdo + 0x20].copy_from_slice(&last_pw.to_le_bytes());
+        flat_page[fdo + 0x20..fdo + 0x28].copy_from_slice(&created.to_le_bytes());
+        flat_page[fdo + 0x30..fdo + 0x32].copy_from_slice(&flags.to_le_bytes());
+        flat_page[fdo + 0x38..fdo + 0x3A].copy_from_slice(&login_cnt.to_le_bytes());
+    }
+
+    /// Extended 5-level hive with Names subkey and F value — exercises
+    /// find_name_for_rid (L411-526) and read_f_value main scan loop (L530-650).
+    /// The RID=500 key: username lookup succeeds ("Administrator"), F value read
+    /// succeeds with real timestamps and UAC flags.
+    #[test]
+    fn walk_sam_users_extended_chain_with_names_and_f_value() {
+        let hive_vaddr: u64 = 0x00A0_0000;  // reusing address space not taken by earlier tests
+        // NOTE: 0x00A0_0000 was used in walk_sam_users_lh_list_sam_found_domains_missing
+        // Use a fresh address range.
+        let hive_vaddr: u64 = 0x0045_0000;
+        let hive_paddr: u64 = 0x0045_0000;
+        let base_block: u64 = 0x0046_0000;
+        let base_block_paddr: u64 = 0x0046_0000;
+        let flat_base_paddr: u64 = 0x0047_0000;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+        build_extended_hive(&mut flat_page);
+
+        let resolver = IsfResolver::from_value(&make_full_isf()).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        // Should find 1 user: RID=500, username="Administrator" (from Names subkey),
+        // account_flags=UAC_NORMAL_ACCOUNT, login_count=7.
+        assert_eq!(result.len(), 1, "should find one SAM user");
+        let user = &result[0];
+        assert_eq!(user.rid, 500);
+        assert_eq!(user.username, "Administrator");
+        assert_eq!(user.account_flags, UAC_NORMAL_ACCOUNT);
+        assert_eq!(user.login_count, 7);
+        assert!(!user.is_disabled);
+        assert!(!user.has_empty_password);
+        assert_eq!(user.last_login_time, 132_000_000_000_000_000u64);
+    }
+
+    /// find_name_for_rid: Names key has subkey_count=0 → returns "RID-<rid>".
+    /// Tests the early-return path in find_name_for_rid (L424-426).
+    #[test]
+    fn walk_sam_extended_names_zero_subkeys_fallback_username() {
+        // Same as extended chain but override names_key subkey_count to 0.
+        let hive_vaddr: u64 = 0x0048_0000;
+        let hive_paddr: u64 = 0x0048_0000;
+        let base_block: u64 = 0x0049_0000;
+        let base_block_paddr: u64 = 0x0049_0000;
+        let flat_base_paddr: u64 = 0x004A_0000;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+        build_extended_hive(&mut flat_page);
+
+        // Override Names NK subkey_count to 0 → find_name_for_rid returns "RID-<rid>".
+        let names_addr_off: usize = 0x380 + 4;
+        flat_page[names_addr_off + 0x18..names_addr_off + 0x1C]
+            .copy_from_slice(&0u32.to_le_bytes());
+
+        let resolver = IsfResolver::from_value(&make_full_isf()).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        // names_key found but subkey_count=0 → find_name_for_rid returns "RID-500"
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].username, "RID-500",
+            "Names with 0 subkeys should fall back to 'RID-<rid>'");
+    }
+
+    /// find_name_for_rid: Names list has an entry but the VK type doesn't match → no username found → "RID-<rid>".
+    /// Tests the "no match found" path (L525-526 in find_name_for_rid).
+    #[test]
+    fn walk_sam_extended_names_vk_type_mismatch_fallback() {
+        let hive_vaddr: u64 = 0x004B_0000;
+        let hive_paddr: u64 = 0x004B_0000;
+        let base_block: u64 = 0x004C_0000;
+        let base_block_paddr: u64 = 0x004C_0000;
+        let flat_base_paddr: u64 = 0x004D_0000;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+        build_extended_hive(&mut flat_page);
+
+        // Override uname VK type to 999 (not 500) → val_type != target_rid → no match.
+        let uvko = (0x480 + 4) as usize;
+        flat_page[uvko + 0x10..uvko + 0x14].copy_from_slice(&999u32.to_le_bytes());
+
+        let resolver = IsfResolver::from_value(&make_full_isf()).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].username, "RID-500",
+            "VK type mismatch should fall back to 'RID-<rid>'");
+    }
+
+    /// read_f_value: val_count=1 but VK NameLength != 1 → no "F" found → default.
+    /// Tests the `if vname_len != 1 { continue }` branch (L575 in read_f_value).
+    #[test]
+    fn walk_sam_extended_f_vk_wrong_name_len_default_flags() {
+        let hive_vaddr: u64 = 0x004E_0000;
+        let hive_paddr: u64 = 0x004E_0000;
+        let base_block: u64 = 0x004F_0000;
+        let base_block_paddr: u64 = 0x004F_0000;
+        let flat_base_paddr: u64 = 0x0055_0000;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+        build_extended_hive(&mut flat_page);
+
+        // Override F VK NameLength to 2 (not 1) → `if vname_len != 1 { continue }` fires.
+        let fvko = (0x500 + 4) as usize;
+        flat_page[fvko + 2..fvko + 4].copy_from_slice(&2u16.to_le_bytes()); // NameLength=2
+
+        let resolver = IsfResolver::from_value(&make_full_isf()).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        // VK NameLength=2 → skip → read_f_value returns default (all zeros)
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].account_flags, 0, "wrong VK name len → default flags");
+        assert_eq!(result[0].login_count, 0, "wrong VK name len → default login_count");
+    }
+
+    /// read_f_value: VK name is 'G' (not 'F') → continue → returns default.
+    /// Tests `if vname != b'F' { continue }` branch (L584).
+    #[test]
+    fn walk_sam_extended_f_vk_wrong_name_byte_default_flags() {
+        let hive_vaddr: u64 = 0x0056_0000;
+        let hive_paddr: u64 = 0x0056_0000;
+        let base_block: u64 = 0x0057_0000;
+        let base_block_paddr: u64 = 0x0057_0000;
+        let flat_base_paddr: u64 = 0x0058_0000;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+        build_extended_hive(&mut flat_page);
+
+        // Override F VK Name[0] to b'G' → `if vname != b'F' { continue }` fires.
+        let fvko = (0x500 + 4) as usize;
+        flat_page[fvko + 0x18] = b'G';
+
+        let resolver = IsfResolver::from_value(&make_full_isf()).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        // VK name is 'G' → no F value found → read_f_value returns default
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].account_flags, 0, "wrong VK name byte → default flags");
+        assert_eq!(result[0].login_count, 0);
+    }
+
+    /// read_f_value: F value DataLength < 0x38 → returns default.
+    /// Tests `if data_len < 0x38 { return default }` branch (L596-598).
+    #[test]
+    fn walk_sam_extended_f_data_too_short_default_flags() {
+        let hive_vaddr: u64 = 0x0059_0000;
+        let hive_paddr: u64 = 0x0059_0000;
+        let base_block: u64 = 0x005A_0000;
+        let base_block_paddr: u64 = 0x005A_0000;
+        let flat_base_paddr: u64 = 0x005B_0000;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut flat_page = vec![0u8; 0x1000];
+        build_extended_hive(&mut flat_page);
+
+        // Override F VK DataLength to 0x10 (< 0x38) → `if data_len < 0x38 { return default }`.
+        let fvko = (0x500 + 4) as usize;
+        flat_page[fvko + 0x08..fvko + 0x0C].copy_from_slice(&0x10u32.to_le_bytes());
+
+        let resolver = IsfResolver::from_value(&make_full_isf()).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
+            .write_phys(flat_base_paddr, &flat_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sam_users(&reader, hive_vaddr).unwrap();
+        // F data_len < 0x38 → return default → account_flags=0
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].account_flags, 0, "short F data → default flags");
+    }
 }

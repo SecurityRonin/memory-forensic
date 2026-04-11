@@ -1619,4 +1619,317 @@ mod tests {
         assert_eq!(c.file_path, e.file_path);
         assert_eq!(c.sha1_hash, e.sha1_hash);
     }
+
+    // ── walk_amcache: IAF with one child (no valid NK sig) → empty ───────
+    //
+    // Build a hive where InventoryApplicationFile is a direct child of root and
+    // has one child entry whose cell has a bad NK signature → child skipped → empty Vec.
+    // This exercises lines 532-549 (the enumeration loop with sig check).
+
+    fn build_iaf_hive(flat_page: &mut Vec<u8>, child_nk_sig: u16) -> (u64, u32) {
+        // Layout within flat_page:
+        //   root NK: cell_off = 0x020 → addr = 0x024
+        //   root list: cell_off = 0x060 → addr = 0x064
+        //   IAF NK: cell_off = 0x0A0 → addr = 0x0A4
+        //   IAF list: cell_off = 0x0E0 → addr = 0x0E4
+        //   child NK: cell_off = 0x120 → addr = 0x124
+        let root_cell_off: u32 = 0x020;
+        let root_list_off: u32 = 0x060;
+        let iaf_cell_off: u32 = 0x0A0;
+        let iaf_list_off: u32 = 0x0E0;
+        let child_cell_off: u32 = 0x120;
+
+        let a = |off: u32| (off + 4) as usize; // addr offset in page
+
+        // Root NK: subkey_count=1, list=root_list_off, name len=0
+        flat_page[a(root_cell_off) + NK_STABLE_SUBKEY_COUNT_OFFSET
+            ..a(root_cell_off) + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        flat_page[a(root_cell_off) + NK_STABLE_SUBKEYS_LIST_OFFSET
+            ..a(root_cell_off) + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&root_list_off.to_le_bytes());
+        // NK_SIGNATURE at root
+        flat_page[a(root_cell_off)..a(root_cell_off) + 2]
+            .copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+
+        // Root list: lf, count=1, entry[0]=iaf_cell_off
+        flat_page[a(root_list_off)] = 0x6C; // 'l'
+        flat_page[a(root_list_off) + 1] = 0x66; // 'f'
+        flat_page[a(root_list_off) + 2..a(root_list_off) + 4]
+            .copy_from_slice(&1u16.to_le_bytes());
+        flat_page[a(root_list_off) + 4..a(root_list_off) + 8]
+            .copy_from_slice(&iaf_cell_off.to_le_bytes());
+
+        // IAF NK: NK_SIGNATURE, name="InventoryApplicationFile", subkey_count=1, list=iaf_list_off
+        flat_page[a(iaf_cell_off)..a(iaf_cell_off) + 2]
+            .copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        flat_page[a(iaf_cell_off) + NK_STABLE_SUBKEY_COUNT_OFFSET
+            ..a(iaf_cell_off) + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        flat_page[a(iaf_cell_off) + NK_STABLE_SUBKEYS_LIST_OFFSET
+            ..a(iaf_cell_off) + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&iaf_list_off.to_le_bytes());
+        let iaf_name = b"InventoryApplicationFile";
+        flat_page[a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET
+            ..a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(iaf_name.len() as u16).to_le_bytes());
+        flat_page[a(iaf_cell_off) + NK_NAME_OFFSET
+            ..a(iaf_cell_off) + NK_NAME_OFFSET + iaf_name.len()]
+            .copy_from_slice(iaf_name);
+
+        // IAF list: lf, count=1, entry[0]=child_cell_off
+        flat_page[a(iaf_list_off)] = 0x6C;
+        flat_page[a(iaf_list_off) + 1] = 0x66;
+        flat_page[a(iaf_list_off) + 2..a(iaf_list_off) + 4]
+            .copy_from_slice(&1u16.to_le_bytes());
+        flat_page[a(iaf_list_off) + 4..a(iaf_list_off) + 8]
+            .copy_from_slice(&child_cell_off.to_le_bytes());
+
+        // Child NK: given signature (to control NK_SIGNATURE check)
+        flat_page[a(child_cell_off)..a(child_cell_off) + 2]
+            .copy_from_slice(&child_nk_sig.to_le_bytes());
+        // Make cell big enough: NK_NAME_OFFSET + 4 bytes of name
+        // child NK has no values (value_count=0 at NK_VALUE_COUNT_OFFSET)
+
+        (root_cell_off as u64, root_cell_off)
+    }
+
+    /// walk_amcache: IAF found directly under root, IAF has one child with bad NK sig
+    /// → child skipped → empty Vec. Exercises lines 532-549.
+    #[test]
+    fn walk_amcache_iaf_child_bad_sig_skipped() {
+        let hive_vaddr: u64 = 0x00E0_0000;
+        let hive_paddr: u64 = 0x00E0_0000;
+        let base_block: u64 = 0x00E1_0000;
+        let base_block_paddr: u64 = 0x00E1_0000;
+        let cell_page_base: u64 = base_block + HBIN_START_OFFSET; // 0x00E2_0000
+        let cell_page_paddr: u64 = cell_page_base;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        build_iaf_hive(&mut cell_page, 0x0000u16); // bad sig for child
+
+        // Build cell sizes (each cell needs a negative i32 size header just before its data)
+        // write_cell: at offset off in page, write [i32_neg_size][data]
+        // read_cell_data reads: size at cell_vaddr, data at cell_vaddr+4
+        // cell_vaddr = hive_base + HBIN_START_OFFSET + cell_index
+        // So we write size header at cell_index offset in cell_page
+        // The data is already at cell_index+4 offset (which is addr offset)
+        // We need to write the size at each cell_index offset
+        for off in &[0x020u32, 0x060, 0x0A0, 0x0E0, 0x120] {
+            // abs size = 0x80 (allocated 128-byte cell); stored as -0x80
+            let size: i32 = -0x80i32;
+            cell_page[*off as usize..*off as usize + 4].copy_from_slice(&size.to_le_bytes());
+        }
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(cell_page_base, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "child with bad NK sig → skipped → empty");
+    }
+
+    /// walk_amcache: IAF found directly under root, IAF has one child with valid NK sig
+    /// and no values → one entry pushed with all-default fields.
+    /// Exercises lines 547-592 (the full value extraction loop).
+    #[test]
+    fn walk_amcache_iaf_child_valid_nk_no_values_one_entry() {
+        let hive_vaddr: u64 = 0x00F0_0000;
+        let hive_paddr: u64 = 0x00F0_0000;
+        let base_block: u64 = 0x00F1_0000;
+        let base_block_paddr: u64 = 0x00F1_0000;
+        let cell_page_base: u64 = base_block + HBIN_START_OFFSET; // 0x00F2_0000
+        let cell_page_paddr: u64 = cell_page_base;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        build_iaf_hive(&mut cell_page, NK_SIGNATURE); // valid NK sig for child
+
+        // Write size headers
+        for off in &[0x020u32, 0x060, 0x0A0, 0x0E0, 0x120] {
+            let size: i32 = -0x80i32;
+            cell_page[*off as usize..*off as usize + 4].copy_from_slice(&size.to_le_bytes());
+        }
+
+        // Make child NK data long enough for NK_NAME_OFFSET (0x4C bytes of nk_data)
+        // The nk_data starts at child_cell_off + 4 within cell_page.
+        // NK_NAME_OFFSET = 0x4C, so we need at least 0x4C bytes of nk data.
+        // With size -0x80, data_size = 0x80 - 4 = 0x7C bytes. 0x7C >= 0x4C. OK.
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(cell_page_base, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        // One child with valid NK sig, no values → one AmcacheEntry with empty/default fields.
+        assert_eq!(result.len(), 1, "valid child NK with no values → one entry");
+        assert_eq!(result[0].file_path, "");
+        assert_eq!(result[0].sha1_hash, "");
+        assert_eq!(result[0].file_size, 0);
+        assert_eq!(result[0].link_timestamp, 0);
+        assert_eq!(result[0].publisher, "");
+        assert!(result[0].is_suspicious, "empty publisher → suspicious");
+    }
+
+    /// walk_amcache: IAF found under root, child data too short (< NK_NAME_OFFSET) → continue.
+    /// Exercises the `Some(d) if d.len() >= NK_NAME_OFFSET` guard (line 543).
+    #[test]
+    fn walk_amcache_iaf_child_data_too_short_skipped() {
+        // Build hive with child cell that has very small allocated size
+        // (abs_size = 8 → data_size = 4, which < NK_NAME_OFFSET=0x4C).
+        let hive_vaddr: u64 = 0x00B0_0000;
+        let hive_paddr: u64 = 0x00B0_0000;
+        let base_block: u64 = 0x00B1_0000;
+        let base_block_paddr: u64 = 0x00B1_0000;
+        let cell_page_base: u64 = base_block + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = cell_page_base;
+
+        let root_cell_off: u32 = 0x020;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+        build_iaf_hive(&mut cell_page, NK_SIGNATURE);
+
+        // Write large size headers for all cells except child
+        for off in &[0x020u32, 0x060, 0x0A0, 0x0E0] {
+            let size: i32 = -0x80i32;
+            cell_page[*off as usize..*off as usize + 4].copy_from_slice(&size.to_le_bytes());
+        }
+        // Child cell at 0x120: very small size → data_size = 4 < NK_NAME_OFFSET
+        let size: i32 = -8i32; // abs=8, data=4
+        cell_page[0x120..0x124].copy_from_slice(&size.to_le_bytes());
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(cell_page_base, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "child data too short → skipped → empty");
+    }
+
+    /// walk_amcache: IAF has subkey_count=0 → returns empty Vec immediately.
+    /// Exercises the `if subkey_count == 0` guard at line 513.
+    #[test]
+    fn walk_amcache_iaf_zero_subkeys_returns_empty() {
+        // Same layout but IAF NK has subkey_count=0.
+        let hive_vaddr: u64 = 0x00C5_0000;
+        let hive_paddr: u64 = 0x00C5_0000;
+        let base_block: u64 = 0x00C6_0000;
+        let base_block_paddr: u64 = 0x00C6_0000;
+        let cell_page_base: u64 = base_block + HBIN_START_OFFSET;
+        let cell_page_paddr: u64 = cell_page_base;
+
+        let root_cell_off: u32 = 0x020;
+        let root_list_off: u32 = 0x060;
+        let iaf_cell_off: u32 = 0x0A0;
+
+        let a = |off: u32| (off + 4) as usize;
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
+
+        let mut cell_page = vec![0u8; 0x1000];
+
+        // Root NK → IAF NK (one subkey)
+        cell_page[a(root_cell_off)..a(root_cell_off) + 2]
+            .copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        cell_page[a(root_cell_off) + NK_STABLE_SUBKEY_COUNT_OFFSET
+            ..a(root_cell_off) + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        cell_page[a(root_cell_off) + NK_STABLE_SUBKEYS_LIST_OFFSET
+            ..a(root_cell_off) + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&root_list_off.to_le_bytes());
+
+        // Root list → IAF
+        cell_page[a(root_list_off)] = 0x6C;
+        cell_page[a(root_list_off) + 1] = 0x66;
+        cell_page[a(root_list_off) + 2..a(root_list_off) + 4]
+            .copy_from_slice(&1u16.to_le_bytes());
+        cell_page[a(root_list_off) + 4..a(root_list_off) + 8]
+            .copy_from_slice(&iaf_cell_off.to_le_bytes());
+
+        // IAF NK: NK_SIGNATURE, subkey_count=0, IAF name
+        cell_page[a(iaf_cell_off)..a(iaf_cell_off) + 2]
+            .copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+        // subkey_count=0 already (zeros)
+        let iaf_name = b"InventoryApplicationFile";
+        cell_page[a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET
+            ..a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(iaf_name.len() as u16).to_le_bytes());
+        cell_page[a(iaf_cell_off) + NK_NAME_OFFSET
+            ..a(iaf_cell_off) + NK_NAME_OFFSET + iaf_name.len()]
+            .copy_from_slice(iaf_name);
+
+        // Size headers
+        for off in &[0x020u32, 0x060, 0x0A0] {
+            let size: i32 = -0x80i32;
+            cell_page[*off as usize..*off as usize + 4].copy_from_slice(&size.to_le_bytes());
+        }
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
+            .write_phys(base_block_paddr, &bb_page)
+            .map_4k(cell_page_base, cell_page_paddr, flags::WRITABLE)
+            .write_phys(cell_page_paddr, &cell_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_amcache(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "IAF subkey_count=0 → empty Vec");
+    }
 }
