@@ -34,7 +34,7 @@ pub struct CidTableEntry {
 }
 
 /// Maximum number of CID table entries to scan (safety limit).
-const MAX_CID_ENTRIES: u64 = 16384;
+pub(crate) const MAX_CID_ENTRIES: u64 = 16384;
 
 /// Walk `PspCidTable` and return one [`CidTableEntry`] per process found.
 ///
