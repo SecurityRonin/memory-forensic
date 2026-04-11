@@ -42,7 +42,7 @@ pub struct AmsiBypassInfo {
 /// Returns `Some(technique_name)` if a known bypass pattern is detected,
 /// `None` for a clean (unpatched) prologue.
 pub fn classify_amsi_patch(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.len() < 3 {
+    if bytes.len() < 6 {
         return None;
     }
     match &bytes[..3] {
@@ -111,12 +111,16 @@ mod tests {
         assert_eq!(classify_amsi_patch(&bytes2), Some("xor_eax_ret"));
     }
 
-    /// Too-short byte slice returns None.
+    /// Byte slices shorter than 6 bytes return None (guard requires len >= 6).
     #[test]
     fn classify_amsi_patch_too_short_returns_none() {
         assert_eq!(classify_amsi_patch(&[]), None);
         assert_eq!(classify_amsi_patch(&[0x31]), None);
         assert_eq!(classify_amsi_patch(&[0x31, 0xC0]), None);
+        // 3–5 bytes also too short (mov_eax_ret needs index 5)
+        assert_eq!(classify_amsi_patch(&[0x31, 0xC0, 0xC3]), None);
+        assert_eq!(classify_amsi_patch(&[0x31, 0xC0, 0xC3, 0x00]), None);
+        assert_eq!(classify_amsi_patch(&[0x31, 0xC0, 0xC3, 0x00, 0x00]), None);
     }
 
     /// `mov eax, imm32; ret` (B8 xx xx xx xx C3) is a bypass.
@@ -127,14 +131,14 @@ mod tests {
         assert_eq!(classify_amsi_patch(&bytes), Some("mov_eax_ret"));
     }
 
-    /// `B8 xx xx` without C3 at index 5 is NOT a bypass.
+    /// `B8 xx xx xx xx` without C3 at index 5 is NOT a bypass.
     #[test]
     fn classify_mov_eax_no_ret_not_detected() {
-        // B8 57 00 07 80 00 — no RET at index 5
+        // B8 57 00 07 80 00 — 6 bytes present but no RET at index 5
         let bytes = [0xB8u8, 0x57, 0x00, 0x07, 0x80, 0x00];
         assert_eq!(classify_amsi_patch(&bytes), None);
-        // Too short for the C3 check (only 3 bytes)
-        let short = [0xB8u8, 0x57, 0x00];
+        // 5 bytes — fails length guard (< 6), returns None before pattern check
+        let short = [0xB8u8, 0x57, 0x00, 0x07, 0x80];
         assert_eq!(classify_amsi_patch(&short), None);
     }
 

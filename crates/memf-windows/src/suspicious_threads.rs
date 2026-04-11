@@ -61,8 +61,7 @@ const KNOWN_INJECTION_TARGETS: &[&str] = &["ntdll.dll", "kernel32.dll", "kernelb
 /// 1. Orphan thread in a system process -> highly suspicious
 /// 2. Thread in RWX memory -> suspicious
 /// 3. Orphan thread (start address in no module) -> suspicious
-/// 4. Known injection target DLL with orphan -> suspicious
-/// 5. Normal thread in a known module -> benign
+/// 4. Normal thread in a known module -> benign
 pub fn classify_suspicious_thread(
     start_module: &str,
     is_orphan: bool,
@@ -99,23 +98,7 @@ pub fn classify_suspicious_thread(
         );
     }
 
-    // Rule 4: Known injection target with orphan status
-    // (This is a secondary check: if we reach here, is_orphan is false,
-    //  but start_module is a common injection target — only flag if
-    //  combined with other signals. Since is_orphan is false here,
-    //  this combination doesn't apply. Keep for clarity.)
-    let _mod_lower = start_module.to_lowercase();
-    if KNOWN_INJECTION_TARGETS.iter().any(|&t| _mod_lower == t) && is_orphan {
-        return (
-            true,
-            format!(
-                "thread in known injection target {} with orphan status",
-                start_module
-            ),
-        );
-    }
-
-    // Rule 5: Normal thread in a known module -> benign
+    // Rule 4: Normal thread in a known module -> benign
     (false, String::new())
 }
 
