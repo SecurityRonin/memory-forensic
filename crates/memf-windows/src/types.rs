@@ -131,7 +131,7 @@ pub struct WinDriverInfo {
 }
 
 /// Information about a loaded DLL extracted from `_LDR_DATA_TABLE_ENTRY`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct WinDllInfo {
     /// Base name of the DLL.
     pub name: String,
@@ -414,7 +414,7 @@ pub struct ProcessSidInfo {
 }
 
 /// Process token and privilege information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct WinTokenInfo {
     /// Process ID.
     pub pid: u64,
@@ -438,7 +438,7 @@ pub struct WinTokenInfo {
 /// image for each process. If the memory at the image base lacks a valid
 /// MZ/PE signature or the PE `SizeOfImage` doesn't match, the process
 /// may have been hollowed (original code replaced with malicious payload).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct WinHollowingInfo {
     /// Process ID.
     pub pid: u64,

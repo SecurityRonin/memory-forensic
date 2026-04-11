@@ -626,6 +626,101 @@ mod tests {
         assert!(indicators.is_empty());
     }
 
+    /// TARGET_MODULES constant check.
+    #[test]
+    fn target_modules_constant() {
+        assert!(TARGET_MODULES.contains(&"msv1_0.dll"));
+        assert!(TARGET_MODULES.contains(&"kdcsvc.dll"));
+        assert!(TARGET_MODULES.contains(&"cryptdll.dll"));
+        assert!(TARGET_MODULES.contains(&"lsasrv.dll"));
+        assert_eq!(TARGET_MODULES.len(), 4);
+    }
+
+    /// NOP_SLED_THRESHOLD and TEXT_SECTION_SCAN_SIZE constants.
+    #[test]
+    fn constants_sane() {
+        assert_eq!(NOP_SLED_THRESHOLD, 5);
+        assert_eq!(TEXT_SECTION_SCAN_SIZE, 4096);
+    }
+
+    /// is_suspicious_dll_path: comprehensive coverage of all branches.
+    #[test]
+    fn suspicious_path_comprehensive() {
+        assert!(!is_suspicious_dll_path("C:\\Windows\\System32\\msv1_0.dll"));
+        assert!(!is_suspicious_dll_path("\\SystemRoot\\System32\\lsasrv.dll"));
+        assert!(!is_suspicious_dll_path("\\??\\C:\\Windows\\System32\\kdcsvc.dll"));
+        assert!(!is_suspicious_dll_path(""));
+        assert!(is_suspicious_dll_path("C:\\evil\\msv1_0.dll"));
+        assert!(is_suspicious_dll_path("C:\\Users\\attacker\\cryptdll.dll"));
+        assert!(is_suspicious_dll_path("D:\\Temp\\msv1_0.dll"));
+    }
+
+    /// SkeletonKeyIndicator clone works correctly.
+    #[test]
+    fn indicator_clone() {
+        let ind = SkeletonKeyIndicator {
+            indicator_type: "auth_patch".into(),
+            address: 0x1000,
+            module: "msv1_0.dll".into(),
+            description: "test desc".into(),
+            confidence: 90,
+            is_detected: true,
+        };
+        let cloned = ind.clone();
+        assert_eq!(cloned.indicator_type, ind.indicator_type);
+        assert_eq!(cloned.address, ind.address);
+        assert_eq!(cloned.confidence, ind.confidence);
+    }
+
+    /// scan_module_patterns: unknown module produces no indicators even with NOPs.
+    #[test]
+    fn scan_module_patterns_unknown_nop_no_indicator() {
+        let mut indicators = Vec::new();
+        let data = [0x90u8; 10];
+        scan_module_patterns("unknown_module.dll", 0x5000_0000, &data, &mut indicators);
+        assert!(indicators.is_empty(), "unknown module → no indicators");
+    }
+
+    /// find_nop_sled: single NOP (below threshold of 5) → None.
+    #[test]
+    fn find_nop_sled_single_nop_below_threshold() {
+        assert_eq!(find_nop_sled(&[0x90u8], 5), None);
+    }
+
+    /// find_nop_sled: run of 4 followed by break, then 5 → finds second run.
+    #[test]
+    fn find_nop_sled_second_run_found() {
+        let mut data = vec![0x90u8; 4];
+        data.push(0x48); // break
+        data.extend_from_slice(&[0x90u8; 5]);
+        // First run (4) is < threshold, second run (5) starts at index 5.
+        assert_eq!(find_nop_sled(&data, 5), Some(5));
+    }
+
+    /// find_patched_conditional_jump: tests all matching opcodes.
+    #[test]
+    fn find_patched_jump_all_matching_opcodes() {
+        for prev in [0x83u8, 0x85, 0x3B, 0x84, 0x39, 0xF6, 0xF7] {
+            let data = [0x00u8, prev, 0xEB, 0x00];
+            let result = find_patched_conditional_jump(&data);
+            assert_eq!(result, Some(2), "opcode 0x{prev:02X} should match");
+        }
+    }
+
+    /// find_patched_conditional_jump: EB at index 0 (no prev byte) → None.
+    #[test]
+    fn find_patched_jump_eb_at_start_no_prev() {
+        let data = [0xEB, 0x05, 0x83, 0x00];
+        // Loop starts at i=1, so i=0 is never a candidate.
+        assert_eq!(find_patched_conditional_jump(&data), None);
+    }
+
+    /// find_patched_conditional_jump: data of length 1 → None (loop condition).
+    #[test]
+    fn find_patched_jump_one_byte_data() {
+        assert_eq!(find_patched_conditional_jump(&[0xEB]), None);
+    }
+
     #[test]
     fn indicator_serializes() {
         let indicator = SkeletonKeyIndicator {

@@ -383,6 +383,132 @@ mod tests {
     }
 
     #[test]
+    fn decode_privileges_all_known_bits() {
+        // All 15 privilege names are covered.
+        let all = u64::MAX;
+        let names = decode_privileges(all);
+        assert!(!names.is_empty());
+        // Spot-check several known ones.
+        assert!(names.contains(&"SeDebugPrivilege".to_string()));
+        assert!(names.contains(&"SeTcbPrivilege".to_string()));
+        assert!(names.contains(&"SeImpersonatePrivilege".to_string()));
+    }
+
+    #[test]
+    fn decode_privileges_single_bits() {
+        // Each known privilege should decode individually.
+        for &(bit, name) in PRIVILEGE_NAMES {
+            let names = decode_privileges(1u64 << bit);
+            assert_eq!(names.len(), 1, "bit {bit} should produce exactly one name");
+            assert_eq!(names[0], name);
+        }
+    }
+
+    #[test]
+    fn sid_to_string_no_sub_authorities() {
+        // S-1-16 — no sub authorities
+        let authority = [0u8, 0, 0, 0, 0, 16];
+        let s = sid_to_string(1, &authority, &[]);
+        assert_eq!(s, "S-1-16");
+    }
+
+    #[test]
+    fn sid_to_string_multiple_sub_authorities() {
+        // S-1-5-21-X-Y-Z-500 pattern
+        let authority = [0u8, 0, 0, 0, 0, 5];
+        let subs = [21u32, 100, 200, 300, 500];
+        let s = sid_to_string(1, &authority, &subs);
+        assert_eq!(s, "S-1-5-21-100-200-300-500");
+    }
+
+    #[test]
+    fn walk_tokens_multiple_processes() {
+        // Two processes; verify both tokens are extracted.
+        let head_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let ep1_vaddr: u64 = 0xFFFF_8000_0050_1000;
+        let ep2_vaddr: u64 = 0xFFFF_8000_0050_2000;
+        let tok1_vaddr: u64 = 0xFFFF_8000_0050_3000;
+        let tok2_vaddr: u64 = 0xFFFF_8000_0050_4000;
+
+        let head_paddr: u64 = 0x0050_0000;
+        let ep1_paddr: u64 = 0x0050_1000;
+        let ep2_paddr: u64 = 0x0050_2000;
+        let tok1_paddr: u64 = 0x0050_3000;
+        let tok2_paddr: u64 = 0x0050_4000;
+
+        let ep1_links = ep1_vaddr + EPROCESS_LINKS;
+        let ep2_links = ep2_vaddr + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(ep1_vaddr, ep1_paddr, flags::WRITABLE)
+            .map_4k(ep2_vaddr, ep2_paddr, flags::WRITABLE)
+            .map_4k(tok1_vaddr, tok1_paddr, flags::WRITABLE)
+            .map_4k(tok2_vaddr, tok2_paddr, flags::WRITABLE)
+            // Head sentinel: Flink→ep1, Blink→ep2
+            .write_phys_u64(head_paddr, ep1_links)
+            .write_phys_u64(head_paddr + 8, ep2_links)
+            // ep1
+            .write_phys_u64(ep1_paddr + KPROCESS_DTB, 0x1AB000)
+            .write_phys_u64(ep1_paddr + EPROCESS_CREATE_TIME, 132800000000000000)
+            .write_phys_u64(ep1_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(ep1_paddr + EPROCESS_PID, 100)
+            .write_phys_u64(ep1_paddr + EPROCESS_LINKS, ep2_links)
+            .write_phys_u64(ep1_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(ep1_paddr + EPROCESS_PPID, 4)
+            .write_phys_u64(ep1_paddr + EPROCESS_PEB, 0)
+            .write_phys_u64(ep1_paddr + EPROCESS_TOKEN, tok1_vaddr | 0x3)
+            .write_phys(ep1_paddr + EPROCESS_IMAGE_NAME, b"proc1.exe\0")
+            // ep2
+            .write_phys_u64(ep2_paddr + KPROCESS_DTB, 0x1AC000)
+            .write_phys_u64(ep2_paddr + EPROCESS_CREATE_TIME, 132800000000000000)
+            .write_phys_u64(ep2_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(ep2_paddr + EPROCESS_PID, 200)
+            .write_phys_u64(ep2_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(ep2_paddr + EPROCESS_LINKS + 8, ep1_links)
+            .write_phys_u64(ep2_paddr + EPROCESS_PPID, 4)
+            .write_phys_u64(ep2_paddr + EPROCESS_PEB, 0)
+            .write_phys_u64(ep2_paddr + EPROCESS_TOKEN, tok2_vaddr | 0x7)
+            .write_phys(ep2_paddr + EPROCESS_IMAGE_NAME, b"proc2.exe\0")
+            // tok1: present bit 20 (SeDebugPrivilege), enabled bit 20
+            .write_phys_u64(tok1_paddr + TOKEN_PRIVILEGES + SEP_PRESENT, 1u64 << 20)
+            .write_phys_u64(tok1_paddr + TOKEN_PRIVILEGES + SEP_ENABLED, 1u64 << 20)
+            // tok2: present bits 23+29, enabled bit 23 only
+            .write_phys_u64(tok2_paddr + TOKEN_PRIVILEGES + SEP_PRESENT, (1u64 << 23) | (1u64 << 29))
+            .write_phys_u64(tok2_paddr + TOKEN_PRIVILEGES + SEP_ENABLED, 1u64 << 23);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_tokens(&reader, head_vaddr).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let p1 = results.iter().find(|r| r.pid == 100).unwrap();
+        assert_eq!(p1.image_name, "proc1.exe");
+        assert!(p1.privilege_names.contains(&"SeDebugPrivilege".to_string()));
+
+        let p2 = results.iter().find(|r| r.pid == 200).unwrap();
+        assert_eq!(p2.image_name, "proc2.exe");
+        assert!(p2.privilege_names.contains(&"SeChangeNotifyPrivilege".to_string()));
+        assert!(!p2.privilege_names.contains(&"SeImpersonatePrivilege".to_string()));
+    }
+
+    #[test]
+    fn win_token_info_serializes() {
+        let info = crate::WinTokenInfo {
+            pid: 4,
+            image_name: "System".to_string(),
+            privileges_present: 0xFF,
+            privileges_enabled: 0x0F,
+            privilege_names: vec!["SeDebugPrivilege".to_string()],
+            session_id: 0,
+            user_sid: "S-1-5-18".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":4"));
+        assert!(json.contains("SeDebugPrivilege"));
+        assert!(json.contains("S-1-5-18"));
+    }
+
+    #[test]
     fn extracts_user_sid_from_token() {
         let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
         let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;

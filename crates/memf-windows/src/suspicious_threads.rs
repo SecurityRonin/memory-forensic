@@ -636,6 +636,165 @@ mod tests {
         );
     }
 
+    /// classify: RWX overrides system-process check when not orphan.
+    #[test]
+    fn classify_rwx_non_orphan_system_process() {
+        let (suspicious, reason) =
+            classify_suspicious_thread("kernel32.dll", false, true, "lsass.exe");
+        assert!(suspicious, "RWX in system process thread should be suspicious");
+        assert!(reason.contains("read-write-execute"), "reason: {reason}");
+    }
+
+    /// classify: orphan in multiple system processes.
+    #[test]
+    fn classify_orphan_in_all_system_processes() {
+        for proc in SYSTEM_PROCESSES {
+            let (suspicious, reason) =
+                classify_suspicious_thread("unknown", true, false, proc);
+            assert!(suspicious, "orphan in {proc} should be suspicious");
+            assert!(reason.contains("system process"), "{proc}: {reason}");
+        }
+    }
+
+    /// classify: non-system process with normal thread is benign.
+    #[test]
+    fn classify_non_system_normal_thread_benign() {
+        let (suspicious, reason) =
+            classify_suspicious_thread("kernelbase.dll", false, false, "notepad.exe");
+        assert!(!suspicious);
+        assert!(reason.is_empty());
+    }
+
+    /// is_rwx_protection: all values from 0..10 exercise the match.
+    #[test]
+    fn is_rwx_protection_coverage() {
+        // Only 6 and 7 are RWX; everything else is not.
+        for i in 0u32..10 {
+            let result = is_rwx_protection(i);
+            let expected = i == 6 || i == 7;
+            assert_eq!(result, expected, "protection={i}");
+        }
+    }
+
+    /// find_containing_module: address at exact end (one past) is NOT in module.
+    #[test]
+    fn find_containing_module_at_end_exclusive() {
+        let dlls = vec![crate::WinDllInfo {
+            name: "ntdll.dll".to_string(),
+            base_addr: 0x7700_0000,
+            size: 0x10_0000,
+            full_path: String::new(),
+            load_order: 0,
+        }];
+        // Exactly at base + size is NOT inside the DLL (exclusive end).
+        let (module, is_orphan) = find_containing_module(&dlls, 0x7710_0000);
+        assert_eq!(module, "unknown");
+        assert!(is_orphan);
+    }
+
+    /// find_containing_module: multiple DLLs, address in second one.
+    #[test]
+    fn find_containing_module_multiple_dlls() {
+        let dlls = vec![
+            crate::WinDllInfo {
+                name: "ntdll.dll".to_string(),
+                base_addr: 0x7700_0000,
+                size: 0x10_0000,
+                full_path: String::new(),
+                load_order: 0,
+            },
+            crate::WinDllInfo {
+                name: "kernel32.dll".to_string(),
+                base_addr: 0x7800_0000,
+                size: 0x10_0000,
+                full_path: String::new(),
+                load_order: 1,
+            },
+        ];
+        let (module, is_orphan) = find_containing_module(&dlls, 0x7800_1000);
+        assert_eq!(module, "kernel32.dll");
+        assert!(!is_orphan);
+    }
+
+    /// SuspiciousThreadInfo: all fields are accessible.
+    #[test]
+    fn suspicious_thread_info_fields() {
+        let info = SuspiciousThreadInfo {
+            pid: 4,
+            process_name: "lsass.exe".to_string(),
+            tid: 100,
+            start_address: 0xDEAD_0000,
+            start_module: "unknown".to_string(),
+            is_orphan: true,
+            in_rwx_memory: false,
+            is_system_thread: true,
+            reason: "test reason".to_string(),
+            is_suspicious: true,
+        };
+        assert_eq!(info.pid, 4);
+        assert_eq!(info.tid, 100);
+        assert!(info.is_orphan);
+        assert!(info.is_system_thread);
+    }
+
+    /// SuspiciousThreadInfo serializes correctly.
+    #[test]
+    fn suspicious_thread_info_serializes() {
+        let info = SuspiciousThreadInfo {
+            pid: 668,
+            process_name: "lsass.exe".to_string(),
+            tid: 200,
+            start_address: 0xABCD_0000,
+            start_module: "unknown".to_string(),
+            is_orphan: true,
+            in_rwx_memory: true,
+            is_system_thread: true,
+            reason: "orphan thread in system process".to_string(),
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":668"));
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"in_rwx_memory\":true"));
+    }
+
+    /// is_address_in_rwx_vad: address exactly at start_vaddr.
+    #[test]
+    fn is_address_in_rwx_vad_at_exact_start() {
+        let vads = vec![crate::WinVadInfo {
+            start_vaddr: 0x1000,
+            end_vaddr: 0x2000,
+            protection: VAD_PROT_EXECUTE_READWRITE,
+            protection_str: "PAGE_EXECUTE_READWRITE".to_string(),
+            pid: 1,
+            image_name: "test.exe".to_string(),
+            is_private: true,
+        }];
+        assert!(is_address_in_rwx_vad(&vads, 0x1000));
+    }
+
+    /// is_address_in_rwx_vad: empty VADs list → always false.
+    #[test]
+    fn is_address_in_rwx_vad_empty_vads() {
+        assert!(!is_address_in_rwx_vad(&[], 0x1234));
+    }
+
+    /// is_address_in_rwx_vad: writecopy at boundary.
+    #[test]
+    fn is_address_in_rwx_vad_writecopy_at_end() {
+        let vads = vec![crate::WinVadInfo {
+            start_vaddr: 0x1000,
+            end_vaddr: 0x2000,
+            protection: VAD_PROT_EXECUTE_WRITECOPY,
+            protection_str: "PAGE_EXECUTE_WRITECOPY".to_string(),
+            pid: 1,
+            image_name: "test.exe".to_string(),
+            is_private: true,
+        }];
+        // Exactly at end_vaddr (inclusive).
+        assert!(is_address_in_rwx_vad(&vads, 0x2000));
+    }
+
     /// walk_suspicious_threads: process has one thread with a non-zero start address
     /// that is NOT in any DLL → orphan thread → detected as suspicious.
     ///

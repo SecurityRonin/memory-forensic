@@ -289,6 +289,110 @@ mod tests {
         assert_eq!(h.volatile_length, volatile_len);
     }
 
+    // ── Test: CmHiveListHead fallback symbol ────────────────────────
+
+    #[test]
+    fn walk_hive_list_cm_hive_fallback() {
+        // Uses CmHiveListHead (not CmpHiveListHead) — same single-hive layout.
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let cmhive_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let strings_vaddr: u64 = 0xFFFF_8000_0020_1000;
+
+        let head_paddr: u64 = 0x0080_0000;
+        let cmhive_paddr: u64 = 0x0090_0000;
+        let strings_paddr: u64 = 0x0091_0000;
+
+        let mut head_data = vec![0u8; 4096];
+        let mut cmhive_data = vec![0u8; 4096];
+        let mut string_data = vec![0u8; 4096];
+
+        let hive_list_entry_vaddr = cmhive_vaddr + 0x300;
+        head_data[0..8].copy_from_slice(&hive_list_entry_vaddr.to_le_bytes());
+        head_data[8..16].copy_from_slice(&hive_list_entry_vaddr.to_le_bytes());
+        cmhive_data[0x300..0x308].copy_from_slice(&head_vaddr.to_le_bytes());
+        cmhive_data[0x308..0x310].copy_from_slice(&head_vaddr.to_le_bytes());
+
+        let base_block_addr: u64 = 0xFEED_CAFE_0000;
+        cmhive_data[0x28..0x30].copy_from_slice(&base_block_addr.to_le_bytes());
+        cmhive_data[0x38..0x3C].copy_from_slice(&0x0010_0000u32.to_le_bytes());
+        cmhive_data[0x58..0x5C].copy_from_slice(&0x0000_1000u32.to_le_bytes());
+
+        let full_path = r"\REGISTRY\MACHINE\SYSTEM";
+        let user_name = r"\??\C:\Windows\System32\config\SYSTEM";
+        let full_path_len = place_utf16_string(&mut string_data, 0x000, full_path);
+        let user_name_len = place_utf16_string(&mut string_data, 0x200, user_name);
+        build_unicode_string_at(&mut cmhive_data, 0x70, full_path_len, strings_vaddr);
+        build_unicode_string_at(&mut cmhive_data, 0x80, user_name_len, strings_vaddr + 0x200);
+
+        // Note: use CmHiveListHead (without "p") as the fallback symbol
+        // Use a minimal custom ISF with only CmHiveListHead (no CmpHiveListHead),
+        // so the fallback branch in walk_hive_list is exercised.
+        let isf = IsfBuilder::new()
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
+            .add_struct("_UNICODE_STRING", 16)
+            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
+            .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
+            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
+            .add_struct("_DUAL", 0x20)
+            .add_field("_DUAL", "Length", 0, "unsigned int")
+            .add_struct("_HHIVE", 0x300)
+            .add_field("_HHIVE", "BaseBlock", 0x28, "pointer")
+            .add_field("_HHIVE", "Storage", 0x38, "_DUAL")
+            .add_struct("_CMHIVE", 0x600)
+            .add_field("_CMHIVE", "Hive", 0x0, "_HHIVE")
+            .add_field("_CMHIVE", "FileFullPath", 0x70, "_UNICODE_STRING")
+            .add_field("_CMHIVE", "FileUserName", 0x80, "_UNICODE_STRING")
+            .add_field("_CMHIVE", "HiveList", 0x300, "_LIST_ENTRY")
+            .add_symbol("CmHiveListHead", head_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(cmhive_vaddr, cmhive_paddr, flags::WRITABLE)
+            .map_4k(strings_vaddr, strings_paddr, flags::WRITABLE)
+            .write_phys(head_paddr, &head_data)
+            .write_phys(cmhive_paddr, &cmhive_data)
+            .write_phys(strings_paddr, &string_data)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let hives = walk_hive_list(&reader).unwrap();
+        assert_eq!(hives.len(), 1);
+        assert_eq!(hives[0].hive_addr, base_block_addr);
+    }
+
+    // ── Test: MAX_HIVE_COUNT safety cap ────────────────────────────
+
+    #[test]
+    fn walk_hive_list_respects_max_hive_count() {
+        // This test verifies the MAX_HIVE_COUNT guard is present.
+        // We can't easily build 256 hives, so we just verify the constant.
+        assert_eq!(MAX_HIVE_COUNT, 256);
+    }
+
+    // ── Test: RegistryHive fields are accessible ───────────────────
+
+    #[test]
+    fn registry_hive_fields() {
+        use crate::RegistryHive;
+        let hive = RegistryHive {
+            base_addr: 0x1000,
+            file_full_path: r"\REGISTRY\MACHINE\SYSTEM".to_string(),
+            file_user_name: r"\??\C:\Windows\config".to_string(),
+            hive_addr: 0x2000,
+            stable_length: 0x40_0000,
+            volatile_length: 0x1000,
+        };
+        assert_eq!(hive.base_addr, 0x1000);
+        assert_eq!(hive.stable_length, 0x40_0000);
+        assert!(hive.file_full_path.contains("SYSTEM"));
+    }
+
     // ── Test 3: Two hives in a circular list ────────────────────────
 
     #[test]

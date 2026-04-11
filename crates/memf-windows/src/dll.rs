@@ -806,6 +806,110 @@ mod tests {
         assert!(!injected.in_init, "should NOT be in InInitializationOrder");
     }
 
+    /// walk_dlls: PEB is mapped but LDR list is empty (circular sentinel pointing to itself).
+    #[test]
+    fn walk_dlls_empty_list() {
+        let vaddr_base = 0xFFFF_8000_0000_0000u64;
+        let paddr_base = 0x10_0000u64;
+        let vaddr_page1 = vaddr_base;
+        let vaddr_page2 = vaddr_base + 0x1000;
+        let paddr_page1 = paddr_base;
+        let paddr_page2 = paddr_base + 0x1000;
+
+        let mut page1 = vec![0u8; 4096];
+        let mut page2 = vec![0u8; 4096];
+
+        let peb_vaddr = vaddr_page1;
+        let ldr_vaddr = vaddr_page1 + 2048;
+        page1[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        // List head at ldr+16: Flink = list_head_vaddr (points to itself = empty)
+        let list_head_vaddr = ldr_vaddr + 16;
+        let ldr_offset = 2048usize;
+        page1[ldr_offset + 16..ldr_offset + 24].copy_from_slice(&list_head_vaddr.to_le_bytes());
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr_page1, paddr_page1, flags::WRITABLE)
+            .map_4k(vaddr_page2, paddr_page2, flags::WRITABLE)
+            .write_phys(paddr_page1, &page1)
+            .write_phys(paddr_page2, &page2)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let dlls = walk_dlls(&reader, peb_vaddr).unwrap();
+        assert!(dlls.is_empty(), "empty list should produce no DLLs");
+    }
+
+    /// WinDllInfo struct: fields accessible and serializes.
+    #[test]
+    fn win_dll_info_serializes() {
+        let dll = crate::WinDllInfo {
+            name: "ntdll.dll".to_string(),
+            full_path: r"C:\Windows\System32\ntdll.dll".to_string(),
+            base_addr: 0x7FFF_0000_0000,
+            size: 0x001F_0000,
+            load_order: 0,
+        };
+        let json = serde_json::to_string(&dll).unwrap();
+        assert!(json.contains("ntdll.dll"));
+        assert!(json.contains("0"));
+    }
+
+    /// walk_ldr_modules: ldr_addr non-null, lf list with zero DllBase entries (skipped).
+    #[test]
+    fn ldr_modules_zero_dll_base_entries_skipped() {
+        let vp1 = 0xFFFF_8000_0000_0000u64;
+        let vp2 = 0xFFFF_8000_0000_1000u64;
+        let pp1 = 0x10_0000u64;
+        let pp2 = 0x11_0000u64;
+
+        let mut p1 = vec![0u8; 4096];
+        let mut p2 = vec![0u8; 4096];
+
+        let peb_vaddr = vp1;
+        let ldr_vaddr = vp1 + 2048;
+        p1[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        let load_head = ldr_vaddr + 16;
+        let mem_head = ldr_vaddr + 32;
+        let init_head = ldr_vaddr + 48;
+
+        let ea = vp2;
+        let ldr_off = 2048usize;
+
+        // InLoadOrder head → ea (single entry with DllBase=0 → skipped)
+        p1[ldr_off + 16..ldr_off + 24].copy_from_slice(&ea.to_le_bytes());
+        p1[ldr_off + 24..ldr_off + 32].copy_from_slice(&ea.to_le_bytes());
+        // InMemoryOrder: empty (head → head)
+        p1[ldr_off + 32..ldr_off + 40].copy_from_slice(&mem_head.to_le_bytes());
+        p1[ldr_off + 40..ldr_off + 48].copy_from_slice(&mem_head.to_le_bytes());
+        // InInitOrder: empty
+        p1[ldr_off + 48..ldr_off + 56].copy_from_slice(&init_head.to_le_bytes());
+        p1[ldr_off + 56..ldr_off + 64].copy_from_slice(&init_head.to_le_bytes());
+
+        // Entry A with DllBase=0 and Flink→load_head (terminates)
+        // InLoadOrderLinks.Flink at entry+0 → load_head
+        p2[0..8].copy_from_slice(&load_head.to_le_bytes());
+        // DllBase at entry+48 = 0 (already zero)
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vp1, pp1, flags::WRITABLE)
+            .map_4k(vp2, pp2, flags::WRITABLE)
+            .write_phys(pp1, &p1)
+            .write_phys(pp2, &p2)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let mods = walk_ldr_modules(&reader, peb_vaddr).unwrap();
+        assert!(mods.is_empty(), "all-zero DllBase entries should be skipped");
+    }
+
     #[test]
     fn ldr_modules_null_ldr_returns_error() {
         let vaddr = 0xFFFF_8000_0000_0000u64;
