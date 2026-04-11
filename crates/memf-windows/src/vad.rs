@@ -16,21 +16,31 @@ const VAD_PROTECTION_MASK: u32 = 0x1F; // 5 bits
 
 /// Map VAD protection index to a human-readable string.
 fn protection_to_string(prot: u32) -> String {
-        todo!()
+    match prot {
+        0 => "PAGE_NOACCESS".into(),
+        1 => "PAGE_READONLY".into(),
+        2 => "PAGE_EXECUTE".into(),
+        3 => "PAGE_EXECUTE_READ".into(),
+        4 => "PAGE_READWRITE".into(),
+        5 => "PAGE_WRITECOPY".into(),
+        6 => "PAGE_EXECUTE_READWRITE".into(),
+        7 => "PAGE_EXECUTE_WRITECOPY".into(),
+        other => format!("UNKNOWN({other})"),
     }
+}
 
 /// Whether a VAD protection value indicates execute+write (suspicious for private regions).
 fn is_execute_write(prot: u32) -> bool {
-        todo!()
-    }
+    matches!(prot, 6 | 7) // PAGE_EXECUTE_READWRITE or PAGE_EXECUTE_WRITECOPY
+}
 
 /// VadFlags.VadType is bits [0:2] (3 bits).
 const VAD_TYPE_MASK: u32 = 0x7;
 
 /// Whether a VAD is private (type 0 = VadNone → private allocation).
 fn is_private_vad(flags: u32) -> bool {
-        todo!()
-    }
+    (flags & VAD_TYPE_MASK) == 0
+}
 
 /// Walk the VAD AVL tree for a process and return all VAD entries.
 ///
@@ -41,8 +51,53 @@ pub fn walk_vad_tree<P: PhysicalMemoryProvider>(
     pid: u64,
     image_name: &str,
 ) -> Result<Vec<WinVadInfo>> {
-        todo!()
+    // Read _RTL_AVL_TREE.Root pointer
+    let root: u64 = reader.read_field(vad_root_vaddr, "_RTL_AVL_TREE", "Root")?;
+
+    if root == 0 {
+        return Ok(Vec::new());
     }
+
+    let mut results = Vec::new();
+    let mut stack = vec![root];
+
+    // Iterative in-order traversal of the AVL tree
+    while let Some(node_addr) = stack.pop() {
+        if node_addr == 0 {
+            continue;
+        }
+
+        // Read _MMVAD_SHORT fields
+        let left: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "Left")?;
+        let right: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "Right")?;
+        let starting_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "StartingVpn")?;
+        let ending_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "EndingVpn")?;
+        let flags_raw: u32 = reader.read_field(node_addr, "_MMVAD_SHORT", "Flags")?;
+
+        let protection = (flags_raw >> VAD_PROTECTION_SHIFT) & VAD_PROTECTION_MASK;
+        let is_private = is_private_vad(flags_raw);
+
+        results.push(WinVadInfo {
+            pid,
+            image_name: image_name.to_string(),
+            start_vaddr: starting_vpn << 12,
+            end_vaddr: (ending_vpn << 12) | 0xFFF,
+            protection,
+            protection_str: protection_to_string(protection),
+            is_private,
+        });
+
+        // Push children for traversal
+        if right != 0 {
+            stack.push(right);
+        }
+        if left != 0 {
+            stack.push(left);
+        }
+    }
+
+    Ok(results)
+}
 
 /// Detect suspicious private RWX memory regions across all processes.
 ///
@@ -53,8 +108,38 @@ pub fn walk_malfind<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinMalfindInfo>> {
-        todo!()
+    let procs = crate::process::walk_processes(reader, ps_head_vaddr)?;
+    let mut results = Vec::new();
+
+    let vad_root_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "VadRoot")
+        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
+
+    for proc in &procs {
+        if proc.peb_addr == 0 {
+            continue; // skip kernel processes
+        }
+
+        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
+        let vads = walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name)?;
+
+        for vad in &vads {
+            if vad.is_private && is_execute_write(vad.protection) {
+                results.push(WinMalfindInfo {
+                    pid: vad.pid,
+                    image_name: vad.image_name.clone(),
+                    start_vaddr: vad.start_vaddr,
+                    end_vaddr: vad.end_vaddr,
+                    protection_str: vad.protection_str.clone(),
+                    first_bytes: Vec::new(), // would read from process VA space
+                });
+            }
+        }
     }
+
+    Ok(results)
+}
 
 #[cfg(test)]
 mod tests {
@@ -66,7 +151,11 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn make_win_reader(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
-        todo!()
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
     }
 
     // _MMVAD_SHORT offsets (from ISF preset):
@@ -90,42 +179,182 @@ mod tests {
         ending_vpn: u64,
         flags: u32,
     ) {
-        todo!()
+        buf[offset + VAD_LEFT..offset + VAD_LEFT + 8].copy_from_slice(&left.to_le_bytes());
+        buf[offset + VAD_RIGHT..offset + VAD_RIGHT + 8].copy_from_slice(&right.to_le_bytes());
+        buf[offset + VAD_STARTING_VPN..offset + VAD_STARTING_VPN + 8]
+            .copy_from_slice(&starting_vpn.to_le_bytes());
+        buf[offset + VAD_ENDING_VPN..offset + VAD_ENDING_VPN + 8]
+            .copy_from_slice(&ending_vpn.to_le_bytes());
+        buf[offset + VAD_FLAGS..offset + VAD_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
     }
 
     /// Encode VadFlags: protection in bits [7:11], type in bits [0:2].
     fn make_vad_flags(protection: u32, vad_type: u32) -> u32 {
-        todo!()
+        (protection << VAD_PROTECTION_SHIFT) | (vad_type & VAD_TYPE_MASK)
     }
 
     #[test]
     fn walks_simple_vad_tree() {
-        todo!()
+        // AVL tree with 3 nodes:
+        //        B (root)
+        //       / \
+        //      A   C
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+
+        let root_off = 0x100usize;
+        let left_off = 0x200usize;
+        let right_off = 0x300usize;
+
+        let root_vaddr = page_vaddr + root_off as u64;
+        let left_vaddr = page_vaddr + left_off as u64;
+        let right_vaddr = page_vaddr + right_off as u64;
+
+        let mut page = vec![0u8; 4096];
+
+        // _RTL_AVL_TREE at offset 0: Root → root_vaddr
+        page[AVL_ROOT..AVL_ROOT + 8].copy_from_slice(&root_vaddr.to_le_bytes());
+
+        // Node B (root): VPN 0x100..0x1FF, PAGE_READWRITE, private
+        build_vad_node(
+            &mut page,
+            root_off,
+            left_vaddr,
+            right_vaddr,
+            0x100,
+            0x1FF,
+            make_vad_flags(4, 0), // PAGE_READWRITE, VadNone (private)
+        );
+
+        // Node A (left): VPN 0x010..0x01F, PAGE_READONLY, mapped
+        build_vad_node(
+            &mut page,
+            left_off,
+            0, // no left child
+            0, // no right child
+            0x010,
+            0x01F,
+            make_vad_flags(1, 2), // PAGE_READONLY, VadImageMap
+        );
+
+        // Node C (right): VPN 0x200..0x2FF, PAGE_EXECUTE_READ, mapped
+        build_vad_node(
+            &mut page,
+            right_off,
+            0,
+            0,
+            0x200,
+            0x2FF,
+            make_vad_flags(3, 1), // PAGE_EXECUTE_READ, VadWriteWatch
+        );
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_vad_tree(&reader, page_vaddr, 1234, "test.exe").unwrap();
+
+        assert_eq!(results.len(), 3);
+
+        // Verify all nodes found (order may vary due to AVL traversal)
+        let vpns: Vec<u64> = results.iter().map(|v| v.start_vaddr >> 12).collect();
+        assert!(vpns.contains(&0x010));
+        assert!(vpns.contains(&0x100));
+        assert!(vpns.contains(&0x200));
+
+        // Check a specific node
+        let node_b = results
+            .iter()
+            .find(|v| v.start_vaddr == 0x100 << 12)
+            .unwrap();
+        assert_eq!(node_b.pid, 1234);
+        assert_eq!(node_b.image_name, "test.exe");
+        assert_eq!(node_b.protection_str, "PAGE_READWRITE");
+        assert!(node_b.is_private);
     }
 
     #[test]
     fn empty_vad_tree() {
-        todo!()
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+
+        let mut page = vec![0u8; 4096];
+        // _RTL_AVL_TREE.Root = 0 (null)
+        page[AVL_ROOT..AVL_ROOT + 8].copy_from_slice(&0u64.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_vad_tree(&reader, page_vaddr, 4, "System").unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]
     fn single_node_vad_tree() {
-        todo!()
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+
+        let root_off = 0x100usize;
+        let root_vaddr = page_vaddr + root_off as u64;
+
+        let mut page = vec![0u8; 4096];
+        page[AVL_ROOT..AVL_ROOT + 8].copy_from_slice(&root_vaddr.to_le_bytes());
+
+        // Single node: VPN 0x7FFE0..0x7FFEF, PAGE_EXECUTE_READWRITE, private
+        build_vad_node(
+            &mut page,
+            root_off,
+            0,
+            0,
+            0x7FFE0,
+            0x7FFEF,
+            make_vad_flags(6, 0), // PAGE_EXECUTE_READWRITE, private
+        );
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_vad_tree(&reader, page_vaddr, 500, "cmd.exe").unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].start_vaddr, 0x7FFE0 << 12);
+        assert_eq!(results[0].end_vaddr, (0x7FFEF << 12) | 0xFFF);
+        assert_eq!(results[0].protection_str, "PAGE_EXECUTE_READWRITE");
+        assert!(results[0].is_private);
     }
 
     #[test]
     fn protection_to_string_covers_all_values() {
-        todo!()
+        assert_eq!(protection_to_string(0), "PAGE_NOACCESS");
+        assert_eq!(protection_to_string(1), "PAGE_READONLY");
+        assert_eq!(protection_to_string(2), "PAGE_EXECUTE");
+        assert_eq!(protection_to_string(3), "PAGE_EXECUTE_READ");
+        assert_eq!(protection_to_string(4), "PAGE_READWRITE");
+        assert_eq!(protection_to_string(5), "PAGE_WRITECOPY");
+        assert_eq!(protection_to_string(6), "PAGE_EXECUTE_READWRITE");
+        assert_eq!(protection_to_string(7), "PAGE_EXECUTE_WRITECOPY");
+        assert_eq!(protection_to_string(99), "UNKNOWN(99)");
     }
 
     #[test]
     fn is_execute_write_identifies_rwx() {
-        todo!()
+        assert!(!is_execute_write(0)); // NOACCESS
+        assert!(!is_execute_write(1)); // READONLY
+        assert!(!is_execute_write(4)); // READWRITE (no execute)
+        assert!(is_execute_write(6)); // EXECUTE_READWRITE
+        assert!(is_execute_write(7)); // EXECUTE_WRITECOPY
     }
 
     #[test]
     fn is_private_vad_checks_type() {
-        todo!()
+        assert!(is_private_vad(make_vad_flags(4, 0))); // VadNone = private
+        assert!(!is_private_vad(make_vad_flags(4, 1))); // VadWriteWatch
+        assert!(!is_private_vad(make_vad_flags(4, 2))); // VadImageMap
     }
 
     // --- Malfind tests ---
@@ -142,11 +371,108 @@ mod tests {
 
     #[test]
     fn malfind_detects_rwx_private_region() {
-        todo!()
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let vad_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let vad_paddr: u64 = 0x0080_2000;
+
+        // Build _EPROCESS
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(vad_vaddr, vad_paddr, flags::WRITABLE)
+            // Sentinel list
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS)
+            // _EPROCESS fields
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1AB000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132800000000000000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 1234)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0x7FFE_0000) // non-null PEB
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"malware.exe\0");
+
+        // VadRoot → AVL tree root
+        let vad_node_vaddr = vad_vaddr + 0x100;
+        let mut vad_page = vec![0u8; 4096];
+
+        // _RTL_AVL_TREE at VadRoot offset within eproc
+        // But VadRoot is at eproc_vaddr + 0x7D8, which maps to eproc_paddr + 0x7D8
+        // That's beyond our 4K page for eproc... we need another page.
+        // Actually eproc is 2048 bytes, so 0x7D8 = 2008, within page.
+        let ptb = ptb.write_phys_u64(eproc_paddr + EPROCESS_VAD_ROOT, vad_node_vaddr);
+
+        // Single VAD node: PAGE_EXECUTE_READWRITE, private
+        build_vad_node(
+            &mut vad_page,
+            0x100,
+            0,
+            0,
+            0x400,                // StartingVpn
+            0x40F,                // EndingVpn (16 pages)
+            make_vad_flags(6, 0), // PAGE_EXECUTE_READWRITE, private
+        );
+
+        let ptb = ptb.write_phys(vad_paddr, &vad_page);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_malfind(&reader, head_vaddr).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].pid, 1234);
+        assert_eq!(results[0].image_name, "malware.exe");
+        assert_eq!(results[0].start_vaddr, 0x400 << 12);
+        assert_eq!(results[0].protection_str, "PAGE_EXECUTE_READWRITE");
     }
 
     #[test]
     fn malfind_skips_non_rwx_regions() {
-        todo!()
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let vad_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let vad_paddr: u64 = 0x0080_2000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(vad_vaddr, vad_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1AB000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132800000000000000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 500)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0x7FFE_0000)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"clean.exe\0");
+
+        let vad_node_vaddr = vad_vaddr + 0x100;
+        let ptb = ptb.write_phys_u64(eproc_paddr + EPROCESS_VAD_ROOT, vad_node_vaddr);
+
+        let mut vad_page = vec![0u8; 4096];
+        // PAGE_READWRITE (not executable) → should not be flagged
+        build_vad_node(
+            &mut vad_page,
+            0x100,
+            0,
+            0,
+            0x400,
+            0x40F,
+            make_vad_flags(4, 0), // PAGE_READWRITE, private
+        );
+        let ptb = ptb.write_phys(vad_paddr, &vad_page);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_malfind(&reader, head_vaddr).unwrap();
+        assert!(results.is_empty());
     }
 }
