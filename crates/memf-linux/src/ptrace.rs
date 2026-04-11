@@ -84,7 +84,7 @@ fn read_ptrace_info<P: PhysicalMemoryProvider>(
         return Ok(None);
     }
 
-    let tracer_pid: u32 = reader.read_field::<u64>(parent_ptr, "task_struct", "pid")? as u32;
+    let tracer_pid: u32 = reader.read_field::<u32>(parent_ptr, "task_struct", "pid")?;
     let tracer_name = reader.read_field_string(parent_ptr, "task_struct", "comm", 16)?;
 
     let tracee_name = proc.comm.clone();

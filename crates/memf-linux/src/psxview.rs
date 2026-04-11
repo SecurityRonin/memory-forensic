@@ -27,29 +27,116 @@ pub fn walk_psxview<P: PhysicalMemoryProvider>(
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
 
+    // Build set of PIDs found in the PID hash table.
+    // If the hash table is unavailable (no symbol, unreadable memory, missing ISF
+    // fields, or completely empty — which is impossible on a live system), we fall
+    // back to assuming all PIDs are present (in_pid_hash = true).
+    let pid_hash_pids = collect_pid_hash_pids(reader).filter(|s| !s.is_empty());
+
     let mut results = Vec::new();
 
     if let Ok(info) = read_task_info(reader, init_task_addr) {
+        let in_pid_hash = pid_hash_pids
+            .as_ref()
+            .map(|set| set.contains(&info.0))
+            .unwrap_or(true);
         results.push(PsxViewInfo {
             pid: info.0,
             comm: info.1,
             in_task_list: true,
-            in_pid_hash: true,
+            in_pid_hash,
         });
     }
 
     for &task_addr in &task_addrs {
         if let Ok(info) = read_task_info(reader, task_addr) {
+            let in_pid_hash = pid_hash_pids
+                .as_ref()
+                .map(|set| set.contains(&info.0))
+                .unwrap_or(true);
             results.push(PsxViewInfo {
                 pid: info.0,
                 comm: info.1,
                 in_task_list: true,
-                in_pid_hash: true,
+                in_pid_hash,
             });
         }
     }
 
     Ok(results)
+}
+
+/// Walk the PID hash table and collect every PID found there.
+///
+/// Linux maintains a hash table (`pid_hash`) indexed by PID value. Each bucket
+/// is an `hlist_head` — a pointer to the first `hlist_node`. Each `task_struct`
+/// embeds an `hlist_node` in its `pid_links` field. By walking every non-empty
+/// bucket and following `hlist_node.next` chains we get the set of PIDs visible
+/// in the hash. A process absent from this set but present in the task list has
+/// been hidden via DKOM (Direct Kernel Object Manipulation).
+///
+/// Returns `None` when the symbol or required ISF fields are unavailable (the
+/// caller should fall back to `in_pid_hash = true`).
+fn collect_pid_hash_pids<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+) -> Option<std::collections::HashSet<u64>> {
+    // Require the pid_hash symbol and hlist_node/pid_links field offsets.
+    let pid_hash_addr = reader.symbols().symbol_address("pid_hash")?;
+    let pid_links_offset = reader.symbols().field_offset("task_struct", "pid_links")?;
+    let hlist_next_offset = reader.symbols().field_offset("hlist_node", "next")?;
+
+    let mut found_pids = std::collections::HashSet::new();
+
+    // pid_hash is an array of hlist_head structs (each is a single pointer).
+    // We scan until we hit an unreadable address; bucket count is not in ISF
+    // so we probe until the first read failure.
+    let mut bucket_offset: u64 = 0;
+    loop {
+        let bucket_head_addr = pid_hash_addr.wrapping_add(bucket_offset);
+        // Each hlist_head is a single pointer to the first hlist_node (or NULL).
+        let first_node_ptr: u64 = match reader
+            .read_bytes(bucket_head_addr, 8)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_le_bytes)
+        {
+            Some(v) => v,
+            None => break,
+        };
+
+        // Walk the hlist_node chain for this bucket.
+        let mut node_ptr = first_node_ptr;
+        let mut depth = 0usize;
+        while node_ptr != 0 && depth < 10_000 {
+            // task_struct base = hlist_node address − pid_links_offset
+            let task_addr = node_ptr.wrapping_sub(pid_links_offset);
+            if let Ok(pid) = reader.read_field::<u32>(task_addr, "task_struct", "pid") {
+                found_pids.insert(u64::from(pid));
+            }
+            // Advance to hlist_node.next
+            let next_ptr: u64 = match reader
+                .read_bytes(node_ptr.wrapping_add(hlist_next_offset), 8)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_le_bytes)
+            {
+                Some(v) => v,
+                None => break,
+            };
+            node_ptr = next_ptr;
+            depth += 1;
+        }
+
+        bucket_offset = bucket_offset.wrapping_add(8);
+        // Stop after scanning a reasonable upper bound of buckets (typically
+        // pid_hash has 4096 buckets on a 64-bit system). We stop early on
+        // read failure so this cap just prevents runaway on synthetic memory.
+        if bucket_offset >= 8 * 4096 {
+            break;
+        }
+    }
+
+    Some(found_pids)
 }
 
 fn read_task_info<P: PhysicalMemoryProvider>(
