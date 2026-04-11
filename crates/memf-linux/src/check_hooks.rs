@@ -56,7 +56,9 @@ pub fn check_inline_hooks<P: PhysicalMemoryProvider>(
         };
 
         let (hook_type, target) = analyze_prologue(&prologue, func_addr);
-        let suspicious = hook_type != "none" || target.is_some_and(|t| t < stext || t > etext);
+        // Suspicious only when a hook IS present AND the target is outside kernel text.
+        // A jmp into a legitimate kernel function is not suspicious.
+        let suspicious = hook_type != "none" && target.map_or(true, |t| t < stext || t > etext);
 
         results.push(KernelHookInfo {
             symbol: func_name.to_string(),
@@ -176,6 +178,8 @@ mod tests {
     #[test]
     fn detects_relative_jmp_hook() {
         // Hooked: E9 xx xx xx xx (relative JMP)
+        // Target lands inside kernel text → hook detected but NOT suspicious
+        // (jmp to a legitimate kernel function should not be flagged).
         let mut prologue = vec![0u8; 4096];
         prologue[0] = 0xE9; // JMP rel32
         prologue[1..5].copy_from_slice(&0x1000i32.to_le_bytes());
@@ -195,10 +199,12 @@ mod tests {
         );
         let results = check_inline_hooks(&reader).unwrap();
 
+        // target = func_vaddr + 5 + 0x1000 = 0xFFFF_8000_0002_1005, inside [stext, etext)
         assert_eq!(results.len(), 1);
-        assert!(results[0].suspicious);
         assert_eq!(results[0].hook_type, "jmp_rel32");
         assert!(results[0].target.is_some());
+        // Hook detected but target inside kernel text → not suspicious
+        assert!(!results[0].suspicious, "jmp into kernel text should not be suspicious");
     }
 
     #[test]
@@ -246,6 +252,7 @@ mod tests {
     #[test]
     fn detects_indirect_jmp_hook() {
         // Covers lines 91-93: FF 25 xx xx xx xx (absolute indirect JMP [rip+disp32])
+        // Target = func_addr + 6 (inside kernel text) → hook detected, not suspicious.
         let mut prologue = vec![0u8; 4096];
         prologue[0] = 0xFF;
         prologue[1] = 0x25;
@@ -269,9 +276,10 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].hook_type, "jmp_indirect");
-        assert!(results[0].suspicious, "jmp_indirect hook must be suspicious");
-        // target = func_addr + 6 + 0 (offset) = 0xFFFF_8000_0002_0006
+        // target = func_addr + 6 + 0 (offset) = 0xFFFF_8000_0002_0006 (inside kernel text)
         assert_eq!(results[0].target, Some(func_vaddr + 6));
+        // Hook detected but target is inside kernel text → not suspicious
+        assert!(!results[0].suspicious, "jmp_indirect targeting kernel text must not be suspicious");
     }
 
     #[test]

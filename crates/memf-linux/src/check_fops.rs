@@ -51,9 +51,10 @@ pub struct HookedFop {
 
 /// Check whether an address falls within the kernel text section.
 ///
-/// Returns `true` if `addr` is in `[kernel_start, kernel_end]`.
+/// Returns `true` if `addr` is in `[kernel_start, kernel_end)`.
+/// `_etext` is the exclusive upper bound of the kernel text section.
 pub fn is_kernel_text_address(addr: u64, kernel_start: u64, kernel_end: u64) -> bool {
-    addr >= kernel_start && addr <= kernel_end
+    addr >= kernel_start && addr < kernel_end
 }
 
 /// Read function pointers from a `file_operations` struct and classify each.
@@ -197,8 +198,8 @@ mod tests {
         assert!(is_kernel_text_address(start, start, end));
         // In the middle
         assert!(is_kernel_text_address(start + 0x1000, start, end));
-        // Exactly at end
-        assert!(is_kernel_text_address(end, start, end));
+        // One below end (last valid address, since end is exclusive)
+        assert!(is_kernel_text_address(end - 1, start, end));
     }
 
     #[test]
@@ -208,6 +209,8 @@ mod tests {
 
         // One below start
         assert!(!is_kernel_text_address(start - 1, start, end));
+        // Exactly at end (exclusive upper bound — not inside)
+        assert!(!is_kernel_text_address(end, start, end));
         // One above end
         assert!(!is_kernel_text_address(end + 1, start, end));
         // Way outside (module space)

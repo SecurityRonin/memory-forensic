@@ -94,12 +94,128 @@ pub fn classify_ebpf_map(map_type: u32, name: &str, value_size: u32) -> bool {
 
 /// Walk `map_idr` and return all loaded eBPF maps.
 ///
+/// Uses the same xarray/IDR traversal pattern as `bpf.rs` for `bpf_prog_idr`,
+/// applied to `map_idr` (the kernel's IDR for `bpf_map` objects).
+///
 /// Returns `Ok(Vec::new())` when `map_idr` symbol is absent.
 pub fn walk_ebpf_maps<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<EbpfMapInfo>> {
-    let _ = reader;
-    Ok(Vec::new())
+    let Some(idr_addr) = reader.symbols().symbol_address("map_idr") else {
+        return Ok(Vec::new());
+    };
+
+    // Read idr.idr_rt.xa_head (or legacy idr.top) to get the xarray/radix root.
+    let xa_head: u64 = reader
+        .read_field(idr_addr, "idr", "idr_rt")
+        .or_else(|_| reader.read_field::<u64>(idr_addr, "idr", "top"))
+        .unwrap_or(0);
+
+    if xa_head == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut maps = Vec::new();
+    walk_map_idr_entries(reader, xa_head, &mut maps)?;
+
+    Ok(maps)
+}
+
+/// Recursively walk xarray/radix-tree nodes to find `bpf_map` leaf pointers.
+///
+/// Mirrors the logic in `bpf.rs`'s `walk_idr_entries` for `bpf_prog`.
+fn walk_map_idr_entries<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    node_ptr: u64,
+    maps: &mut Vec<EbpfMapInfo>,
+) -> Result<()> {
+    const MAX_SLOTS: usize = 64;
+    const MAX_MAPS: usize = 10_000;
+
+    let is_node = (node_ptr & 0x3) == 0x2;
+
+    if is_node {
+        let real_addr = node_ptr & !0x3;
+        let slots_offset = reader
+            .symbols()
+            .field_offset("xa_node", "slots")
+            .unwrap_or(16);
+
+        for i in 0..MAX_SLOTS {
+            if maps.len() >= MAX_MAPS {
+                break;
+            }
+            let slot_addr = real_addr + slots_offset + (i as u64) * 8;
+            let slot_val = {
+                let mut buf = [0u8; 8];
+                match reader.vas().read_virt(slot_addr, &mut buf) {
+                    Ok(()) => u64::from_le_bytes(buf),
+                    Err(_) => 0,
+                }
+            };
+            if slot_val == 0 {
+                continue;
+            }
+            walk_map_idr_entries(reader, slot_val, maps)?;
+        }
+    } else if node_ptr & 0x3 == 0 && node_ptr > 0x1000 {
+        // Leaf pointer — attempt to read a bpf_map struct.
+        if let Ok(info) = read_bpf_map(reader, node_ptr) {
+            maps.push(info);
+        }
+    }
+
+    Ok(())
+}
+
+/// Read a single `bpf_map` struct and populate `EbpfMapInfo`.
+fn read_bpf_map<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    map_addr: u64,
+) -> Result<EbpfMapInfo> {
+    use crate::Error;
+
+    // bpf_map.map_type (u32)
+    let map_type: u32 = reader.read_field(map_addr, "bpf_map", "map_type")?;
+    let map_type_name_str = map_type_name(map_type);
+
+    // bpf_map.key_size (u32)
+    let key_size: u32 = reader
+        .read_field(map_addr, "bpf_map", "key_size")
+        .unwrap_or(0);
+
+    // bpf_map.value_size (u32)
+    let value_size: u32 = reader
+        .read_field(map_addr, "bpf_map", "value_size")
+        .unwrap_or(0);
+
+    // bpf_map.max_entries (u32)
+    let max_entries: u32 = reader
+        .read_field(map_addr, "bpf_map", "max_entries")
+        .unwrap_or(0);
+
+    // bpf_map.name (BPF_OBJ_NAME_LEN = 16 bytes, null-terminated)
+    let name = reader
+        .read_field_string(map_addr, "bpf_map", "name", 16)
+        .unwrap_or_default();
+
+    // bpf_map.id — stored in the map's aux or directly; try direct first.
+    let id: u32 = reader
+        .read_field(map_addr, "bpf_map", "id")
+        .unwrap_or(0);
+
+    let is_suspicious = classify_ebpf_map(map_type, &name, value_size);
+
+    Ok(EbpfMapInfo {
+        id,
+        map_type,
+        map_type_name: map_type_name_str,
+        key_size,
+        value_size,
+        max_entries,
+        name,
+        is_suspicious,
+    })
 }
 
 #[cfg(test)]
@@ -224,30 +340,69 @@ mod tests {
         assert!(classify_ebpf_map(26, "my_output", 0));
     }
 
-    // RED test: walk_ebpf_maps with a symbol returns EbpfMapInfo entries.
+    // Walk with a fully-constructed IDR → returns real EbpfMapInfo entries.
     #[test]
     fn walk_ebpf_maps_with_symbol_returns_entries() {
         use memf_core::test_builders::flags;
 
-        // map_idr is an IDR. The xa_head pointer is at idr.idr_rt offset.
-        // We set up the symbol so the walker can attempt traversal.
-        // With no valid ISF fields for idr/bpf_map, it should gracefully
-        // return empty rather than panic.
+        // Memory layout:
+        //   idr page  @ paddr 0x0085_0000 (vaddr 0xFFFF_8000_0040_0000)
+        //   map page  @ paddr 0x0086_0000 (vaddr 0xFFFF_8000_0041_0000)
+        //
+        // idr.idr_rt at offset 0 = map_vaddr (clean leaf: low bits 0x0, > 0x1000)
+        // bpf_map.map_type at offset 0 = 1 (array)
 
-        let map_idr_vaddr: u64 = 0xFFFF_8000_0040_0000;
-        let map_idr_paddr: u64 = 0x0085_0000;
+        let idr_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let idr_paddr: u64 = 0x0085_0000;
+        let map_vaddr: u64 = 0xFFFF_8000_0041_0000;
+        let map_paddr: u64 = 0x0086_0000;
+
+        let map_type_off: u64 = 0x00; // u32
+        let key_size_off: u64 = 0x04; // u32
+        let value_size_off: u64 = 0x08; // u32
+        let max_entries_off: u64 = 0x0C; // u32
+        let name_off: u64 = 0x10;     // char[16]
+        let id_off: u64 = 0x20;       // u32
 
         let isf = IsfBuilder::new()
-            .add_symbol("map_idr", map_idr_vaddr)
+            .add_symbol("map_idr", idr_vaddr)
+            .add_struct("idr", 0x20)
+            .add_field("idr", "idr_rt", 0x00u64, "pointer")
+            .add_struct("bpf_map", 0x100)
+            .add_field("bpf_map", "map_type",    map_type_off,    "unsigned int")
+            .add_field("bpf_map", "key_size",    key_size_off,    "unsigned int")
+            .add_field("bpf_map", "value_size",  value_size_off,  "unsigned int")
+            .add_field("bpf_map", "max_entries", max_entries_off, "unsigned int")
+            .add_field("bpf_map", "name",        name_off,        "char")
+            .add_field("bpf_map", "id",          id_off,          "unsigned int")
             .build_json();
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // idr page: idr_rt = map_vaddr (leaf pointer)
+        let mut idr_page = [0u8; 4096];
+        idr_page[0..8].copy_from_slice(&map_vaddr.to_le_bytes());
+
+        // bpf_map page
+        let mut map_page = [0u8; 4096];
+        map_page[map_type_off as usize..map_type_off as usize + 4]
+            .copy_from_slice(&1u32.to_le_bytes()); // array
+        map_page[key_size_off as usize..key_size_off as usize + 4]
+            .copy_from_slice(&4u32.to_le_bytes());
+        map_page[value_size_off as usize..value_size_off as usize + 4]
+            .copy_from_slice(&8u32.to_le_bytes());
+        map_page[max_entries_off as usize..max_entries_off as usize + 4]
+            .copy_from_slice(&1024u32.to_le_bytes());
+        map_page[name_off as usize..name_off as usize + 8]
+            .copy_from_slice(b"test_map");
+        map_page[id_off as usize..id_off as usize + 4]
+            .copy_from_slice(&7u32.to_le_bytes());
+
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(
-                map_idr_vaddr,
-                map_idr_paddr,
-                flags::PRESENT | flags::WRITABLE,
-            )
+            .map_4k(idr_vaddr, idr_paddr, flags::PRESENT | flags::WRITABLE)
+            .write_phys(idr_paddr, &idr_page)
+            .map_4k(map_vaddr, map_paddr, flags::PRESENT | flags::WRITABLE)
+            .write_phys(map_paddr, &map_page)
             .build();
 
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -255,5 +410,16 @@ mod tests {
 
         let result = walk_ebpf_maps(&reader);
         assert!(result.is_ok(), "walk_ebpf_maps should not error");
+        let maps = result.unwrap();
+        assert_eq!(maps.len(), 1, "should return exactly one map entry");
+        let m = &maps[0];
+        assert_eq!(m.id, 7);
+        assert_eq!(m.map_type, 1);
+        assert_eq!(m.map_type_name, "array");
+        assert_eq!(m.key_size, 4);
+        assert_eq!(m.value_size, 8);
+        assert_eq!(m.max_entries, 1024);
+        assert!(m.name.contains("test_map"), "name should be test_map: {}", m.name);
+        assert!(!m.is_suspicious, "benign array map should not be suspicious");
     }
 }
