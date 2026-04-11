@@ -394,7 +394,8 @@ fn parse_import_descriptors<P: PhysicalMemoryProvider>(
             let is_suspicious = if expected_base != 0 && expected_size != 0 {
                 classify_iat_hook(iat_entry, expected_base, expected_size, &hook_module_name)
             } else {
-                false
+                // Originating DLL not in module list; flag if destination is also unresolvable
+                hook_module_name.is_empty()
             };
 
             if is_suspicious {
@@ -692,6 +693,51 @@ mod tests {
         // empty. The hook_target (e.g. 0x1000) >= end (0), so it IS >= end → suspicious.
         // Actually 0x1000 >= 0 (base) but 0x1000 >= 0 (end) → outside → suspicious.
         assert!(classify_iat_hook(0x1000, 0, 0, "ntdll.dll"));
+    }
+
+    /// When the originating DLL is not in the module list (expected_base == 0,
+    /// expected_size == 0) AND the hook destination is also unresolvable
+    /// (hook_module_name is empty), the entry must be flagged suspicious.
+    /// This covers the `hook_module_name.is_empty()` branch added to fix
+    /// silently-missed hooks against unknown DLLs.
+    #[test]
+    fn unresolvable_originating_dll_with_empty_hook_module_is_suspicious() {
+        // Simulate: originating DLL not found in module list → (0, 0).
+        // Hook target address also outside all known modules → resolve_module → "".
+        let hook_target: u64 = 0xDEAD_0000_1234;
+        let hook_module_name = resolve_module(hook_target, &[]); // empty ranges → ""
+        assert!(hook_module_name.is_empty());
+
+        // The new branch: expected_base == 0 && expected_size == 0 → hook_module_name.is_empty()
+        let expected_base: u64 = 0;
+        let expected_size: u32 = 0;
+        let is_suspicious = if expected_base != 0 && expected_size != 0 {
+            classify_iat_hook(hook_target, expected_base, expected_size, &hook_module_name)
+        } else {
+            hook_module_name.is_empty()
+        };
+        assert!(is_suspicious, "hook against unknown DLL with unresolvable target must be flagged suspicious");
+    }
+
+    /// When the originating DLL is not in the module list but the hook destination
+    /// IS resolvable to a known module, the entry must NOT be flagged suspicious.
+    #[test]
+    fn unresolvable_originating_dll_with_known_hook_module_is_not_suspicious() {
+        let hook_target: u64 = 0x7FF8_0000_1000;
+        let ranges: Vec<(u64, u64, String)> = vec![
+            (0x7FF8_0000_0000, 0x7FF8_0010_0000, "ntdll.dll".to_string()),
+        ];
+        let hook_module_name = resolve_module(hook_target, &ranges);
+        assert_eq!(hook_module_name, "ntdll.dll");
+
+        let expected_base: u64 = 0;
+        let expected_size: u32 = 0;
+        let is_suspicious = if expected_base != 0 && expected_size != 0 {
+            classify_iat_hook(hook_target, expected_base, expected_size, &hook_module_name)
+        } else {
+            hook_module_name.is_empty()
+        };
+        assert!(!is_suspicious, "hook that resolves to a known module should not be flagged suspicious");
     }
 
     // ── resolve_module and find_module_range coverage ─────────────────

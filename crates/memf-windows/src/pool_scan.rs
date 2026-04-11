@@ -49,7 +49,7 @@ const KNOWN_TAGS: &[(&str, &str)] = &[
     ("Thre", "ETHREAD"),
     ("Driv", "DRIVER_OBJECT"),
     ("File", "FILE_OBJECT"),
-    ("Mutant", "KMUTANT"),
+    ("Muta", "KMUTANT"),
     ("Even", "EVENT"),
     ("Sema", "SEMAPHORE"),
     ("Sect", "SECTION"),
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn classify_all_known_tags_not_suspicious() {
         let known = [
-            "Proc", "Thre", "Driv", "File", "Mutant", "Even", "Sema",
+            "Proc", "Thre", "Driv", "File", "Muta", "Even", "Sema",
             "Sect", "Port", "Vad\x20", "CM10", "CM31", "ObNm", "ObHd",
         ];
         for tag in &known {
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(infer_struct_type("Thre"), "ETHREAD");
         assert_eq!(infer_struct_type("Driv"), "DRIVER_OBJECT");
         assert_eq!(infer_struct_type("File"), "FILE_OBJECT");
-        assert_eq!(infer_struct_type("Mutant"), "KMUTANT");
+        assert_eq!(infer_struct_type("Muta"), "KMUTANT");
         assert_eq!(infer_struct_type("Port"), "ALPC_PORT");
         assert_eq!(infer_struct_type("ObHd"), "OBJECT_HEADER");
     }

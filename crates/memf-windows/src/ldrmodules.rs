@@ -446,9 +446,12 @@ mod tests {
         use memf_symbols::test_builders::IsfBuilder;
 
         // ISF without _PEB_LDR_DATA fields → field_offset returns None → Walker error.
-        let isf = IsfBuilder::windows_kernel_preset()
-            // Intentionally omit _PEB_LDR_DATA fields.
-            .build_json();
+        let mut isf = IsfBuilder::windows_kernel_preset().build_json();
+        // Remove _PEB_LDR_DATA so field_offset("_PEB_LDR_DATA", ...) returns None.
+        isf["user_types"]
+            .as_object_mut()
+            .unwrap()
+            .remove("_PEB_LDR_DATA");
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
@@ -484,8 +487,7 @@ mod tests {
 
         // Missing _PEB_LDR_DATA fields → returns Err (Walker error).
         let result = walk_ldrmodules(&reader, eproc_vaddr, 1234, "test.exe");
-        // This will either Err (missing field) or Ok(empty) — both are acceptable.
-        let _ = result;
+        assert!(result.is_err(), "expected Err when _PEB_LDR_DATA is absent from ISF");
     }
 
     /// MAX_MODULES constant is sensible.
