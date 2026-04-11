@@ -20,9 +20,6 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{Error, Result};
 
-/// Maximum number of CID table entries to scan (safety limit).
-const MAX_CID_ENTRIES: u64 = 16384;
-
 /// Cross-view process entry showing visibility across enumeration sources.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PsxViewEntry {
@@ -104,112 +101,24 @@ fn walk_active_list<P: PhysicalMemoryProvider>(
 
 /// Walk the `PspCidTable` kernel handle table to find process objects.
 ///
-/// `PspCidTable` is a pointer to a `_HANDLE_TABLE` whose entries map
-/// PIDs (as handle values) to `_EPROCESS` pointers.
+/// Delegates to [`crate::psxview_cid::walk_psp_cid_table`] and maps the
+/// results into the local [`RawProcInfo`] type used by the merge step.
 fn walk_cid_table<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<RawProcInfo>> {
-    let cid_table_ptr = reader
-        .symbols()
-        .symbol_address("PspCidTable")
-        .ok_or_else(|| Error::Walker("symbol 'PspCidTable' not found".into()))?;
-
-    // PspCidTable stores a pointer to _HANDLE_TABLE; dereference it.
-    let ht_addr: u64 = {
-        let bytes = reader.read_bytes(cid_table_ptr, 8)?;
-        u64::from_le_bytes(
-            bytes
-                .try_into()
-                .map_err(|_| Error::Walker("failed to read PspCidTable pointer".into()))?,
-        )
-    };
-
-    if ht_addr == 0 {
-        return Ok(Vec::new());
+    // Require PspCidTable symbol; if absent, treat as error (psxview needs it).
+    if reader.symbols().symbol_address("PspCidTable").is_none() {
+        return Err(Error::Walker("symbol 'PspCidTable' not found".into()));
     }
 
-    // Read TableCode from the _HANDLE_TABLE
-    let table_code: u64 = reader.read_field(ht_addr, "_HANDLE_TABLE", "TableCode")?;
+    let entries = crate::psxview_cid::walk_psp_cid_table(reader)?;
 
-    // Level = low 2 bits of TableCode
-    let level = table_code & 0x3;
-    let base_addr = table_code & !0x3;
-
-    if base_addr == 0 {
-        return Ok(Vec::new());
-    }
-
-    // Only support level-0 (flat) tables for now
-    if level != 0 {
-        return Err(crate::Error::Walker(format!(
-            "PspCidTable level-{level} not yet supported; results incomplete"
-        )));
-    }
-
-    let entry_size = reader
-        .symbols()
-        .struct_size("_HANDLE_TABLE_ENTRY")
-        .ok_or_else(|| Error::Walker("missing _HANDLE_TABLE_ENTRY size".into()))?;
-
-    // Read NextHandleNeedingPool to determine entry count
-    let next_handle: u32 = reader.read_field(ht_addr, "_HANDLE_TABLE", "NextHandleNeedingPool")?;
-
-    // Number of entries = next_handle / 4 (handle values are index * 4)
-    let num_entries = u64::from(next_handle) / 4;
-    let num_entries = num_entries.min(MAX_CID_ENTRIES);
-
-    let mut procs = Vec::new();
-
-    // In PspCidTable, handle value = index * 4 = PID for processes.
-    // Index 0 is reserved.
-    for idx in 1..num_entries {
-        let entry_addr = base_addr + idx * entry_size;
-
-        let obj_ptr: u64 =
-            match reader.read_field(entry_addr, "_HANDLE_TABLE_ENTRY", "ObjectPointerBits") {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-        if obj_ptr == 0 {
-            continue;
-        }
-
-        // ObjectPointerBits is shifted right by 4; reconstruct the pointer
-        // with kernel canonical high bits set.
-        let object_addr = (obj_ptr << 4) | 0xFFFF_0000_0000_0000;
-
-        // object_addr points to _OBJECT_HEADER; the body (_EPROCESS) follows
-        // at the Body field offset (typically 0x30).
-        let body_offset = reader
-            .symbols()
-            .field_offset("_OBJECT_HEADER", "Body")
-            .unwrap_or(0x30);
-        let eprocess_addr = object_addr.wrapping_add(body_offset);
-
-        // Verify this is a process by reading PID and checking it matches
-        let pid: u64 = match reader.read_field(eprocess_addr, "_EPROCESS", "UniqueProcessId") {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        // In PspCidTable, handle value = pid = idx * 4
-        let expected_pid = idx * 4;
-        if pid != expected_pid {
-            // Not a process entry (could be a thread), or corrupted
-            continue;
-        }
-
-        let image_name = reader
-            .read_field_string(eprocess_addr, "_EPROCESS", "ImageFileName", 15)
-            .unwrap_or_default();
-
-        procs.push(RawProcInfo {
-            pid,
-            image_name,
-            eprocess_addr,
-        });
-    }
-
-    Ok(procs)
+    Ok(entries
+        .into_iter()
+        .map(|e| RawProcInfo {
+            pid: u64::from(e.pid),
+            image_name: e.image_name,
+            eprocess_addr: e.eprocess_addr,
+        })
+        .collect())
 }
 
 /// Merge process views from ActiveProcessLinks and PspCidTable.
