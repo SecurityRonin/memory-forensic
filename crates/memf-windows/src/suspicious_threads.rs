@@ -49,9 +49,6 @@ const SYSTEM_PROCESSES: &[&str] = &[
     "svchost.exe",
 ];
 
-/// DLLs commonly used as injection targets / trampolines.
-const KNOWN_INJECTION_TARGETS: &[&str] = &["ntdll.dll", "kernel32.dll", "kernelbase.dll"];
-
 /// Classify whether a thread is suspicious based on its characteristics.
 ///
 /// Returns `(is_suspicious, reason)` where `reason` is a human-readable
@@ -63,7 +60,7 @@ const KNOWN_INJECTION_TARGETS: &[&str] = &["ntdll.dll", "kernel32.dll", "kernelb
 /// 3. Orphan thread (start address in no module) -> suspicious
 /// 4. Normal thread in a known module -> benign
 pub fn classify_suspicious_thread(
-    start_module: &str,
+    _start_module: &str,
     is_orphan: bool,
     in_rwx_memory: bool,
     process_name: &str,
