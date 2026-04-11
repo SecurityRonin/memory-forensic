@@ -173,8 +173,6 @@ fn read_bpf_map<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     map_addr: u64,
 ) -> Result<EbpfMapInfo> {
-    use crate::Error;
-
     // bpf_map.map_type (u32)
     let map_type: u32 = reader.read_field(map_addr, "bpf_map", "map_type")?;
     let map_type_name_str = map_type_name(map_type);
