@@ -114,12 +114,6 @@ pub fn walk_consoles<P: PhysicalMemoryProvider + Clone>(
     let procs = crate::process::walk_processes(reader, ps_head)
         .unwrap_or_default();
 
-    // Field offsets
-    let peb_heap_off = reader
-        .symbols()
-        .field_offset("_PEB", "ProcessHeap")
-        .unwrap_or(0x30) as u64;
-
     let mut results = Vec::new();
 
     for proc in &procs {

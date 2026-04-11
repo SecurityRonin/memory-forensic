@@ -78,11 +78,11 @@ pub fn classify_winstation(name: &str) -> bool {
 
 /// Classify a desktop name as suspicious.
 ///
-/// Returns `true` when:
-/// - The desktop has a non-standard name on `WinSta0` (standard names are
-///   `Default`, `Winlogon`, `Disconnect`, `Screen-saver`)
-/// - Any desktop on a non-`WinSta0` interactive station
-/// - Empty desktop name (always suspicious)
+/// Returns `true` (suspicious) when the desktop name is empty (unnamed desktop
+/// is anomalous) or the desktop is on the interactive station (`WinSta0`) but
+/// has a non-standard name (standard names are `Default`, `Winlogon`,
+/// `Disconnect`, `Screen-saver`).  Desktops on service stations (non-`WinSta0`)
+/// are considered benign.
 pub fn classify_desktop(name: &str, winstation: &str) -> bool {
     if name.is_empty() {
         return true;

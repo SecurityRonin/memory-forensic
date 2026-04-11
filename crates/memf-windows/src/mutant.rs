@@ -75,12 +75,6 @@ fn walk_directory_recursive<P: PhysicalMemoryProvider>(
             .read_field(header_addr, "_OBJECT_HEADER", "TypeIndex")
             .unwrap_or(0);
 
-        // Read InfoMask to check if NAME_INFO is present
-        let info_mask: u8 = reader
-            .read_field(header_addr, "_OBJECT_HEADER", "InfoMask")
-            .unwrap_or(0);
-        let _ = info_mask; // used implicitly via walk_directory
-
         let type_name = resolve_type_name(reader, ob_type_table_addr, type_index);
 
         if type_name == "Mutant" {
@@ -603,9 +597,6 @@ mod tests {
         assert_eq!(mutants[0].owner_pid, 0);
         assert_eq!(mutants[0].owner_thread_id, 0);
     }
-
-    fn ethread_vaddr_unused() -> u64 { 0 }
-    fn ethread_paddr_unused() -> u64 { 0 }
 
     /// resolve_type_name: valid slot and type with empty name → returns "<unknown>".
     #[test]
