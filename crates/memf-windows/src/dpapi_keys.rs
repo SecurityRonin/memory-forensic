@@ -42,8 +42,12 @@ pub struct DpapiMasterKeyInfo {
 /// user account (e.g. a service account or machine account GUID not
 /// associated with any interactive logon session).
 pub fn classify_dpapi_master_key(guid: &str, description: &str) -> bool {
-        todo!()
-    }
+    // Suspicious: empty GUID (memory corruption or uninitialized entry)
+    // or description containing unusual markers
+    guid.is_empty()
+        || guid == "{00000000-0000-0000-0000-000000000000}"
+        || description.to_ascii_lowercase().contains("backdoor")
+}
 
 /// Walk LSASS memory for cached DPAPI master keys.
 ///
@@ -57,8 +61,18 @@ pub fn classify_dpapi_master_key(guid: &str, description: &str) -> bool {
 pub fn walk_dpapi_master_keys<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<DpapiMasterKeyInfo>> {
-        todo!()
+    // Graceful degradation: require g_MasterKeyCache symbol from lsasrv.dll
+    if reader
+        .symbols()
+        .symbol_address("g_MasterKeyCache")
+        .is_none()
+    {
+        return Ok(Vec::new());
     }
+
+    // Full implementation pending lsasrv struct definitions.
+    Ok(Vec::new())
+}
 
 #[cfg(test)]
 mod tests {
@@ -67,36 +81,76 @@ mod tests {
     /// An empty GUID is suspicious (indicates uninitialized or corrupt entry).
     #[test]
     fn classify_empty_guid_suspicious() {
-        todo!()
+        assert!(classify_dpapi_master_key("", "Normal master key"));
     }
 
     /// The all-zero GUID is suspicious.
     #[test]
     fn classify_null_guid_suspicious() {
-        todo!()
+        assert!(classify_dpapi_master_key(
+            "{00000000-0000-0000-0000-000000000000}",
+            "Normal"
+        ));
     }
 
     /// Description containing "backdoor" is suspicious.
     #[test]
     fn classify_backdoor_description_suspicious() {
-        todo!()
+        let valid_guid = "{12345678-1234-1234-1234-123456789abc}";
+        assert!(classify_dpapi_master_key(valid_guid, "backdoor key"));
+        assert!(classify_dpapi_master_key(valid_guid, "BACKDOOR_KEY"));
+        assert!(classify_dpapi_master_key(valid_guid, "My Backdoor Master Key"));
     }
 
     /// Normal valid GUID with clean description → benign.
     #[test]
     fn classify_valid_guid_benign() {
-        todo!()
+        assert!(!classify_dpapi_master_key(
+            "{12345678-1234-1234-1234-123456789abc}",
+            "User master key"
+        ));
     }
 
     /// DpapiMasterKeyInfo serializes correctly.
     #[test]
     fn dpapi_master_key_info_serializes() {
-        todo!()
+        let info = DpapiMasterKeyInfo {
+            guid: "{12345678-1234-1234-1234-123456789abc}".to_string(),
+            version: 2,
+            flags: 0,
+            description: "User master key".to_string(),
+            master_key: vec![0x01u8; 64],
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"version\":2"));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("User master key"));
     }
 
     /// Without g_MasterKeyCache symbol, walker returns empty.
     #[test]
     fn walk_dpapi_master_keys_no_symbol_returns_empty() {
-        todo!()
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &[0u8; 16]);
+        let (cr3, mem) = ptb.build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_dpapi_master_keys(&reader).unwrap();
+        assert!(results.is_empty());
     }
 }
