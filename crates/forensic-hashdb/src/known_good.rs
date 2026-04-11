@@ -34,31 +34,54 @@ impl From<std::io::Error> for KnownGoodError {
 /// hashes. Binary search provides exact matching — no probabilistic structure,
 /// making it safe for forensic exclusion decisions.
 pub struct KnownGoodDb {
-    _file: std::fs::File,
-    mmap: Mmap,
+    /// `None` when the file is empty (zero hashes).
+    mmap: Option<Mmap>,
 }
 
 impl KnownGoodDb {
     /// Open a binary file containing sorted 32-byte SHA-256 hashes.
     /// File must be a multiple of 32 bytes.
     pub fn open(path: &Path) -> Result<Self, KnownGoodError> {
-        let _ = path;
-        Err(KnownGoodError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "not implemented",
-        )))
+        let file = std::fs::File::open(path)?;
+        let meta = file.metadata()?;
+        let bytes = meta.len();
+        if bytes % 32 != 0 {
+            return Err(KnownGoodError::InvalidFileSize { bytes });
+        }
+        if bytes == 0 {
+            return Ok(Self { mmap: None });
+        }
+        // SAFETY: file is opened read-only; caller is responsible for not
+        // modifying the file while this mapping is live (standard mmap contract).
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+        Ok(Self { mmap: Some(mmap) })
     }
 
     /// Returns `true` iff the hash is present in the database.
     /// Zero false positives — safe for forensic exclusion decisions.
     pub fn is_known_good(&self, sha256: &[u8; 32]) -> bool {
-        let _ = sha256;
+        let Some(ref mmap) = self.mmap else {
+            return false;
+        };
+        let count = mmap.len() / 32;
+        let data = mmap.as_ref();
+        let mut lo = 0usize;
+        let mut hi = count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let entry: &[u8; 32] = data[mid * 32..(mid + 1) * 32].try_into().unwrap();
+            match entry.cmp(sha256) {
+                std::cmp::Ordering::Equal => return true,
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+            }
+        }
         false
     }
 
     /// Number of hashes in the database.
     pub fn len(&self) -> usize {
-        0
+        self.mmap.as_ref().map_or(0, |m| m.len() / 32)
     }
 
     pub fn is_empty(&self) -> bool {

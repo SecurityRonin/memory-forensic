@@ -1,4 +1,4 @@
-use crate::types::{BadFileInfo, BadFileSource};
+use crate::types::BadFileInfo;
 use std::collections::HashMap;
 
 /// Provenance-tracked malware hash lookup database.
@@ -13,9 +13,8 @@ pub struct KnownBadDb {
 impl KnownBadDb {
     /// Construct from an iterator of `(sha256, info)` pairs.
     pub fn from_entries(iter: impl IntoIterator<Item = ([u8; 32], BadFileInfo)>) -> Self {
-        let _ = iter;
         Self {
-            entries: HashMap::new(),
+            entries: iter.into_iter().collect(),
         }
     }
 
@@ -24,19 +23,17 @@ impl KnownBadDb {
     /// No false negatives. Phase 1: backed by `HashMap` (no false positives
     /// either). Phase 2 will swap in an XOR filter pre-screen.
     pub fn might_be_malicious(&self, sha256: &[u8; 32]) -> bool {
-        let _ = sha256;
-        false
+        self.entries.contains_key(sha256)
     }
 
     /// Exact lookup with full provenance. Returns `None` if definitely not present.
     pub fn lookup(&self, sha256: &[u8; 32]) -> Option<&BadFileInfo> {
-        let _ = sha256;
-        None
+        self.entries.get(sha256)
     }
 
     /// Number of entries in the database.
     pub fn len(&self) -> usize {
-        0
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
