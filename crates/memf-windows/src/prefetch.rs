@@ -299,4 +299,131 @@ mod tests {
         assert_eq!(pf.run_count, expected_run_count);
         assert_eq!(pf.last_run_time, expected_last_run);
     }
+
+    /// utf16le_to_string with empty bytes returns empty string.
+    #[test]
+    fn utf16le_to_string_empty_bytes() {
+        assert_eq!(utf16le_to_string(&[]), "");
+    }
+
+    /// utf16le_to_string stops at null terminator.
+    #[test]
+    fn utf16le_to_string_stops_at_null() {
+        // "AB\0C" in UTF-16LE → stops after 'B'
+        let bytes: &[u8] = &[0x41, 0x00, 0x42, 0x00, 0x00, 0x00, 0x43, 0x00];
+        assert_eq!(utf16le_to_string(bytes), "AB");
+    }
+
+    /// scan_prefetch with a region too small (< MIN_PARSE_SIZE) skips it entirely.
+    #[test]
+    fn scan_prefetch_region_too_small() {
+        let reader = build_empty_reader();
+        // MIN_PARSE_SIZE is 0xD4 = 212 bytes; region of 100 bytes is too small.
+        let result =
+            scan_prefetch(&reader, &[(0xFFFF_8000_0000_0000, 100)]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// scan_prefetch: magic present but executable name is all-null → parse returns None, no entry.
+    #[test]
+    fn scan_prefetch_empty_exe_name_skipped() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        const PF_VADDR: u64 = 0xFFFF_8000_0020_0000;
+        const PF_PADDR: u64 = 0x0090_0000;
+        const REGION_SIZE: u64 = 0x4000;
+
+        let mut builder = PageTableBuilder::new();
+        for i in 0..4u64 {
+            builder = builder.map_4k(
+                PF_VADDR + i * 0x1000,
+                PF_PADDR + i * 0x1000,
+                flags::PRESENT | flags::WRITABLE,
+            );
+        }
+
+        // Write magic but leave exe name at offset 0x10 as all-zeros (empty UTF-16LE).
+        builder = builder.write_phys(PF_PADDR, &PREFETCH_MAGIC);
+        // Exe name area stays zero → utf16le_to_string returns "" → parse_prefetch_header returns None.
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = scan_prefetch(&reader, &[(PF_VADDR, REGION_SIZE)]).unwrap();
+        assert!(result.is_empty(), "empty exe name should not produce an entry");
+    }
+
+    /// scan_prefetch: two adjacent prefetch headers at different page boundaries are both found.
+    #[test]
+    fn scan_prefetch_two_entries_found() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map 8 pages = 32 KiB; place a prefetch header at page 0 and page 4.
+        const REGION_VADDR: u64 = 0xFFFF_8000_0030_0000;
+        const REGION_PADDR: u64 = 0x00A0_0000;
+        const REGION_SIZE: u64 = 0x8000; // 32 KiB
+
+        let mut builder = PageTableBuilder::new();
+        for i in 0..8u64 {
+            builder = builder.map_4k(
+                REGION_VADDR + i * 0x1000,
+                REGION_PADDR + i * 0x1000,
+                flags::PRESENT | flags::WRITABLE,
+            );
+        }
+
+        // Helper: write a prefetch entry at a given physical offset.
+        let write_pf = |mut b: PageTableBuilder, base_paddr: u64, exe: &str, hash: u32| {
+            b = b.write_phys(base_paddr, &PREFETCH_MAGIC);
+            let exe_utf16: Vec<u8> = exe.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            b = b.write_phys(base_paddr + EXE_NAME_OFFSET as u64, &exe_utf16);
+            b = b.write_phys(base_paddr + HASH_OFFSET as u64, &hash.to_le_bytes());
+            b
+        };
+
+        builder = write_pf(builder, REGION_PADDR, "CMD.EXE", 0xAAAA_AAAA);
+        builder = write_pf(builder, REGION_PADDR + 0x4000, "SVCHOST.EXE", 0xBBBB_BBBB);
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = scan_prefetch(&reader, &[(REGION_VADDR, REGION_SIZE)]).unwrap();
+        assert_eq!(result.len(), 2, "should find both prefetch entries");
+        assert_eq!(result[0].executable_name, "CMD.EXE");
+        assert_eq!(result[1].executable_name, "SVCHOST.EXE");
+    }
+
+    /// PrefetchInfo serializes correctly.
+    #[test]
+    fn prefetch_info_serializes() {
+        let info = PrefetchInfo {
+            offset: 0xFFFF_8000_0010_0000,
+            executable_name: "NOTEPAD.EXE".to_string(),
+            hash: 0xDEAD_BEEF,
+            run_count: 7,
+            last_run_time: 133_500_672_000_000_000,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("NOTEPAD.EXE"));
+        assert!(json.contains("\"run_count\":7"));
+        assert!(json.contains("\"hash\":3735928559")); // 0xDEAD_BEEF decimal
+    }
+
+    /// read_u32_at returns None when address is unmapped.
+    #[test]
+    fn read_u32_at_unmapped_returns_none() {
+        let reader = build_empty_reader();
+        assert!(read_u32_at(&reader, 0xDEAD_BEEF_0000).is_none());
+    }
+
+    /// read_u64_at returns None when address is unmapped.
+    #[test]
+    fn read_u64_at_unmapped_returns_none() {
+        let reader = build_empty_reader();
+        assert!(read_u64_at(&reader, 0xDEAD_BEEF_0000).is_none());
+    }
 }

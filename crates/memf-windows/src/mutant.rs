@@ -570,4 +570,98 @@ mod tests {
         assert!(json.contains("\"owner_pid\":1234"));
         assert!(json.contains("\"abandoned\":false"));
     }
+
+    /// walk_mutants: mutant with owner_thread = 0 → owner_pid and owner_thread_id are 0.
+    /// Exercises the `else { (0, 0) }` branch in read_mutant_info.
+    #[test]
+    fn walk_mutants_no_owner_thread() {
+        // Build a single mutant but override the OwnerThread field to 0 after building.
+        let root_dir_ptr_paddr: u64 = 0x0010_0000;
+        let root_dir_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let root_dir_paddr: u64 = 0x0020_0000;
+
+        let bno_obj_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let bno_obj_paddr: u64 = 0x0030_0000;
+        let root_entry_vaddr: u64 = 0xFFFF_8000_0020_0C00;
+        let root_entry_paddr: u64 = 0x0030_0C00;
+
+        let mutant_obj_vaddr: u64 = 0xFFFF_8000_0031_0000;
+        let mutant_obj_paddr: u64 = 0x0041_0000;
+        let subdir_entry_vaddr: u64 = 0xFFFF_8000_0031_0C00;
+        let subdir_entry_paddr: u64 = 0x0041_0C00;
+
+        let mutant_type_vaddr: u64 = 0xFFFF_8000_0051_0000;
+        let mutant_type_paddr: u64 = 0x0061_0000;
+        let dir_type_vaddr: u64 = 0xFFFF_8000_0051_1000;
+        let dir_type_paddr: u64 = 0x0062_0000;
+        let ob_table_paddr: u64 = 0x0071_0000;
+
+        let mutant_type_index: u8 = 17;
+        let dir_type_index: u8 = 3;
+
+        let mut ptb = PageTableBuilder::new()
+            .map_4k(OBP_ROOT_DIR_OBJ_VADDR, root_dir_ptr_paddr, flags::WRITABLE)
+            .write_phys_u64(root_dir_ptr_paddr, root_dir_vaddr)
+            .map_4k(root_dir_vaddr, root_dir_paddr, flags::WRITABLE)
+            .map_4k(bno_obj_vaddr, bno_obj_paddr, flags::WRITABLE)
+            .map_4k(mutant_obj_vaddr, mutant_obj_paddr, flags::WRITABLE)
+            .map_4k(OB_TYPE_INDEX_TABLE_VADDR, ob_table_paddr, flags::WRITABLE)
+            .map_4k(ethread_vaddr_unused(), ethread_paddr_unused(), flags::WRITABLE);
+
+        ptb = write_object_type(ptb, dir_type_vaddr, dir_type_paddr, dir_type_vaddr + 0x800, dir_type_paddr + 0x800, "Directory");
+        ptb = ptb.write_phys_u64(ob_table_paddr + u64::from(dir_type_index) * 8, dir_type_vaddr);
+        ptb = write_object_type(ptb, mutant_type_vaddr, mutant_type_paddr, mutant_type_vaddr + 0x800, mutant_type_paddr + 0x800, "Mutant");
+        ptb = ptb.write_phys_u64(ob_table_paddr + u64::from(mutant_type_index) * 8, mutant_type_vaddr);
+
+        let (bno_body, ptb2) = write_named_object(ptb, bno_obj_vaddr, bno_obj_paddr, bno_obj_vaddr + 0x800, bno_obj_paddr + 0x800, "BaseNamedObjects", dir_type_index);
+        ptb = ptb2;
+        ptb = ptb.map_4k(root_entry_vaddr, root_entry_paddr, flags::WRITABLE);
+        ptb = write_dir_entry(ptb, root_entry_paddr, 0, bno_body);
+        ptb = set_bucket(ptb, root_dir_paddr, 0, root_entry_vaddr);
+
+        let (mutant_body, ptb2) = write_named_object(ptb, mutant_obj_vaddr, mutant_obj_paddr, mutant_obj_vaddr + 0x800, mutant_obj_paddr + 0x800, "NoOwnerMutex", mutant_type_index);
+        ptb = ptb2;
+        let body_phys_off = mutant_body - mutant_obj_vaddr;
+        // OwnerThread = 0 (no owner)
+        ptb = ptb.write_phys_u64(mutant_obj_paddr + body_phys_off + KMUTANT_OWNER_THREAD, 0);
+        ptb = ptb.write_phys(mutant_obj_paddr + body_phys_off + KMUTANT_ABANDONED, &[0u8]);
+
+        ptb = ptb.map_4k(subdir_entry_vaddr, subdir_entry_paddr, flags::WRITABLE);
+        ptb = write_dir_entry(ptb, subdir_entry_paddr, 0, mutant_body);
+        let bno_body_paddr = bno_obj_paddr + (bno_body - bno_obj_vaddr);
+        ptb = set_bucket(ptb, bno_body_paddr, 0, subdir_entry_vaddr);
+
+        let reader = make_test_reader(ptb);
+        let mutants = walk_mutants(&reader).unwrap();
+
+        assert_eq!(mutants.len(), 1);
+        assert_eq!(mutants[0].name, "NoOwnerMutex");
+        assert_eq!(mutants[0].owner_pid, 0, "no owner thread → owner_pid should be 0");
+        assert_eq!(mutants[0].owner_thread_id, 0);
+        assert!(!mutants[0].abandoned);
+    }
+
+    fn ethread_vaddr_unused() -> u64 { 0xFFFF_8000_0081_0000 }
+    fn ethread_paddr_unused() -> u64 { 0x0091_0000 }
+
+    /// resolve_type_name: valid slot and type with empty name → returns "<unknown>".
+    #[test]
+    fn resolve_type_name_empty_name_returns_unknown() {
+        // Build an _OBJECT_TYPE with a Name _UNICODE_STRING that has Length=0.
+        let ob_table_paddr: u64 = 0x0073_0000;
+        let type_vaddr: u64 = 0xFFFF_8000_0083_0000;
+        let type_paddr: u64 = 0x0083_0000;
+
+        let ptb = build_empty_root()
+            .map_4k(OB_TYPE_INDEX_TABLE_VADDR, ob_table_paddr, flags::WRITABLE)
+            .map_4k(type_vaddr, type_paddr, flags::WRITABLE)
+            // Slot 5 → type_vaddr
+            .write_phys_u64(ob_table_paddr + 5 * 8, type_vaddr)
+            // _OBJECT_TYPE.Name at type_paddr + 0x10: Length=0, Buffer=0 → empty string
+            .write_phys(type_paddr + OBJ_TYPE_NAME, &[0u8; 16]);
+
+        let reader = make_test_reader(ptb);
+        let name = resolve_type_name(&reader, OB_TYPE_INDEX_TABLE_VADDR, 5);
+        assert_eq!(name, "<unknown>", "empty unicode name should return '<unknown>'");
+    }
 }

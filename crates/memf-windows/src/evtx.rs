@@ -333,4 +333,188 @@ mod tests {
         assert_eq!(chunk.first_timestamp, timestamp);
         assert_eq!(chunk.last_timestamp, timestamp);
     }
+
+    /// A chunk with a known channel name embedded as UTF-16LE in the records area
+    /// exercises the identify_channel scanning path.
+    #[test]
+    fn scan_evtx_chunk_with_known_channel() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        const CHUNK_VADDR: u64 = 0xFFFF_8000_0020_0000;
+        const CHUNK_PADDR: u64 = 0x0090_0000;
+
+        let mut builder = PageTableBuilder::new();
+        for i in 0..16u64 {
+            builder = builder.map_4k(
+                CHUNK_VADDR + i * 0x1000,
+                CHUNK_PADDR + i * 0x1000,
+                flags::PRESENT | flags::WRITABLE,
+            );
+        }
+
+        // ElfChnk magic
+        builder = builder.write_phys(CHUNK_PADDR, &ELFCHNK_MAGIC);
+        builder = builder.write_phys(CHUNK_PADDR + 0x08, &1u64.to_le_bytes());
+        builder = builder.write_phys(CHUNK_PADDR + 0x10, &1u64.to_le_bytes());
+
+        // Write "Security" as UTF-16LE in the records area (at records_offset + 0x10)
+        let channel_name = "Security";
+        let channel_utf16: Vec<u8> = channel_name
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        builder = builder.write_phys(CHUNK_PADDR + RECORDS_OFFSET + 0x10, &channel_utf16);
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = scan_evtx_chunks(&reader, &[(CHUNK_VADDR, CHUNK_SIZE)]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].channel, "Security");
+    }
+
+    /// identify_channel falls back to "Unknown" when the records area is unmapped.
+    #[test]
+    fn scan_evtx_chunk_unknown_channel_when_unmapped() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map only the first page (header page), leaving records area unmapped.
+        const CHUNK_VADDR: u64 = 0xFFFF_8000_0030_0000;
+        const CHUNK_PADDR: u64 = 0x00A0_0000;
+
+        let mut builder = PageTableBuilder::new();
+        // Map all 16 pages but only put data in the first to avoid unmapped reads.
+        for i in 0..16u64 {
+            builder = builder.map_4k(
+                CHUNK_VADDR + i * 0x1000,
+                CHUNK_PADDR + i * 0x1000,
+                flags::PRESENT | flags::WRITABLE,
+            );
+        }
+
+        // ElfChnk magic at offset 0
+        builder = builder.write_phys(CHUNK_PADDR, &ELFCHNK_MAGIC);
+        builder = builder.write_phys(CHUNK_PADDR + 0x08, &42u64.to_le_bytes());
+        builder = builder.write_phys(CHUNK_PADDR + 0x10, &99u64.to_le_bytes());
+        // Records area is zeroed — no record magic → record_count stays 0,
+        // channel scanning finds no known name → "Unknown".
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = scan_evtx_chunks(&reader, &[(CHUNK_VADDR, CHUNK_SIZE)]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].channel, "Unknown");
+        assert_eq!(result[0].record_count, 0);
+    }
+
+    /// A record with record_size < 24 causes the record loop to break early.
+    #[test]
+    fn scan_evtx_chunk_small_record_size_breaks_loop() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        const CHUNK_VADDR: u64 = 0xFFFF_8000_0040_0000;
+        const CHUNK_PADDR: u64 = 0x00B0_0000;
+
+        let mut builder = PageTableBuilder::new();
+        for i in 0..16u64 {
+            builder = builder.map_4k(
+                CHUNK_VADDR + i * 0x1000,
+                CHUNK_PADDR + i * 0x1000,
+                flags::PRESENT | flags::WRITABLE,
+            );
+        }
+
+        builder = builder.write_phys(CHUNK_PADDR, &ELFCHNK_MAGIC);
+        builder = builder.write_phys(CHUNK_PADDR + 0x08, &5u64.to_le_bytes());
+        builder = builder.write_phys(CHUNK_PADDR + 0x10, &5u64.to_le_bytes());
+
+        // Write record magic but size = 10 (< 24 minimum) → loop breaks.
+        let record_paddr = CHUNK_PADDR + RECORDS_OFFSET;
+        builder = builder.write_phys(record_paddr, &RECORD_MAGIC);
+        builder = builder.write_phys(record_paddr + 4, &10u32.to_le_bytes()); // too small
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = scan_evtx_chunks(&reader, &[(CHUNK_VADDR, CHUNK_SIZE)]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].record_count, 0, "loop should break on small record_size");
+    }
+
+    /// Region too small for even one chunk (< CHUNK_SIZE) produces no results.
+    #[test]
+    fn scan_evtx_region_too_small() {
+        let reader = build_empty_reader();
+        // Region length = CHUNK_SIZE - 1 → while condition `addr + CHUNK_SIZE <= region_end` is false.
+        let result =
+            scan_evtx_chunks(&reader, &[(0xFFFF_8000_0000_0000, CHUNK_SIZE - 1)]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Two chunks back-to-back in a 128 KiB region are both found.
+    #[test]
+    fn scan_evtx_two_chunks_found() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // 128 KiB = 2 × 64 KiB chunks, 32 pages total
+        const REGION_VADDR: u64 = 0xFFFF_8000_0050_0000;
+        const REGION_PADDR: u64 = 0x00C0_0000;
+        const REGION_SIZE: u64 = 0x2_0000;
+
+        let mut builder = PageTableBuilder::new();
+        for i in 0..32u64 {
+            builder = builder.map_4k(
+                REGION_VADDR + i * 0x1000,
+                REGION_PADDR + i * 0x1000,
+                flags::PRESENT | flags::WRITABLE,
+            );
+        }
+
+        // Chunk 0 at REGION_PADDR
+        builder = builder.write_phys(REGION_PADDR, &ELFCHNK_MAGIC);
+        builder = builder.write_phys(REGION_PADDR + 0x08, &1u64.to_le_bytes());
+        builder = builder.write_phys(REGION_PADDR + 0x10, &1u64.to_le_bytes());
+
+        // Chunk 1 at REGION_PADDR + 0x10000
+        let chunk2_paddr = REGION_PADDR + CHUNK_SIZE;
+        builder = builder.write_phys(chunk2_paddr, &ELFCHNK_MAGIC);
+        builder = builder.write_phys(chunk2_paddr + 0x08, &2u64.to_le_bytes());
+        builder = builder.write_phys(chunk2_paddr + 0x10, &2u64.to_le_bytes());
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = scan_evtx_chunks(&reader, &[(REGION_VADDR, REGION_SIZE)]).unwrap();
+        assert_eq!(result.len(), 2, "should find both chunks");
+        assert_eq!(result[0].first_event_id, 1);
+        assert_eq!(result[1].first_event_id, 2);
+    }
+
+    /// EvtxChunkInfo serializes correctly.
+    #[test]
+    fn evtx_chunk_info_serializes() {
+        use crate::EvtxChunkInfo;
+        let info = EvtxChunkInfo {
+            offset: 0xFFFF_8000_0010_0000,
+            first_event_id: 100,
+            last_event_id: 200,
+            first_timestamp: 133_500_672_000_000_000,
+            last_timestamp: 133_500_673_000_000_000,
+            record_count: 10,
+            channel: "Security".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"first_event_id\":100"));
+        assert!(json.contains("\"record_count\":10"));
+        assert!(json.contains("\"channel\":\"Security\""));
+    }
 }

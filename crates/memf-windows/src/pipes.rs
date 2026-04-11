@@ -689,4 +689,59 @@ mod tests {
         assert!(json.contains("\"is_suspicious\":true"));
         assert!(json.contains("Cobalt Strike"));
     }
+
+    /// NamedPipeInfo serializes correctly for benign pipes (suspicion_reason = None).
+    #[test]
+    fn named_pipe_info_benign_serializes() {
+        let info = NamedPipeInfo {
+            name: "lsass".to_string(),
+            is_suspicious: false,
+            suspicion_reason: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"name\":\"lsass\""));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("\"suspicion_reason\":null"));
+    }
+
+    /// classify_pipe: MSSE prefix but missing "-server" suffix → not suspicious.
+    #[test]
+    fn classify_pipe_msse_no_server_suffix_benign() {
+        // Pattern requires starts_with("msse-") AND ends_with("-server").
+        assert!(classify_pipe("MSSE-1234-serverx").is_none(), "must end with '-server' exactly");
+        assert!(classify_pipe("MSSE-1234").is_none(), "no '-server' suffix is benign");
+    }
+
+    /// classify_pipe: postex_ssh_ takes priority over postex_ (ordering test).
+    #[test]
+    fn classify_pipe_postex_ssh_beats_postex() {
+        let reason_ssh = classify_pipe("postex_ssh_abcd").unwrap();
+        let reason_meterp = classify_pipe("postex_abcd").unwrap();
+        assert!(reason_ssh.contains("Cobalt Strike"), "postex_ssh_ → Cobalt Strike SSH");
+        assert!(reason_meterp.contains("Meterpreter"), "postex_ (no ssh_) → Meterpreter");
+    }
+
+    /// is_guid_like: string of correct length but hyphen in wrong position.
+    #[test]
+    fn is_guid_like_hyphen_wrong_position_not_guid() {
+        // Swap the hyphen from position 8 to position 9
+        assert!(!is_guid_like("deadbeef1-234-5678-abcd-0123456789ab"));
+    }
+
+    /// walk_named_pipes: symbol present but ObpRootDirectoryObject read returns null ptr → empty.
+    #[test]
+    fn walk_named_pipes_root_dir_zero_returns_empty() {
+        // Map ObpRootDirectoryObject to a page containing 0x00...00.
+        let root_ptr_paddr: u64 = 0x0001_0000;
+        let root_ptr_vaddr = OBP_ROOT_DIR_OBJ_VADDR;
+        let page = vec![0u8; 4096]; // all zeros → root_dir_addr == 0
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(root_ptr_vaddr, root_ptr_paddr, flags::WRITABLE)
+            .write_phys(root_ptr_paddr, &page);
+
+        let reader = make_test_reader(ptb);
+        let pipes = walk_named_pipes(&reader).unwrap();
+        assert!(pipes.is_empty(), "null root_dir_addr should return empty pipes");
+    }
 }

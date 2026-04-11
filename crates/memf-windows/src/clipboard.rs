@@ -670,6 +670,249 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// walk_clipboard: num_formats > MAX_CLIP_ENTRIES → empty (safety guard).
+    #[test]
+    fn walk_clipboard_too_many_formats_empty() {
+        use memf_core::test_builders::flags;
+        let sym_addr: u64 = 0xFFFF_8000_5200_0000;
+        let sym_paddr: u64 = 0x0053_0000;
+        let winsta_addr: u64 = 0x0000_7FF0_5000_0000;
+        let winsta_paddr: u64 = 0x0054_0000;
+
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
+        let mut winsta_page = vec![0u8; 4096];
+        // cNumClipFormats at default offset 0x60 = MAX_CLIP_ENTRIES + 1 = 257
+        let too_many: u32 = MAX_CLIP_ENTRIES as u32 + 1;
+        winsta_page[0x60..0x64].copy_from_slice(&too_many.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_clipboard(&reader).unwrap();
+        assert!(result.is_empty(), "num_formats > MAX_CLIP_ENTRIES should return empty");
+    }
+
+    /// walk_clipboard: pClipBase pointer is zero → empty.
+    #[test]
+    fn walk_clipboard_zero_clip_base_empty() {
+        use memf_core::test_builders::flags;
+        let sym_addr: u64 = 0xFFFF_8000_5300_0000;
+        let sym_paddr: u64 = 0x0055_0000;
+        let winsta_addr: u64 = 0x0000_7FF0_6000_0000;
+        let winsta_paddr: u64 = 0x0056_0000;
+
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
+        let mut winsta_page = vec![0u8; 4096];
+        // cNumClipFormats at 0x60 = 1 (valid)
+        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
+        // pClipBase at 0x58 = 0 (null)
+
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_clipboard(&reader).unwrap();
+        assert!(result.is_empty(), "null pClipBase should return empty");
+    }
+
+    /// walk_clipboard: full path with one CF_TEXT entry (suspicious password content).
+    #[test]
+    fn walk_clipboard_cf_text_entry_suspicious() {
+        use memf_core::test_builders::flags;
+
+        // Layout:
+        //   sym_addr   → winsta_addr (pointer)
+        //   winsta_addr: cNumClipFormats=1 at +0x60, pClipBase=clip_addr at +0x58
+        //   clip_addr  : fmt=1 (CF_TEXT) at +0x00, hData=text_addr at +0x08
+        //   text_addr  : "password: hunter2\0"
+        let sym_addr: u64    = 0xFFFF_8000_5400_0000;
+        let sym_paddr: u64   = 0x0057_0000;
+        let winsta_addr: u64 = 0x0000_7FF0_7000_0000;
+        let winsta_paddr: u64 = 0x0058_0000;
+        let clip_addr: u64   = 0x0000_7FF0_7001_0000;
+        let clip_paddr: u64  = 0x0059_0000;
+        let text_addr: u64   = 0x0000_7FF0_7002_0000;
+        let text_paddr: u64  = 0x005A_0000;
+
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
+
+        let mut winsta_page = vec![0u8; 4096];
+        winsta_page[0x58..0x60].copy_from_slice(&clip_addr.to_le_bytes()); // pClipBase
+        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());       // cNumClipFormats
+
+        let mut clip_page = vec![0u8; 4096];
+        clip_page[0x00..0x04].copy_from_slice(&1u32.to_le_bytes()); // fmt = CF_TEXT
+        clip_page[0x08..0x10].copy_from_slice(&text_addr.to_le_bytes()); // hData
+
+        let text = b"password: hunter2\0";
+        let mut text_page = vec![0u8; 4096];
+        text_page[..text.len()].copy_from_slice(text);
+
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_struct("_CLIP", 0x10)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
+            .map_4k(clip_addr, clip_paddr, flags::WRITABLE)
+            .map_4k(text_addr, text_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .write_phys(clip_paddr, &clip_page)
+            .write_phys(text_paddr, &text_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_clipboard(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].format, 1);
+        assert_eq!(result[0].format_name, "CF_TEXT");
+        assert_eq!(result[0].preview, "password: hunter2");
+        assert!(result[0].is_suspicious, "password content should be flagged suspicious");
+    }
+
+    /// walk_clipboard: CF_UNICODETEXT entry with benign content.
+    #[test]
+    fn walk_clipboard_cf_unicodetext_entry_benign() {
+        use memf_core::test_builders::flags;
+
+        let sym_addr: u64    = 0xFFFF_8000_5500_0000;
+        let sym_paddr: u64   = 0x005B_0000;
+        let winsta_addr: u64 = 0x0000_7FF0_8000_0000;
+        let winsta_paddr: u64 = 0x005C_0000;
+        let clip_addr: u64   = 0x0000_7FF0_8001_0000;
+        let clip_paddr: u64  = 0x005D_0000;
+        let text_addr: u64   = 0x0000_7FF0_8002_0000;
+        let text_paddr: u64  = 0x005E_0000;
+
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
+
+        let mut winsta_page = vec![0u8; 4096];
+        winsta_page[0x58..0x60].copy_from_slice(&clip_addr.to_le_bytes());
+        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
+
+        let mut clip_page = vec![0u8; 4096];
+        clip_page[0x00..0x04].copy_from_slice(&13u32.to_le_bytes()); // CF_UNICODETEXT
+        clip_page[0x08..0x10].copy_from_slice(&text_addr.to_le_bytes());
+
+        // "Hello" as UTF-16LE + null terminator
+        let hello_utf16: Vec<u8> = "Hello"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .chain([0u8, 0u8])
+            .collect();
+        let mut text_page = vec![0u8; 4096];
+        text_page[..hello_utf16.len()].copy_from_slice(&hello_utf16);
+
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_struct("_CLIP", 0x10)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
+            .map_4k(clip_addr, clip_paddr, flags::WRITABLE)
+            .map_4k(text_addr, text_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .write_phys(clip_paddr, &clip_page)
+            .write_phys(text_paddr, &text_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_clipboard(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].format, 13);
+        assert_eq!(result[0].format_name, "CF_UNICODETEXT");
+        assert_eq!(result[0].preview, "Hello");
+        assert!(!result[0].is_suspicious);
+    }
+
+    /// walk_clipboard: unknown (non-text) format produces an entry with empty preview.
+    #[test]
+    fn walk_clipboard_unknown_format_no_preview() {
+        use memf_core::test_builders::flags;
+
+        let sym_addr: u64    = 0xFFFF_8000_5600_0000;
+        let sym_paddr: u64   = 0x005F_0000;
+        let winsta_addr: u64 = 0x0000_7FF0_9000_0000;
+        let winsta_paddr: u64 = 0x0060_0000;
+        let clip_addr: u64   = 0x0000_7FF0_9001_0000;
+        let clip_paddr: u64  = 0x0061_0000;
+
+        let mut sym_page = vec![0u8; 4096];
+        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
+
+        let mut winsta_page = vec![0u8; 4096];
+        winsta_page[0x58..0x60].copy_from_slice(&clip_addr.to_le_bytes());
+        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
+
+        let mut clip_page = vec![0u8; 4096];
+        clip_page[0x00..0x04].copy_from_slice(&8u32.to_le_bytes()); // CF_DIB (non-text)
+        clip_page[0x08..0x10].copy_from_slice(&0xDEAD_BEEFu64.to_le_bytes()); // hData
+
+        let isf = IsfBuilder::new()
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_struct("_CLIP", 0x10)
+            .add_symbol("grpWinStaList", sym_addr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
+            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
+            .map_4k(clip_addr, clip_paddr, flags::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .write_phys(winsta_paddr, &winsta_page)
+            .write_phys(clip_paddr, &clip_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_clipboard(&reader).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].format, 8);
+        assert_eq!(result[0].format_name, "CF_DIB");
+        assert!(result[0].preview.is_empty(), "non-text format should have empty preview");
+        assert!(!result[0].is_suspicious);
+    }
+
     // ── walk_clipboard tests ──────────────────────────────────────────
 
     /// No grpWinStaList symbol → empty Vec.

@@ -463,6 +463,154 @@ mod tests {
         assert!(desktops.is_empty(), "null first_ws should yield no desktops");
     }
 
+    /// Helper: build ISF with grpWinStaList symbol and required structs including _UNICODE_STRING.
+    /// Layout chosen to avoid field overlap:
+    ///   _WINSTATION_OBJECT.Name   @ 0x10 (_UNICODE_STRING = 16 bytes: 0x10..0x20)
+    ///   _WINSTATION_OBJECT.dwSessionId @ 0x20
+    ///   _WINSTATION_OBJECT.rpwinstaNext @ 0x28
+    ///   _WINSTATION_OBJECT.rpdeskList   @ 0x30
+    ///
+    ///   tagDESKTOP.Name        @ 0x10 (_UNICODE_STRING = 16 bytes: 0x10..0x20)
+    ///   tagDESKTOP.pheapDesktop @ 0x20  (placed AFTER the Name _UNICODE_STRING)
+    ///   tagDESKTOP.rpdeskNext   @ 0x28
+    ///   tagDESKTOP.dwThreadCount @ 0x30
+    fn make_winsta_isf(list_vaddr: u64) -> memf_symbols::isf::IsfResolver {
+        use memf_symbols::test_builders::IsfBuilder;
+        use memf_symbols::isf::IsfResolver;
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("grpWinStaList", list_vaddr)
+            .add_struct("_WINSTATION_OBJECT", 0x100)
+            .add_field("_WINSTATION_OBJECT", "Name", 0x10, "_UNICODE_STRING")
+            .add_field("_WINSTATION_OBJECT", "dwSessionId", 0x20, "unsigned long")
+            .add_field("_WINSTATION_OBJECT", "rpwinstaNext", 0x28, "pointer")
+            .add_field("_WINSTATION_OBJECT", "rpdeskList", 0x30, "pointer")
+            .add_struct("tagDESKTOP", 0x100)
+            .add_field("tagDESKTOP", "Name", 0x10, "_UNICODE_STRING")
+            .add_field("tagDESKTOP", "pheapDesktop", 0x20, "pointer")
+            .add_field("tagDESKTOP", "rpdeskNext", 0x28, "pointer")
+            .add_field("tagDESKTOP", "dwThreadCount", 0x30, "unsigned long")
+            .build_json();
+        IsfResolver::from_value(&isf).unwrap()
+    }
+
+    /// Helper: write a _UNICODE_STRING block into a page buffer.
+    /// Layout: Length(u16) at off, MaxLength(u16) at off+2, Buffer(u64) at off+8.
+    /// The UTF-16LE string data is placed at str_off within the same page.
+    fn write_unistr_in_page(page: &mut Vec<u8>, off: usize, text: &str, str_off: usize, base_vaddr: u64) {
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let len = utf16.len() as u16;
+        page[str_off..str_off + utf16.len()].copy_from_slice(&utf16);
+        page[off..off + 2].copy_from_slice(&len.to_le_bytes());      // Length
+        page[off + 2..off + 4].copy_from_slice(&len.to_le_bytes());  // MaxLength
+        let buf_vaddr = base_vaddr + str_off as u64;
+        page[off + 8..off + 16].copy_from_slice(&buf_vaddr.to_le_bytes()); // Buffer
+    }
+
+    /// walk_desktops: station with one desktop in the linked list.
+    /// Exercises walk_station_desktops and the desktop-info push path.
+    #[test]
+    fn walk_desktops_station_with_one_desktop() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        // Addresses (all physical < 0x00FF_FFFF per 16 MB limit)
+        let list_vaddr: u64  = 0xFFFF_8000_00C0_0000;
+        let list_paddr: u64  = 0x00C0_0000;
+        let ws_vaddr: u64    = 0xFFFF_8000_00C1_0000;
+        let ws_paddr: u64    = 0x00C1_0000;
+        let desk_vaddr: u64  = 0xFFFF_8000_00C2_0000;
+        let desk_paddr: u64  = 0x00C2_0000;
+
+        let resolver = make_winsta_isf(list_vaddr);
+
+        // list page: first 8 bytes = ws_vaddr
+        let mut list_page = vec![0u8; 4096];
+        list_page[0..8].copy_from_slice(&ws_vaddr.to_le_bytes());
+
+        // ws page: _UNICODE_STRING at 0x10 (Name), session_id at 0x20, rpdeskList at 0x30
+        let mut ws_page = vec![0u8; 4096];
+        write_unistr_in_page(&mut ws_page, 0x10, "WinSta0", 0x200, ws_vaddr);
+        ws_page[0x20..0x24].copy_from_slice(&1u32.to_le_bytes()); // session_id
+        ws_page[0x30..0x38].copy_from_slice(&desk_vaddr.to_le_bytes()); // rpdeskList
+
+        // desk page: _UNICODE_STRING at 0x10 (Name, occupies 0x10..0x20),
+        //            pheapDesktop at 0x20, rpdeskNext at 0x28, dwThreadCount at 0x30.
+        let mut desk_page = vec![0u8; 4096];
+        write_unistr_in_page(&mut desk_page, 0x10, "Default", 0x200, desk_vaddr);
+        let heap_size: u64 = 0x0010_0000;
+        desk_page[0x20..0x28].copy_from_slice(&heap_size.to_le_bytes()); // pheapDesktop
+        desk_page[0x30..0x34].copy_from_slice(&3u32.to_le_bytes());       // dwThreadCount
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .map_4k(ws_vaddr, ws_paddr, flags::WRITABLE)
+            .map_4k(desk_vaddr, desk_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .write_phys(ws_paddr, &ws_page)
+            .write_phys(desk_paddr, &desk_page)
+            .build();
+
+        let vas = memf_core::vas::VirtualAddressSpace::new(mem, cr3, memf_core::vas::TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let (stations, desktops) = walk_desktops(&reader).unwrap();
+        assert_eq!(stations.len(), 1, "should find exactly one window station");
+        let ws = &stations[0];
+        assert_eq!(ws.name, "WinSta0");
+        assert_eq!(ws.session_id, 1);
+        assert!(ws.is_interactive);
+        assert!(!ws.is_suspicious, "WinSta0 should not be suspicious");
+        assert_eq!(ws.desktop_count, 1);
+
+        assert_eq!(desktops.len(), 1, "should find exactly one desktop");
+        let desk = &desktops[0];
+        assert_eq!(desk.name, "Default");
+        assert_eq!(desk.winstation_name, "WinSta0");
+        assert_eq!(desk.heap_size, heap_size);
+        assert_eq!(desk.thread_count, 3);
+        assert!(!desk.is_suspicious, "'Default' on WinSta0 is standard");
+    }
+
+    /// walk_desktops: suspicious desktop (non-standard name on WinSta0).
+    #[test]
+    fn walk_desktops_suspicious_desktop_flagged() {
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let list_vaddr: u64  = 0xFFFF_8000_00D0_0000;
+        let list_paddr: u64  = 0x00D0_0000;
+        let ws_vaddr: u64    = 0xFFFF_8000_00D1_0000;
+        let ws_paddr: u64    = 0x00D1_0000;
+        let desk_vaddr: u64  = 0xFFFF_8000_00D2_0000;
+        let desk_paddr: u64  = 0x00D2_0000;
+
+        let resolver = make_winsta_isf(list_vaddr);
+
+        let mut list_page = vec![0u8; 4096];
+        list_page[0..8].copy_from_slice(&ws_vaddr.to_le_bytes());
+
+        let mut ws_page = vec![0u8; 4096];
+        write_unistr_in_page(&mut ws_page, 0x10, "WinSta0", 0x200, ws_vaddr);
+        ws_page[0x30..0x38].copy_from_slice(&desk_vaddr.to_le_bytes());
+
+        let mut desk_page = vec![0u8; 4096];
+        write_unistr_in_page(&mut desk_page, 0x10, "HiddenDesktop", 0x200, desk_vaddr);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .map_4k(ws_vaddr, ws_paddr, flags::WRITABLE)
+            .map_4k(desk_vaddr, desk_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .write_phys(ws_paddr, &ws_page)
+            .write_phys(desk_paddr, &desk_page)
+            .build();
+
+        let vas = memf_core::vas::VirtualAddressSpace::new(mem, cr3, memf_core::vas::TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let (_stations, desktops) = walk_desktops(&reader).unwrap();
+        assert_eq!(desktops.len(), 1);
+        assert!(desktops[0].is_suspicious, "HiddenDesktop on WinSta0 must be flagged");
+    }
+
     /// grpWinStaList present, first_ws non-zero and mapped, but all fields zero →
     /// exercises the station walk loop (reads ws_name, session_id, desktop list).
     #[test]

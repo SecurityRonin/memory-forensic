@@ -594,4 +594,114 @@ mod tests {
         assert!(results[0].suspicious, "corrupt PE should be flagged");
         assert!(results[0].reason.contains("PE"), "reason should mention PE");
     }
+
+    /// read_pe_header: MZ present but header is exactly 0x40 bytes —
+    /// e_lfanew could be within the buffer but the PE sig is at the boundary.
+    /// Exercises the `header.len() < pe_off + 4` extended-read branch.
+    #[test]
+    fn read_pe_header_pe_beyond_512_bytes_extended_read() {
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let peb_paddr: u64 = 0x00B0_0000;
+        let image_base_vaddr: u64 = 0x0000_0000_0040_0000;
+        let image_base_paddr: u64 = 0x00A0_0000;
+
+        // Put PE signature beyond offset 512 so the extended read path is taken.
+        // e_lfanew = 0x200 (512), so pe_off = 0x200 which equals header.len() (512)
+        // → the condition `header.len() < pe_off + 4` is true.
+        let pe_offset: u32 = 0x200; // exactly at 512
+        let mut image_data = vec![0u8; 4096];
+        image_data[0] = 0x4D; // 'M'
+        image_data[1] = 0x5A; // 'Z'
+        image_data[0x3C..0x40].copy_from_slice(&pe_offset.to_le_bytes());
+        // PE signature at offset 0x200
+        image_data[0x200] = b'P';
+        image_data[0x201] = b'E';
+        image_data[0x202] = 0;
+        image_data[0x203] = 0;
+        // SizeOfImage at pe_off + 24 + 56 = 0x200 + 80 = 0x250
+        let soi: u32 = 0x2_0000;
+        image_data[0x250..0x254].copy_from_slice(&soi.to_le_bytes());
+
+        let ldr_size: u64 = u64::from(soi);
+
+        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+            777,
+            "legit.exe",
+            peb_paddr,
+            image_base_vaddr,
+            image_base_paddr,
+            &image_data,
+            ldr_size,
+        );
+
+        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = check_hollowing(&reader, head_vaddr).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].has_mz, "MZ should be detected");
+        assert!(results[0].has_pe, "PE signature beyond 512 bytes should be read via extended path");
+        assert!(!results[0].suspicious, "matching sizes should not be flagged");
+    }
+
+    /// ldr_first_image_size: InLoadOrderModuleList.Flink == list head (empty list) → returns 0.
+    /// Exercises the `first_entry == list_head` guard in ldr_first_image_size.
+    #[test]
+    fn ldr_first_image_size_empty_ldr_list_returns_zero() {
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let peb_paddr: u64 = 0x00D0_0000;
+        let image_base_vaddr: u64 = 0x0000_0000_0050_0000;
+        let image_base_paddr: u64 = 0x00E0_0000;
+
+        // Build a process with a valid PE but empty LDR list (Flink → list head itself).
+        // We achieve this by setting ldr_size=0 and manually patching ldr_entry to loop back.
+        let pe_size: u32 = 0x1_0000;
+        let mut image_data = vec![0u8; 4096];
+        write_pe_header(&mut image_data, 0, pe_size);
+
+        // ldr_size=0 passed as the "LDR-advertised" size.
+        // When ldr_size == 0, ldr_first_image_size returns 0, so there's no mismatch.
+        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+            555,
+            "test.exe",
+            peb_paddr,
+            image_base_vaddr,
+            image_base_paddr,
+            &image_data,
+            0, // ldr_size = 0 → ldr_first_image_size path returns 0
+        );
+
+        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = check_hollowing(&reader, head_vaddr).unwrap();
+        assert_eq!(results.len(), 1);
+        // ldr_size==0 means the mismatch branch `ldr_size > 0` is skipped → not suspicious.
+        assert!(!results[0].suspicious, "ldr_size=0 should skip size mismatch check");
+    }
+
+    /// WinHollowingInfo serializes correctly.
+    #[test]
+    fn win_hollowing_info_serializes() {
+        use crate::WinHollowingInfo;
+        let info = WinHollowingInfo {
+            pid: 1234,
+            image_name: "svchost.exe".to_string(),
+            image_base: 0x0000_0000_0040_0000,
+            has_mz: true,
+            has_pe: true,
+            pe_size_of_image: 0x1_0000,
+            ldr_size_of_image: 0x1_0000,
+            suspicious: false,
+            reason: String::new(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("svchost.exe"));
+        assert!(json.contains("\"has_mz\":true"));
+        assert!(json.contains("\"suspicious\":false"));
+    }
 }

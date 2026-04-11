@@ -69,8 +69,8 @@ pub fn classify_kerberos_ticket(
     let rc4_tgt = is_tgt && encryption_type == 23;
 
     // Suspicious: service name contains unusual characters or is krbtgt from unexpected realm
-    let name_suspicious =
-        server_name.is_empty() || (is_tgt && server_name.to_ascii_lowercase().contains("krbtgt/"));
+    // Suspicious: service name is empty (malformed ticket)
+    let name_suspicious = server_name.is_empty();
 
     lifetime_suspicious || rc4_tgt || name_suspicious
 }
@@ -111,6 +111,113 @@ mod tests {
             18, // AES256
             true,
         ));
+    }
+
+    /// A normal TGT with short lifetime and AES256 → not suspicious.
+    #[test]
+    fn classify_normal_tgt_not_suspicious() {
+        let eight_hours: u64 = 8 * 60 * 60 * 10_000_000;
+        assert!(!classify_kerberos_ticket(
+            "krbtgt/CORP.LOCAL",
+            0,
+            eight_hours,
+            18,
+            true,
+        ));
+    }
+
+    /// RC4 TGT → always suspicious (Overpass-the-Hash indicator).
+    #[test]
+    fn classify_rc4_tgt_suspicious() {
+        let two_hours: u64 = 2 * 60 * 60 * 10_000_000;
+        assert!(classify_kerberos_ticket(
+            "krbtgt/CORP.LOCAL",
+            0,
+            two_hours,
+            23, // RC4-HMAC
+            true,
+        ));
+    }
+
+    /// Non-TGT service ticket with RC4 and short lifetime → not suspicious.
+    #[test]
+    fn classify_service_ticket_rc4_not_suspicious() {
+        let two_hours: u64 = 2 * 60 * 60 * 10_000_000;
+        assert!(!classify_kerberos_ticket(
+            "host/server.corp.local",
+            0,
+            two_hours,
+            23,
+            false,
+        ));
+    }
+
+    /// Empty server name → suspicious.
+    #[test]
+    fn classify_empty_server_name_suspicious() {
+        assert!(classify_kerberos_ticket("", 0, 3_600_000_000, 18, false));
+    }
+
+    /// Normal 2-hour AES256 TGT to krbtgt → not suspicious (standard Kerberos behaviour).
+    #[test]
+    fn classify_tgt_krbtgt_in_name_not_suspicious() {
+        let two_hours: u64 = 2 * 60 * 60 * 10_000_000;
+        assert!(!classify_kerberos_ticket(
+            "krbtgt/CORP.LOCAL",
+            0,
+            two_hours,
+            18,
+            true,
+        ));
+    }
+
+    /// Non-TGT with long lifetime → suspicious (lifetime check only).
+    #[test]
+    fn classify_non_tgt_long_lifetime_suspicious() {
+        let twenty_hours: u64 = 20 * 60 * 60 * 10_000_000;
+        assert!(classify_kerberos_ticket(
+            "host/server.corp.local",
+            0,
+            twenty_hours,
+            18,
+            false,
+        ));
+    }
+
+    /// end_time <= start_time: no lifetime flag, no RC4 TGT, non-empty host → not suspicious.
+    #[test]
+    fn classify_end_before_start_not_suspicious() {
+        assert!(!classify_kerberos_ticket(
+            "host/dc.corp.local",
+            1_000_000_000_000,
+            500_000_000_000,
+            18,
+            false,
+        ));
+    }
+
+    /// KerberosTicketInfo serializes correctly.
+    #[test]
+    fn kerberos_ticket_info_serializes() {
+        let info = KerberosTicketInfo {
+            logon_session: 0x1234,
+            client_name: "alice@CORP.LOCAL".to_string(),
+            server_name: "krbtgt/CORP.LOCAL".to_string(),
+            realm: "CORP.LOCAL".to_string(),
+            start_time: 0,
+            end_time: 100_000_000,
+            renew_until: 200_000_000,
+            ticket_flags: 0x4000_0000,
+            encryption_type: 18,
+            ticket_data: vec![0x01, 0x02, 0x03],
+            is_tgt: true,
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("alice@CORP.LOCAL"));
+        assert!(json.contains("\"is_tgt\":true"));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("\"encryption_type\":18"));
     }
 
     /// Without KerbLogonSessionTable symbol, walker returns empty.
