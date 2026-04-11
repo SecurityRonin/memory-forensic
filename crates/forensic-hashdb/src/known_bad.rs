@@ -1,4 +1,4 @@
-use crate::types::BadFileInfo;
+use crate::types::{BadFileInfo, BadFileSource};
 use std::collections::HashMap;
 
 /// Provenance-tracked malware hash lookup database.
