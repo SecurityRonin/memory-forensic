@@ -46,20 +46,8 @@ pub struct SessionInfo {
 /// Values correspond to the `SECURITY_LOGON_TYPE` enumeration in
 /// `ntsecapi.h`.
 pub fn logon_type_name(logon_type: u32) -> &'static str {
-    match logon_type {
-        0 => "System",
-        2 => "Interactive",
-        3 => "Network",
-        4 => "Batch",
-        5 => "Service",
-        7 => "Unlock",
-        8 => "NetworkCleartext",
-        9 => "NewCredentials",
-        10 => "RemoteInteractive",
-        11 => "CachedInteractive",
-        _ => "Unknown",
+        todo!()
     }
-}
 
 /// Classify a logon session as suspicious based on forensic heuristics.
 ///
@@ -71,29 +59,8 @@ pub fn logon_type_name(logon_type: u32) -> &'static str {
 /// - `RemoteInteractive` (type 10) from the SYSTEM account — SYSTEM should
 ///   never initiate RDP sessions; indicates possible exploitation
 pub fn classify_session(logon_type: u32, username: &str) -> bool {
-    // NetworkCleartext logons are always suspicious — plaintext credentials.
-    if logon_type == 8 {
-        return true;
+        todo!()
     }
-
-    // NewCredentials with a non-system account suggests runas /netonly or PtH.
-    if logon_type == 9 {
-        let normalized = username.to_uppercase();
-        if normalized != "SYSTEM" {
-            return true;
-        }
-    }
-
-    // SYSTEM using RemoteInteractive (RDP) is abnormal.
-    if logon_type == 10 {
-        let normalized = username.to_uppercase();
-        if normalized == "SYSTEM" {
-            return true;
-        }
-    }
-
-    false
-}
 
 /// Enumerate Windows logon sessions from kernel memory.
 ///
@@ -105,21 +72,8 @@ pub fn classify_session(logon_type: u32, username: &str) -> bool {
 pub fn walk_sessions<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<SessionInfo>> {
-    // Require LogonSessionList or SepLogonSessions symbol to proceed.
-    // If neither is present, return empty vec (graceful degradation).
-    let _list_head = match reader
-        .symbols()
-        .symbol_address("LogonSessionList")
-        .or_else(|| reader.symbols().symbol_address("SepLogonSessions"))
-    {
-        Some(addr) => addr,
-        None => return Ok(Vec::new()),
-    };
-
-    // Full logon session enumeration requires lsass internals not available
-    // in the synthetic test environment. Return empty vec.
-    Ok(Vec::new())
-}
+        todo!()
+    }
 
 #[cfg(test)]
 mod tests {
@@ -137,19 +91,19 @@ mod tests {
     /// Type 2 maps to "Interactive".
     #[test]
     fn logon_type_interactive() {
-        assert_eq!(logon_type_name(2), "Interactive");
+        todo!()
     }
 
     /// Type 3 maps to "Network".
     #[test]
     fn logon_type_network() {
-        assert_eq!(logon_type_name(3), "Network");
+        todo!()
     }
 
     /// Type 10 maps to "RemoteInteractive".
     #[test]
     fn logon_type_remote() {
-        assert_eq!(logon_type_name(10), "RemoteInteractive");
+        todo!()
     }
 
     // ---------------------------------------------------------------
@@ -159,114 +113,109 @@ mod tests {
     /// NetworkCleartext (type 8) is always suspicious.
     #[test]
     fn classify_cleartext_suspicious() {
-        assert!(classify_session(8, "admin"));
+        todo!()
     }
 
     /// A normal Interactive (type 2) logon from a regular user is benign.
     #[test]
     fn classify_normal_benign() {
-        assert!(!classify_session(2, "jsmith"));
+        todo!()
     }
 
     /// SYSTEM using RemoteInteractive (type 10) is suspicious.
     #[test]
     fn classify_system_rdp_suspicious() {
-        assert!(classify_session(10, "SYSTEM"));
+        todo!()
     }
 
     /// NewCredentials (type 9) with a non-system account is suspicious.
     #[test]
     fn classify_new_credentials_non_system_suspicious() {
-        assert!(classify_session(9, "admin"));
+        todo!()
     }
 
     /// NewCredentials (type 9) with the SYSTEM account is not suspicious.
     #[test]
     fn classify_new_credentials_system_benign() {
-        assert!(!classify_session(9, "SYSTEM"));
+        todo!()
     }
 
     /// RemoteInteractive (type 10) from a regular user is benign.
     #[test]
     fn classify_remote_regular_user_benign() {
-        assert!(!classify_session(10, "jsmith"));
+        todo!()
     }
 
     /// System logon type (0) is benign.
     #[test]
     fn classify_system_logon_type_benign() {
-        assert!(!classify_session(0, "SYSTEM"));
+        todo!()
     }
 
     /// Type 0 maps to "System".
     #[test]
     fn logon_type_system() {
-        assert_eq!(logon_type_name(0), "System");
+        todo!()
     }
 
     /// Type 4 maps to "Batch".
     #[test]
     fn logon_type_batch() {
-        assert_eq!(logon_type_name(4), "Batch");
+        todo!()
     }
 
     /// Type 5 maps to "Service".
     #[test]
     fn logon_type_service() {
-        assert_eq!(logon_type_name(5), "Service");
+        todo!()
     }
 
     /// Type 7 maps to "Unlock".
     #[test]
     fn logon_type_unlock() {
-        assert_eq!(logon_type_name(7), "Unlock");
+        todo!()
     }
 
     /// Type 8 maps to "NetworkCleartext".
     #[test]
     fn logon_type_network_cleartext() {
-        assert_eq!(logon_type_name(8), "NetworkCleartext");
+        todo!()
     }
 
     /// Type 9 maps to "NewCredentials".
     #[test]
     fn logon_type_new_credentials() {
-        assert_eq!(logon_type_name(9), "NewCredentials");
+        todo!()
     }
 
     /// Type 11 maps to "CachedInteractive".
     #[test]
     fn logon_type_cached_interactive() {
-        assert_eq!(logon_type_name(11), "CachedInteractive");
+        todo!()
     }
 
     /// Unknown type maps to "Unknown".
     #[test]
     fn logon_type_unknown() {
-        assert_eq!(logon_type_name(99), "Unknown");
-        assert_eq!(logon_type_name(1), "Unknown");
-        assert_eq!(logon_type_name(6), "Unknown");
+        todo!()
     }
 
     /// NewCredentials (type 9) with lowercase "system" is still benign (case-insensitive).
     #[test]
     fn classify_new_credentials_lowercase_system_benign() {
-        assert!(!classify_session(9, "system"));
-        assert!(!classify_session(9, "SYSTEM"));
-        assert!(!classify_session(9, "System"));
+        todo!()
     }
 
     /// RemoteInteractive (type 10) with lowercase "system" is suspicious (case-insensitive).
     #[test]
     fn classify_remote_lowercase_system_suspicious() {
-        assert!(classify_session(10, "system"));
-        assert!(classify_session(10, "System"));
+        todo!()
     }
 
     /// NetworkCleartext (type 8) with SYSTEM account is still suspicious.
     #[test]
     fn classify_cleartext_with_system_suspicious() {
-        assert!(classify_session(8, "SYSTEM"));
+        todo!()
     }
 
     // ---------------------------------------------------------------
@@ -276,91 +225,25 @@ mod tests {
     /// When no logon session symbols are present, walker returns an empty Vec.
     #[test]
     fn walk_no_symbol_returns_empty() {
-        let isf = IsfBuilder::new()
-            .add_struct("_SEP_LOGON_SESSION_REFERENCES", 0x100)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let sessions = walk_sessions(&reader).unwrap();
-        assert!(sessions.is_empty());
+        todo!()
     }
 
     /// When LogonSessionList symbol IS present, walker should return an empty Vec
     /// (graceful degradation — full walk not implemented in test env).
     #[test]
     fn walk_with_logon_session_list_symbol_returns_empty() {
-        let sym_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let sym_paddr: u64 = 0x0010_0000;
-
-        let isf = IsfBuilder::new()
-            .add_symbol("LogonSessionList", sym_vaddr)
-            .add_struct("_SEP_LOGON_SESSION_REFERENCES", 0x100)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let mut page = vec![0u8; 4096];
-        // Write a non-null pointer at the symbol address.
-        page[0..8].copy_from_slice(&0xFFFF_8000_0020_0000u64.to_le_bytes());
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let sessions = walk_sessions(&reader).unwrap();
-        assert!(sessions.is_empty());
+        todo!()
     }
 
     /// When SepLogonSessions symbol (fallback) IS present, walker returns empty.
     #[test]
     fn walk_with_sep_logon_sessions_symbol_returns_empty() {
-        let sym_vaddr: u64 = 0xFFFF_8000_0011_0000;
-        let sym_paddr: u64 = 0x0011_0000;
-
-        let isf = IsfBuilder::new()
-            .add_symbol("SepLogonSessions", sym_vaddr)
-            .add_struct("_SEP_LOGON_SESSION_REFERENCES", 0x100)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let mut page = vec![0u8; 4096];
-        page[0..8].copy_from_slice(&0xFFFF_8000_0030_0000u64.to_le_bytes());
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let sessions = walk_sessions(&reader).unwrap();
-        assert!(sessions.is_empty());
+        todo!()
     }
 
     /// SessionInfo serializes correctly.
     #[test]
     fn session_info_serializes() {
-        let info = SessionInfo {
-            session_id: 1,
-            username: "jsmith".to_string(),
-            domain: "CORP".to_string(),
-            logon_type: "Interactive".to_string(),
-            logon_time: 132_500_000_000_000_000,
-            auth_package: "Kerberos".to_string(),
-            logon_id: 0xDEAD_BEEF,
-            is_suspicious: false,
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"session_id\":1"));
-        assert!(json.contains("\"username\":\"jsmith\""));
-        assert!(json.contains("\"domain\":\"CORP\""));
-        assert!(json.contains("\"logon_type\":\"Interactive\""));
-        assert!(json.contains("\"auth_package\":\"Kerberos\""));
-        assert!(json.contains("\"is_suspicious\":false"));
+        todo!()
     }
 }

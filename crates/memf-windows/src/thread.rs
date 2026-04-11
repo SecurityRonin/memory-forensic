@@ -18,36 +18,8 @@ pub fn walk_threads<P: PhysicalMemoryProvider>(
     eproc_addr: u64,
     pid: u64,
 ) -> Result<Vec<WinThreadInfo>> {
-    // _KPROCESS is embedded at _EPROCESS.Pcb (offset 0).
-    let pcb_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "Pcb")
-        .ok_or_else(|| Error::Walker("missing _EPROCESS.Pcb offset".into()))?;
-
-    // ThreadListHead is within _KPROCESS.
-    let thread_list_head_offset = reader
-        .symbols()
-        .field_offset("_KPROCESS", "ThreadListHead")
-        .ok_or_else(|| Error::Walker("missing _KPROCESS.ThreadListHead offset".into()))?;
-
-    let thread_list_head_vaddr = eproc_addr
-        .wrapping_add(pcb_offset)
-        .wrapping_add(thread_list_head_offset);
-
-    // Walk the circular linked list: ThreadListHead -> _KTHREAD.ThreadListEntry
-    let kthread_addrs = reader.walk_list_with(
-        thread_list_head_vaddr,
-        "_LIST_ENTRY",
-        "Flink",
-        "_KTHREAD",
-        "ThreadListEntry",
-    )?;
-
-    kthread_addrs
-        .into_iter()
-        .map(|kthread_addr| read_thread_info(reader, kthread_addr, pid))
-        .collect()
-}
+        todo!()
+    }
 
 /// Read thread info from a single `_KTHREAD`.
 ///
@@ -59,44 +31,8 @@ fn read_thread_info<P: PhysicalMemoryProvider>(
     kthread_addr: u64,
     pid: u64,
 ) -> Result<WinThreadInfo> {
-    // Read fields from _KTHREAD
-    let teb_addr: u64 = reader.read_field(kthread_addr, "_KTHREAD", "Teb")?;
-    let start_address: u64 = reader.read_field(kthread_addr, "_KTHREAD", "Win32StartAddress")?;
-    let create_time: u64 = reader.read_field(kthread_addr, "_KTHREAD", "CreateTime")?;
-
-    // _ETHREAD base = _KTHREAD base (since Tcb is at offset 0 within _ETHREAD).
-    let ethread_addr = kthread_addr;
-
-    // Read TID from _ETHREAD.Cid.UniqueThread.
-    // _ETHREAD.Cid is a _CLIENT_ID at offset 0x620.
-    // _CLIENT_ID.UniqueThread is at offset 8 within _CLIENT_ID.
-    let cid_offset = reader
-        .symbols()
-        .field_offset("_ETHREAD", "Cid")
-        .ok_or_else(|| Error::Walker("missing _ETHREAD.Cid offset".into()))?;
-
-    let tid: u64 = reader.read_field(
-        ethread_addr.wrapping_add(cid_offset),
-        "_CLIENT_ID",
-        "UniqueThread",
-    )?;
-
-    // Try to read the State field; fall back to Running if not available.
-    let state_raw: u32 = reader
-        .read_field(kthread_addr, "_KTHREAD", "State")
-        .unwrap_or(0);
-    let state = ThreadState::from_raw(state_raw);
-
-    Ok(WinThreadInfo {
-        tid,
-        pid,
-        create_time,
-        start_address,
-        teb_addr,
-        state,
-        vaddr: ethread_addr,
-    })
-}
+        todo!()
+    }
 
 #[cfg(test)]
 mod tests {
@@ -135,12 +71,7 @@ mod tests {
     /// Build an ObjectReader with the windows_kernel_preset symbols and a
     /// configured page table mapping.
     fn make_win_reader(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
-        let isf = IsfBuilder::windows_kernel_preset();
-        let json = isf.build_json();
-        let resolver = IsfResolver::from_value(&json).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     /// Write a _KTHREAD / _ETHREAD structure at the given physical address.
@@ -157,191 +88,21 @@ mod tests {
         flink_vaddr: u64,
         blink_vaddr: u64,
     ) -> PageTableBuilder {
-        ptb
-            // _KTHREAD.Teb at offset 0xF0
-            .write_phys_u64(paddr + KTHREAD_TEB, teb)
-            // _KTHREAD.Win32StartAddress at offset 0x680
-            .write_phys_u64(paddr + KTHREAD_WIN32_START_ADDR, start_address)
-            // _KTHREAD.CreateTime at offset 0x688
-            .write_phys_u64(paddr + KTHREAD_CREATE_TIME, create_time)
-            // _KTHREAD.ThreadListEntry.Flink at offset 0x2F8
-            .write_phys_u64(paddr + KTHREAD_THREAD_LIST_ENTRY, flink_vaddr)
-            // _KTHREAD.ThreadListEntry.Blink at offset 0x2F8 + 8
-            .write_phys_u64(paddr + KTHREAD_THREAD_LIST_ENTRY + 8, blink_vaddr)
-            // _ETHREAD.Cid.UniqueProcess at offset 0x620
-            .write_phys_u64(paddr + ETHREAD_CID, pid)
-            // _ETHREAD.Cid.UniqueThread at offset 0x620 + 8
-            .write_phys_u64(paddr + ETHREAD_CID + CLIENT_ID_UNIQUE_THREAD, tid)
+        todo!()
     }
 
     #[test]
     fn walk_single_thread() {
-        // One _KTHREAD within an _EPROCESS.
-        //
-        // Memory layout:
-        //   Page 1 (eproc_vaddr): _EPROCESS with _KPROCESS.ThreadListHead
-        //   Page 2 (kthread_vaddr): _KTHREAD (1536 bytes, needs 1 page)
-        //
-        // Circular: ThreadListHead.Flink -> kthread.ThreadListEntry
-        //           kthread.ThreadListEntry.Flink -> ThreadListHead
-
-        let eproc_paddr: u64 = 0x0080_0000;
-        let kthread_paddr: u64 = 0x0080_1000;
-
-        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let kthread_vaddr: u64 = 0xFFFF_8000_0010_1000;
-
-        let thread_list_head_vaddr = eproc_vaddr + KPROCESS_THREAD_LIST_HEAD;
-        let kthread_list_entry_vaddr = kthread_vaddr + KTHREAD_THREAD_LIST_ENTRY;
-
-        // ThreadListHead: Flink -> kthread.ThreadListEntry, Blink -> kthread.ThreadListEntry
-        let ptb = PageTableBuilder::new()
-            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
-            .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
-            // _KPROCESS.ThreadListHead.Flink
-            .write_phys_u64(
-                eproc_paddr + KPROCESS_THREAD_LIST_HEAD,
-                kthread_list_entry_vaddr,
-            )
-            // _KPROCESS.ThreadListHead.Blink
-            .write_phys_u64(
-                eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8,
-                kthread_list_entry_vaddr,
-            );
-
-        let ptb = write_kthread(
-            ptb,
-            kthread_paddr,
-            8,                       // tid
-            4,                       // pid
-            0x7FF0_0000_0000,        // teb
-            0x7FF6_0000_1000,        // start_address
-            132_800_000_000_000_000, // create_time
-            thread_list_head_vaddr,  // Flink -> back to head
-            thread_list_head_vaddr,  // Blink -> back to head
-        );
-
-        let reader = make_win_reader(ptb);
-        let threads = walk_threads(&reader, eproc_vaddr, 4).unwrap();
-
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].tid, 8);
-        assert_eq!(threads[0].pid, 4);
-        assert_eq!(threads[0].teb_addr, 0x7FF0_0000_0000);
-        assert_eq!(threads[0].start_address, 0x7FF6_0000_1000);
-        assert_eq!(threads[0].create_time, 132_800_000_000_000_000);
-        assert_eq!(threads[0].vaddr, kthread_vaddr);
+        todo!()
     }
 
     #[test]
     fn walk_two_threads() {
-        // Two _KTHREAD entries in circular list within one _EPROCESS.
-        //
-        // Memory layout:
-        //   Page 1 (eproc_vaddr): _EPROCESS with _KPROCESS.ThreadListHead
-        //   Page 2 (kthread_a_vaddr): _KTHREAD A (tid=100)
-        //   Page 3 (kthread_b_vaddr): _KTHREAD B (tid=200)
-        //
-        // Circular: ThreadListHead -> A.ThreadListEntry -> B.ThreadListEntry -> ThreadListHead
-
-        let eproc_paddr: u64 = 0x0080_0000;
-        let kthread_a_paddr: u64 = 0x0080_1000;
-        let kthread_b_paddr: u64 = 0x0080_2000;
-
-        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let kthread_a_vaddr: u64 = 0xFFFF_8000_0010_1000;
-        let kthread_b_vaddr: u64 = 0xFFFF_8000_0010_2000;
-
-        let thread_list_head_vaddr = eproc_vaddr + KPROCESS_THREAD_LIST_HEAD;
-        let a_list_entry_vaddr = kthread_a_vaddr + KTHREAD_THREAD_LIST_ENTRY;
-        let b_list_entry_vaddr = kthread_b_vaddr + KTHREAD_THREAD_LIST_ENTRY;
-
-        // ThreadListHead.Flink -> A.ThreadListEntry
-        // ThreadListHead.Blink -> B.ThreadListEntry
-        let ptb = PageTableBuilder::new()
-            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
-            .map_4k(kthread_a_vaddr, kthread_a_paddr, flags::WRITABLE)
-            .map_4k(kthread_b_vaddr, kthread_b_paddr, flags::WRITABLE)
-            // _KPROCESS.ThreadListHead.Flink -> A
-            .write_phys_u64(eproc_paddr + KPROCESS_THREAD_LIST_HEAD, a_list_entry_vaddr)
-            // _KPROCESS.ThreadListHead.Blink -> B
-            .write_phys_u64(
-                eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8,
-                b_list_entry_vaddr,
-            );
-
-        // Thread A: tid=100, Flink -> B, Blink -> head
-        let ptb = write_kthread(
-            ptb,
-            kthread_a_paddr,
-            100,                     // tid
-            42,                      // pid
-            0x7FF0_0000_1000,        // teb
-            0x7FF6_0000_2000,        // start_address
-            132_800_000_100_000_000, // create_time
-            b_list_entry_vaddr,      // Flink -> B
-            thread_list_head_vaddr,  // Blink -> head
-        );
-
-        // Thread B: tid=200, Flink -> head, Blink -> A
-        let ptb = write_kthread(
-            ptb,
-            kthread_b_paddr,
-            200,                     // tid
-            42,                      // pid
-            0x7FF0_0000_2000,        // teb
-            0x7FF6_0000_3000,        // start_address
-            132_800_000_200_000_000, // create_time
-            thread_list_head_vaddr,  // Flink -> head (loop back)
-            a_list_entry_vaddr,      // Blink -> A
-        );
-
-        let reader = make_win_reader(ptb);
-        let threads = walk_threads(&reader, eproc_vaddr, 42).unwrap();
-
-        assert_eq!(threads.len(), 2);
-
-        // Thread A
-        assert_eq!(threads[0].tid, 100);
-        assert_eq!(threads[0].pid, 42);
-        assert_eq!(threads[0].teb_addr, 0x7FF0_0000_1000);
-        assert_eq!(threads[0].start_address, 0x7FF6_0000_2000);
-        assert_eq!(threads[0].create_time, 132_800_000_100_000_000);
-        assert_eq!(threads[0].vaddr, kthread_a_vaddr);
-
-        // Thread B
-        assert_eq!(threads[1].tid, 200);
-        assert_eq!(threads[1].pid, 42);
-        assert_eq!(threads[1].teb_addr, 0x7FF0_0000_2000);
-        assert_eq!(threads[1].start_address, 0x7FF6_0000_3000);
-        assert_eq!(threads[1].create_time, 132_800_000_200_000_000);
-        assert_eq!(threads[1].vaddr, kthread_b_vaddr);
+        todo!()
     }
 
     #[test]
     fn walk_empty_thread_list() {
-        // _KPROCESS.ThreadListHead.Flink points back to itself -> empty list.
-        let eproc_paddr: u64 = 0x0080_0000;
-        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
-
-        let thread_list_head_vaddr = eproc_vaddr + KPROCESS_THREAD_LIST_HEAD;
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
-            // ThreadListHead.Flink -> self (empty)
-            .write_phys_u64(
-                eproc_paddr + KPROCESS_THREAD_LIST_HEAD,
-                thread_list_head_vaddr,
-            )
-            // ThreadListHead.Blink -> self (empty)
-            .write_phys_u64(
-                eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8,
-                thread_list_head_vaddr,
-            );
-
-        let reader = make_win_reader(ptb);
-        let threads = walk_threads(&reader, eproc_vaddr, 4).unwrap();
-
-        assert!(threads.is_empty());
+        todo!()
     }
 }
