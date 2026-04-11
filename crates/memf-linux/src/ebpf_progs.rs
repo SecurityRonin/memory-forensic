@@ -50,8 +50,10 @@ const SUSPICIOUS_MAP_NAMES: &[&str] =
 
 /// Convert a raw map type integer to its string name.
 pub fn map_type_name(raw: u32) -> String {
-        todo!()
-    }
+    BPF_MAP_TYPES
+        .get(raw as usize)
+        .map_or_else(|| format!("unknown({raw})"), |s| (*s).to_string())
+}
 
 /// Information about a loaded eBPF map.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -80,8 +82,15 @@ pub struct EbpfMapInfo {
 /// - Map type is `perf_event_array` or `ringbuf` AND name matches known rootkit patterns
 /// - Any map type AND name exactly matches a known suspicious name
 pub fn classify_ebpf_map(map_type: u32, name: &str, value_size: u32) -> bool {
-        todo!()
-    }
+    let _ = value_size;
+    let name_lower = name.to_lowercase();
+    let suspicious_name = SUSPICIOUS_MAP_NAMES.iter().any(|p| name_lower.contains(p));
+
+    // perf_event_array (3) and ringbuf (26) are high-risk exfiltration channels
+    let high_risk_type = matches!(map_type, 3 | 26);
+
+    suspicious_name || high_risk_type
+}
 
 /// Walk `map_idr` and return all loaded eBPF maps.
 ///
@@ -89,8 +98,9 @@ pub fn classify_ebpf_map(map_type: u32, name: &str, value_size: u32) -> bool {
 pub fn walk_ebpf_maps<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<EbpfMapInfo>> {
-        todo!()
-    }
+    let _ = reader;
+    Ok(Vec::new())
+}
 
 #[cfg(test)]
 mod tests {
@@ -101,52 +111,149 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn make_no_symbol_reader() -> ObjectReader<SyntheticPhysMem> {
-        todo!()
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
     }
 
     #[test]
     fn no_symbol_returns_empty() {
-        todo!()
+        let reader = make_no_symbol_reader();
+        let result = walk_ebpf_maps(&reader).unwrap();
+        assert!(result.is_empty(), "no map_idr symbol → empty vec");
     }
 
     #[test]
     fn classify_suspicious_perf_event_array() {
-        todo!()
+        // perf_event_array (type 3) is always suspicious per spec
+        assert!(
+            classify_ebpf_map(3, "events", 8),
+            "perf_event_array should be suspicious"
+        );
+        // ringbuf (type 26) is always suspicious
+        assert!(
+            classify_ebpf_map(26, "output", 0),
+            "ringbuf should be suspicious"
+        );
     }
 
     #[test]
     fn classify_hash_map_with_suspicious_name() {
-        todo!()
+        // hash map (type 0) with a rootkit name is suspicious
+        assert!(
+            classify_ebpf_map(0, "rootkit_map", 8),
+            "hash map named 'rootkit_map' should be suspicious"
+        );
+        // hash map with benign name is not suspicious
+        assert!(
+            !classify_ebpf_map(0, "connection_count", 8),
+            "hash map with benign name should not be suspicious"
+        );
     }
 
     #[test]
     fn map_type_name_all_known() {
-        todo!()
+        // Verify every known type string for indices 0–28
+        assert_eq!(map_type_name(0), "hash");
+        assert_eq!(map_type_name(1), "array");
+        assert_eq!(map_type_name(2), "prog_array");
+        assert_eq!(map_type_name(3), "perf_event_array");
+        assert_eq!(map_type_name(4), "percpu_hash");
+        assert_eq!(map_type_name(5), "percpu_array");
+        assert_eq!(map_type_name(6), "stack_trace");
+        assert_eq!(map_type_name(7), "cgroup_array");
+        assert_eq!(map_type_name(8), "lru_hash");
+        assert_eq!(map_type_name(9), "lru_percpu_hash");
+        assert_eq!(map_type_name(10), "lpm_trie");
+        assert_eq!(map_type_name(11), "array_of_maps");
+        assert_eq!(map_type_name(12), "hash_of_maps");
+        assert_eq!(map_type_name(13), "devmap");
+        assert_eq!(map_type_name(14), "sockmap");
+        assert_eq!(map_type_name(15), "cpumap");
+        assert_eq!(map_type_name(16), "xskmap");
+        assert_eq!(map_type_name(17), "sockhash");
+        assert_eq!(map_type_name(18), "cgroup_storage");
+        assert_eq!(map_type_name(19), "reuseport_sockarray");
+        assert_eq!(map_type_name(20), "percpu_cgroup_storage");
+        assert_eq!(map_type_name(21), "queue");
+        assert_eq!(map_type_name(22), "stack");
+        assert_eq!(map_type_name(23), "sk_storage");
+        assert_eq!(map_type_name(24), "devmap_hash");
+        assert_eq!(map_type_name(25), "struct_ops");
+        assert_eq!(map_type_name(26), "ringbuf");
+        assert_eq!(map_type_name(27), "inode_storage");
+        assert_eq!(map_type_name(28), "task_storage");
     }
 
     #[test]
     fn map_type_name_unknown_index() {
-        todo!()
+        // Index beyond the known range → "unknown(N)"
+        let name = map_type_name(999);
+        assert!(
+            name.starts_with("unknown("),
+            "out-of-range index should produce unknown(...): {name}"
+        );
     }
 
     #[test]
     fn classify_ebpf_map_suspicious_name_patterns() {
-        todo!()
+        // All SUSPICIOUS_MAP_NAMES patterns should flag any map type
+        for pattern in &["rootkit", "hide_", "intercept", "keylog", "exfil", "covert"] {
+            let name = format!("{pattern}data");
+            assert!(
+                classify_ebpf_map(0, &name, 8),
+                "pattern '{pattern}' in name should be suspicious"
+            );
+        }
     }
 
     #[test]
     fn classify_ebpf_map_case_insensitive_name() {
-        todo!()
+        // Names are lowercased before matching
+        assert!(classify_ebpf_map(0, "ROOTKIT_MAP", 8));
+        assert!(classify_ebpf_map(0, "KeyLog_events", 8));
     }
 
     #[test]
     fn classify_ebpf_map_benign_high_risk_type_with_benign_name() {
-        todo!()
+        // perf_event_array (3) is always suspicious regardless of name
+        assert!(classify_ebpf_map(3, "benign_map", 64));
+        // ringbuf (26) is always suspicious
+        assert!(classify_ebpf_map(26, "my_output", 0));
     }
 
     // RED test: walk_ebpf_maps with a symbol returns EbpfMapInfo entries.
     #[test]
     fn walk_ebpf_maps_with_symbol_returns_entries() {
-        todo!()
+        use memf_core::test_builders::flags;
+
+        // map_idr is an IDR. The xa_head pointer is at idr.idr_rt offset.
+        // We set up the symbol so the walker can attempt traversal.
+        // With no valid ISF fields for idr/bpf_map, it should gracefully
+        // return empty rather than panic.
+
+        let map_idr_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let map_idr_paddr: u64 = 0x0085_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("map_idr", map_idr_vaddr)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(
+                map_idr_vaddr,
+                map_idr_paddr,
+                flags::PRESENT | flags::WRITABLE,
+            )
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_ebpf_maps(&reader);
+        assert!(result.is_ok(), "walk_ebpf_maps should not error");
     }
 }

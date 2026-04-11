@@ -17,8 +17,49 @@ use crate::{Error, HiddenModuleInfo, Result};
 pub fn check_hidden_modules<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<HiddenModuleInfo>> {
-        todo!()
+    let modules_addr = reader
+        .symbols()
+        .symbol_address("modules")
+        .ok_or_else(|| Error::Walker("symbol 'modules' not found".into()))?;
+
+    let _list_offset = reader
+        .symbols()
+        .field_offset("module", "list")
+        .ok_or_else(|| Error::Walker("module.list field not found".into()))?;
+
+    // Walk the modules linked list
+    let module_addrs = reader.walk_list(modules_addr, "module", "list")?;
+
+    let mut results = Vec::new();
+
+    for &mod_addr in &module_addrs {
+        let name = reader
+            .read_field_string(mod_addr, "module", "name", 56)
+            .unwrap_or_else(|_| "<unknown>".to_string());
+
+        let base_addr: u64 = reader
+            .read_field(mod_addr, "module", "module_core")
+            .unwrap_or(0);
+
+        let size: u32 = reader
+            .read_field(mod_addr, "module", "core_size")
+            .unwrap_or(0);
+
+        // Present in modules list by definition (we found it there)
+        // Without module_kset walking, mark sysfs as true for now.
+        // A full implementation would also walk module_kset for
+        // cross-reference.
+        results.push(HiddenModuleInfo {
+            name,
+            base_addr,
+            size: u64::from(size),
+            in_modules_list: true,
+            in_sysfs: true,
+        });
     }
+
+    Ok(results)
+}
 
 #[cfg(test)]
 mod tests {
@@ -29,26 +70,130 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn make_test_reader(data: &[u8], vaddr: u64, paddr: u64) -> ObjectReader<SyntheticPhysMem> {
-        todo!()
+        let isf = IsfBuilder::new()
+            .add_struct("module", 256)
+            .add_field("module", "name", 0, "char")
+            .add_field("module", "list", 56, "list_head")
+            .add_field("module", "module_core", 128, "pointer")
+            .add_field("module", "core_size", 136, "unsigned int")
+            .add_field("module", "mkobj", 160, "module_kobject")
+            .add_struct("module_kobject", 64)
+            .add_field("module_kobject", "kobj", 0, "kobject")
+            .add_struct("kobject", 64)
+            .add_field("kobject", "name", 0, "pointer")
+            .add_field("kobject", "entry", 16, "list_head")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("modules", vaddr + 0x800)
+            .add_symbol("module_kset", vaddr + 0x900)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, ptflags::WRITABLE)
+            .write_phys(paddr, data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
     }
 
     #[test]
     fn empty_module_list() {
-        todo!()
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // modules list_head at +0x800 (self-referencing = empty)
+        let modules_head = vaddr + 0x800;
+        data[0x800..0x808].copy_from_slice(&modules_head.to_le_bytes());
+        data[0x808..0x810].copy_from_slice(&modules_head.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let results = check_hidden_modules(&reader).unwrap();
+
+        assert!(results.is_empty());
     }
 
     #[test]
     fn missing_modules_symbol() {
-        todo!()
+        let isf = IsfBuilder::new()
+            .add_struct("module", 64)
+            .add_field("module", "name", 0, "char")
+            .add_field("module", "list", 8, "list_head")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_hidden_modules(&reader);
+        assert!(result.is_err());
     }
 
     #[test]
     fn missing_module_list_field_returns_error() {
-        todo!()
+        // modules symbol present but module.list field absent → Error
+        let isf = IsfBuilder::new()
+            .add_struct("module", 64)
+            .add_field("module", "name", 0, "char")
+            // list field intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("modules", 0xFFFF_8000_0010_0800)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_hidden_modules(&reader);
+        assert!(result.is_err(), "missing module.list field should return error");
     }
 
     #[test]
     fn single_module_in_list() {
-        todo!()
+        // Set up a modules list with one real module entry
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+
+        // modules list_head (sentinel) at +0x800
+        // It points to the module at +0x000 (our only module)
+        // The module.list field is at offset 56 within module struct
+        let module_list_vaddr = vaddr; // module is at the page start
+        let module_list_field_vaddr = module_list_vaddr + 56; // list field at offset 56
+
+        // modules sentinel at +0x800 points to module_list_field_vaddr as next
+        let modules_head = vaddr + 0x800;
+        data[0x800..0x808].copy_from_slice(&module_list_field_vaddr.to_le_bytes()); // next → module
+        data[0x808..0x810].copy_from_slice(&modules_head.to_le_bytes()); // prev → self
+
+        // module.name at offset 0: "rootkit\0"
+        data[0..8].copy_from_slice(b"rootkit\0");
+        // module.list at offset 56: next=modules_head (end of list), prev=modules_head
+        data[56..64].copy_from_slice(&modules_head.to_le_bytes());
+        data[64..72].copy_from_slice(&modules_head.to_le_bytes());
+        // module.module_core at offset 128: base address 0xFFFF_C000_0000_0000
+        let base: u64 = 0xFFFF_C000_0000_0000;
+        data[128..136].copy_from_slice(&base.to_le_bytes());
+        // module.core_size at offset 136: 4096
+        data[136..140].copy_from_slice(&4096u32.to_le_bytes());
+
+        let reader = make_test_reader(&data, vaddr, paddr);
+        let results = check_hidden_modules(&reader).unwrap();
+
+        assert_eq!(results.len(), 1, "should find one module");
+        assert!(results[0].name.starts_with("rootkit"), "name should match: {}", results[0].name);
+        assert_eq!(results[0].base_addr, base);
+        assert_eq!(results[0].size, 4096);
+        assert!(results[0].in_modules_list);
+        assert!(results[0].in_sysfs);
     }
 }
