@@ -520,4 +520,145 @@ mod tests {
         assert!(json.contains("\"victim_pid\":42"));
         assert!(json.contains("\"is_suspicious\":true"));
     }
+
+    // --- OomEventInfo: Clone + Debug coverage ---
+    #[test]
+    fn oom_event_info_clone_debug() {
+        let ev = OomEventInfo {
+            victim_pid: 7,
+            victim_comm: "sshd".to_string(),
+            oom_score_adj: -1000,
+            total_vm_kb: 2048,
+            rss_kb: 1024,
+            timestamp_ns: 42,
+            reason: "oom_kill_process".to_string(),
+            is_suspicious: true,
+        };
+        let cloned = ev.clone();
+        assert_eq!(cloned.victim_pid, 7);
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("sshd"));
+    }
+
+    // --- walk_oom_events: log_buf_len symbol present → uses that size ---
+    // Exercises lines 131-138 (log_buf_len reading branch).
+    #[test]
+    fn walk_oom_events_with_log_buf_len_symbol() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let log_text = b"Out of memory: Killed process 5000 (bash) score 300 total-vm:8192kB, anon-rss:4096kB";
+        let record = build_printk_record(777, log_text);
+
+        let buf_vaddr: u64     = 0xFFFF_8800_0003_0000;
+        let buf_paddr: u64     = 0x0030_0000;
+        let buflen_vaddr: u64  = 0xFFFF_8800_0003_1000;
+        let buflen_paddr: u64  = 0x0031_0000;
+
+        // log_buf_len = 4096 (as a u32 LE at buflen_vaddr)
+        let buf_len_val: u32 = 4096;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("__log_buf", buf_vaddr)
+            .add_symbol("log_buf_len", buflen_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut buf = record.clone();
+        buf.resize(4096, 0);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(buf_vaddr, buf_paddr, ptf::WRITABLE)
+            .write_phys(buf_paddr, &buf)
+            .map_4k(buflen_vaddr, buflen_paddr, ptf::WRITABLE)
+            .write_phys(buflen_paddr, &buf_len_val.to_le_bytes())
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_oom_events(&reader).expect("should not error");
+        assert_eq!(result.len(), 1, "should parse OOM event from buf with explicit log_buf_len");
+        assert_eq!(result[0].victim_pid, 5000);
+        assert_eq!(result[0].victim_comm, "bash");
+        // bash PID=5000 ≥ 100 and not in suspicious list → benign
+        assert!(!result[0].is_suspicious);
+    }
+
+    // --- walk_oom_events: record with len==0 → loop breaks immediately ---
+    #[test]
+    fn walk_oom_events_zero_len_record_stops_parsing() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // A buffer whose first record header has len=0 → loop breaks immediately.
+        let buf_vaddr: u64 = 0xFFFF_8800_0004_0000;
+        let buf_paddr: u64 = 0x0040_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("__log_buf", buf_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Build a 4096-byte buffer: header with ts_nsec=1, len=0 → break on first record.
+        let mut buf = vec![0u8; 4096];
+        buf[0..8].copy_from_slice(&1u64.to_le_bytes()); // ts_nsec
+        // len at [8..10] = 0 → loop should break
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(buf_vaddr, buf_paddr, ptf::WRITABLE)
+            .write_phys(buf_paddr, &buf)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_oom_events(&reader).expect("should not error");
+        assert!(result.is_empty(), "zero-len record should stop parsing → empty result");
+    }
+
+    // --- walk_oom_events: record with len > remaining buffer → break ---
+    #[test]
+    fn walk_oom_events_len_exceeds_buffer_stops_parsing() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let buf_vaddr: u64 = 0xFFFF_8800_0005_0000;
+        let buf_paddr: u64 = 0x0050_0000;
+
+        let isf = IsfBuilder::new()
+            .add_symbol("__log_buf", buf_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Header with len=60000 which exceeds the buffer → break.
+        let mut buf = vec![0u8; 4096];
+        buf[0..8].copy_from_slice(&1u64.to_le_bytes()); // ts_nsec
+        buf[8..10].copy_from_slice(&60000u16.to_le_bytes()); // len > 4096 → break
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(buf_vaddr, buf_paddr, ptf::WRITABLE)
+            .write_phys(buf_paddr, &buf)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_oom_events(&reader).expect("should not error");
+        assert!(result.is_empty(), "over-length record must stop parsing → empty result");
+    }
+
+    // --- classify_oom_victim: case-insensitive containerd detection ---
+    #[test]
+    fn classify_oom_victim_case_insensitive() {
+        // The check uses to_ascii_lowercase() + contains()
+        assert!(classify_oom_victim("DOCKERD", 5000), "DOCKERD in uppercase must be detected");
+        assert!(classify_oom_victim("Containerd-shim", 9999), "containerd substring case-insensitive");
+    }
 }

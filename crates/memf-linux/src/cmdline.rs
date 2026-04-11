@@ -368,4 +368,132 @@ mod tests {
         let dbg = format!("{:?}", a);
         assert!(dbg.contains("bash"));
     }
+
+    /// walk_cmdlines: init_task is valid userspace process with cmdline, plus a linked task.
+    /// Exercises lines 38-45: both init_task result pushed AND for-loop body with a second task.
+    #[test]
+    fn walk_cmdlines_two_processes_both_pushed() {
+        // Layout:
+        //   init_task_vaddr (vaddr=0xFFFF_8000_0040_0000):
+        //     pid=1, comm="init", mm → mm1_vaddr, tasks.next → task2_tasks_vaddr
+        //   task2_vaddr (vaddr=0xFFFF_8000_0041_0000):
+        //     pid=2, comm="sh", mm → mm2_vaddr, tasks.next → init_task.tasks (head)
+        //   arg pages for each process
+        //
+        // Note: task2 is pointed to by tasks.next of init_task. walk_list follows
+        // task_struct.tasks list: it reads tasks.next at (init_task + tasks_offset),
+        // adjusts back by tasks_offset to get the task_struct base.
+        // So tasks.next of init_task should be (task2_vaddr + tasks_offset).
+
+        let tasks_off: u64 = 16u64;
+        let mm_off: u64    = 48u64;
+        let arg_off_in_mm: u64 = 64u64;
+        let arg_end_off_in_mm: u64 = 72u64;
+
+        let init_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let init_paddr: u64 = 0x0040_0000;
+
+        let task2_vaddr: u64 = 0xFFFF_8000_0041_0000;
+        let task2_paddr: u64 = 0x0041_0000;
+
+        let mm1_vaddr: u64 = 0xFFFF_8000_0042_0000;
+        let mm1_paddr: u64 = 0x0042_0000;
+
+        let mm2_vaddr: u64 = 0xFFFF_8000_0043_0000;
+        let mm2_paddr: u64 = 0x0043_0000;
+
+        let arg1_vaddr: u64 = 0xFFFF_8000_0044_0000;
+        let arg1_paddr: u64 = 0x0044_0000;
+
+        let arg2_vaddr: u64 = 0xFFFF_8000_0045_0000;
+        let arg2_paddr: u64 = 0x0045_0000;
+
+        let arg1_data = b"/sbin/init\0";
+        let arg2_data = b"/bin/sh\0-c\0true\0";
+
+        // init_task page
+        let mut page1 = vec![0u8; 4096];
+        page1[0..4].copy_from_slice(&1u32.to_le_bytes()); // pid=1
+        let task2_tasks_vaddr = task2_vaddr + tasks_off;
+        page1[tasks_off as usize..tasks_off as usize + 8]
+            .copy_from_slice(&task2_tasks_vaddr.to_le_bytes()); // tasks.next → task2.tasks
+        page1[24..32].copy_from_slice(&(init_vaddr + tasks_off).to_le_bytes()); // tasks.prev → self
+        page1[32..36].copy_from_slice(b"init"); // comm
+        page1[mm_off as usize..mm_off as usize + 8]
+            .copy_from_slice(&mm1_vaddr.to_le_bytes()); // mm → mm1
+
+        // task2 page
+        let mut page2 = vec![0u8; 4096];
+        page2[0..4].copy_from_slice(&2u32.to_le_bytes()); // pid=2
+        let init_tasks_vaddr = init_vaddr + tasks_off;
+        page2[tasks_off as usize..tasks_off as usize + 8]
+            .copy_from_slice(&init_tasks_vaddr.to_le_bytes()); // tasks.next → init.tasks (head, terminates)
+        page2[24..32].copy_from_slice(&(task2_vaddr + tasks_off).to_le_bytes());
+        page2[32..34].copy_from_slice(b"sh"); // comm
+        page2[mm_off as usize..mm_off as usize + 8]
+            .copy_from_slice(&mm2_vaddr.to_le_bytes()); // mm → mm2
+
+        // mm1 page: arg_start=arg1_vaddr, arg_end=arg1_vaddr+len(arg1_data)
+        let mut mm1_page = vec![0u8; 4096];
+        mm1_page[arg_off_in_mm as usize..arg_off_in_mm as usize + 8]
+            .copy_from_slice(&arg1_vaddr.to_le_bytes());
+        let arg1_end = arg1_vaddr + arg1_data.len() as u64;
+        mm1_page[arg_end_off_in_mm as usize..arg_end_off_in_mm as usize + 8]
+            .copy_from_slice(&arg1_end.to_le_bytes());
+
+        // mm2 page
+        let mut mm2_page = vec![0u8; 4096];
+        mm2_page[arg_off_in_mm as usize..arg_off_in_mm as usize + 8]
+            .copy_from_slice(&arg2_vaddr.to_le_bytes());
+        let arg2_end = arg2_vaddr + arg2_data.len() as u64;
+        mm2_page[arg_end_off_in_mm as usize..arg_end_off_in_mm as usize + 8]
+            .copy_from_slice(&arg2_end.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "state", 4, "long")
+            .add_field("task_struct", "tasks", 16, "list_head")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "pgd", 0, "pointer")
+            .add_field("mm_struct", "arg_start", 64, "unsigned long")
+            .add_field("mm_struct", "arg_end", 72, "unsigned long")
+            .add_symbol("init_task", init_vaddr)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
+            .write_phys(init_paddr, &page1)
+            .map_4k(task2_vaddr, task2_paddr, flags::WRITABLE)
+            .write_phys(task2_paddr, &page2)
+            .map_4k(mm1_vaddr, mm1_paddr, flags::WRITABLE)
+            .write_phys(mm1_paddr, &mm1_page)
+            .map_4k(mm2_vaddr, mm2_paddr, flags::WRITABLE)
+            .write_phys(mm2_paddr, &mm2_page)
+            .map_4k(arg1_vaddr, arg1_paddr, flags::WRITABLE)
+            .write_phys(arg1_paddr, arg1_data.as_slice())
+            .map_4k(arg2_vaddr, arg2_paddr, flags::WRITABLE)
+            .write_phys(arg2_paddr, arg2_data.as_slice())
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cmdlines(&reader).unwrap();
+        // init_task (pid=1) + task2 (pid=2) should both be present
+        assert_eq!(result.len(), 2, "both init_task and task2 should have cmdlines");
+        let pids: Vec<u64> = result.iter().map(|r| r.pid).collect();
+        assert!(pids.contains(&1), "init_task (pid=1) must be in results");
+        assert!(pids.contains(&2), "task2 (pid=2) must be in results");
+        let init_cmdline = result.iter().find(|r| r.pid == 1).unwrap();
+        assert_eq!(init_cmdline.cmdline, "/sbin/init");
+        let sh_cmdline = result.iter().find(|r| r.pid == 2).unwrap();
+        assert_eq!(sh_cmdline.cmdline, "/bin/sh -c true");
+    }
 }

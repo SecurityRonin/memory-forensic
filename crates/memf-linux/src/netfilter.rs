@@ -506,4 +506,161 @@ mod tests {
         let src = rules[0].source.as_deref().unwrap_or("");
         assert!(src.contains('.'), "source IP should be dotted notation: {src}");
     }
+
+    // --- parse_ipt_entries: two chained entries (non-zero next_offset) ---
+    // Exercises lines 182-186: when next_off != 0, offset advances to next entry.
+    #[test]
+    fn parse_ipt_entries_two_chained_entries() {
+        // Two ipt_entry records back to back. First has next_off = 128 (size of one record).
+        // Second has next_off = 0 (terminates).
+        let entry_size = 128usize;
+        let mut data = vec![0u8; entry_size * 2];
+
+        // Entry 1: src=1.2.3.4 (stored as bytes [1,2,3,4] → u32), proto=6, target="ACCEPT", next=128
+        let src1 = u32::from_le_bytes([1, 2, 3, 4]);
+        data[0x00..0x04].copy_from_slice(&src1.to_le_bytes());
+        data[0x10..0x12].copy_from_slice(&6u16.to_le_bytes()); // tcp
+        // target_offset at 0x58: 0x60 → but 0x60 > entry_size(128=0x80), still within 2*128=256
+        let target_off1: u16 = 0x60;
+        data[0x58..0x5A].copy_from_slice(&target_off1.to_le_bytes());
+        // next_offset at 0x5A = 128
+        data[0x5A..0x5C].copy_from_slice(&(entry_size as u16).to_le_bytes());
+        // target name at 0x60: "ACCEPT"
+        data[0x60..0x66].copy_from_slice(b"ACCEPT");
+
+        // Entry 2 at offset 128: dst=5.6.7.8, proto=17, target="DROP", next=0
+        let dst2 = u32::from_le_bytes([5, 6, 7, 8]);
+        data[entry_size + 0x04..entry_size + 0x08].copy_from_slice(&dst2.to_le_bytes());
+        data[entry_size + 0x10..entry_size + 0x12].copy_from_slice(&17u16.to_le_bytes()); // udp
+        // target_offset for entry 2: since entry 2 starts at 128, target at 128+0x60=0xE0
+        // but we need it relative to entry 2's base: 0x60 places it at offset 96 within entry
+        // data[entry_size+0x60..] is within our 256-byte buffer
+        let target_off2: u16 = 0x60;
+        data[entry_size + 0x58..entry_size + 0x5A].copy_from_slice(&target_off2.to_le_bytes());
+        data[entry_size + 0x5A..entry_size + 0x5C].copy_from_slice(&0u16.to_le_bytes()); // next=0
+        data[entry_size + 0x60..entry_size + 0x64].copy_from_slice(b"DROP");
+
+        let entry_vaddr: u64 = 0xFFFF_8000_0080_0000;
+        let entry_paddr: u64 = 0x00F0_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
+        assert_eq!(rules.len(), 2, "two chained entries should produce two rules");
+        assert_eq!(rules[0].target, "ACCEPT");
+        assert_eq!(rules[0].protocol, "tcp");
+        assert!(rules[0].source.is_some(), "entry 1 has src_ip");
+        assert_eq!(rules[1].target, "DROP");
+        assert_eq!(rules[1].protocol, "udp");
+        assert!(rules[1].destination.is_some(), "entry 2 has dst_ip");
+    }
+
+    // --- parse_ipt_entries: target_offset == 0 → target_name is empty string ---
+    // Exercises line 153: target_off == 0 → target_name = ""
+    #[test]
+    fn parse_ipt_entries_zero_target_offset_empty_target_name() {
+        let mut data = vec![0u8; 256];
+        // target_offset at 0x58 = 0 → condition `target_off > 0` is false → empty name
+        // next_offset at 0x5A = 0 → terminates
+        let entry_vaddr: u64 = 0xFFFF_8000_0090_0000;
+        let entry_paddr: u64 = 0x00F1_0000;
+        let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
+
+        let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].target.is_empty(), "zero target_offset must produce empty target name");
+    }
+
+    // --- walk_netfilter_rules: xt_table list has an entry whose name matches ---
+    // Exercises lines 72-76: the loop inside read_xt_table finds a matching table name
+    // → parse_table_rules is called → returns empty (stub) → rules stays empty.
+    #[test]
+    fn walk_netfilter_rules_matching_table_name_calls_parse() {
+        // We need:
+        //   init_net symbol, net.xt at offset 0, netns_xt.tables at offset 0,
+        //   list_head for AF_INET (index 2 × 16 = offset 32) that points to an
+        //   xt_table entry whose "name" field contains "filter".
+        //
+        // init_net_vaddr layout:
+        //   [0..16]  = net.xt (embedded netns_xt, tables at offset 0 within it)
+        //   [32..40] = AF_INET list_head.next → xt_table_vaddr (pointing at the table)
+        //   [40..48] = AF_INET list_head.prev → af_inet_list_vaddr (self)
+        //
+        // xt_table_vaddr layout (same page, offset 0x100):
+        //   list.next @ offset 0 → af_inet_list_vaddr  (back to head → list terminates after one entry)
+        //   list.prev @ offset 8 → af_inet_list_vaddr
+        //   name      @ offset 0x10 → "filter\0"
+        //   (no private/entries fields needed — parse_table_rules stub returns empty)
+
+        let init_net_vaddr: u64 = 0xFFFF_8800_00A1_0000;
+        let init_net_paddr: u64 = 0x00A1_0000;
+
+        let af_inet_offset: u64 = 32; // 2 * list_head_size(16)
+        let af_inet_list_vaddr = init_net_vaddr + af_inet_offset;
+        let xt_table_off: u64 = 0x100;
+        let xt_table_vaddr = init_net_vaddr + xt_table_off;
+
+        let mut page = [0u8; 4096];
+
+        // AF_INET list_head at [32..48]: next=xt_table_vaddr, prev=af_inet_list_vaddr
+        page[32..40].copy_from_slice(&xt_table_vaddr.to_le_bytes());   // list_head.next → xt_table
+        page[40..48].copy_from_slice(&af_inet_list_vaddr.to_le_bytes()); // list_head.prev
+
+        // xt_table at [0x100..]:
+        //   list.next @ 0x100 = af_inet_list_vaddr (back to head, terminates walk_list)
+        //   list.prev @ 0x108 = af_inet_list_vaddr
+        //   name @ 0x110 = "filter\0"
+        page[0x100..0x108].copy_from_slice(&af_inet_list_vaddr.to_le_bytes()); // list.next
+        page[0x108..0x110].copy_from_slice(&af_inet_list_vaddr.to_le_bytes()); // list.prev
+        let name_bytes = b"filter\0";
+        page[0x110..0x110 + name_bytes.len()].copy_from_slice(name_bytes);
+
+        let isf = IsfBuilder::new()
+            .add_symbol("init_net", init_net_vaddr)
+            .add_struct("net", 256)
+            .add_field("net", "xt", 0x00u64, "netns_xt")
+            .add_struct("netns_xt", 256)
+            .add_field("netns_xt", "tables", 0x00u64, "pointer")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_field("list_head", "prev", 0x08u64, "pointer")
+            .add_struct("xt_table", 128)
+            .add_field("xt_table", "list", 0x00u64, "list_head")
+            .add_field("xt_table", "name", 0x10u64, "char")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(init_net_vaddr, init_net_paddr, flags::WRITABLE)
+            .write_phys(init_net_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // parse_table_rules is a stub that returns Ok([]) → total result is empty
+        let result = walk_netfilter_rules(&reader).unwrap_or_default();
+        assert!(
+            result.is_empty(),
+            "matching table name calls parse_table_rules (stub) → still empty"
+        );
+    }
+
+    // --- NetfilterRuleInfo: Clone + Debug coverage ---
+    #[test]
+    fn netfilter_rule_info_clone_debug() {
+        use crate::NetfilterRuleInfo;
+        let rule = NetfilterRuleInfo {
+            table: "filter".to_string(),
+            chain: "INPUT".to_string(),
+            target: "DROP".to_string(),
+            protocol: "tcp".to_string(),
+            source: Some("1.2.3.4".to_string()),
+            destination: None,
+        };
+        let cloned = rule.clone();
+        assert_eq!(cloned.table, "filter");
+        assert_eq!(cloned.target, "DROP");
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("DROP"));
+        assert!(dbg.contains("1.2.3.4"));
+    }
 }

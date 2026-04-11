@@ -457,4 +457,120 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].futex_type, "shared", "bit 0 set → shared futex");
     }
+
+    // --- walk_futex_table: task_ptr != 0 → read pid from task_struct ---
+    // Exercises lines 127-131: when waiter_count==0 and task_ptr is non-zero,
+    // the walker reads task_struct.pid to set first_pid.
+    #[test]
+    fn walk_futex_non_null_task_reads_pid() {
+        use memf_core::test_builders::flags as ptf;
+
+        // Layout:
+        //   bucket_vaddr : chain (at offset 0) → node_vaddr
+        //   node_vaddr   : [0..8]=0 (hlist_node.next), [8..16]=task_vaddr (task ptr),
+        //                  [16..24]=0 (futex key), [24..32]=0 (key_offset_field → private)
+        //   task_vaddr   : task_struct with pid at offset 0 = 1234
+        let bucket_vaddr: u64 = 0xFFFF_8800_00E0_0000;
+        let bucket_paddr: u64 = 0x00E0_0000;
+        let node_vaddr: u64   = 0xFFFF_8800_00E1_0000;
+        let node_paddr: u64   = 0x00E1_0000;
+        let task_vaddr: u64   = 0xFFFF_8800_00E2_0000;
+        let task_paddr: u64   = 0x00E2_0000;
+
+        let mut bucket_page = [0u8; 4096];
+        bucket_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        let mut node_page = [0u8; 4096];
+        // hlist_node.next at offset 0 = 0 (one iteration)
+        node_page[0..8].copy_from_slice(&0u64.to_le_bytes());
+        // task ptr at offset 8 (default futex_q.task offset) = task_vaddr
+        node_page[8..16].copy_from_slice(&task_vaddr.to_le_bytes());
+        // futex key at offset 16 = 0 (normal userspace key)
+        // key_offset_field at offset 24 = 0 → "private"
+
+        let mut task_page = [0u8; 4096];
+        // task_struct.pid at offset 0 = 1234 (u32)
+        task_page[0..4].copy_from_slice(&1234u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("futex_queues", bucket_vaddr)
+            .add_struct("futex_hash_bucket", 64)
+            .add_field("futex_hash_bucket", "chain", 0, "pointer")
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "unsigned int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bucket_vaddr, bucket_paddr, ptf::WRITABLE)
+            .write_phys(bucket_paddr, &bucket_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_futex_table(&reader).unwrap();
+        assert_eq!(result.len(), 1, "one waiter → one entry");
+        assert_eq!(result[0].owner_pid, 1234, "pid should be read from task_struct");
+        assert_eq!(result[0].waiter_count, 1);
+    }
+
+    // --- walk_futex_table: suspicious futex via high waiter count ---
+    // Two nodes in a bucket (nodeA.next → nodeB, nodeB.next=0) → waiter_count=2.
+    // Key is userspace range, pid=0 → not suspicious for kernel-space key check,
+    // but count > 1000 makes it suspicious.
+    // We use a chained list to exercise the "waiter_count > 0" loop iterations > 1.
+    #[test]
+    fn walk_futex_two_waiters_in_bucket() {
+        use memf_core::test_builders::flags as ptf;
+
+        let bucket_vaddr: u64 = 0xFFFF_8800_00F0_0000;
+        let bucket_paddr: u64 = 0x00F0_0000;
+        let node_a_vaddr: u64 = 0xFFFF_8800_00F1_0000;
+        let node_a_paddr: u64 = 0x00F1_0000;
+        let node_b_vaddr: u64 = 0xFFFF_8800_00F2_0000;
+        let node_b_paddr: u64 = 0x00F2_0000;
+
+        let mut bucket_page = [0u8; 4096];
+        bucket_page[0..8].copy_from_slice(&node_a_vaddr.to_le_bytes());
+
+        let mut node_a_page = [0u8; 4096];
+        // hlist_node.next → node_b_vaddr
+        node_a_page[0..8].copy_from_slice(&node_b_vaddr.to_le_bytes());
+        // task ptr at offset 8 = 0
+        // key at offset 16 = 0 → private
+        // key_offset_field at offset 24 = 0
+
+        let mut node_b_page = [0u8; 4096];
+        // hlist_node.next = 0 (terminate)
+        node_b_page[0..8].copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("futex_queues", bucket_vaddr)
+            .add_struct("futex_hash_bucket", 64)
+            .add_field("futex_hash_bucket", "chain", 0, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bucket_vaddr, bucket_paddr, ptf::WRITABLE)
+            .write_phys(bucket_paddr, &bucket_page)
+            .map_4k(node_a_vaddr, node_a_paddr, ptf::WRITABLE)
+            .write_phys(node_a_paddr, &node_a_page)
+            .map_4k(node_b_vaddr, node_b_paddr, ptf::WRITABLE)
+            .write_phys(node_b_paddr, &node_b_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_futex_table(&reader).unwrap();
+        assert_eq!(result.len(), 1, "one bucket with two waiters → one aggregate entry");
+        assert_eq!(result[0].waiter_count, 2, "two nodes → waiter_count = 2");
+        assert!(!result[0].is_suspicious, "count=2, key=0, pid=0 → benign");
+    }
 }

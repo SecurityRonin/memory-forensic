@@ -793,4 +793,179 @@ mod tests {
         assert_eq!(libs[0].lib_path, "/tmp/evil.so");
         assert!(libs[0].is_suspicious, "/tmp library should be suspicious");
     }
+
+    // --- walk_library_list: file.f_path field missing → error returned ---
+    // Exercises line 107: ok_or_else for f_path offset.
+    #[test]
+    fn walk_library_list_missing_f_path_field_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_0088_0000;
+        let paddr: u64 = 0x0088_1000;
+        let mut data = vec![0u8; 4096];
+
+        // mm != 0 (non-kernel thread)
+        let mm_addr = vaddr + 0x200;
+        data[0..4].copy_from_slice(&9u32.to_le_bytes());
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+        // mm.mmap = 0 so VMA loop won't run, but we need file.f_path to be missing
+
+        // Build ISF without file.f_path field
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "mmap", 8, "pointer")
+            // "file" struct is absent → f_path field offset returns None → Error
+            .add_struct("path", 16)
+            .add_field("path", "dentry", 8, "pointer")
+            .add_struct("dentry", 64)
+            .add_field("dentry", "d_name", 0, "qstr")
+            .add_struct("qstr", 16)
+            .add_field("qstr", "name", 8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_library_list(&reader, vaddr, 9, "proc");
+        assert!(result.is_err(), "missing file.f_path field must return an error");
+    }
+
+    // --- walk_library_list: path.dentry field missing → error ---
+    #[test]
+    fn walk_library_list_missing_path_dentry_field_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_0089_0000;
+        let paddr: u64 = 0x0089_0000;
+        let mut data = vec![0u8; 4096];
+
+        let mm_addr = vaddr + 0x200;
+        data[0..4].copy_from_slice(&10u32.to_le_bytes());
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "mmap", 8, "pointer")
+            .add_struct("file", 64)
+            .add_field("file", "f_path", 0, "path")
+            // "path" struct exists but "dentry" field is missing
+            .add_struct("path", 16)
+            .add_struct("dentry", 64)
+            .add_field("dentry", "d_name", 0, "qstr")
+            .add_struct("qstr", 16)
+            .add_field("qstr", "name", 8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_library_list(&reader, vaddr, 10, "proc");
+        assert!(result.is_err(), "missing path.dentry field must return an error");
+    }
+
+    // --- walk_library_list: dentry.d_name field missing → error ---
+    #[test]
+    fn walk_library_list_missing_d_name_field_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_008A_0000;
+        let paddr: u64 = 0x008A_0000;
+        let mut data = vec![0u8; 4096];
+
+        let mm_addr = vaddr + 0x200;
+        data[0..4].copy_from_slice(&11u32.to_le_bytes());
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "mmap", 8, "pointer")
+            .add_struct("file", 64)
+            .add_field("file", "f_path", 0, "path")
+            .add_struct("path", 16)
+            .add_field("path", "dentry", 8, "pointer")
+            // "dentry" struct exists but "d_name" field is missing
+            .add_struct("dentry", 64)
+            .add_struct("qstr", 16)
+            .add_field("qstr", "name", 8, "pointer")
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_library_list(&reader, vaddr, 11, "proc");
+        assert!(result.is_err(), "missing dentry.d_name field must return an error");
+    }
+
+    // --- walk_library_list: qstr.name field missing → error ---
+    #[test]
+    fn walk_library_list_missing_qstr_name_field_returns_error() {
+        let vaddr: u64 = 0xFFFF_8000_008B_0000;
+        let paddr: u64 = 0x008B_0000;
+        let mut data = vec![0u8; 4096];
+
+        let mm_addr = vaddr + 0x200;
+        data[0..4].copy_from_slice(&12u32.to_le_bytes());
+        data[48..56].copy_from_slice(&mm_addr.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "comm", 32, "char")
+            .add_field("task_struct", "mm", 48, "pointer")
+            .add_struct("mm_struct", 128)
+            .add_field("mm_struct", "mmap", 8, "pointer")
+            .add_struct("file", 64)
+            .add_field("file", "f_path", 0, "path")
+            .add_struct("path", 16)
+            .add_field("path", "dentry", 8, "pointer")
+            .add_struct("dentry", 64)
+            .add_field("dentry", "d_name", 0, "qstr")
+            // "qstr" struct exists but "name" field is missing
+            .add_struct("qstr", 16)
+            .build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_library_list(&reader, vaddr, 12, "proc");
+        assert!(result.is_err(), "missing qstr.name field must return an error");
+    }
+
+    // --- classify_library: path without any '/' → basename = whole path ---
+    // Exercises the rsplit('/').next() branch where the string has no '/'
+    // (basename == whole path, which may or may not start with '.').
+    #[test]
+    fn classify_library_no_slash_path() {
+        // A path without '/' — basename is the whole string.
+        // "libc.so.6" does not start with '.' and contains ".so." → benign.
+        assert!(!classify_library("libc.so.6"), "bare name with .so. must be benign");
+        // ".hidden.so.1" starts with '.' → suspicious.
+        assert!(classify_library(".hidden.so.1"), "hidden bare name must be suspicious");
+    }
 }
