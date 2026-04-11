@@ -285,16 +285,16 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     Ok(results)
 }
 
-/// Check if a value name is a cached credential entry (`NL$1` through `NL$10`).
+/// Check if a value name is a cached credential entry (`NL$1` through `NL$50`).
+///
+/// Windows supports up to 50 cached credentials (CachedLogonsCount registry value).
+/// The hard-coded `matches!` list missed NL$11 and above; parsing the suffix as an
+/// integer handles any valid count up to the 50-entry upper bound.
 fn is_nl_entry(name: &str) -> bool {
-    if let Some(suffix) = name.strip_prefix("NL$") {
-        matches!(
-            suffix,
-            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10"
-        )
-    } else {
-        false
-    }
+    name.strip_prefix("NL$")
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|n| n > 0 && n <= 50)
+        .unwrap_or(false)
 }
 
 /// Decode a UTF-16LE byte slice into a String.
@@ -536,8 +536,8 @@ mod tests {
     #[test]
     fn is_nl_entry_invalid_prefix() {
         assert!(!is_nl_entry("NL$0"));
-        assert!(!is_nl_entry("NL$11"));
-        assert!(!is_nl_entry("NL$100"));
+        assert!(!is_nl_entry("NL$51"));  // above 50-entry upper bound
+        assert!(!is_nl_entry("NL$100")); // well above limit
         assert!(!is_nl_entry("nl$1")); // case-sensitive
         assert!(!is_nl_entry("CachedLogons"));
         assert!(!is_nl_entry(""));
@@ -548,8 +548,18 @@ mod tests {
     fn is_nl_entry_boundary_values() {
         assert!(is_nl_entry("NL$1"));
         assert!(is_nl_entry("NL$10"));
+        assert!(is_nl_entry("NL$11")); // was wrongly rejected before fix
+        assert!(is_nl_entry("NL$50")); // upper bound
         assert!(!is_nl_entry("NL$0"));
-        assert!(!is_nl_entry("NL$11"));
+        assert!(!is_nl_entry("NL$51")); // one above upper bound
+    }
+
+    /// NL$11, NL$25, NL$50 are all valid cached credential entries.
+    #[test]
+    fn is_nl_entry_above_ten_accepted() {
+        assert!(is_nl_entry("NL$11"), "NL$11 should be accepted");
+        assert!(is_nl_entry("NL$25"), "NL$25 should be accepted");
+        assert!(is_nl_entry("NL$50"), "NL$50 should be accepted");
     }
 
     // ── decode_utf16le tests ──────────────────────────────────────────

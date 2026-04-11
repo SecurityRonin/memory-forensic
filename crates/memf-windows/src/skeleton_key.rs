@@ -21,7 +21,10 @@ use crate::{dll, process};
 const TARGET_MODULES: &[&str] = &["msv1_0.dll", "kdcsvc.dll", "cryptdll.dll", "lsasrv.dll"];
 
 /// Minimum number of consecutive NOP bytes (0x90) to flag as a NOP sled.
-const NOP_SLED_THRESHOLD: usize = 5;
+///
+/// 5 consecutive NOPs is too common in legitimate code (compiler padding etc.).
+/// 16+ consecutive NOPs is a strong indicator of an actual attack-inserted NOP sled.
+const NOP_SLED_THRESHOLD: usize = 16;
 
 /// Number of bytes to read from each target DLL's .text section for scanning.
 const TEXT_SECTION_SCAN_SIZE: usize = 4096;
@@ -570,9 +573,9 @@ mod tests {
     #[test]
     fn scan_module_patterns_msv_with_nop_sled() {
         let mut indicators = Vec::new();
-        let mut data = vec![0x55u8; 10];
-        // Insert a NOP sled at offset 5
-        data[5..10].fill(0x90);
+        // Need at least NOP_SLED_THRESHOLD (16) consecutive NOPs to trigger.
+        let mut data = vec![0x55u8; 20];
+        data[4..20].fill(0x90); // 16 NOPs at offset 4
         scan_module_patterns("msv1_0.dll", 0x1000_0000, &data, &mut indicators);
         assert_eq!(indicators.len(), 1);
         assert_eq!(indicators[0].indicator_type, "auth_patch");
@@ -601,7 +604,7 @@ mod tests {
     #[test]
     fn scan_module_patterns_cryptdll_with_nop_sled() {
         let mut indicators = Vec::new();
-        let data = [0x90u8; 8];
+        let data = [0x90u8; 16]; // exactly NOP_SLED_THRESHOLD
         scan_module_patterns("cryptdll.dll", 0x3000_0000, &data, &mut indicators);
         assert_eq!(indicators.len(), 1);
         assert_eq!(indicators[0].indicator_type, "rc4_patch");
@@ -610,7 +613,7 @@ mod tests {
     #[test]
     fn scan_module_patterns_lsasrv_with_nop_sled() {
         let mut indicators = Vec::new();
-        let data = [0x90u8; 6];
+        let data = [0x90u8; 16]; // exactly NOP_SLED_THRESHOLD
         scan_module_patterns("lsasrv.dll", 0x4000_0000, &data, &mut indicators);
         assert_eq!(indicators.len(), 1);
         assert_eq!(indicators[0].indicator_type, "auth_patch");
@@ -639,7 +642,7 @@ mod tests {
     /// NOP_SLED_THRESHOLD and TEXT_SECTION_SCAN_SIZE constants.
     #[test]
     fn constants_sane() {
-        assert_eq!(NOP_SLED_THRESHOLD, 5);
+        assert_eq!(NOP_SLED_THRESHOLD, 16);
         assert_eq!(TEXT_SECTION_SCAN_SIZE, 4096);
     }
 

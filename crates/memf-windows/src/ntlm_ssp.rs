@@ -60,7 +60,7 @@ pub fn classify_ntlm_credential(username: &str, nt_hash: &[u8], lm_hash: &[u8]) 
     let privileged = username.eq_ignore_ascii_case("administrator")
         || username.eq_ignore_ascii_case("admin")
         || username.to_ascii_lowercase().contains("svc_")
-        || username.to_ascii_lowercase().starts_with("svc");
+        || username.to_ascii_lowercase().starts_with("svc_");
 
     lm_present || empty_password || privileged
 }
@@ -132,12 +132,16 @@ mod tests {
     }
 
     /// Service account (starts with "svc_") → suspicious.
+    /// "svchost" alone is NOT flagged — only accounts with the "svc_" prefix
+    /// or containing "svc_" as a substring are considered service accounts.
     #[test]
     fn classify_svc_account_suspicious() {
         let nt_hash = vec![0x01u8; 16];
         let lm_hash = vec![0u8; 16];
         assert!(classify_ntlm_credential("svc_backup", &nt_hash, &lm_hash));
-        assert!(classify_ntlm_credential("svchost_svc", &nt_hash, &lm_hash));
+        assert!(classify_ntlm_credential("SVC_SQL", &nt_hash, &lm_hash));
+        // "svchost" alone (no underscore) is NOT a service account convention.
+        assert!(!classify_ntlm_credential("svchost", &nt_hash, &lm_hash));
     }
 
     /// Regular non-privileged account with strong hash → benign.

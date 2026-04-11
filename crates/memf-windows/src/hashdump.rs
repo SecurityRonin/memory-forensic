@@ -411,13 +411,13 @@ fn decrypt_hashed_boot_key(f_data: &[u8], boot_key: &[u8]) -> Vec<u8> {
         }
         // Revision 3: AES-128-CBC
         3 => {
-            // Salt at F[0x78..0x88], encrypted data at F[0x88..]
-            if f_data.len() < 0x98 {
+            // IV at F[0x6C..0x7C], encrypted data at F[0x7C..0x9C]
+            if f_data.len() < 0x9C {
                 return Vec::new();
             }
 
-            let salt = &f_data[0x78..0x88];
-            let encrypted = &f_data[0x88..];
+            let salt = &f_data[0x6C..0x7C];
+            let encrypted = &f_data[0x7C..0x9C];
 
             // AES-CBC decrypt with boot_key as key and salt as IV.
             // Without an AES library, we use a simplified approach.
@@ -462,12 +462,12 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
         let enc_start = nt_offset + 4;
         if enc_start + 16 <= v_data.len() {
             let encrypted_nt = &v_data[enc_start..enc_start + 16];
-            // XOR with hashed boot key first, then DES-decrypt with RID.
-            let mut xored = [0u8; 16];
-            for (i, &b) in encrypted_nt.iter().enumerate() {
-                xored[i] = b ^ hashed_boot_key[i % hashed_boot_key.len()];
+            // CORRECT order: DES-decrypt first, then XOR with hashed boot key.
+            let decrypted_des = decrypt_sam_hash_with_rid(encrypted_nt, rid);
+            let mut decrypted = [0u8; 16];
+            for (i, &b) in decrypted_des.iter().enumerate() {
+                decrypted[i] = b ^ hashed_boot_key[i % hashed_boot_key.len()];
             }
-            let decrypted = decrypt_sam_hash_with_rid(&xored, rid);
             if decrypted.len() == 16 {
                 hex_encode(&decrypted)
             } else {
@@ -488,11 +488,12 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
         let enc_start = lm_offset + 4;
         if enc_start + 16 <= v_data.len() {
             let encrypted_lm = &v_data[enc_start..enc_start + 16];
-            let mut xored = [0u8; 16];
-            for (i, &b) in encrypted_lm.iter().enumerate() {
-                xored[i] = b ^ hashed_boot_key[i % hashed_boot_key.len()];
+            // CORRECT order: DES-decrypt first, then XOR with hashed boot key.
+            let decrypted_des = decrypt_sam_hash_with_rid(encrypted_lm, rid);
+            let mut decrypted = [0u8; 16];
+            for (i, &b) in decrypted_des.iter().enumerate() {
+                decrypted[i] = b ^ hashed_boot_key[i % hashed_boot_key.len()];
             }
-            let decrypted = decrypt_sam_hash_with_rid(&xored, rid);
             if decrypted.len() == 16 {
                 hex_encode(&decrypted)
             } else {
@@ -2072,13 +2073,17 @@ mod tests {
     /// decrypt_hashed_boot_key with revision 3 marker (AES path).
     #[test]
     fn decrypt_hashed_boot_key_rev3() {
-        let mut f_data = vec![0u8; 0x98];
+        // Buffer must be >= 0x9C: IV at [0x6C..0x7C], ciphertext at [0x7C..0x9C].
+        let mut f_data = vec![0u8; 0x9C];
         // Revision = 3
         f_data[0x68] = 0x03;
         f_data[0x69] = 0x00;
+        // Place non-zero data at the correct IV and ciphertext offsets.
+        f_data[0x6C..0x7C].fill(0xAB); // IV
+        f_data[0x7C..0x9C].fill(0xCD); // ciphertext (32 bytes, only first 16 used)
         let boot_key = vec![0u8; 16];
         let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        // AES path: 0x88..0x98 = 16 bytes encrypted data → should produce 16 bytes.
+        // AES path: [0x7C..0x9C] = 32 bytes → first 16 bytes decrypted → 16-byte result.
         assert_eq!(result.len(), 16);
     }
 
@@ -2565,15 +2570,15 @@ mod tests {
         assert!(result.is_empty(), "rev2 with f_data.len()=0x80 (< 0xA0) → empty");
     }
 
-    /// decrypt_hashed_boot_key rev3 with F data exactly 0x88 bytes (< 0x98) → empty.
+    /// decrypt_hashed_boot_key rev3 with F data exactly 0x9B bytes (< 0x9C) → empty.
     #[test]
     fn decrypt_hashed_boot_key_rev3_too_short() {
-        let mut f_data = vec![0u8; 0x88]; // needs 0x98
+        let mut f_data = vec![0u8; 0x9B]; // needs 0x9C (IV at 0x6C..0x7C, ct at 0x7C..0x9C)
         f_data[0x68] = 0x03;
         f_data[0x69] = 0x00;
         let boot_key = vec![0u8; 16];
         let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        assert!(result.is_empty(), "rev3 with f_data.len()=0x88 (< 0x98) → empty");
+        assert!(result.is_empty(), "rev3 with f_data.len()=0x9B (< 0x9C) → empty");
     }
 
     /// extract_hashes_from_v with nt_length >= 20 but offset out of bounds.
