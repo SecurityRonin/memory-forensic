@@ -230,6 +230,143 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// walk_sysinfo: KdDebuggerDataBlock present — exercises product_type_name branches
+    /// and the system_time read path.
+    #[test]
+    fn walker_with_kd_debugger_data_block() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let build_num_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let build_num_paddr: u64 = 0x0030_0000;
+        let kd_vaddr: u64 = 0xFFFF_8000_0031_0000;
+        let kd_paddr: u64 = 0x0031_0000;
+
+        // Build layout: KdDebuggerDataBlock page
+        // SystemTime at +0x14 = 8 bytes
+        // NtProductType at +0x264 = 4 bytes
+        let mut kd_page = vec![0u8; 4096];
+        let sys_time: u64 = 0x01D8_DEAD_BEEF_0000;
+        kd_page[0x14..0x1C].copy_from_slice(&sys_time.to_le_bytes());
+        // product type 3 = Server
+        kd_page[0x264..0x268].copy_from_slice(&3u32.to_le_bytes());
+
+        // Build number = 19041 (no high bit set)
+        let raw_build: u32 = 19041;
+        let mut build_page = vec![0u8; 4096];
+        build_page[0..4].copy_from_slice(&raw_build.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("NtBuildNumber", build_num_vaddr)
+            .add_symbol("KdDebuggerDataBlock", kd_vaddr);
+
+        let json = isf.build_json();
+        let resolver = IsfResolver::from_value(&json).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(build_num_vaddr, build_num_paddr, flags::WRITABLE)
+            .write_phys(build_num_paddr, &build_page)
+            .map_4k(kd_vaddr, kd_paddr, flags::WRITABLE)
+            .write_phys(kd_paddr, &kd_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_sysinfo(&reader).unwrap();
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.build_number, 19041);
+        assert_eq!(info.system_time, sys_time);
+        assert_eq!(info.product_type, "Server");
+    }
+
+    /// walk_sysinfo: KdDebuggerDataBlock present but product_type = 2 → Domain Controller.
+    #[test]
+    fn walker_kd_debugger_domain_controller() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let build_num_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let build_num_paddr: u64 = 0x0040_0000;
+        let kd_vaddr: u64 = 0xFFFF_8000_0041_0000;
+        let kd_paddr: u64 = 0x0041_0000;
+
+        let mut kd_page = vec![0u8; 4096];
+        // product type 2 = Domain Controller
+        kd_page[0x264..0x268].copy_from_slice(&2u32.to_le_bytes());
+
+        let raw_build: u32 = 17763;
+        let mut build_page = vec![0u8; 4096];
+        build_page[0..4].copy_from_slice(&raw_build.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("NtBuildNumber", build_num_vaddr)
+            .add_symbol("KdDebuggerDataBlock", kd_vaddr);
+
+        let json = isf.build_json();
+        let resolver = IsfResolver::from_value(&json).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(build_num_vaddr, build_num_paddr, flags::WRITABLE)
+            .write_phys(build_num_paddr, &build_page)
+            .map_4k(kd_vaddr, kd_paddr, flags::WRITABLE)
+            .write_phys(kd_paddr, &kd_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let info = walk_sysinfo(&reader).unwrap().unwrap();
+        assert_eq!(info.product_type, "Domain Controller");
+        assert_eq!(info.build_number, 17763);
+    }
+
+    /// walk_sysinfo: KdDebuggerDataBlock present but product_type = 1 → Workstation.
+    #[test]
+    fn walker_kd_debugger_workstation() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let build_num_vaddr: u64 = 0xFFFF_8000_0050_0000;
+        let build_num_paddr: u64 = 0x0050_0000;
+        let kd_vaddr: u64 = 0xFFFF_8000_0051_0000;
+        let kd_paddr: u64 = 0x0051_0000;
+
+        let mut kd_page = vec![0u8; 4096];
+        // product type 1 = Workstation
+        kd_page[0x264..0x268].copy_from_slice(&1u32.to_le_bytes());
+
+        let mut build_page = vec![0u8; 4096];
+        build_page[0..4].copy_from_slice(&22000u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("NtBuildNumber", build_num_vaddr)
+            .add_symbol("KdDebuggerDataBlock", kd_vaddr);
+
+        let json = isf.build_json();
+        let resolver = IsfResolver::from_value(&json).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(build_num_vaddr, build_num_paddr, flags::WRITABLE)
+            .write_phys(build_num_paddr, &build_page)
+            .map_4k(kd_vaddr, kd_paddr, flags::WRITABLE)
+            .write_phys(kd_paddr, &kd_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let info = walk_sysinfo(&reader).unwrap().unwrap();
+        assert_eq!(info.product_type, "Workstation");
+    }
+
     #[test]
     fn walker_with_build_number_returns_info() {
         use memf_core::object_reader::ObjectReader;

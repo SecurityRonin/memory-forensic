@@ -493,4 +493,81 @@ mod tests {
         assert_eq!(mutants[0].owner_thread_id, 5678);
         assert!(!mutants[0].abandoned);
     }
+
+    /// walk_mutants: abandoned mutant is correctly read.
+    #[test]
+    fn walk_mutants_abandoned() {
+        let ptb = build_single_mutant("AbandonedMutex", 5678, 9012, true);
+        let reader = make_test_reader(ptb);
+        let mutants = walk_mutants(&reader).unwrap();
+
+        assert_eq!(mutants.len(), 1);
+        assert_eq!(mutants[0].name, "AbandonedMutex");
+        assert!(mutants[0].abandoned);
+    }
+
+    /// resolve_type_name: slot reads 0 (null obj_type_addr) → returns "<unknown>".
+    #[test]
+    fn resolve_type_name_null_obj_type_addr_returns_unknown() {
+        // Build a reader with ObTypeIndexTable mapped but the slot at index 0 is zero.
+        let ob_table_paddr: u64 = 0x0070_1000;
+
+        let ptb = build_empty_root()
+            .map_4k(OB_TYPE_INDEX_TABLE_VADDR, ob_table_paddr, flags::WRITABLE)
+            // All zeros: slot[0] = 0 (null obj type pointer)
+            .write_phys(ob_table_paddr, &[0u8; 4096]);
+        let reader = make_test_reader(ptb);
+
+        let name = resolve_type_name(&reader, OB_TYPE_INDEX_TABLE_VADDR, 0);
+        assert_eq!(name, "<unknown>", "null pointer slot should return '<unknown>'");
+    }
+
+    /// resolve_type_name: slot read fails (unmapped address) → returns "<unknown>".
+    #[test]
+    fn resolve_type_name_unmapped_table_returns_unknown() {
+        let ptb = build_empty_root();
+        let reader = make_test_reader(ptb);
+
+        // Use an unmapped table address → read_bytes fails → "<unknown>"
+        let name = resolve_type_name(&reader, 0xDEAD_BEEF_CAFE_0000, 5);
+        assert_eq!(name, "<unknown>", "unmapped table addr should return '<unknown>'");
+    }
+
+    /// walk_directory_recursive: depth >= MAX_DIR_DEPTH guard returns Ok early.
+    #[test]
+    fn walk_directory_recursive_depth_limit_returns_ok() {
+        let ptb = build_empty_root()
+            .map_4k(OB_TYPE_INDEX_TABLE_VADDR, 0x0070_2000, flags::WRITABLE)
+            .write_phys(0x0070_2000, &[0u8; 4096]);
+        let reader = make_test_reader(ptb);
+
+        let mut results = Vec::new();
+        // Call with depth = MAX_DIR_DEPTH (8) → should return Ok immediately.
+        let ret = walk_directory_recursive(
+            &reader,
+            0xFFFF_8000_0010_0000, // root dir addr (mapped to empty page from build_empty_root)
+            OB_TYPE_INDEX_TABLE_VADDR,
+            OBJ_HEADER_BODY,
+            MAX_DIR_DEPTH,
+            &mut results,
+        );
+        assert!(ret.is_ok(), "depth == MAX_DIR_DEPTH should return Ok without error");
+        assert!(results.is_empty(), "no results should be added when depth limit exceeded");
+    }
+
+    /// MutantInfo serializes correctly.
+    #[test]
+    fn mutant_info_serializes() {
+        use crate::MutantInfo;
+        let info = MutantInfo {
+            name: "TestMutex".to_string(),
+            owner_pid: 1234,
+            owner_thread_id: 5678,
+            abandoned: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"name\":\"TestMutex\""));
+        assert!(json.contains("\"owner_pid\":1234"));
+        assert!(json.contains("\"abandoned\":false"));
+    }
 }

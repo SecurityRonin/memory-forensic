@@ -92,6 +92,47 @@ mod tests {
         assert_eq!(classify_etw_patch(&bytes2), Some("xor_eax_ret"));
     }
 
+    /// `mov eax, 0; ret` is a known ETW patch.
+    #[test]
+    fn classify_mov_eax_ret_detected() {
+        // Pattern: B8 00 00 00 00 C3
+        let bytes = [0xB8u8, 0x00, 0x00, 0x00, 0x00, 0xC3];
+        assert_eq!(classify_etw_patch(&bytes), Some("mov_eax_ret"));
+        // B8 XX XX XX XX C3 — any two bytes after B8 are matched by the wildcard
+        let bytes2 = [0xB8u8, 0xFF, 0x12, 0x00, 0x00, 0xC3];
+        assert_eq!(classify_etw_patch(&bytes2), Some("mov_eax_ret"));
+    }
+
+    /// `jmp <stub>` (EB xx) is a known ETW patch.
+    #[test]
+    fn classify_jmp_stub_detected() {
+        let bytes = [0xEBu8, 0x08, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(classify_etw_patch(&bytes), Some("jmp_stub"));
+    }
+
+    /// `int3` patch (CC xx ...) is a known ETW patch.
+    #[test]
+    fn classify_int3_patch_detected() {
+        let bytes = [0xCCu8, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(classify_etw_patch(&bytes), Some("int3_patch"));
+    }
+
+    /// Fewer than 3 bytes returns None (cannot classify).
+    #[test]
+    fn classify_too_short_returns_none() {
+        assert_eq!(classify_etw_patch(&[]), None);
+        assert_eq!(classify_etw_patch(&[0x31]), None);
+        assert_eq!(classify_etw_patch(&[0x31, 0xC0]), None);
+    }
+
+    /// mov_eax_ret requires byte[5] == 0xC3 — without it, no match.
+    #[test]
+    fn classify_mov_eax_without_ret_not_detected() {
+        // B8 XX XX but no 0xC3 at index 5
+        let bytes = [0xB8u8, 0x00, 0x00, 0x00, 0x00, 0x00]; // index 5 = 0x00, not 0xC3
+        assert_eq!(classify_etw_patch(&bytes), None);
+    }
+
     /// Normal function prologue bytes must not be flagged.
     #[test]
     fn classify_clean_bytes_not_suspicious() {

@@ -389,6 +389,173 @@ mod tests {
         ObjectReader::new(vas, Box::new(resolver))
     }
 
+    /// More well-known tags return the expected description.
+    #[test]
+    fn describe_tag_more_known_tags() {
+        assert!(describe_tag("MmCa").is_some());
+        assert!(describe_tag("MmCi").is_some());
+        assert!(describe_tag("Driv").is_some());
+        assert!(describe_tag("Devi").is_some());
+        assert!(describe_tag("ObNm").is_some());
+        assert!(describe_tag("ObDi").is_some());
+        assert!(describe_tag("CcBc").is_some());
+        assert!(describe_tag("Pool").is_some());
+        assert!(describe_tag("Ntfx").is_some());
+        assert!(describe_tag("NtfF").is_some());
+        assert!(describe_tag("FMfn").is_some());
+        assert!(describe_tag("Tokn").is_some());
+        assert!(describe_tag("Sema").is_some());
+        assert!(describe_tag("Muta").is_some());
+        assert!(describe_tag("Even").is_some());
+        assert!(describe_tag("Key ").is_some());
+        assert!(describe_tag("Irp ").is_some());
+        assert!(describe_tag("Mdl ").is_some());
+        assert!(describe_tag("Vad ").is_some());
+        assert!(describe_tag("VadS").is_some());
+        assert!(describe_tag("CM  ").is_some());
+        assert!(describe_tag("Ica ").is_some());
+        assert!(describe_tag("Afd ").is_some());
+        assert!(describe_tag("TcpE").is_some());
+        assert!(describe_tag("UdpA").is_some());
+    }
+
+    /// NonPagedExecute pool type (pool_type_raw & 0x20 set, bit 0 clear).
+    #[test]
+    fn walk_pool_tags_nonpaged_execute_entry() {
+        // Add a 3rd entry with PoolType=0x20 (NonPagedExecute) to the existing fixture
+        // by building a dedicated reader with one NonPagedExecute entry.
+        const NX_TABLE_PTR_VADDR: u64 = 0xFFFF_8000_0011_0000;
+        const NX_TABLE_PTR_PADDR: u64 = 0x0082_0000;
+        const NX_SIZE_VADDR: u64 = 0xFFFF_8000_0011_1000;
+        const NX_SIZE_PADDR: u64 = 0x0083_0000;
+        const NX_TABLE_VADDR: u64 = 0xFFFF_8000_0012_0000;
+        const NX_TABLE_PADDR: u64 = 0x0084_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_TABLE", 40)
+            .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
+            .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
+            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_symbol("PoolTrackTable", NX_TABLE_PTR_VADDR)
+            .add_symbol("PoolTrackTableSize", NX_SIZE_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut ptr_data = vec![0u8; 4096];
+        ptr_data[0..8].copy_from_slice(&NX_TABLE_VADDR.to_le_bytes());
+
+        let mut size_data = vec![0u8; 4096];
+        size_data[0..8].copy_from_slice(&1u64.to_le_bytes()); // 1 entry
+
+        let mut table_data = vec![0u8; 4096];
+        // Tag "Exec" with PoolType=0x20 (NonPagedExecute: bit 0 clear, bit 5 set)
+        table_data[0..4].copy_from_slice(b"Exec");
+        table_data[4..8].copy_from_slice(&0x20u32.to_le_bytes()); // NonPagedExecute
+        table_data[8..16].copy_from_slice(&5u64.to_le_bytes()); // NonPagedAllocs
+        table_data[16..24].copy_from_slice(&0u64.to_le_bytes()); // NonPagedFrees
+        table_data[24..32].copy_from_slice(&1024u64.to_le_bytes()); // NonPagedBytes
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(NX_TABLE_PTR_VADDR, NX_TABLE_PTR_PADDR, flags::WRITABLE)
+            .write_phys(NX_TABLE_PTR_PADDR, &ptr_data)
+            .map_4k(NX_SIZE_VADDR, NX_SIZE_PADDR, flags::WRITABLE)
+            .write_phys(NX_SIZE_PADDR, &size_data)
+            .map_4k(NX_TABLE_VADDR, NX_TABLE_PADDR, flags::WRITABLE)
+            .write_phys(NX_TABLE_PADDR, &table_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_pool_tags(&reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tag, "Exec");
+        assert_eq!(entries[0].pool_type, "NonPagedExecute");
+        assert_eq!(entries[0].allocation_count, 5);
+        assert_eq!(entries[0].bytes_used, 1024);
+    }
+
+    /// PoolTrackTable symbol present but table pointer is 0 → empty.
+    #[test]
+    fn walk_pool_tags_zero_table_addr_empty() {
+        const ZPTR_VADDR: u64 = 0xFFFF_8000_0013_0000;
+        const ZPTR_PADDR: u64 = 0x0085_0000;
+        const ZSIZE_VADDR: u64 = 0xFFFF_8000_0013_1000;
+        const ZSIZE_PADDR: u64 = 0x0086_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_TABLE", 40)
+            .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
+            .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
+            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_symbol("PoolTrackTable", ZPTR_VADDR)
+            .add_symbol("PoolTrackTableSize", ZSIZE_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // table ptr page: all zeros (pointer is 0 → table_addr == 0 → early return)
+        let ptr_data = vec![0u8; 4096];
+        let mut size_data = vec![0u8; 4096];
+        size_data[0..8].copy_from_slice(&2u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ZPTR_VADDR, ZPTR_PADDR, flags::WRITABLE)
+            .write_phys(ZPTR_PADDR, &ptr_data)
+            .map_4k(ZSIZE_VADDR, ZSIZE_PADDR, flags::WRITABLE)
+            .write_phys(ZSIZE_PADDR, &size_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_pool_tags(&reader).unwrap();
+        assert!(entries.is_empty(), "zero table_addr should return empty");
+    }
+
+    /// PoolTrackTable symbol present but PoolTrackTableSize symbol absent → empty.
+    #[test]
+    fn walk_pool_tags_no_size_symbol_empty() {
+        const NPTR_VADDR: u64 = 0xFFFF_8000_0014_0000;
+        const NPTR_PADDR: u64 = 0x0087_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("_POOL_TRACKER_TABLE", 40)
+            .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
+            .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
+            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
+            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_symbol("PoolTrackTable", NPTR_VADDR)
+            // intentionally no PoolTrackTableSize symbol
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // table ptr page: non-zero pointer so we pass the zero-ptr check
+        let mut ptr_data = vec![0u8; 4096];
+        ptr_data[0..8].copy_from_slice(&0xFFFF_8000_0015_0000u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(NPTR_VADDR, NPTR_PADDR, flags::WRITABLE)
+            .write_phys(NPTR_PADDR, &ptr_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_pool_tags(&reader).unwrap();
+        assert!(entries.is_empty(), "absent PoolTrackTableSize symbol → empty");
+    }
+
     /// Two synthetic pool tag entries are correctly parsed.
     #[test]
     fn walk_pool_tags_with_entries() {

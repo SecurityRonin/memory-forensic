@@ -111,4 +111,95 @@ mod tests {
         let results = walk_bitlocker_keys(&reader).unwrap();
         assert!(results.is_empty());
     }
+
+    /// 16-byte AES-128 key with varied content is valid.
+    #[test]
+    fn classify_valid_aes128_key() {
+        let key: Vec<u8> = (10u8..=25).collect(); // 16 bytes
+        assert!(classify_bitlocker_key(&key));
+    }
+
+    /// All-zero 16-byte key is invalid.
+    #[test]
+    fn classify_zero_16byte_key_invalid() {
+        let key = vec![0u8; 16];
+        assert!(!classify_bitlocker_key(&key));
+    }
+
+    /// Key where every byte is identical (non-zero) is invalid (uniform).
+    #[test]
+    fn classify_uniform_byte_key_invalid() {
+        let key = vec![0xAAu8; 16];
+        assert!(!classify_bitlocker_key(&key));
+        let key32 = vec![0xBBu8; 32];
+        assert!(!classify_bitlocker_key(&key32));
+    }
+
+    /// Wrong-length keys (e.g. 8, 24, 64 bytes) are rejected.
+    #[test]
+    fn classify_wrong_length_keys_invalid() {
+        assert!(!classify_bitlocker_key(&[0u8; 8]));
+        assert!(!classify_bitlocker_key(&[0x01u8; 24]));
+        assert!(!classify_bitlocker_key(&[]));
+        // 15 bytes — neither 16 nor 32
+        let key15: Vec<u8> = (1u8..=15).collect();
+        assert!(!classify_bitlocker_key(&key15));
+    }
+
+    /// FveBlockDevice present but MmNonPagedPoolStart absent → empty.
+    #[test]
+    fn walk_bitlocker_fve_present_no_pool_start_empty() {
+        let isf = IsfBuilder::new()
+            .add_symbol("FveBlockDevice", 0xFFFF_8000_0010_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &[0u8; 16])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let results = walk_bitlocker_keys(&reader).unwrap();
+        assert!(results.is_empty());
+    }
+
+    /// Both FveBlockDevice and MmNonPagedPoolStart present → empty (graceful degradation).
+    #[test]
+    fn walk_bitlocker_both_symbols_present_empty() {
+        let isf = IsfBuilder::new()
+            .add_symbol("FveBlockDevice", 0xFFFF_8000_0010_0000)
+            .add_symbol("MmNonPagedPoolStart", 0xFFFF_8000_0010_1000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let p1: u64 = 0x0080_0000;
+        let p2: u64 = 0x0081_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(0xFFFF_8000_0010_0000, p1, flags::WRITABLE)
+            .map_4k(0xFFFF_8000_0010_1000, p2, flags::WRITABLE)
+            .write_phys(p1, &[0u8; 16])
+            .write_phys(p2, &[0u8; 16])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let results = walk_bitlocker_keys(&reader).unwrap();
+        assert!(results.is_empty());
+    }
+
+    /// BitlockerKeyInfo serializes correctly.
+    #[test]
+    fn bitlocker_key_info_serializes() {
+        let info = BitlockerKeyInfo {
+            volume_guid: "{12345678-1234-1234-1234-123456789abc}".to_string(),
+            key_type: "FVEK".to_string(),
+            key_material: vec![0x01u8; 32],
+            algorithm: "AES-256-XTS".to_string(),
+            is_found: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("FVEK"));
+        assert!(json.contains("AES-256-XTS"));
+        assert!(json.contains("\"is_found\":true"));
+    }
 }

@@ -101,6 +101,71 @@ mod tests {
         ));
     }
 
+    /// "admin" (case-insensitive) is flagged as privileged.
+    #[test]
+    fn classify_admin_account_suspicious() {
+        let nt_hash = vec![0xBBu8; 16];
+        let lm_hash = vec![0u8; 16];
+        assert!(classify_ntlm_credential("admin", &nt_hash, &lm_hash));
+        assert!(classify_ntlm_credential("ADMIN", &nt_hash, &lm_hash));
+        assert!(classify_ntlm_credential("Admin", &nt_hash, &lm_hash));
+    }
+
+    /// LM hash present (any non-zero byte) → suspicious.
+    #[test]
+    fn classify_lm_hash_present_suspicious() {
+        let nt_hash = vec![0x01u8; 16];
+        let lm_hash = vec![0x01u8; 16]; // non-zero LM hash
+        assert!(classify_ntlm_credential("jsmith", &nt_hash, &lm_hash));
+    }
+
+    /// Empty-password NT hash → suspicious.
+    #[test]
+    fn classify_empty_password_nt_hash_suspicious() {
+        // NT hash of empty password: 31d6cfe0d16ae931b73c59d7e0c089c0
+        let empty_nt: Vec<u8> = vec![
+            0x31, 0xd6, 0xcf, 0xe0, 0xd1, 0x6a, 0xe9, 0x31,
+            0xb7, 0x3c, 0x59, 0xd7, 0xe0, 0xc0, 0x89, 0xc0,
+        ];
+        let lm_hash = vec![0u8; 16];
+        assert!(classify_ntlm_credential("jsmith", &empty_nt, &lm_hash));
+    }
+
+    /// Service account (starts with "svc_") → suspicious.
+    #[test]
+    fn classify_svc_account_suspicious() {
+        let nt_hash = vec![0x01u8; 16];
+        let lm_hash = vec![0u8; 16];
+        assert!(classify_ntlm_credential("svc_backup", &nt_hash, &lm_hash));
+        assert!(classify_ntlm_credential("svchost_svc", &nt_hash, &lm_hash));
+    }
+
+    /// Regular non-privileged account with strong hash → benign.
+    #[test]
+    fn classify_regular_user_benign() {
+        let nt_hash = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04,
+                           0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C];
+        let lm_hash = vec![0u8; 16];
+        assert!(!classify_ntlm_credential("jdoe", &nt_hash, &lm_hash));
+    }
+
+    /// NtlmCredentialInfo serializes correctly.
+    #[test]
+    fn ntlm_credential_info_serializes() {
+        let info = NtlmCredentialInfo {
+            logon_id: 0xDEAD_BEEF,
+            username: "Administrator".to_string(),
+            domain: "CORP".to_string(),
+            nt_hash: vec![0xAAu8; 16],
+            lm_hash: vec![0u8; 16],
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"username\":\"Administrator\""));
+        assert!(json.contains("\"domain\":\"CORP\""));
+        assert!(json.contains("\"is_suspicious\":true"));
+    }
+
     /// Without NlpMsv1_0LogonSessionList symbol, walker returns empty.
     #[test]
     fn walk_ntlm_credentials_no_symbol_returns_empty() {

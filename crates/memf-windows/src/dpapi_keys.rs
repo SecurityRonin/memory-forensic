@@ -84,6 +84,50 @@ mod tests {
         assert!(classify_dpapi_master_key("", "Normal master key"));
     }
 
+    /// The all-zero GUID is suspicious.
+    #[test]
+    fn classify_null_guid_suspicious() {
+        assert!(classify_dpapi_master_key(
+            "{00000000-0000-0000-0000-000000000000}",
+            "Normal"
+        ));
+    }
+
+    /// Description containing "backdoor" is suspicious.
+    #[test]
+    fn classify_backdoor_description_suspicious() {
+        let valid_guid = "{12345678-1234-1234-1234-123456789abc}";
+        assert!(classify_dpapi_master_key(valid_guid, "backdoor key"));
+        assert!(classify_dpapi_master_key(valid_guid, "BACKDOOR_KEY"));
+        assert!(classify_dpapi_master_key(valid_guid, "My Backdoor Master Key"));
+    }
+
+    /// Normal valid GUID with clean description → benign.
+    #[test]
+    fn classify_valid_guid_benign() {
+        assert!(!classify_dpapi_master_key(
+            "{12345678-1234-1234-1234-123456789abc}",
+            "User master key"
+        ));
+    }
+
+    /// DpapiMasterKeyInfo serializes correctly.
+    #[test]
+    fn dpapi_master_key_info_serializes() {
+        let info = DpapiMasterKeyInfo {
+            guid: "{12345678-1234-1234-1234-123456789abc}".to_string(),
+            version: 2,
+            flags: 0,
+            description: "User master key".to_string(),
+            master_key: vec![0x01u8; 64],
+            is_suspicious: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"version\":2"));
+        assert!(json.contains("\"is_suspicious\":false"));
+        assert!(json.contains("User master key"));
+    }
+
     /// Without g_MasterKeyCache symbol, walker returns empty.
     #[test]
     fn walk_dpapi_master_keys_no_symbol_returns_empty() {
