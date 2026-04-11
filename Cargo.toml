@@ -8,6 +8,7 @@ members = [
     "crates/memf-linux",
     "crates/memf-windows",
     "crates/forensic-indicators",
+    "crates/forensic-hashdb",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ repository = "https://github.com/SecurityRonin/memory-forensic"
 
 [workspace.dependencies]
 forensic-indicators = { path = "crates/forensic-indicators" }
+forensic-hashdb = { path = "crates/forensic-hashdb" }
 memf-format  = { path = "crates/memf-format" }
 memf-strings = { path = "crates/memf-strings" }
 memf-symbols = { path = "crates/memf-symbols" }
