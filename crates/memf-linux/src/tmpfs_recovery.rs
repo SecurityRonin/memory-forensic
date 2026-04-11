@@ -183,7 +183,13 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
                     .read_field(inode_addr, "inode", "i_ctime")
                     .unwrap_or(0);
 
-                // Filename is not stored in inode directly; left empty (recovered from dentry).
+                // Filename is not stored in the inode itself; it lives only in the dentry
+                // cache. Without a dentry lookup here, we cannot recover the name, so it
+                // is left empty. As a result, `classify_tmpfs_file`'s hidden-dot-file
+                // branch (`starts_with('.')`) is effectively disabled for entries produced
+                // by this walker — only the executable-bit check fires.
+                // TODO: resolve the dentry for this inode via `i_dentry` to enable
+                //       dot-file detection.
                 let filename = String::new();
                 let is_suspicious = classify_tmpfs_file(&filename, i_mode);
 

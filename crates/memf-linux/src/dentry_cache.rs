@@ -140,6 +140,13 @@ fn collect_hidden_dentries_for_task<P: PhysicalMemoryProvider>(
         return;
     }
 
+    // fdtable.max_fds → number of valid slots in the fd array.
+    // Cap at 65536 to avoid scanning corrupt/huge values.
+    let max_fds: u64 = match reader.read_field::<u32>(fdt_ptr, "fdtable", "max_fds") {
+        Ok(v) => u64::from(v).min(65536),
+        Err(_) => return,
+    };
+
     // fdtable.fd → pointer to array of file pointers.
     let fd_array_ptr: u64 = match reader.read_field(fdt_ptr, "fdtable", "fd") {
         Ok(v) => v,
@@ -149,7 +156,7 @@ fn collect_hidden_dentries_for_task<P: PhysicalMemoryProvider>(
         return;
     }
 
-    for fd_index in 0u64..256 {
+    for fd_index in 0u64..max_fds {
         let file_slot_addr = fd_array_ptr + fd_index * 8;
         let file_ptr_raw = match reader.read_bytes(file_slot_addr, 8) {
             Ok(b) => b,
@@ -589,8 +596,9 @@ mod tests {
 
         // files_struct: fdt@0
         let files_fdt_offset: u64 = 0;
-        // fdtable: fd@0
-        let fdt_fd_offset: u64 = 0;
+        // fdtable: max_fds@0, fd@8
+        let fdt_max_fds_offset: u64 = 0;
+        let fdt_fd_offset: u64 = 8;
         // file: f_path@0, path.dentry@8
         let file_fpath_offset: u64 = 0;
         let path_dentry_offset: u64 = 8;
@@ -626,8 +634,10 @@ mod tests {
         files_page[files_fdt_offset as usize..files_fdt_offset as usize + 8]
             .copy_from_slice(&fdt_vaddr.to_le_bytes());
 
-        // Build fdtable page: fd array ptr at offset 0
+        // Build fdtable page: max_fds at fdt_max_fds_offset, fd array ptr at fdt_fd_offset
         let mut fdt_page = [0u8; 4096];
+        fdt_page[fdt_max_fds_offset as usize..fdt_max_fds_offset as usize + 4]
+            .copy_from_slice(&10u32.to_le_bytes()); // max_fds = 10
         fdt_page[fdt_fd_offset as usize..fdt_fd_offset as usize + 8]
             .copy_from_slice(&fd_arr_vaddr.to_le_bytes());
 
@@ -678,6 +688,7 @@ mod tests {
             .add_struct("files_struct", 64)
             .add_field("files_struct", "fdt", files_fdt_offset, "pointer")
             .add_struct("fdtable", 64)
+            .add_field("fdtable", "max_fds", fdt_max_fds_offset, "unsigned int")
             .add_field("fdtable", "fd", fdt_fd_offset, "pointer")
             .add_struct("file", 256)
             .add_field("file", "f_path", file_fpath_offset, "path")
@@ -769,8 +780,10 @@ mod tests {
         let mut files_page = [0u8; 4096];
         files_page[0..8].copy_from_slice(&fdt_vaddr.to_le_bytes());
 
+        // fdtable page: max_fds at offset 0 (u32 = 8 slots), fd array ptr at offset 8
         let mut fdt_page = [0u8; 4096];
-        fdt_page[0..8].copy_from_slice(&fd_arr_vaddr.to_le_bytes());
+        fdt_page[0..4].copy_from_slice(&8u32.to_le_bytes()); // max_fds = 8
+        fdt_page[8..16].copy_from_slice(&fd_arr_vaddr.to_le_bytes());
 
         let mut fd_arr_page = [0u8; 4096];
         fd_arr_page[0..8].copy_from_slice(&file_vaddr.to_le_bytes());
@@ -792,7 +805,8 @@ mod tests {
             .add_struct("files_struct", 64)
             .add_field("files_struct", "fdt", 0u64, "pointer")
             .add_struct("fdtable", 64)
-            .add_field("fdtable", "fd", 0u64, "pointer")
+            .add_field("fdtable", "max_fds", 0u64, "unsigned int")
+            .add_field("fdtable", "fd", 8u64, "pointer")
             .add_struct("file", 256)
             .add_field("file", "f_path", 0u64, "path")
             .add_struct("path", 16)
@@ -876,8 +890,10 @@ mod tests {
         let mut files_page = [0u8; 4096];
         files_page[0..8].copy_from_slice(&fdt_vaddr.to_le_bytes());
 
+        // fdtable page: max_fds at offset 0 (u32 = 8 slots), fd array ptr at offset 8
         let mut fdt_page = [0u8; 4096];
-        fdt_page[0..8].copy_from_slice(&fd_arr_vaddr.to_le_bytes());
+        fdt_page[0..4].copy_from_slice(&8u32.to_le_bytes()); // max_fds = 8
+        fdt_page[8..16].copy_from_slice(&fd_arr_vaddr.to_le_bytes());
 
         let mut fd_arr_page = [0u8; 4096];
         fd_arr_page[0..8].copy_from_slice(&file_vaddr.to_le_bytes());
@@ -913,7 +929,8 @@ mod tests {
             .add_struct("files_struct", 64)
             .add_field("files_struct", "fdt", 0u64, "pointer")
             .add_struct("fdtable", 64)
-            .add_field("fdtable", "fd", 0u64, "pointer")
+            .add_field("fdtable", "max_fds", 0u64, "unsigned int")
+            .add_field("fdtable", "fd", 8u64, "pointer")
             .add_struct("file", 256)
             .add_field("file", "f_path", 0u64, "path")
             .add_struct("path", 16)
