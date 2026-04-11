@@ -107,8 +107,14 @@ pub struct UserAssistEntry {
 /// Non-alphabetic characters pass through unchanged. This is used by
 /// Windows to obfuscate UserAssist value names in the registry.
 pub fn rot13_decode(s: &str) -> String {
-        todo!()
-    }
+    s.chars()
+        .map(|c| match c {
+            'A'..='M' | 'a'..='m' => (c as u8 + 13) as char,
+            'N'..='Z' | 'n'..='z' => (c as u8 - 13) as char,
+            other => other,
+        })
+        .collect()
+}
 
 // ── Suspicious classification ────────────────────────────────────────
 
@@ -162,33 +168,94 @@ const SUSPICIOUS_LOLBINS: &[&str] = &[
 /// - Script engines (wscript, cscript, mshta) -- frequently abused
 /// - Encoded command-line launchers
 pub fn classify_userassist(name: &str) -> bool {
-        todo!()
+    let lower = name.to_ascii_lowercase();
+
+    // Check for known offensive tool names anywhere in the path.
+    for tool in SUSPICIOUS_TOOLS {
+        if lower.contains(tool) {
+            return true;
+        }
     }
+
+    // Check for LOLBins — these are suspicious when they appear in
+    // UserAssist because it means a user interactively launched them.
+    for lolbin in SUSPICIOUS_LOLBINS {
+        if lower.ends_with(lolbin)
+            || lower.contains(&format!("\\{lolbin}"))
+            || lower.contains(&format!("/{lolbin}"))
+        {
+            return true;
+        }
+    }
+
+    // cmd.exe or powershell.exe from outside System32 is suspicious.
+    let is_cmd_or_ps = lower.contains("cmd.exe") || lower.contains("powershell.exe");
+    if is_cmd_or_ps && !lower.contains("\\windows\\system32\\") {
+        return true;
+    }
+
+    false
+}
 
 // ── Hive cell helpers ────────────────────────────────────────────────
 
 /// Compute the virtual address of a cell given its cell index.
 fn cell_address(hive_addr: u64, cell_index: u32) -> u64 {
-        todo!()
-    }
+    hive_addr
+        .wrapping_add(HBIN_START_OFFSET)
+        .wrapping_add(cell_index as u64)
+}
 
 /// Read cell data from a cell at `cell_vaddr`, skipping the 4-byte size header.
 fn read_cell_data<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     cell_vaddr: u64,
 ) -> crate::Result<Vec<u8>> {
-        todo!()
+    let size_bytes = reader.read_bytes(cell_vaddr, 4)?;
+    let raw_size = i32::from_le_bytes(size_bytes[..4].try_into().unwrap());
+    let abs_size = raw_size.unsigned_abs() as usize;
+    if abs_size <= 4 {
+        return Ok(Vec::new());
     }
+    let data_len = (abs_size - 4).min(0x10000);
+    reader
+        .read_bytes(cell_vaddr.wrapping_add(4), data_len)
+        .map_err(Into::into)
+}
 
 /// Extract the key name from an nk cell's data bytes (ASCII, compressed).
 fn read_key_name(nk_data: &[u8]) -> String {
-        todo!()
+    if nk_data.len() < NK_NAME_OFFSET + 1 {
+        return String::new();
     }
+    let name_len = u16::from_le_bytes(
+        nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let end = NK_NAME_OFFSET + name_len;
+    if end > nk_data.len() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&nk_data[NK_NAME_OFFSET..end]).into_owned()
+}
 
 /// Read the value name from a vk cell's data bytes.
 fn read_value_name(vk_data: &[u8]) -> String {
-        todo!()
+    if vk_data.len() < VK_NAME_OFFSET + 1 {
+        return String::new();
     }
+    let name_len = u16::from_le_bytes(
+        vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let end = VK_NAME_OFFSET + name_len;
+    if end > vk_data.len() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&vk_data[VK_NAME_OFFSET..end]).into_owned()
+}
 
 /// Find a subkey by name (case-insensitive) under a given nk cell.
 ///
@@ -199,8 +266,135 @@ fn find_subkey<P: PhysicalMemoryProvider>(
     nk_data: &[u8],
     target_name: &str,
 ) -> crate::Result<Option<u32>> {
-        todo!()
+    if nk_data.len() < NK_STABLE_SUBKEYS_LIST_OFFSET + 4 {
+        return Ok(None);
     }
+
+    let subkey_count = u32::from_le_bytes(
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+
+    if subkey_count == 0 {
+        return Ok(None);
+    }
+
+    let subkeys_list_cell = u32::from_le_bytes(
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+
+    // The subkeys list cell may be an index node (lf, lh, ri, li).
+    // Read its data and iterate child cell indices.
+    let list_vaddr = cell_address(hive_addr, subkeys_list_cell);
+    let list_data = read_cell_data(reader, list_vaddr)?;
+
+    if list_data.len() < 4 {
+        return Ok(None);
+    }
+
+    let sig = u16::from_le_bytes(list_data[0..2].try_into().unwrap());
+    let count = u16::from_le_bytes(list_data[2..4].try_into().unwrap()) as usize;
+    let count = count.min(MAX_SUBKEYS);
+
+    match sig {
+        // "lf" (0x666C) or "lh" (0x686C): each entry is 8 bytes (cell index + hash).
+        0x666C | 0x686C => {
+            for i in 0..count {
+                let off = 4 + i * 8;
+                if off + 4 > list_data.len() {
+                    break;
+                }
+                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_vaddr = cell_address(hive_addr, child_cell);
+                if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
+                    if child_nk.len() >= NK_NAME_OFFSET {
+                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        if child_sig == NK_SIGNATURE {
+                            let name = read_key_name(&child_nk);
+                            if name.eq_ignore_ascii_case(target_name) {
+                                return Ok(Some(child_cell));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // "li" (0x696C): each entry is 4 bytes (cell index only).
+        0x696C => {
+            for i in 0..count {
+                let off = 4 + i * 4;
+                if off + 4 > list_data.len() {
+                    break;
+                }
+                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_vaddr = cell_address(hive_addr, child_cell);
+                if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
+                    if child_nk.len() >= NK_NAME_OFFSET {
+                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        if child_sig == NK_SIGNATURE {
+                            let name = read_key_name(&child_nk);
+                            if name.eq_ignore_ascii_case(target_name) {
+                                return Ok(Some(child_cell));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // "ri" (0x6972): index of indices — each entry is a cell index to
+        // another lf/lh/li list. Recurse one level.
+        0x6972 => {
+            for i in 0..count {
+                let off = 4 + i * 4;
+                if off + 4 > list_data.len() {
+                    break;
+                }
+                let sub_list_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                // Build a synthetic nk_data-like slice so we can call ourselves
+                // with the sub-list. Instead, just read the sub-list directly.
+                let sub_vaddr = cell_address(hive_addr, sub_list_cell);
+                let sub_data = read_cell_data(reader, sub_vaddr)?;
+                if sub_data.len() < 4 {
+                    continue;
+                }
+                let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
+                let sub_count = u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                let sub_count = sub_count.min(MAX_SUBKEYS);
+                let entry_size: usize = match sub_sig {
+                    0x666C | 0x686C => 8,
+                    0x696C => 4,
+                    _ => continue,
+                };
+                for j in 0..sub_count {
+                    let soff = 4 + j * entry_size;
+                    if soff + 4 > sub_data.len() {
+                        break;
+                    }
+                    let child_cell =
+                        u32::from_le_bytes(sub_data[soff..soff + 4].try_into().unwrap());
+                    let child_vaddr = cell_address(hive_addr, child_cell);
+                    if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
+                        if child_nk.len() >= NK_NAME_OFFSET {
+                            let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                            if child_sig == NK_SIGNATURE {
+                                let name = read_key_name(&child_nk);
+                                if name.eq_ignore_ascii_case(target_name) {
+                                    return Ok(Some(child_cell));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(None)
+}
 
 /// List all subkey cell indices under a given nk cell.
 fn list_subkeys<P: PhysicalMemoryProvider>(
@@ -208,8 +402,98 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
     hive_addr: u64,
     nk_data: &[u8],
 ) -> crate::Result<Vec<u32>> {
-        todo!()
+    if nk_data.len() < NK_STABLE_SUBKEYS_LIST_OFFSET + 4 {
+        return Ok(Vec::new());
     }
+
+    let subkey_count = u32::from_le_bytes(
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+
+    if subkey_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let subkeys_list_cell = u32::from_le_bytes(
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+
+    let list_vaddr = cell_address(hive_addr, subkeys_list_cell);
+    let list_data = read_cell_data(reader, list_vaddr)?;
+
+    if list_data.len() < 4 {
+        return Ok(Vec::new());
+    }
+
+    let sig = u16::from_le_bytes(list_data[0..2].try_into().unwrap());
+    let count = u16::from_le_bytes(list_data[2..4].try_into().unwrap()) as usize;
+    let count = count.min(MAX_SUBKEYS);
+    let mut cells = Vec::with_capacity(count);
+
+    match sig {
+        0x666C | 0x686C => {
+            for i in 0..count {
+                let off = 4 + i * 8;
+                if off + 4 > list_data.len() {
+                    break;
+                }
+                cells.push(u32::from_le_bytes(
+                    list_data[off..off + 4].try_into().unwrap(),
+                ));
+            }
+        }
+        0x696C => {
+            for i in 0..count {
+                let off = 4 + i * 4;
+                if off + 4 > list_data.len() {
+                    break;
+                }
+                cells.push(u32::from_le_bytes(
+                    list_data[off..off + 4].try_into().unwrap(),
+                ));
+            }
+        }
+        0x6972 => {
+            for i in 0..count {
+                let off = 4 + i * 4;
+                if off + 4 > list_data.len() {
+                    break;
+                }
+                let sub_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let sub_vaddr = cell_address(hive_addr, sub_cell);
+                if let Ok(sub_data) = read_cell_data(reader, sub_vaddr) {
+                    if sub_data.len() >= 4 {
+                        let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
+                        let sub_count =
+                            u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                        let sub_count = sub_count.min(MAX_SUBKEYS);
+                        let entry_size: usize = match sub_sig {
+                            0x666C | 0x686C => 8,
+                            0x696C => 4,
+                            _ => continue,
+                        };
+                        for j in 0..sub_count {
+                            let soff = 4 + j * entry_size;
+                            if soff + 4 > sub_data.len() {
+                                break;
+                            }
+                            cells.push(u32::from_le_bytes(
+                                sub_data[soff..soff + 4].try_into().unwrap(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(cells)
+}
 
 // ── Walk function ────────────────────────────────────────────────────
 
@@ -228,8 +512,122 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
 ) -> crate::Result<Vec<UserAssistEntry>> {
-        todo!()
+    // Read root cell index from _HBASE_BLOCK.
+    let root_cell_bytes =
+        match reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4) {
+            Ok(b) => b,
+            Err(_) => return Ok(Vec::new()),
+        };
+    let root_cell = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
+    if root_cell == 0 {
+        return Ok(Vec::new());
     }
+
+    // Navigate from root to the UserAssist key.
+    let mut current_cell = root_cell;
+    for &component in USERASSIST_PATH {
+        let cell_vaddr = cell_address(hive_addr, current_cell);
+        let nk_data = match read_cell_data(reader, cell_vaddr) {
+            Ok(d) => d,
+            Err(_) => return Ok(Vec::new()),
+        };
+        if nk_data.len() < NK_NAME_OFFSET {
+            return Ok(Vec::new());
+        }
+        let sig = u16::from_le_bytes(nk_data[0..2].try_into().unwrap());
+        if sig != NK_SIGNATURE {
+            return Ok(Vec::new());
+        }
+        match find_subkey(reader, hive_addr, &nk_data, component)? {
+            Some(child) => current_cell = child,
+            None => return Ok(Vec::new()),
+        }
+    }
+
+    // `current_cell` now points to the UserAssist key.
+    // Enumerate GUID subkeys.
+    let ua_vaddr = cell_address(hive_addr, current_cell);
+    let ua_nk = read_cell_data(reader, ua_vaddr)?;
+    let guid_cells = list_subkeys(reader, hive_addr, &ua_nk)?;
+
+    let mut entries = Vec::new();
+
+    for guid_cell in guid_cells {
+        if entries.len() >= MAX_USERASSIST_ENTRIES {
+            break;
+        }
+
+        let guid_vaddr = cell_address(hive_addr, guid_cell);
+        let guid_nk = match read_cell_data(reader, guid_vaddr) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if guid_nk.len() < NK_NAME_OFFSET {
+            continue;
+        }
+        let sig = u16::from_le_bytes(guid_nk[0..2].try_into().unwrap());
+        if sig != NK_SIGNATURE {
+            continue;
+        }
+
+        // Find the "Count" subkey under the GUID key.
+        let count_cell = match find_subkey(reader, hive_addr, &guid_nk, "Count")? {
+            Some(c) => c,
+            None => continue,
+        };
+
+        // Read values from the Count key.
+        let count_vaddr = cell_address(hive_addr, count_cell);
+        let count_nk = match read_cell_data(reader, count_vaddr) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if count_nk.len() < NK_VALUES_LIST_OFFSET + 4 {
+            continue;
+        }
+
+        let value_count = u32::from_le_bytes(
+            count_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        if value_count == 0 {
+            continue;
+        }
+
+        let values_list_cell = u32::from_le_bytes(
+            count_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        );
+
+        let vl_vaddr = cell_address(hive_addr, values_list_cell);
+        let vl_data = match read_cell_data(reader, vl_vaddr) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let count = value_count.min(MAX_VALUES);
+        for i in 0..count {
+            if entries.len() >= MAX_USERASSIST_ENTRIES {
+                break;
+            }
+            let off = i * 4;
+            if off + 4 > vl_data.len() {
+                break;
+            }
+            let val_cell = u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
+
+            match parse_userassist_value(reader, hive_addr, val_cell) {
+                Ok(Some(entry)) => entries.push(entry),
+                _ => continue,
+            }
+        }
+    }
+
+    Ok(entries)
+}
 
 /// Parse a single UserAssist value cell into a `UserAssistEntry`.
 ///
@@ -240,8 +638,67 @@ fn parse_userassist_value<P: PhysicalMemoryProvider>(
     hive_addr: u64,
     val_cell: u32,
 ) -> crate::Result<Option<UserAssistEntry>> {
-        todo!()
+    let val_vaddr = cell_address(hive_addr, val_cell);
+    let vk_data = read_cell_data(reader, val_vaddr)?;
+
+    if vk_data.len() < VK_NAME_OFFSET {
+        return Ok(None);
     }
+
+    let sig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
+    if sig != VK_SIGNATURE {
+        return Ok(None);
+    }
+
+    // Read the ROT13-encoded value name.
+    let rot13_name = read_value_name(&vk_data);
+    let decoded_name = rot13_decode(&rot13_name);
+
+    // Read the binary value data.
+    let data_length = u32::from_le_bytes(
+        vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+
+    // Strip MSB (inline data flag) for size check.
+    let actual_length = (data_length & 0x7FFF_FFFF) as usize;
+
+    if actual_length < USERASSIST_DATA_SIZE {
+        return Ok(None);
+    }
+
+    // Read the value data from the data cell.
+    let data_cell = u32::from_le_bytes(
+        vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+
+    let data_vaddr = cell_address(hive_addr, data_cell);
+    let raw_data = read_cell_data(reader, data_vaddr)?;
+
+    if raw_data.len() < USERASSIST_DATA_SIZE {
+        return Ok(None);
+    }
+
+    // Parse the 72-byte UserAssist data structure (Vista+ format).
+    let run_count = u32::from_le_bytes(raw_data[4..8].try_into().unwrap());
+    let focus_count = u32::from_le_bytes(raw_data[8..12].try_into().unwrap());
+    let focus_time_ms = u32::from_le_bytes(raw_data[12..16].try_into().unwrap());
+    let last_run_time = u64::from_le_bytes(raw_data[60..68].try_into().unwrap());
+
+    let is_suspicious = classify_userassist(&decoded_name);
+
+    Ok(Some(UserAssistEntry {
+        name: decoded_name,
+        run_count,
+        focus_count,
+        last_run_time,
+        focus_time_ms,
+        is_suspicious,
+    }))
+}
 
 #[cfg(test)]
 mod tests {
@@ -253,7 +710,14 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
-        todo!()
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
     }
 
     // ── rot13_decode exhaustive tests ────────────────────────────────
@@ -261,44 +725,54 @@ mod tests {
     /// Basic ROT13: "Pzq.rkr" decodes to "Cmd.exe".
     #[test]
     fn rot13_decode_basic() {
-        todo!()
+        assert_eq!(rot13_decode("Pzq.rkr"), "Cmd.exe");
     }
 
     /// Non-alpha characters pass through unchanged; letters still rotate.
     /// "P:\\Hfref" (ROT13 of "C:\Users") decodes back to "C:\\Users".
     #[test]
     fn rot13_decode_passthrough() {
-        todo!()
+        assert_eq!(rot13_decode("P:\\Hfref"), "C:\\Users");
     }
 
     /// ROT13 is its own inverse.
     #[test]
     fn rot13_involutory() {
-        todo!()
+        let original = "mimikatz.exe";
+        assert_eq!(rot13_decode(&rot13_decode(original)), original);
     }
 
     /// Empty string decodes to empty string.
     #[test]
     fn rot13_empty_string() {
-        todo!()
+        assert_eq!(rot13_decode(""), "");
     }
 
     /// Digits and punctuation pass through unchanged.
     #[test]
     fn rot13_digits_unchanged() {
-        todo!()
+        assert_eq!(rot13_decode("1234567890!@#$%"), "1234567890!@#$%");
     }
 
     /// ROT13 wraps at alphabet boundaries: 'N'→'A', 'Z'→'M', 'n'→'a', 'z'→'m'.
     #[test]
     fn rot13_boundary_wrap() {
-        todo!()
+        assert_eq!(rot13_decode("N"), "A");
+        assert_eq!(rot13_decode("Z"), "M");
+        assert_eq!(rot13_decode("n"), "a");
+        assert_eq!(rot13_decode("z"), "m");
+        // Forward direction
+        assert_eq!(rot13_decode("A"), "N");
+        assert_eq!(rot13_decode("M"), "Z");
+        assert_eq!(rot13_decode("a"), "n");
+        assert_eq!(rot13_decode("m"), "z");
     }
 
     /// Decode a known ROT13 encoded UserAssist name.
     #[test]
     fn rot13_decode_userassist_known() {
-        todo!()
+        // "zvzvxngm.rkr" is ROT13 of "mimikatz.exe"
+        assert_eq!(rot13_decode("zvzvxngm.rkr"), "mimikatz.exe");
     }
 
     // ── classify_userassist tests ────────────────────────────────────
@@ -306,114 +780,182 @@ mod tests {
     /// Normal Windows programs should not be flagged.
     #[test]
     fn classify_userassist_benign() {
-        todo!()
+        assert!(!classify_userassist("C:\\Windows\\System32\\notepad.exe"));
+        assert!(!classify_userassist(
+            "C:\\Program Files\\Microsoft Office\\WINWORD.EXE"
+        ));
+        assert!(!classify_userassist(
+            "{6D809377-6AF0-444B-8957-A3773F02200E}\\calc.exe"
+        ));
     }
 
     /// Known offensive/hacking tools must be flagged as suspicious.
     #[test]
     fn classify_userassist_suspicious_tool() {
-        todo!()
+        assert!(classify_userassist("C:\\Temp\\mimikatz.exe"));
+        assert!(classify_userassist("C:\\Users\\admin\\Desktop\\PsExec.exe"));
+        assert!(classify_userassist("D:\\tools\\cobalt_strike\\beacon.exe"));
+        assert!(classify_userassist("C:\\Users\\hacker\\procdump.exe"));
     }
 
     /// All known suspicious tools are flagged.
     #[test]
     fn classify_userassist_all_suspicious_tools() {
-        todo!()
+        let tools = [
+            "mimikatz", "psexec", "procdump", "beacon", "cobalt", "rubeus",
+            "seatbelt", "sharpup", "sharphound", "bloodhound", "lazagne",
+            "safetykatz", "winpeas", "linpeas", "chisel", "plink", "ncat",
+            "netcat", "nc.exe", "nc64.exe", "whoami", "certutil",
+        ];
+        for tool in &tools {
+            assert!(
+                classify_userassist(&format!("C:\\Temp\\{}.exe", tool)),
+                "Expected {} to be suspicious",
+                tool
+            );
+        }
     }
 
     /// Script engines and living-off-the-land binaries from unusual
     /// paths should be flagged.
     #[test]
     fn classify_userassist_lolbin_suspicious() {
-        todo!()
+        // mshta from any path is suspicious
+        assert!(classify_userassist("C:\\Windows\\System32\\mshta.exe"));
+        // wscript/cscript are suspicious
+        assert!(classify_userassist("C:\\Windows\\System32\\wscript.exe"));
+        assert!(classify_userassist("C:\\Windows\\System32\\cscript.exe"));
     }
 
     /// All LOLBins are flagged.
     #[test]
     fn classify_userassist_all_lolbins_suspicious() {
-        todo!()
+        let lolbins = [
+            "mshta.exe", "wscript.exe", "cscript.exe", "regsvr32.exe",
+            "rundll32.exe", "msiexec.exe", "certutil.exe", "bitsadmin.exe",
+        ];
+        for bin in &lolbins {
+            assert!(
+                classify_userassist(&format!("C:\\Windows\\System32\\{}", bin)),
+                "Expected LOLBin {} to be suspicious",
+                bin
+            );
+        }
     }
 
     /// LOLBins also detected by path component.
     #[test]
     fn classify_userassist_lolbin_path_contains() {
-        todo!()
+        assert!(classify_userassist("C:\\Users\\user\\mshta.exe"));
+        assert!(classify_userassist("C:\\Temp\\rundll32.exe"));
     }
 
     /// cmd.exe from system32 is NOT suspicious.
     #[test]
     fn classify_userassist_cmd_system32_benign() {
-        todo!()
+        assert!(!classify_userassist(
+            "C:\\Windows\\System32\\cmd.exe"
+        ));
     }
 
     /// cmd.exe from outside system32 IS suspicious.
     #[test]
     fn classify_userassist_cmd_outside_system32_suspicious() {
-        todo!()
+        assert!(classify_userassist("C:\\Temp\\cmd.exe"));
+        assert!(classify_userassist("C:\\Users\\admin\\cmd.exe"));
     }
 
     /// powershell.exe from system32 is NOT suspicious.
     #[test]
     fn classify_userassist_powershell_system32_benign() {
-        todo!()
+        assert!(!classify_userassist(
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        ));
     }
 
     /// powershell.exe from outside system32 IS suspicious.
     #[test]
     fn classify_userassist_powershell_outside_system32_suspicious() {
-        todo!()
+        assert!(classify_userassist("C:\\Temp\\powershell.exe"));
     }
 
     /// Empty string is benign.
     #[test]
     fn classify_userassist_empty_benign() {
-        todo!()
+        assert!(!classify_userassist(""));
     }
 
     // ── read_key_name unit tests ─────────────────────────────────────
 
     #[test]
     fn read_key_name_too_short() {
-        todo!()
+        let data = vec![0u8; NK_NAME_OFFSET]; // exactly NK_NAME_OFFSET bytes, no room for data
+        assert_eq!(read_key_name(&data), "");
     }
 
     #[test]
     fn read_key_name_valid() {
-        todo!()
+        let mut data = vec![0u8; 0x60];
+        let name = b"Software";
+        // NK_NAME_LENGTH_OFFSET = 0x48, NK_NAME_OFFSET = 0x4C
+        data[NK_NAME_LENGTH_OFFSET] = name.len() as u8;
+        data[NK_NAME_LENGTH_OFFSET + 1] = 0;
+        data[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+        assert_eq!(read_key_name(&data), "Software");
     }
 
     #[test]
     fn read_key_name_overflow_returns_empty() {
-        todo!()
+        let mut data = vec![0u8; 0x60];
+        // Set name length to something larger than buffer allows
+        data[NK_NAME_LENGTH_OFFSET] = 0xFF;
+        data[NK_NAME_LENGTH_OFFSET + 1] = 0xFF;
+        assert_eq!(read_key_name(&data), "");
     }
 
     // ── read_value_name unit tests ────────────────────────────────────
 
     #[test]
     fn read_value_name_too_short() {
-        todo!()
+        let data = vec![0u8; VK_NAME_OFFSET]; // exactly VK_NAME_OFFSET, no room
+        assert_eq!(read_value_name(&data), "");
     }
 
     #[test]
     fn read_value_name_valid() {
-        todo!()
+        let mut data = vec![0u8; 0x30];
+        let name = b"url1";
+        // VK_NAME_LENGTH_OFFSET = 0x02, VK_NAME_OFFSET = 0x14
+        data[VK_NAME_LENGTH_OFFSET] = name.len() as u8;
+        data[VK_NAME_LENGTH_OFFSET + 1] = 0;
+        data[VK_NAME_OFFSET..VK_NAME_OFFSET + name.len()].copy_from_slice(name);
+        assert_eq!(read_value_name(&data), "url1");
     }
 
     #[test]
     fn read_value_name_overflow_returns_empty() {
-        todo!()
+        let mut data = vec![0u8; 0x30];
+        data[VK_NAME_LENGTH_OFFSET] = 0xFF;
+        data[VK_NAME_LENGTH_OFFSET + 1] = 0xFF;
+        assert_eq!(read_value_name(&data), "");
     }
 
     // ── cell_address unit test ────────────────────────────────────────
 
     #[test]
     fn cell_address_calculation() {
-        todo!()
+        // cell_address(hive_addr, cell_index) = hive_addr + HBIN_START + cell_index
+        let hive_addr: u64 = 0x1000_0000;
+        let cell_index: u32 = 0x100;
+        let expected = hive_addr + HBIN_START_OFFSET + cell_index as u64;
+        assert_eq!(cell_address(hive_addr, cell_index), expected);
     }
 
     #[test]
     fn cell_address_zero_index() {
-        todo!()
+        let hive_addr: u64 = 0x2000_0000;
+        let expected = hive_addr + HBIN_START_OFFSET;
+        assert_eq!(cell_address(hive_addr, 0), expected);
     }
 
     // ── walk_userassist tests ────────────────────────────────────────
@@ -421,13 +963,17 @@ mod tests {
     /// Empty reader with no relevant symbols → returns empty Vec.
     #[test]
     fn walk_userassist_no_symbol() {
-        todo!()
+        let reader = make_reader();
+        let result = walk_userassist(&reader, 0).unwrap();
+        assert!(result.is_empty());
     }
 
     /// Non-zero but unmapped hive address → returns empty Vec.
     #[test]
     fn walk_userassist_unmapped_hive_graceful() {
-        todo!()
+        let reader = make_reader();
+        let result = walk_userassist(&reader, 0xDEAD_BEEF_0000).unwrap();
+        assert!(result.is_empty());
     }
 
     /// Walk body exercises past root-cell read when hive is mapped but root cell is 0.
@@ -436,14 +982,87 @@ mod tests {
     /// The walker reads the root cell at offset 0x24, gets 0, and returns empty.
     #[test]
     fn walk_userassist_mapped_hive_root_cell_zero_empty() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HBASE_BLOCK", 0x200)
+            .add_field("_HBASE_BLOCK", "RootCell", 0x24, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_vaddr: u64 = 0xFFFF_8000_0100_0000;
+        let hive_paddr: u64 = 0x0010_0000;
+
+        // Build a 4096-byte page for the hive block with RootCell = 0 at offset 0x24.
+        let mut hive_page = [0u8; 4096];
+        // RootCell at offset 0x24 stays 0 (default zero-init).
+        let _ = hive_page; // used below
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_userassist(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "root cell == 0 should return empty");
     }
 
     /// Walk body: non-zero root cell pointing into mapped memory with no valid nk signature
     /// exercises the signature check branch and returns empty gracefully.
     #[test]
     fn walk_userassist_root_cell_nonzero_bad_signature_empty() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_HBASE_BLOCK", 0x200)
+            .add_field("_HBASE_BLOCK", "RootCell", 0x24, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map 8 pages so we have room for hive block + HBIN region.
+        let hive_vaddr: u64 = 0xFFFF_8000_0200_0000;
+        // HBIN starts at hive_vaddr + 0x1000; root cell index 0x20 → cell_address = hive + 0x1000 + 0x20
+        let cell_index: u32 = 0x20;
+
+        // Page 0: hive block (offset 0x24 = root cell = cell_index).
+        let mut page0 = [0u8; 4096];
+        page0[0x24..0x28].copy_from_slice(&cell_index.to_le_bytes());
+
+        // Page 1: HBIN start (vaddr + 0x1000). The cell at cell_index = 0x20 within HBIN.
+        // read_cell_data reads 4 bytes for size at cell_vaddr, then reads data.
+        // cell_vaddr = hive_vaddr + 0x1000 + 0x20
+        // We write a size of -100 (signed) so abs_size = 100, data_len = 96.
+        // Then the first 2 bytes of data (at cell+4) are NOT "nk" (0x6B6E) — all zeros.
+        let page1 = [0u8; 4096];
+        // Write a negative cell size at offset 0x20: i32 of -100 = 0xFFFFFF9C
+        // but we leave it zero — the walker will get abs_size=0 → data_len = 0 → empty vec
+        // which causes read_cell_data to return Ok([]). Then nk_data.len() < NK_NAME_OFFSET → empty.
+        let _ = page1;
+        let mut page1 = [0u8; 4096];
+        // Write cell size = -200 (i32) so abs = 200, data_len = 196.
+        let cell_size: i32 = -200;
+        page1[cell_index as usize..cell_index as usize + 4]
+            .copy_from_slice(&cell_size.to_le_bytes());
+        // data bytes start at cell_index + 4; first two are signature — leave as 0x0000 (invalid).
+
+        let paddr0: u64 = 0x0030_0000;
+        let paddr1: u64 = 0x0031_0000;
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, paddr0, flags::WRITABLE)
+            .map_4k(hive_vaddr + 0x1000, paddr1, flags::WRITABLE)
+            .write_phys(paddr0, &page0)
+            .write_phys(paddr1, &page1)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_userassist(&reader, hive_vaddr).unwrap();
+        assert!(result.is_empty(), "bad nk signature should return empty");
     }
 
     // ── find_subkey unit tests ───────────────────────────────────────
@@ -452,21 +1071,47 @@ mod tests {
     /// Covers lines 269-270 (nk_data.len() < NK_STABLE_SUBKEYS_LIST_OFFSET + 4).
     #[test]
     fn find_subkey_nk_data_too_short_returns_none() {
-        todo!()
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        // nk_data shorter than NK_STABLE_SUBKEYS_LIST_OFFSET (0x1C) + 4 = 0x20
+        let nk_data = vec![0u8; 10];
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap();
+        assert!(result.is_none(), "too-short nk_data should return None");
     }
 
     /// find_subkey returns None when subkey_count == 0.
     /// Covers line 279-281 (subkey_count == 0).
     #[test]
     fn find_subkey_zero_subkey_count_returns_none() {
-        todo!()
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        // nk_data long enough (> NK_STABLE_SUBKEYS_LIST_OFFSET + 4 = 0x20),
+        // but subkey_count at NK_STABLE_SUBKEY_COUNT_OFFSET (0x14) = 0.
+        let nk_data = vec![0u8; 0x40];
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap();
+        assert!(result.is_none(), "zero subkey_count should return None");
     }
 
     /// find_subkey with a non-zero subkey_count but unmapped list cell → returns None.
     /// Covers lines 283-296 (list_data.len() < 4).
     #[test]
     fn find_subkey_list_cell_unmapped_returns_none() {
-        todo!()
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        // nk_data with subkey_count=1 and subkeys_list_cell=0x100 (points somewhere unmapped).
+        let mut nk_data = vec![0u8; 0x40];
+        // subkey_count at NK_STABLE_SUBKEY_COUNT_OFFSET = 0x14
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        // subkeys_list_cell at NK_STABLE_SUBKEYS_LIST_OFFSET = 0x1C
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&0x100u32.to_le_bytes());
+        // cell_address = hive_addr + HBIN_START_OFFSET + 0x100 = 0x1000_0000 + 0x1000 + 0x100
+        // This address is not mapped in the reader, so read_cell_data will return Err,
+        // which find_subkey propagates. The caller should treat Err as None.
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software")
+            .unwrap_or(None);
+        assert!(result.is_none(), "unmapped list cell should return None or Err");
     }
 
     // ── list_subkeys unit tests ──────────────────────────────────────
@@ -474,13 +1119,21 @@ mod tests {
     /// list_subkeys returns empty when nk_data too short.
     #[test]
     fn list_subkeys_nk_data_too_short_returns_empty() {
-        todo!()
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        let nk_data = vec![0u8; 10];
+        let result = list_subkeys(&reader, hive_addr, &nk_data).unwrap();
+        assert!(result.is_empty());
     }
 
     /// list_subkeys returns empty when subkey_count == 0.
     #[test]
     fn list_subkeys_zero_count_returns_empty() {
-        todo!()
+        let reader = make_reader();
+        let hive_addr: u64 = 0x1000_0000;
+        let nk_data = vec![0u8; 0x40]; // subkey_count at 0x14 = 0 (all zeros)
+        let result = list_subkeys(&reader, hive_addr, &nk_data).unwrap();
+        assert!(result.is_empty());
     }
 
     // ── read_cell_data unit tests ────────────────────────────────────
@@ -489,69 +1142,348 @@ mod tests {
     /// We map a page with a cell size of exactly 4 (i32 = -4 or +4).
     #[test]
     fn read_cell_data_abs_size_le_4_returns_empty() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Map a page and write a cell size of 4 at offset 0.
+        let cell_vaddr: u64 = 0xFFFF_8000_0300_0000;
+        let cell_paddr: u64 = 0x0040_0000;
+        let mut page = [0u8; 4096];
+        // Write i32 of 4 (positive = free, abs_size = 4) → returns empty.
+        page[0..4].copy_from_slice(&4i32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(cell_vaddr, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_cell_data(&reader, cell_vaddr).unwrap();
+        assert!(
+            result.is_empty(),
+            "abs_size == 4 should return empty Vec"
+        );
     }
 
     /// read_cell_data with a negative size (allocated cell) returns data bytes.
     #[test]
     fn read_cell_data_negative_size_returns_data() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let cell_vaddr: u64 = 0xFFFF_8000_0400_0000;
+        let cell_paddr: u64 = 0x0045_0000;
+        let mut page = [0u8; 4096];
+        // Write i32 of -20 (allocated, abs_size=20, data_len=16).
+        page[0..4].copy_from_slice(&(-20i32).to_le_bytes());
+        // Write some data bytes.
+        page[4..20].copy_from_slice(&[0xAB; 16]);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(cell_vaddr, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_cell_data(&reader, cell_vaddr).unwrap();
+        assert_eq!(result.len(), 16);
+        assert!(result.iter().all(|&b| b == 0xAB));
     }
 
     // ── UserAssistEntry struct tests ─────────────────────────────────
 
     #[test]
     fn userassist_entry_construction() {
-        todo!()
+        let entry = UserAssistEntry {
+            name: "C:\\Windows\\System32\\notepad.exe".to_string(),
+            run_count: 5,
+            focus_count: 3,
+            last_run_time: 132_000_000_000_000_000,
+            focus_time_ms: 15000,
+            is_suspicious: false,
+        };
+        assert_eq!(entry.run_count, 5);
+        assert_eq!(entry.focus_count, 3);
+        assert!(!entry.is_suspicious);
     }
 
     #[test]
     fn userassist_entry_serialization() {
-        todo!()
+        let entry = UserAssistEntry {
+            name: "mimikatz.exe".to_string(),
+            run_count: 1,
+            focus_count: 1,
+            last_run_time: 0,
+            focus_time_ms: 0,
+            is_suspicious: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"is_suspicious\":true"));
+        assert!(json.contains("\"run_count\":1"));
+        assert!(json.contains("\"name\":\"mimikatz.exe\""));
     }
 
     // ── Constants ─────────────────────────────────────────────────────
 
     #[test]
     fn userassist_constants_sane() {
-        todo!()
+        assert_eq!(HBASE_BLOCK_ROOT_CELL_OFFSET, 0x24);
+        assert_eq!(HBIN_START_OFFSET, 0x1000);
+        assert_eq!(NK_SIGNATURE, 0x6B6E);
+        assert_eq!(VK_SIGNATURE, 0x6B76);
+        assert_eq!(USERASSIST_DATA_SIZE, 72);
+        assert_eq!(MAX_USERASSIST_ENTRIES, 4096);
     }
 
     /// find_subkey: list_data with lf signature, count=0 → None.
     #[test]
     fn find_subkey_lf_list_zero_count_none() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // We'll place the hive at 0x0500_0000 and map the list cell.
+        let hive_addr: u64 = 0x0500_0000;
+        // subkeys_list_cell = 0x100; cell_address = hive_addr + 0x1000 + 0x100
+        let list_cell: u32 = 0x100;
+        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_paddr: u64 = 0x0060_0000;
+
+        // Build the nk_data for a subkey list pointing to list_cell.
+        let mut nk_data = vec![0u8; 0x40];
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        // list_data page: write a cell at offset 0 (list_vaddr is at list_paddr).
+        // The cell size header (4 bytes) then lf list data.
+        // i32 of -20 → abs=20, data_len=16.
+        // data: sig="lf"(0x666C), count=0.
+        let mut list_page = vec![0u8; 4096];
+        list_page[0..4].copy_from_slice(&(-20i32).to_le_bytes()); // cell size
+        list_page[4..6].copy_from_slice(&[0x6C, 0x66]); // "lf" signature
+        list_page[6..8].copy_from_slice(&0u16.to_le_bytes()); // count = 0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap();
+        assert!(result.is_none());
     }
 
     /// find_subkey: list_data with li signature, count=0 → None.
     #[test]
     fn find_subkey_li_list_zero_count_none() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x0510_0000;
+        let list_cell: u32 = 0x200;
+        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_paddr: u64 = 0x0061_0000;
+
+        let mut nk_data = vec![0u8; 0x40];
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        let mut list_page = vec![0u8; 4096];
+        list_page[0..4].copy_from_slice(&(-20i32).to_le_bytes());
+        list_page[4..6].copy_from_slice(&[0x6C, 0x69]); // "li" = 0x696C
+        list_page[6..8].copy_from_slice(&0u16.to_le_bytes()); // count = 0
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap();
+        assert!(result.is_none());
     }
 
     /// find_subkey: unknown list signature → None (falls to _ => {} arm).
     #[test]
     fn find_subkey_unknown_list_sig_none() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x0520_0000;
+        let list_cell: u32 = 0x300;
+        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_paddr: u64 = 0x0062_0000;
+
+        let mut nk_data = vec![0u8; 0x40];
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        let mut list_page = vec![0u8; 4096];
+        list_page[0..4].copy_from_slice(&(-20i32).to_le_bytes());
+        list_page[4..6].copy_from_slice(&[0xFF, 0xFF]); // unknown sig
+        list_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap();
+        assert!(result.is_none());
     }
 
     /// list_subkeys: lf signature with count=1 returns one cell index.
     /// We use list_cell=0 so cell_address = hive_addr+0x1000+0 = page boundary.
     #[test]
     fn list_subkeys_lf_one_entry() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Use cell index 0 so list_vaddr = hive_addr + 0x1000 (page-aligned).
+        let hive_addr: u64 = 0x0530_0000;
+        let list_cell: u32 = 0x0;
+        let list_vaddr = hive_addr + 0x1000 + list_cell as u64; // 0x0531_0000
+        let list_paddr: u64 = 0x0063_0000;
+
+        let mut nk_data = vec![0u8; 0x40];
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        // list_vaddr is exactly list_paddr in our mapping.
+        // read_cell_data reads size at list_vaddr then data at list_vaddr+4.
+        let mut list_page = vec![0u8; 4096];
+        // Cell size = -32 (allocated, abs=32, data_len=28).
+        list_page[0..4].copy_from_slice(&(-32i32).to_le_bytes());
+        // lf signature at list_vaddr+4
+        list_page[4..6].copy_from_slice(&[0x6C, 0x66]);
+        // count = 1 at list_vaddr+6
+        list_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+        // entry[0]: child_cell = 0xABCD at list_vaddr+8
+        list_page[8..12].copy_from_slice(&0xABCDu32.to_le_bytes());
+        // hash (ignored)
+        list_page[12..16].copy_from_slice(&0u32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = list_subkeys(&reader, hive_addr, &nk_data).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 0xABCD);
     }
 
     /// list_subkeys: li signature returns cell indices.
     #[test]
     fn list_subkeys_li_entries() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x0540_0000;
+        let list_cell: u32 = 0x0; // cell at hive_addr+0x1000
+        let list_vaddr = hive_addr + 0x1000 + list_cell as u64; // 0x0541_0000
+        let list_paddr: u64 = 0x0064_0000;
+
+        let mut nk_data = vec![0u8; 0x40];
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&2u32.to_le_bytes());
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        let mut list_page = vec![0u8; 4096];
+        list_page[0..4].copy_from_slice(&(-24i32).to_le_bytes()); // size
+        list_page[4..6].copy_from_slice(&[0x6C, 0x69]); // "li" = 0x696C
+        list_page[6..8].copy_from_slice(&2u16.to_le_bytes()); // count = 2
+        list_page[8..12].copy_from_slice(&0x1111u32.to_le_bytes());
+        list_page[12..16].copy_from_slice(&0x2222u32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = list_subkeys(&reader, hive_addr, &nk_data).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], 0x1111);
+        assert_eq!(result[1], 0x2222);
     }
 
     /// list_subkeys: unknown list signature → empty result.
     #[test]
     fn list_subkeys_unknown_sig_empty() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x0550_0000;
+        let list_cell: u32 = 0x600;
+        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_paddr: u64 = 0x0065_0000;
+
+        let mut nk_data = vec![0u8; 0x40];
+        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell.to_le_bytes());
+
+        let mut list_page = vec![0u8; 4096];
+        list_page[0..4].copy_from_slice(&(-20i32).to_le_bytes());
+        list_page[4..6].copy_from_slice(&[0xDE, 0xAD]); // unknown sig
+        list_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
+            .write_phys(list_paddr, &list_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = list_subkeys(&reader, hive_addr, &nk_data).unwrap();
+        assert!(result.is_empty());
     }
 
     // ── find_subkey ri arm tests ─────────────────────────────────────
@@ -566,13 +1498,129 @@ mod tests {
     ///   hive_addr + 0x1000 + nk_cell  (page3): nk child cell
     #[test]
     fn find_subkey_ri_finds_matching_child() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Use a hive base that gives us room to place multiple pages in the HBIN area.
+        // HBIN starts at hive_addr + 0x1000.
+        let hive_addr: u64 = 0x0560_0000;
+
+        // Cell indices (relative to HBIN start):
+        //   ri_cell   = 0x0000 → vaddr = hive_addr + 0x1000
+        //   lf_cell   = 0x1000 → vaddr = hive_addr + 0x2000
+        //   nk_cell   = 0x2000 → vaddr = hive_addr + 0x3000
+        let ri_cell: u32   = 0x0000;
+        let lf_cell: u32   = 0x1000;
+        let nk_cell: u32   = 0x2000;
+
+        let ri_vaddr  = hive_addr + 0x1000 + ri_cell as u64;   // 0x0561_0000
+        let lf_vaddr  = hive_addr + 0x1000 + lf_cell as u64;   // 0x0562_0000
+        let nk_vaddr  = hive_addr + 0x1000 + nk_cell as u64;   // 0x0563_0000
+
+        let ri_paddr: u64  = 0x0068_0000;
+        let lf_paddr: u64  = 0x0069_0000;
+        let nk_paddr: u64  = 0x006A_0000;
+
+        // nk_data for the parent key: subkey_count=1, subkeys_list_cell=ri_cell.
+        let mut parent_nk = vec![0u8; 0x60];
+        parent_nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        parent_nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&ri_cell.to_le_bytes());
+
+        // ri list page: cell_size=-16, sig=0x6972, count=1, entry[0]=lf_cell.
+        let mut ri_page = vec![0u8; 4096];
+        ri_page[0..4].copy_from_slice(&(-16i32).to_le_bytes());
+        ri_page[4..6].copy_from_slice(&[0x72, 0x69]);  // "ri" = 0x6972
+        ri_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+        ri_page[8..12].copy_from_slice(&lf_cell.to_le_bytes());
+
+        // lf sub-list page: cell_size=-24, sig=0x666C, count=1, entry[0]=(nk_cell,hash=0).
+        let mut lf_page = vec![0u8; 4096];
+        lf_page[0..4].copy_from_slice(&(-24i32).to_le_bytes());
+        lf_page[4..6].copy_from_slice(&[0x6C, 0x66]);  // "lf"
+        lf_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+        lf_page[8..12].copy_from_slice(&nk_cell.to_le_bytes());
+        lf_page[12..16].copy_from_slice(&0u32.to_le_bytes()); // hash
+
+        // nk child page: cell_size such that data_len >= NK_NAME_OFFSET + name.len().
+        // data_len = abs_size - 4; need data_len >= 0x4C + 8 = 84 → abs_size >= 88.
+        let name = b"Software";
+        let nk_abs_size: usize = 4 + NK_NAME_OFFSET + name.len() + 4; // margin
+        let mut nk_page = vec![0u8; 4096];
+        nk_page[0..4].copy_from_slice(&(-(nk_abs_size as i32)).to_le_bytes());
+        nk_page[4..6].copy_from_slice(&[0x6E, 0x6B]);  // "nk" = 0x6B6E
+        nk_page[4 + NK_NAME_LENGTH_OFFSET..4 + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(name.len() as u16).to_le_bytes());
+        nk_page[4 + NK_NAME_OFFSET..4 + NK_NAME_OFFSET + name.len()]
+            .copy_from_slice(name);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ri_vaddr,  ri_paddr,  flags::WRITABLE)
+            .map_4k(lf_vaddr,  lf_paddr,  flags::WRITABLE)
+            .map_4k(nk_vaddr,  nk_paddr,  flags::WRITABLE)
+            .write_phys(ri_paddr, &ri_page)
+            .write_phys(lf_paddr, &lf_page)
+            .write_phys(nk_paddr, &nk_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = find_subkey(&reader, hive_addr, &parent_nk, "Software").unwrap();
+        assert_eq!(result, Some(nk_cell), "ri→lf→nk should find 'Software'");
     }
 
     /// find_subkey: ri signature with sub-list that has an unknown sig → continues (no match).
     #[test]
     fn find_subkey_ri_unknown_sub_sig_no_match() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x0570_0000;
+        let ri_cell: u32   = 0x0000;
+        let sub_cell: u32  = 0x1000;
+
+        let ri_vaddr  = hive_addr + 0x1000 + ri_cell as u64;
+        let sub_vaddr = hive_addr + 0x1000 + sub_cell as u64;
+
+        let ri_paddr: u64  = 0x006B_0000;
+        let sub_paddr: u64 = 0x006C_0000;
+
+        let mut parent_nk = vec![0u8; 0x60];
+        parent_nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        parent_nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&ri_cell.to_le_bytes());
+
+        let mut ri_page = vec![0u8; 4096];
+        ri_page[0..4].copy_from_slice(&(-16i32).to_le_bytes());
+        ri_page[4..6].copy_from_slice(&[0x72, 0x69]);
+        ri_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+        ri_page[8..12].copy_from_slice(&sub_cell.to_le_bytes());
+
+        // sub-list with unknown signature → entry_size arm is `continue`.
+        let mut sub_page = vec![0u8; 4096];
+        sub_page[0..4].copy_from_slice(&(-16i32).to_le_bytes());
+        sub_page[4..6].copy_from_slice(&[0xBB, 0xBB]); // unknown sig
+        sub_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ri_vaddr,  ri_paddr,  flags::WRITABLE)
+            .map_4k(sub_vaddr, sub_paddr, flags::WRITABLE)
+            .write_phys(ri_paddr, &ri_page)
+            .write_phys(sub_paddr, &sub_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = find_subkey(&reader, hive_addr, &parent_nk, "Software").unwrap();
+        assert!(result.is_none(), "unknown sub-sig should yield no match");
     }
 
     // ── list_subkeys ri arm tests ────────────────────────────────────
@@ -580,13 +1628,105 @@ mod tests {
     /// list_subkeys: ri signature with a sub-list (li) containing two cells.
     #[test]
     fn list_subkeys_ri_with_li_sub_list() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x0580_0000;
+        let ri_cell: u32   = 0x0000;
+        let li_cell: u32   = 0x1000;
+
+        let ri_vaddr  = hive_addr + 0x1000 + ri_cell as u64;
+        let li_vaddr  = hive_addr + 0x1000 + li_cell as u64;
+
+        let ri_paddr: u64  = 0x006D_0000;
+        let li_paddr: u64  = 0x006E_0000;
+
+        let mut parent_nk = vec![0u8; 0x60];
+        parent_nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&2u32.to_le_bytes());
+        parent_nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&ri_cell.to_le_bytes());
+
+        // ri list: cell_size=-16, sig=0x6972, count=1, entry=li_cell.
+        let mut ri_page = vec![0u8; 4096];
+        ri_page[0..4].copy_from_slice(&(-16i32).to_le_bytes());
+        ri_page[4..6].copy_from_slice(&[0x72, 0x69]);
+        ri_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+        ri_page[8..12].copy_from_slice(&li_cell.to_le_bytes());
+
+        // li sub-list: cell_size=-20, sig=0x696C, count=2, entries=[0xAAAA, 0xBBBB].
+        let mut li_page = vec![0u8; 4096];
+        li_page[0..4].copy_from_slice(&(-20i32).to_le_bytes());
+        li_page[4..6].copy_from_slice(&[0x6C, 0x69]); // "li"
+        li_page[6..8].copy_from_slice(&2u16.to_le_bytes());
+        li_page[8..12].copy_from_slice(&0xAAAAu32.to_le_bytes());
+        li_page[12..16].copy_from_slice(&0xBBBBu32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ri_vaddr, ri_paddr, flags::WRITABLE)
+            .map_4k(li_vaddr, li_paddr, flags::WRITABLE)
+            .write_phys(ri_paddr, &ri_page)
+            .write_phys(li_paddr, &li_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = list_subkeys(&reader, hive_addr, &parent_nk).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], 0xAAAA);
+        assert_eq!(result[1], 0xBBBB);
     }
 
     /// list_subkeys: ri signature with unknown sub-list sig → no cells collected.
     #[test]
     fn list_subkeys_ri_unknown_sub_sig_empty() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x0590_0000;
+        let ri_cell: u32   = 0x0000;
+        let bad_cell: u32  = 0x1000;
+
+        let ri_vaddr   = hive_addr + 0x1000 + ri_cell as u64;
+        let bad_vaddr  = hive_addr + 0x1000 + bad_cell as u64;
+
+        let ri_paddr: u64   = 0x006F_0000;
+        let bad_paddr: u64  = 0x0070_0000;
+
+        let mut parent_nk = vec![0u8; 0x60];
+        parent_nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        parent_nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&ri_cell.to_le_bytes());
+
+        let mut ri_page = vec![0u8; 4096];
+        ri_page[0..4].copy_from_slice(&(-16i32).to_le_bytes());
+        ri_page[4..6].copy_from_slice(&[0x72, 0x69]);
+        ri_page[6..8].copy_from_slice(&1u16.to_le_bytes());
+        ri_page[8..12].copy_from_slice(&bad_cell.to_le_bytes());
+
+        let mut bad_page = vec![0u8; 4096];
+        bad_page[0..4].copy_from_slice(&(-16i32).to_le_bytes());
+        bad_page[4..6].copy_from_slice(&[0xCC, 0xCC]); // unknown
+        bad_page[6..8].copy_from_slice(&3u16.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(ri_vaddr,  ri_paddr,  flags::WRITABLE)
+            .map_4k(bad_vaddr, bad_paddr, flags::WRITABLE)
+            .write_phys(ri_paddr, &ri_page)
+            .write_phys(bad_paddr, &bad_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = list_subkeys(&reader, hive_addr, &parent_nk).unwrap();
+        assert!(result.is_empty(), "unknown sub-sig in ri → empty result");
     }
 
     // ── parse_userassist_value tests ─────────────────────────────────
@@ -594,19 +1734,94 @@ mod tests {
     /// parse_userassist_value: vk_data too short → Ok(None).
     #[test]
     fn parse_userassist_value_short_vk_data_none() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x05A0_0000;
+        let val_cell: u32  = 0x0000; // cell at hive_addr + 0x1000
+
+        let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
+        let cell_paddr: u64 = 0x0071_0000;
+
+        // abs_size=10 → data_len=6, but VK_NAME_OFFSET=0x14=20, so 6 < 20 → Ok(None).
+        let mut page = vec![0u8; 4096];
+        page[0..4].copy_from_slice(&(-10i32).to_le_bytes()); // abs_size=10, data_len=6
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(cell_vaddr, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = parse_userassist_value(&reader, hive_addr, val_cell).unwrap();
+        assert!(result.is_none(), "too-short vk_data should return None");
     }
 
     /// parse_userassist_value: valid vk cell size but sig != VK_SIGNATURE → Ok(None).
     #[test]
     fn parse_userassist_value_invalid_vk_sig_none() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x05B0_0000;
+        let val_cell: u32  = 0x0000;
+        let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
+        let cell_paddr: u64 = 0x0072_0000;
+
+        // abs_size=60 → data_len=56 ≥ VK_NAME_OFFSET(20); sig = 0xDEAD (not vk).
+        let mut page = vec![0u8; 4096];
+        page[0..4].copy_from_slice(&(-60i32).to_le_bytes());
+        page[4..6].copy_from_slice(&[0xAD, 0xDE]); // 0xDEAD, little-endian
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(cell_vaddr, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = parse_userassist_value(&reader, hive_addr, val_cell).unwrap();
+        assert!(result.is_none(), "wrong vk sig should return None");
     }
 
     /// parse_userassist_value: valid vk with data_length < USERASSIST_DATA_SIZE → Ok(None).
     #[test]
     fn parse_userassist_value_data_too_small_none() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x05C0_0000;
+        let val_cell: u32  = 0x0000;
+        let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
+        let cell_paddr: u64 = 0x0073_0000;
+
+        // Large vk cell but data_length field = 10 (< 72 = USERASSIST_DATA_SIZE).
+        let mut page = vec![0u8; 4096];
+        page[0..4].copy_from_slice(&(-100i32).to_le_bytes()); // abs_size=100
+        page[4..6].copy_from_slice(&[0x76, 0x6B]);            // "vk" = 0x6B76, LE
+        // VK_DATA_LENGTH_OFFSET = 0x04 (relative to data start = page offset 8)
+        page[4 + VK_DATA_LENGTH_OFFSET..4 + VK_DATA_LENGTH_OFFSET + 4]
+            .copy_from_slice(&10u32.to_le_bytes()); // data_length = 10 < 72
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(cell_vaddr, cell_paddr, flags::WRITABLE)
+            .write_phys(cell_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = parse_userassist_value(&reader, hive_addr, val_cell).unwrap();
+        assert!(result.is_none(), "data_length < USERASSIST_DATA_SIZE should return None");
     }
 
     /// parse_userassist_value: fully valid vk cell with 72-byte data → Ok(Some(entry)).
@@ -614,30 +1829,115 @@ mod tests {
     /// Layout uses two cells on the same page (cell index 0 = vk, cell index far enough for data).
     #[test]
     fn parse_userassist_value_valid_entry() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let hive_addr: u64 = 0x05D0_0000;
+        // vk cell at cell index 0 → vaddr = hive_addr + 0x1000
+        let val_cell: u32  = 0x0000;
+        // data cell at cell index 0x400 → vaddr = hive_addr + 0x1000 + 0x400
+        let data_cell: u32 = 0x0400;
+
+        let vk_vaddr   = hive_addr + 0x1000 + val_cell as u64;
+        let data_vaddr = hive_addr + 0x1000 + data_cell as u64;
+        // Both fit on the same 4K page (0x400 bytes apart, data offset < 4096).
+        let page_paddr: u64 = 0x0074_0000;
+
+        // ROT13 encoded name "zvzvxngm.rkr" = ROT13("mimikatz.exe")
+        let rot13_name = b"zvzvxngm.rkr";
+
+        // The entire page holds both the vk cell (at offset 0) and data cell (at offset 0x404).
+        let mut page = vec![0u8; 4096];
+
+        // vk cell: size=-120, sig=0x6B76, name_len, data_length=72, data_cell offset.
+        let vk_cell_size: i32 = -(4 + 80); // cell_size header(4) + vk_data(80) → abs_size=84
+        page[0..4].copy_from_slice(&vk_cell_size.to_le_bytes());
+        // vk data starts at offset 4:
+        page[4..6].copy_from_slice(&[0x76, 0x6B]); // "vk" LE = 0x6B76
+        // VK_NAME_LENGTH_OFFSET = 0x02 (within vk_data → page offset 4+2=6)
+        page[4 + VK_NAME_LENGTH_OFFSET..4 + VK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(rot13_name.len() as u16).to_le_bytes());
+        // VK_DATA_LENGTH_OFFSET = 0x04 (→ page offset 4+4=8)
+        page[4 + VK_DATA_LENGTH_OFFSET..4 + VK_DATA_LENGTH_OFFSET + 4]
+            .copy_from_slice(&(USERASSIST_DATA_SIZE as u32).to_le_bytes());
+        // VK_DATA_OFFSET_OFFSET = 0x08 (→ page offset 4+8=12)
+        page[4 + VK_DATA_OFFSET_OFFSET..4 + VK_DATA_OFFSET_OFFSET + 4]
+            .copy_from_slice(&data_cell.to_le_bytes());
+        // VK_NAME_OFFSET = 0x14 (→ page offset 4+0x14=24)
+        page[4 + VK_NAME_OFFSET..4 + VK_NAME_OFFSET + rot13_name.len()]
+            .copy_from_slice(rot13_name);
+
+        // data cell at offset 0x400: size=-(72+4)=-76, then 72 bytes of UA data.
+        let data_off = data_cell as usize; // offset within page
+        let data_cell_size: i32 = -((USERASSIST_DATA_SIZE as i32) + 4);
+        page[data_off..data_off + 4].copy_from_slice(&data_cell_size.to_le_bytes());
+        // UA data starts at data_off + 4:
+        // offset 4: run_count = 7
+        let ua_start = data_off + 4;
+        page[ua_start + 4..ua_start + 8].copy_from_slice(&7u32.to_le_bytes());
+        // offset 8: focus_count = 3
+        page[ua_start + 8..ua_start + 12].copy_from_slice(&3u32.to_le_bytes());
+        // offset 12: focus_time_ms = 5000
+        page[ua_start + 12..ua_start + 16].copy_from_slice(&5000u32.to_le_bytes());
+        // offset 60: last_run_time = 132_000_000_000
+        page[ua_start + 60..ua_start + 68]
+            .copy_from_slice(&132_000_000_000u64.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vk_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page)
+            .build();
+        // data_vaddr is on the same physical page (same 4K aligned base).
+        // Since vk_vaddr and data_vaddr are on the same page, this mapping covers both.
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = parse_userassist_value(&reader, hive_addr, val_cell).unwrap();
+        assert!(result.is_some(), "valid vk should return Some(entry)");
+        let entry = result.unwrap();
+        assert_eq!(entry.name, "mimikatz.exe");
+        assert_eq!(entry.run_count, 7);
+        assert_eq!(entry.focus_count, 3);
+        assert_eq!(entry.focus_time_ms, 5000);
+        assert_eq!(entry.last_run_time, 132_000_000_000);
+        assert!(entry.is_suspicious, "mimikatz.exe should be classified suspicious");
     }
 
     /// classify_userassist: lolbin ends_with variant coverage (path ends with lolbin name).
     #[test]
     fn classify_userassist_lolbin_ends_with() {
-        todo!()
+        // This uses the `ends_with(lolbin)` branch.
+        assert!(classify_userassist("mshta.exe"));
+        assert!(classify_userassist("rundll32.exe"));
+        assert!(classify_userassist("bitsadmin.exe"));
     }
 
     /// classify_userassist: path contains /lolbin (Unix-style path).
     #[test]
     fn classify_userassist_lolbin_forward_slash_path() {
-        todo!()
+        // Forward slash path contains "/wscript.exe"
+        assert!(classify_userassist("/usr/bin/wscript.exe"));
     }
 
     /// rot13_decode: full alphabet test.
     #[test]
     fn rot13_decode_full_alphabet() {
-        todo!()
+        let input = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        let expected = "NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm";
+        assert_eq!(rot13_decode(input), expected);
     }
 
     #[test]
     fn userassist_path_components() {
-        todo!()
+        assert_eq!(USERASSIST_PATH[0], "Software");
+        assert_eq!(USERASSIST_PATH[1], "Microsoft");
+        assert_eq!(USERASSIST_PATH[2], "Windows");
+        assert_eq!(USERASSIST_PATH[3], "CurrentVersion");
+        assert_eq!(USERASSIST_PATH[4], "Explorer");
+        assert_eq!(USERASSIST_PATH[5], "UserAssist");
     }
 
     // ── walk_userassist full-path integration test ────────────────────
@@ -676,6 +1976,188 @@ mod tests {
     // All cell indices are offsets within the HBIN page (< 0x1000).
     #[test]
     fn walk_userassist_full_path_finds_mimikatz() {
-        todo!()
+        use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+        let isf = IsfBuilder::new()
+            .add_struct("_CM_KEY_NODE", 0x50)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Hive block at 0xFFFF_8000_0A00_0000, HBIN page at 0xFFFF_8000_0A01_0000.
+        let hive_vaddr: u64 = 0xFFFF_8000_0A00_0000;
+        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
+        let hive_paddr: u64 = 0x00A0_0000;
+        let hbin_paddr: u64 = 0x00A1_0000;
+        let data_paddr: u64 = 0x00A2_0000;
+
+        // ── Cell index plan (offsets within HBIN page) ──────────────────
+        // Each nk slot is 0x80 bytes; cell index = slot_base within hbin page.
+        // Since cell_address = hive_addr + 0x1000 + cell_index,
+        // cell index 0 → vaddr = hbin_vaddr, which is on hbin_paddr.
+        //
+        // nk cells at indices: root=0x000, sw=0x080, ms=0x100, win=0x180,
+        //   cv=0x200, exp=0x280, ua=0x300, guid=0x380, count=0x400
+        // lf lists at: lf0=0x480(root→sw), lf1=0x500(sw→ms), lf2=0x580(ms→win),
+        //   lf3=0x600(win→cv), lf4=0x680(cv→exp), lf5=0x700(exp→ua),
+        //   lf6=0x780(ua→guid), lf7=0x800(guid→count)
+        // values_list at: 0x880
+        // vk cell at:     0x900
+        // data cell at a separate page (data_paddr), cell index=0x1000 (next page).
+        //
+        // data cell index: 0x1000 (= second HBIN page start)
+        // data_vaddr = hive_vaddr + 0x1000 + 0x1000 = hive_vaddr + 0x2000
+
+        // NK_ROOT must be non-zero (walk_userassist returns early if root_cell == 0).
+        const NK_ROOT:  u32 = 0x020;
+        const NK_SW:    u32 = 0x0A0;
+        const NK_MS:    u32 = 0x120;
+        const NK_WIN:   u32 = 0x1A0;
+        const NK_CV:    u32 = 0x220;
+        const NK_EXP:   u32 = 0x2A0;
+        const NK_UA:    u32 = 0x320;
+        const NK_GUID:  u32 = 0x3A0;
+        const NK_COUNT: u32 = 0x420;
+        const LF_ROOT:  u32 = 0x4A0;
+        const LF_SW:    u32 = 0x4C0;
+        const LF_MS:    u32 = 0x4E0;
+        const LF_WIN:   u32 = 0x500;
+        const LF_CV:    u32 = 0x520;
+        const LF_EXP:   u32 = 0x540;
+        const LF_UA:    u32 = 0x560;
+        const LF_GUID:  u32 = 0x580;
+        const VLIST:    u32 = 0x5A0;
+        const VK_IDX:   u32 = 0x5C0;
+        const DATA_IDX: u32 = 0x1000; // on second HBIN page
+
+        let data_vaddr = hive_vaddr + HBIN_START_OFFSET + DATA_IDX as u64;
+
+        // Helper: write an allocated cell at `off` in buf.
+        // Writes: i32 size (negative), then `payload` bytes.
+        let write_cell = |buf: &mut Vec<u8>, off: usize, payload: &[u8]| {
+            let abs_size = (payload.len() + 4) as i32;
+            buf[off..off + 4].copy_from_slice(&(-abs_size).to_le_bytes());
+            buf[off + 4..off + 4 + payload.len()].copy_from_slice(payload);
+        };
+
+        // Helper: build a minimal nk cell data (payload, no size header).
+        // name is ASCII, subkey_count=1 (unless is_leaf), lf_cell is the subkeys list.
+        // For Count node: subkey_count=0, value_count=1, values_list_cell=VLIST.
+        let make_nk = |name: &[u8], subkey_count: u32, lf_cell: u32,
+                        value_count: u32, vlist_cell: u32| -> Vec<u8> {
+            let needed = NK_NAME_OFFSET + name.len();
+            let mut nk = vec![0u8; needed];
+            nk[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
+            nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+                .copy_from_slice(&subkey_count.to_le_bytes());
+            nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+                .copy_from_slice(&lf_cell.to_le_bytes());
+            nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+                .copy_from_slice(&value_count.to_le_bytes());
+            nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+                .copy_from_slice(&vlist_cell.to_le_bytes());
+            let name_len = name.len() as u16;
+            nk[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&name_len.to_le_bytes());
+            nk[NK_NAME_OFFSET..NK_NAME_OFFSET + name.len()].copy_from_slice(name);
+            nk
+        };
+
+        // Helper: build an lf list payload pointing to one child cell.
+        let make_lf = |child_cell: u32| -> Vec<u8> {
+            let mut lf = vec![0u8; 12]; // sig(2) + count(2) + entry(4+4)
+            lf[0..2].copy_from_slice(&[0x6C, 0x66]); // "lf"
+            lf[2..4].copy_from_slice(&1u16.to_le_bytes());
+            lf[4..8].copy_from_slice(&child_cell.to_le_bytes());
+            lf[8..12].copy_from_slice(&0u32.to_le_bytes()); // hash
+            lf
+        };
+
+        let mut hbin = vec![0u8; 0x1000];
+
+        // nk cells
+        write_cell(&mut hbin, NK_ROOT as usize,  &make_nk(b"$$$PROTO.HIV", 1, LF_ROOT,  0, 0));
+        write_cell(&mut hbin, NK_SW as usize,    &make_nk(b"Software",     1, LF_SW,    0, 0));
+        write_cell(&mut hbin, NK_MS as usize,    &make_nk(b"Microsoft",    1, LF_MS,    0, 0));
+        write_cell(&mut hbin, NK_WIN as usize,   &make_nk(b"Windows",      1, LF_WIN,   0, 0));
+        write_cell(&mut hbin, NK_CV as usize,    &make_nk(b"CurrentVersion", 1, LF_CV,  0, 0));
+        write_cell(&mut hbin, NK_EXP as usize,   &make_nk(b"Explorer",     1, LF_EXP,  0, 0));
+        write_cell(&mut hbin, NK_UA as usize,    &make_nk(b"UserAssist",   1, LF_UA,   0, 0));
+        write_cell(&mut hbin, NK_GUID as usize,  &make_nk(b"{GUIDTEST}",   1, LF_GUID, 0, 0));
+        // Count nk: subkey_count=0, value_count=1, values_list=VLIST
+        write_cell(&mut hbin, NK_COUNT as usize, &make_nk(b"Count",        0, 0,       1, VLIST));
+
+        // lf lists
+        write_cell(&mut hbin, LF_ROOT as usize,  &make_lf(NK_SW));
+        write_cell(&mut hbin, LF_SW as usize,    &make_lf(NK_MS));
+        write_cell(&mut hbin, LF_MS as usize,    &make_lf(NK_WIN));
+        write_cell(&mut hbin, LF_WIN as usize,   &make_lf(NK_CV));
+        write_cell(&mut hbin, LF_CV as usize,    &make_lf(NK_EXP));
+        write_cell(&mut hbin, LF_EXP as usize,   &make_lf(NK_UA));
+        write_cell(&mut hbin, LF_UA as usize,    &make_lf(NK_GUID));
+        write_cell(&mut hbin, LF_GUID as usize,  &make_lf(NK_COUNT));
+
+        // values_list: one entry pointing to VK_IDX
+        {
+            let off = VLIST as usize;
+            hbin[off..off + 4].copy_from_slice(&(-8i32).to_le_bytes()); // size=8: 4hdr+4entry
+            hbin[off + 4..off + 8].copy_from_slice(&VK_IDX.to_le_bytes());
+        }
+
+        // vk cell: name="zvzvxngm.rkr" (ROT13 of "mimikatz.exe"), data_length=72, data_cell=DATA_IDX
+        let rot13_name = b"zvzvxngm.rkr";
+        {
+            let vk_off = VK_IDX as usize;
+            let vk_payload_len = 4 + VK_NAME_OFFSET + rot13_name.len();
+            let abs_vk = (vk_payload_len + 4) as i32;
+            hbin[vk_off..vk_off + 4].copy_from_slice(&(-abs_vk).to_le_bytes());
+            let d = vk_off + 4; // vk data start
+            hbin[d..d + 2].copy_from_slice(&VK_SIGNATURE.to_le_bytes());
+            hbin[d + VK_NAME_LENGTH_OFFSET..d + VK_NAME_LENGTH_OFFSET + 2]
+                .copy_from_slice(&(rot13_name.len() as u16).to_le_bytes());
+            hbin[d + VK_DATA_LENGTH_OFFSET..d + VK_DATA_LENGTH_OFFSET + 4]
+                .copy_from_slice(&(USERASSIST_DATA_SIZE as u32).to_le_bytes());
+            hbin[d + VK_DATA_OFFSET_OFFSET..d + VK_DATA_OFFSET_OFFSET + 4]
+                .copy_from_slice(&DATA_IDX.to_le_bytes());
+            hbin[d + VK_NAME_OFFSET..d + VK_NAME_OFFSET + rot13_name.len()]
+                .copy_from_slice(rot13_name);
+        }
+
+        // hive block page: RootCell at offset 0x24 = NK_ROOT
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x24..0x28].copy_from_slice(&NK_ROOT.to_le_bytes());
+
+        // data cell page (72 bytes UA data):
+        //   run_count=5 at [4], focus_count=2 at [8], focus_time_ms=3000 at [12],
+        //   last_run_time=132_111_000_000 at [60]
+        let mut data_page = vec![0u8; 0x1000];
+        let data_abs = (USERASSIST_DATA_SIZE as i32 + 4) as i32;
+        data_page[0..4].copy_from_slice(&(-data_abs).to_le_bytes());
+        data_page[4 + 4..4 + 8].copy_from_slice(&5u32.to_le_bytes());   // run_count
+        data_page[4 + 8..4 + 12].copy_from_slice(&2u32.to_le_bytes());  // focus_count
+        data_page[4 + 12..4 + 16].copy_from_slice(&3000u32.to_le_bytes()); // focus_time_ms
+        data_page[4 + 60..4 + 68].copy_from_slice(&132_111_000_000u64.to_le_bytes()); // last_run
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
+            .write_phys(hbin_paddr, &hbin)
+            .map_4k(data_vaddr, data_paddr, flags::WRITABLE)
+            .write_phys(data_paddr, &data_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = walk_userassist(&reader, hive_vaddr).unwrap();
+
+        assert!(!entries.is_empty(), "should find at least one UserAssist entry");
+        let e = &entries[0];
+        assert_eq!(e.name, "mimikatz.exe", "ROT13 name should decode correctly");
+        assert_eq!(e.run_count, 5);
+        assert_eq!(e.focus_count, 2);
+        assert_eq!(e.focus_time_ms, 3000);
+        assert_eq!(e.last_run_time, 132_111_000_000);
+        assert!(e.is_suspicious, "mimikatz.exe should be suspicious");
     }
 }
