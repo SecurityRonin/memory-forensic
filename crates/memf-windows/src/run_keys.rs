@@ -476,9 +476,6 @@ mod tests {
         // Non-zero NTUSER addr that points nowhere readable → empty but no panic.
         let result = walk_run_keys(&reader, 0, 0xDEAD_0000);
         // Should not panic; either empty Ok or tolerable error.
-        assert!(
-            result.is_ok() || result.is_err(),
-            "should not panic with unreachable hive"
-        );
+        assert!(result.is_ok(), "walker should degrade gracefully with unreachable hive");
     }
 }

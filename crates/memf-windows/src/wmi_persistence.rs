@@ -50,7 +50,7 @@ pub fn classify_wmi_subscription(name: &str, query: &str, command: &str) -> bool
     // Suspicious WQL patterns: persistence-oriented modification event queries
     let suspicious_query = q.contains("__instancemodificationevent")
         && q.contains("targetinstance isa")
-        || q.contains("win32_processtrace")
+        || q.contains("win32_processstarttrace")
         || q.contains("__instancecreationevent") && q.contains("win32_process");
 
     // Suspicious consumer commands: code execution paths

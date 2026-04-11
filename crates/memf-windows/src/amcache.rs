@@ -238,8 +238,13 @@ fn find_subkey<P: PhysicalMemoryProvider>(
     let list_count = u16::from_le_bytes([list_data[2], list_data[3]]) as usize;
     let target_lower = target_name.to_ascii_lowercase();
 
+    // Dispatch on list signature: li (0x696C) uses 4-byte entries (raw cell offset
+    // only); lf (0x666C) and lh (0x686C) use 8-byte entries (cell offset + hash).
+    let list_sig = u16::from_le_bytes([list_data[0], list_data[1]]);
+    let stride = if list_sig == 0x696C { 4 } else { 8 };
+
     for i in 0..list_count {
-        let offset = 4 + i * 8;
+        let offset = 4 + i * stride;
         if offset + 4 > list_data.len() {
             break;
         }
@@ -527,10 +532,14 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
     let list_count =
         (u16::from_le_bytes([list_data[2], list_data[3]]) as usize).min(MAX_AMCACHE_ENTRIES);
 
+    // Dispatch on list signature: li (0x696C) → 4-byte entries; lf/lh → 8-byte.
+    let list_sig = u16::from_le_bytes([list_data[0], list_data[1]]);
+    let stride = if list_sig == 0x696C { 4 } else { 8 };
+
     let mut entries = Vec::with_capacity(list_count);
 
     for i in 0..list_count {
-        let offset = 4 + i * 8;
+        let offset = 4 + i * stride;
         if offset + 4 > list_data.len() {
             break;
         }
@@ -994,6 +1003,88 @@ mod tests {
 
         let result = walk_amcache(&reader, hive_vaddr).unwrap();
         assert!(result.is_empty(), "bad NK_SIGNATURE → empty Vec");
+    }
+
+    // ── find_subkey li-stride test ────────────────────────────────────
+
+    /// `find_subkey` must correctly handle `li` subkey lists (4-byte entries,
+    /// no hash word).  We build a synthetic hive in physical memory that
+    /// contains:
+    ///   • a parent_data NK slice with subkey_count=1 and subkeys_list_index
+    ///     pointing to an `li` list cell
+    ///   • the `li` list cell on the hbin page with one 4-byte entry pointing
+    ///     to a child NK cell
+    ///   • the child NK cell named "InventoryApplicationFile"
+    /// and verify that find_subkey returns the correct child cell index.
+    #[test]
+    fn find_subkey_li_stride_finds_child() {
+        let hive_base: u64 = 0x00B0_0000;
+
+        let list_cell_index: u32 = 0x100;
+        let child_cell_index: u32 = 0x200;
+
+        let hbin_page_vaddr = hive_base + HBIN_START_OFFSET; // 0x00B1_0000
+        let hbin_page_paddr: u64 = 0x00B1_0000;
+
+        // parent nk_data: subkey_count=1, subkeys_list_index=list_cell_index
+        let mut parent_data = vec![0u8; 0x60];
+        parent_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        parent_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+            .copy_from_slice(&list_cell_index.to_le_bytes());
+
+        // Build the hbin page.
+        // li list cell at offset 0x100:
+        //   [i32 size=-12][sig=li 0x696C][count=1][child_cell_index u32]
+        //   (no hash word — li entries are 4 bytes each)
+        // child NK cell at offset 0x200:
+        //   [i32 size=-0x80][nk_data with NK_SIGNATURE, name="InventoryApplicationFile"]
+        let mut hbin_page = vec![0u8; 0x1000];
+
+        let list_off = list_cell_index as usize;
+        hbin_page[list_off..list_off + 4].copy_from_slice(&(-12i32).to_le_bytes());
+        // li sig = 0x696C → LE bytes [0x6C, 0x69]
+        hbin_page[list_off + 4] = 0x6C;
+        hbin_page[list_off + 5] = 0x69;
+        // count = 1
+        hbin_page[list_off + 6..list_off + 8].copy_from_slice(&1u16.to_le_bytes());
+        // entry[0]: child_cell_index (4 bytes, no hash)
+        hbin_page[list_off + 8..list_off + 12]
+            .copy_from_slice(&child_cell_index.to_le_bytes());
+
+        let child_off = child_cell_index as usize;
+        hbin_page[child_off..child_off + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
+        // NK sig = 0x6B6E → bytes [0x6E, 0x6B]
+        hbin_page[child_off + 4] = 0x6E;
+        hbin_page[child_off + 5] = 0x6B;
+        let child_name = b"InventoryApplicationFile";
+        hbin_page[child_off + 4 + NK_NAME_LENGTH_OFFSET
+            ..child_off + 4 + NK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&(child_name.len() as u16).to_le_bytes());
+        hbin_page[child_off + 4 + NK_NAME_OFFSET
+            ..child_off + 4 + NK_NAME_OFFSET + child_name.len()]
+            .copy_from_slice(child_name);
+
+        let isf = make_amcache_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hbin_page_vaddr, hbin_page_paddr, flags::WRITABLE)
+            .write_phys(hbin_page_paddr, &hbin_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let found =
+            find_subkey(&reader, hive_base, &parent_data, "InventoryApplicationFile");
+        assert_eq!(
+            found,
+            Some(child_cell_index),
+            "find_subkey should locate child via li (4-byte stride) list"
+        );
+
+        // Also verify a missing name returns None (no false positives)
+        let not_found = find_subkey(&reader, hive_base, &parent_data, "NoSuchKey");
+        assert!(not_found.is_none(), "find_subkey should return None for absent name");
     }
 
     // ── read_cell_data unit tests ─────────────────────────────────────
