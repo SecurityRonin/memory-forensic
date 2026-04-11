@@ -53,8 +53,8 @@ pub struct HookedFop {
 ///
 /// Returns `true` if `addr` is in `[kernel_start, kernel_end]`.
 pub fn is_kernel_text_address(addr: u64, kernel_start: u64, kernel_end: u64) -> bool {
-    addr >= kernel_start && addr <= kernel_end
-}
+        todo!()
+    }
 
 /// Read function pointers from a `file_operations` struct and classify each.
 ///
@@ -66,28 +66,8 @@ pub fn check_fops_entry<P: PhysicalMemoryProvider>(
     kernel_start: u64,
     kernel_end: u64,
 ) -> Vec<HookedFop> {
-    let mut results = Vec::new();
-
-    for &field_name in FOP_FIELDS {
-        let ptr: u64 = match reader.read_pointer(fops_addr, "file_operations", field_name) {
-            Ok(p) => p,
-            Err(_) => continue, // Field not in symbol table, skip
-        };
-
-        // Skip null pointers — they mean the operation is not implemented
-        if ptr == 0 {
-            continue;
-        }
-
-        results.push(HookedFop {
-            function_name: field_name.to_string(),
-            target_address: ptr,
-            is_in_kernel_text: is_kernel_text_address(ptr, kernel_start, kernel_end),
-        });
+        todo!()
     }
-
-    results
-}
 
 /// Maximum number of /proc entries to walk (cycle protection).
 const MAX_PROC_ENTRIES: usize = 10_000;
@@ -104,77 +84,8 @@ const MAX_PROC_ENTRIES: usize = 10_000;
 pub fn scan_proc_fops<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<FopsHookInfo>> {
-    // Look up required symbols; return empty if missing (graceful degradation)
-    let Some(proc_root) = reader.symbols().symbol_address("proc_root") else {
-        return Ok(Vec::new());
-    };
-    let Some(kernel_start) = reader.symbols().symbol_address("_stext") else {
-        return Ok(Vec::new());
-    };
-    let Some(kernel_end) = reader.symbols().symbol_address("_etext") else {
-        return Ok(Vec::new());
-    };
-
-    let mut results = Vec::new();
-
-    // Walk the proc_dir_entry tree starting from proc_root's subdir
-    let mut stack = Vec::new();
-    let subdir: u64 = reader
-        .read_pointer(proc_root, "proc_dir_entry", "subdir")
-        .unwrap_or(0);
-    if subdir != 0 {
-        stack.push((subdir, "/proc".to_string()));
+        todo!()
     }
-
-    let mut visited = 0usize;
-    while let Some((entry_addr, parent_path)) = stack.pop() {
-        if visited >= MAX_PROC_ENTRIES {
-            break;
-        }
-        visited += 1;
-
-        // Read the entry name
-        let name = reader
-            .read_field_string(entry_addr, "proc_dir_entry", "name", 128)
-            .unwrap_or_else(|_| "<unknown>".to_string());
-        let path = format!("{parent_path}/{name}");
-
-        // Check if this entry has a proc_fops pointer
-        let fops_addr: u64 = reader
-            .read_pointer(entry_addr, "proc_dir_entry", "proc_fops")
-            .unwrap_or(0);
-
-        if fops_addr != 0 {
-            let hooked_functions = check_fops_entry(reader, fops_addr, kernel_start, kernel_end);
-            let is_suspicious = hooked_functions.iter().any(|f| !f.is_in_kernel_text);
-
-            results.push(FopsHookInfo {
-                path: path.clone(),
-                struct_address: fops_addr,
-                hooked_functions,
-                is_suspicious,
-            });
-        }
-
-        // Recurse into subdirectories
-        let child: u64 = reader
-            .read_pointer(entry_addr, "proc_dir_entry", "subdir")
-            .unwrap_or(0);
-        if child != 0 {
-            stack.push((child, path));
-        }
-
-        // Follow the next sibling
-        let next: u64 = reader
-            .read_pointer(entry_addr, "proc_dir_entry", "next")
-            .unwrap_or(0);
-        if next != 0 {
-            stack.push((next, parent_path));
-        }
-    }
-
-    Ok(results)
-}
 
 #[cfg(test)]
 mod tests {
@@ -190,30 +101,12 @@ mod tests {
 
     #[test]
     fn is_kernel_text_address_inside() {
-        let start = 0xFFFF_8000_0000_0000u64;
-        let end = 0xFFFF_8000_00FF_FFFFu64;
-
-        // Exactly at start
-        assert!(is_kernel_text_address(start, start, end));
-        // In the middle
-        assert!(is_kernel_text_address(start + 0x1000, start, end));
-        // Exactly at end
-        assert!(is_kernel_text_address(end, start, end));
+        todo!()
     }
 
     #[test]
     fn is_kernel_text_address_outside() {
-        let start = 0xFFFF_8000_0000_0000u64;
-        let end = 0xFFFF_8000_00FF_FFFFu64;
-
-        // One below start
-        assert!(!is_kernel_text_address(start - 1, start, end));
-        // One above end
-        assert!(!is_kernel_text_address(end + 1, start, end));
-        // Way outside (module space)
-        assert!(!is_kernel_text_address(0xFFFF_C900_DEAD_BEEF, start, end));
-        // Zero address
-        assert!(!is_kernel_text_address(0, start, end));
+        todo!()
     }
 
     // -----------------------------------------------------------------------
@@ -228,98 +121,17 @@ mod tests {
         kernel_start: u64,
         kernel_end: u64,
     ) -> ObjectReader<SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("file_operations", 256)
-            .add_field("file_operations", "read", 0, "pointer")
-            .add_field("file_operations", "write", 8, "pointer")
-            .add_field("file_operations", "open", 16, "pointer")
-            .add_field("file_operations", "release", 24, "pointer")
-            .add_field("file_operations", "unlocked_ioctl", 32, "pointer")
-            .add_field("file_operations", "llseek", 40, "pointer")
-            .add_field("file_operations", "mmap", 48, "pointer")
-            .add_field("file_operations", "poll", 56, "pointer")
-            .add_field("file_operations", "read_iter", 64, "pointer")
-            .add_field("file_operations", "write_iter", 72, "pointer")
-            .add_symbol("_stext", kernel_start)
-            .add_symbol("_etext", kernel_end)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(fops_vaddr, fops_paddr, ptflags::WRITABLE)
-            .write_phys(fops_paddr, fops_data)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     #[test]
     fn classify_fops_all_kernel() {
-        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
-        let fops_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let fops_paddr: u64 = 0x0080_0000;
-
-        // Build a file_operations struct where all pointers are in kernel text
-        let mut fops_data = vec![0u8; 4096];
-        let kernel_func = kernel_start + 0x1000; // Solidly inside kernel text
-        for i in 0..FOP_FIELDS.len() {
-            let offset = i * 8;
-            fops_data[offset..offset + 8].copy_from_slice(&kernel_func.to_le_bytes());
-        }
-
-        let reader = make_fops_reader(&fops_data, fops_vaddr, fops_paddr, kernel_start, kernel_end);
-
-        let results = check_fops_entry(&reader, fops_vaddr, kernel_start, kernel_end);
-
-        // All function pointers should be classified as in-kernel
-        assert!(!results.is_empty());
-        for fop in &results {
-            assert!(
-                fop.is_in_kernel_text,
-                "function {} at {:#x} should be in kernel text",
-                fop.function_name, fop.target_address,
-            );
-        }
+        todo!()
     }
 
     #[test]
     fn classify_fops_hooked_pointer() {
-        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
-        let fops_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let fops_paddr: u64 = 0x0080_0000;
-
-        // Build file_operations: read points to module space, rest are kernel
-        let mut fops_data = vec![0u8; 4096];
-        let kernel_func = kernel_start + 0x1000;
-        let hooked_addr: u64 = 0xFFFF_C900_DEAD_BEEF; // Outside kernel text (module space)
-
-        // read (offset 0) is hooked
-        fops_data[0..8].copy_from_slice(&hooked_addr.to_le_bytes());
-        // write through write_iter are kernel
-        for i in 1..FOP_FIELDS.len() {
-            let offset = i * 8;
-            fops_data[offset..offset + 8].copy_from_slice(&kernel_func.to_le_bytes());
-        }
-
-        let reader = make_fops_reader(&fops_data, fops_vaddr, fops_paddr, kernel_start, kernel_end);
-
-        let results = check_fops_entry(&reader, fops_vaddr, kernel_start, kernel_end);
-
-        // Find the "read" entry
-        let read_fop = results.iter().find(|f| f.function_name == "read").unwrap();
-        assert!(!read_fop.is_in_kernel_text);
-        assert_eq!(read_fop.target_address, hooked_addr);
-
-        // All others should be in-kernel
-        for fop in results.iter().filter(|f| f.function_name != "read") {
-            assert!(
-                fop.is_in_kernel_text,
-                "function {} should be in kernel text",
-                fop.function_name,
-            );
-        }
+        todo!()
     }
 
     // -----------------------------------------------------------------------
@@ -328,59 +140,17 @@ mod tests {
 
     #[test]
     fn scan_proc_fops_no_symbol() {
-        // No proc_root symbol → should return Ok(empty vec), not an error
-        let isf = IsfBuilder::new()
-            .add_struct("file_operations", 256)
-            .add_field("file_operations", "read", 0, "pointer")
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = scan_proc_fops(&reader).unwrap();
-        assert!(results.is_empty());
+        todo!()
     }
 
     #[test]
     fn scan_proc_fops_missing_stext_returns_empty() {
-        // proc_root present but _stext absent → graceful empty
-        let isf = IsfBuilder::new()
-            .add_struct("file_operations", 256)
-            .add_field("file_operations", "read", 0, "pointer")
-            .add_symbol("proc_root", 0xFFFF_8000_0010_0000)
-            // _stext intentionally omitted
-            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = scan_proc_fops(&reader).unwrap();
-        assert!(results.is_empty(), "missing _stext should yield empty vec");
+        todo!()
     }
 
     #[test]
     fn scan_proc_fops_missing_etext_returns_empty() {
-        // proc_root + _stext present but _etext absent → graceful empty
-        let isf = IsfBuilder::new()
-            .add_struct("file_operations", 256)
-            .add_field("file_operations", "read", 0, "pointer")
-            .add_symbol("proc_root", 0xFFFF_8000_0010_0000)
-            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
-            // _etext intentionally omitted
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = scan_proc_fops(&reader).unwrap();
-        assert!(results.is_empty(), "missing _etext should yield empty vec");
+        todo!()
     }
 
     // -----------------------------------------------------------------------
@@ -389,176 +159,21 @@ mod tests {
 
     #[test]
     fn scan_proc_fops_symbol_present_empty_proc_tree() {
-        // proc_root, _stext, _etext all present. proc_root memory is all
-        // zeros so proc_dir_entry.subdir == 0 → stack stays empty → no results.
-        let proc_root_vaddr: u64 = 0xFFFF_8800_0060_0000;
-        let proc_root_paddr: u64 = 0x0070_0000;
-        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
-
-        // All zeros: proc_dir_entry.subdir pointer at offset 0 = 0
-        let page = [0u8; 4096];
-
-        let isf = IsfBuilder::new()
-            .add_struct("proc_dir_entry", 256)
-            .add_field("proc_dir_entry", "subdir", 0, "pointer")
-            .add_field("proc_dir_entry", "next", 8, "pointer")
-            .add_field("proc_dir_entry", "proc_fops", 16, "pointer")
-            .add_field("proc_dir_entry", "name", 24, "char")
-            .add_struct("file_operations", 256)
-            .add_field("file_operations", "read", 0, "pointer")
-            .add_symbol("proc_root", proc_root_vaddr)
-            .add_symbol("_stext", kernel_start)
-            .add_symbol("_etext", kernel_end)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(proc_root_vaddr, proc_root_paddr, ptflags::WRITABLE)
-            .write_phys(proc_root_paddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = scan_proc_fops(&reader).unwrap_or_default();
-        assert!(results.is_empty(), "empty proc tree should produce no fops hook entries");
+        todo!()
     }
 
     #[test]
     fn scan_proc_fops_with_entry_no_proc_fops() {
-        // proc_root → subdir → one entry with proc_fops == 0 → no hook info recorded
-        let proc_root_vaddr: u64 = 0xFFFF_8800_0070_0000;
-        let proc_root_paddr: u64 = 0x0040_0000;
-        let entry_vaddr: u64 = 0xFFFF_8800_0071_0000;
-        let entry_paddr: u64 = 0x0041_0000;
-        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
-
-        // proc_root page: subdir at offset 0 → entry_vaddr
-        let mut root_page = [0u8; 4096];
-        root_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes()); // subdir
-        // next at 8 = 0, proc_fops at 16 = 0
-
-        // entry page: subdir=0, next=0, proc_fops=0, name="modules"
-        let mut entry_page = [0u8; 4096];
-        // subdir at 0 = 0, next at 8 = 0, proc_fops at 16 = 0
-        entry_page[24..31].copy_from_slice(b"modules"); // name
-
-        let isf = IsfBuilder::new()
-            .add_struct("proc_dir_entry", 256)
-            .add_field("proc_dir_entry", "subdir",    0x00u64, "pointer")
-            .add_field("proc_dir_entry", "next",      0x08u64, "pointer")
-            .add_field("proc_dir_entry", "proc_fops", 0x10u64, "pointer")
-            .add_field("proc_dir_entry", "name",      0x18u64, "char")
-            .add_struct("file_operations", 256)
-            .add_field("file_operations", "read", 0x00u64, "pointer")
-            .add_symbol("proc_root", proc_root_vaddr)
-            .add_symbol("_stext", kernel_start)
-            .add_symbol("_etext", kernel_end)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(proc_root_vaddr, proc_root_paddr, ptflags::WRITABLE)
-            .write_phys(proc_root_paddr, &root_page)
-            .map_4k(entry_vaddr, entry_paddr, ptflags::WRITABLE)
-            .write_phys(entry_paddr, &entry_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = scan_proc_fops(&reader).unwrap_or_default();
-        // proc_fops == 0 → no FopsHookInfo pushed
-        assert!(results.is_empty(), "entry with proc_fops==0 should produce no hook entries");
+        todo!()
     }
 
     #[test]
     fn scan_proc_fops_with_entry_and_proc_fops_in_kernel() {
-        // proc_root → subdir → entry with proc_fops pointing to a mapped fops struct
-        // fops.read is inside kernel text → is_suspicious = false
-        let proc_root_vaddr: u64 = 0xFFFF_8800_0080_0000;
-        let proc_root_paddr: u64 = 0x0042_0000;
-        let entry_vaddr: u64 = 0xFFFF_8800_0081_0000;
-        let entry_paddr: u64 = 0x0043_0000;
-        let fops_vaddr: u64 = 0xFFFF_8800_0082_0000;
-        let fops_paddr: u64 = 0x0044_0000;
-        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
-        let kernel_func: u64 = kernel_start + 0x5000;
-
-        // proc_root: subdir → entry
-        let mut root_page = [0u8; 4096];
-        root_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes());
-
-        // entry: subdir=0, next=0, proc_fops=fops_vaddr, name="net"
-        let mut entry_page = [0u8; 4096];
-        // subdir at 0 = 0
-        // next at 8 = 0
-        entry_page[0x10..0x18].copy_from_slice(&fops_vaddr.to_le_bytes()); // proc_fops
-        entry_page[0x18..0x1b].copy_from_slice(b"net"); // name
-
-        // fops: read at offset 0 = kernel_func (inside kernel text)
-        let mut fops_page = [0u8; 4096];
-        fops_page[0..8].copy_from_slice(&kernel_func.to_le_bytes()); // read
-
-        let isf = IsfBuilder::new()
-            .add_struct("proc_dir_entry", 256)
-            .add_field("proc_dir_entry", "subdir",    0x00u64, "pointer")
-            .add_field("proc_dir_entry", "next",      0x08u64, "pointer")
-            .add_field("proc_dir_entry", "proc_fops", 0x10u64, "pointer")
-            .add_field("proc_dir_entry", "name",      0x18u64, "char")
-            .add_struct("file_operations", 256)
-            .add_field("file_operations", "read",         0x00u64, "pointer")
-            .add_field("file_operations", "write",        0x08u64, "pointer")
-            .add_field("file_operations", "open",         0x10u64, "pointer")
-            .add_field("file_operations", "release",      0x18u64, "pointer")
-            .add_field("file_operations", "unlocked_ioctl", 0x20u64, "pointer")
-            .add_field("file_operations", "llseek",       0x28u64, "pointer")
-            .add_field("file_operations", "mmap",         0x30u64, "pointer")
-            .add_field("file_operations", "poll",         0x38u64, "pointer")
-            .add_field("file_operations", "read_iter",    0x40u64, "pointer")
-            .add_field("file_operations", "write_iter",   0x48u64, "pointer")
-            .add_symbol("proc_root", proc_root_vaddr)
-            .add_symbol("_stext", kernel_start)
-            .add_symbol("_etext", kernel_end)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(proc_root_vaddr, proc_root_paddr, ptflags::WRITABLE)
-            .write_phys(proc_root_paddr, &root_page)
-            .map_4k(entry_vaddr, entry_paddr, ptflags::WRITABLE)
-            .write_phys(entry_paddr, &entry_page)
-            .map_4k(fops_vaddr, fops_paddr, ptflags::WRITABLE)
-            .write_phys(fops_paddr, &fops_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = scan_proc_fops(&reader).unwrap_or_default();
-        assert_eq!(results.len(), 1, "should find exactly one entry with proc_fops");
-        let entry = &results[0];
-        assert!(!entry.is_suspicious, "kernel-text pointer should not be suspicious");
-        assert!(entry.path.contains("net") || entry.path.contains("/proc"), "path should contain entry name");
+        todo!()
     }
 
     #[test]
     fn check_fops_entry_null_pointer_skipped() {
-        // file_operations struct where all pointers are NULL → no results
-        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
-        let fops_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let fops_paddr: u64 = 0x0080_0000;
-
-        // All zeros (null pointers) in the fops struct
-        let fops_data = vec![0u8; 4096];
-
-        let reader = make_fops_reader(&fops_data, fops_vaddr, fops_paddr, kernel_start, kernel_end);
-        let results = check_fops_entry(&reader, fops_vaddr, kernel_start, kernel_end);
-
-        assert!(
-            results.is_empty(),
-            "all-null fops struct should produce no HookedFop entries"
-        );
+        todo!()
     }
 }
