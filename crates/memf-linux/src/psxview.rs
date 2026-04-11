@@ -18,57 +18,16 @@ use crate::{Error, PsxViewInfo, Result};
 pub fn walk_psxview<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<PsxViewInfo>> {
-    let init_task_addr = reader
-        .symbols()
-        .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
-
-    let tasks_offset = reader
-        .symbols()
-        .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
-
-    let head_vaddr = init_task_addr + tasks_offset;
-    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
-
-    let mut results = Vec::new();
-
-    // View 1: task list walk (init_task + all linked tasks)
-    if let Ok(info) = read_task_info(reader, init_task_addr) {
-        results.push(PsxViewInfo {
-            pid: info.0,
-            comm: info.1,
-            in_task_list: true,
-            in_pid_hash: true, // init_task is always present
-        });
+        todo!()
     }
-
-    for &task_addr in &task_addrs {
-        if let Ok(info) = read_task_info(reader, task_addr) {
-            results.push(PsxViewInfo {
-                pid: info.0,
-                comm: info.1,
-                in_task_list: true,
-                // Without pid_hash iteration support, mark as true
-                // for processes found via task list. A more complete
-                // implementation would cross-reference pid_hash.
-                in_pid_hash: true,
-            });
-        }
-    }
-
-    Ok(results)
-}
 
 /// Read PID and comm from a task_struct.
 fn read_task_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     task_addr: u64,
 ) -> Result<(u64, String)> {
-    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
-    let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
-    Ok((u64::from(pid), comm))
-}
+        todo!()
+    }
 
 #[cfg(test)]
 mod tests {
@@ -84,190 +43,31 @@ mod tests {
         paddr: u64,
         extra_mappings: &[(u64, u64, &[u8])],
     ) -> ObjectReader<SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "int")
-            .add_field("task_struct", "state", 4, "long")
-            .add_field("task_struct", "tasks", 16, "list_head")
-            .add_field("task_struct", "comm", 32, "char")
-            .add_field("task_struct", "mm", 48, "pointer")
-            .add_field("task_struct", "pid_links", 56, "hlist_node")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            .add_struct("hlist_node", 16)
-            .add_field("hlist_node", "next", 0, "pointer")
-            .add_field("hlist_node", "pprev", 8, "pointer")
-            .add_struct("pid", 32)
-            .add_field("pid", "nr", 0, "unsigned int")
-            .add_symbol("init_task", vaddr)
-            .add_symbol("pid_hash", vaddr + 0x800)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let mut builder = PageTableBuilder::new()
-            .map_4k(vaddr, paddr, ptflags::WRITABLE)
-            .write_phys(paddr, data);
-
-        for &(ev, ep, edata) in extra_mappings {
-            builder = builder
-                .map_4k(ev, ep, ptflags::WRITABLE)
-                .write_phys(ep, edata);
-        }
-
-        let (cr3, mem) = builder.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     #[test]
     fn all_processes_visible_in_both_views() {
-        let vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let paddr: u64 = 0x0080_0000;
-        let mut data = vec![0u8; 4096];
-
-        // init_task (PID 1, "init")
-        data[0..4].copy_from_slice(&1u32.to_le_bytes());
-        let tasks_addr = vaddr + 16;
-        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
-        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
-        data[32..36].copy_from_slice(b"init");
-
-        let reader = make_test_reader(&data, vaddr, paddr, &[]);
-        let results = walk_psxview(&reader).unwrap();
-
-        assert!(!results.is_empty());
-        assert!(results[0].in_task_list);
+        todo!()
     }
 
     #[test]
     fn missing_init_task_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 64)
-            .add_field("task_struct", "pid", 0, "int")
-            .add_field("task_struct", "tasks", 8, "list_head")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_psxview(&reader);
-        assert!(result.is_err());
+        todo!()
     }
 
     #[test]
     fn missing_tasks_field_returns_error() {
-        // init_task present but task_struct.tasks field absent → Error
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "int")
-            // tasks field intentionally omitted
-            .add_field("task_struct", "comm", 32, "char")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_psxview(&reader);
-        assert!(result.is_err(), "missing task_struct.tasks field should return error");
+        todo!()
     }
 
     #[test]
     fn walk_psxview_multiple_tasks_in_list() {
-        // Tests lines 47-57: loop body processes a second task in the task list.
-        let init_vaddr: u64 = 0xFFFF_8000_0020_0000;
-        let init_paddr: u64 = 0x0090_0000;
-        let task2_vaddr: u64 = 0xFFFF_8000_0021_0000;
-        let task2_paddr: u64 = 0x0091_0000;
-
-        let mut init_data = vec![0u8; 4096];
-        // pid = 1
-        init_data[0..4].copy_from_slice(&1u32.to_le_bytes());
-        // tasks.next = task2.tasks (offset 16)
-        let task2_tasks = task2_vaddr + 16;
-        init_data[16..24].copy_from_slice(&task2_tasks.to_le_bytes());
-        // tasks.prev = task2.tasks (circular)
-        init_data[24..32].copy_from_slice(&task2_tasks.to_le_bytes());
-        init_data[32..38].copy_from_slice(b"init\0\0");
-
-        let mut task2_data = vec![0u8; 4096];
-        // pid = 2
-        task2_data[0..4].copy_from_slice(&2u32.to_le_bytes());
-        // tasks.next = init.tasks (completes the circle)
-        let init_tasks = init_vaddr + 16;
-        task2_data[16..24].copy_from_slice(&init_tasks.to_le_bytes());
-        task2_data[24..32].copy_from_slice(&init_tasks.to_le_bytes());
-        task2_data[32..36].copy_from_slice(b"sh\0\0");
-
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "int")
-            .add_field("task_struct", "state", 4, "long")
-            .add_field("task_struct", "tasks", 16, "list_head")
-            .add_field("task_struct", "comm", 32, "char")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            .add_symbol("init_task", init_vaddr)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(init_vaddr, init_paddr, ptflags::WRITABLE)
-            .write_phys(init_paddr, &init_data)
-            .map_4k(task2_vaddr, task2_paddr, ptflags::WRITABLE)
-            .write_phys(task2_paddr, &task2_data)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let results = walk_psxview(&reader).unwrap();
-
-        // Should have init_task + task2
-        assert_eq!(results.len(), 2, "expected two tasks: init + task2");
-
-        // Both should have correct visibility flags
-        let init_entry = results.iter().find(|r| r.pid == 1).expect("init_task missing");
-        assert!(init_entry.in_task_list);
-        assert!(init_entry.in_pid_hash);
-
-        let task2_entry = results.iter().find(|r| r.pid == 2).expect("task2 missing");
-        assert!(task2_entry.in_task_list);
-        assert!(task2_entry.in_pid_hash);
-        assert_eq!(task2_entry.comm, "sh");
+        todo!()
     }
 
     #[test]
     fn psxview_entries_have_correct_visibility_flags() {
-        let vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let paddr: u64 = 0x0080_0000;
-        let mut data = vec![0u8; 4096];
-
-        // init_task: pid=1, comm="swapper"
-        data[0..4].copy_from_slice(&1u32.to_le_bytes());
-        let tasks_addr = vaddr + 16; // self-referential = empty list
-        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
-        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
-        data[32..39].copy_from_slice(b"swapper");
-
-        let reader = make_test_reader(&data, vaddr, paddr, &[]);
-        let results = walk_psxview(&reader).unwrap();
-
-        assert!(!results.is_empty(), "should find at least init_task");
-        let init = &results[0];
-        assert!(init.in_task_list, "init_task must be in_task_list");
-        assert!(init.in_pid_hash, "init_task must be in_pid_hash");
-        assert_eq!(init.pid, 1);
+        todo!()
     }
 }
