@@ -33,17 +33,8 @@ const SYSTEM_LIB_PREFIXES: &[&str] =
 /// Returns `true` if the path contains "pam" (case-insensitive) AND does
 /// not start with a known system library directory.
 pub fn classify_pam_hook(path: &str) -> bool {
-    if path.is_empty() {
-        return false;
+        todo!()
     }
-    let lower = path.to_lowercase();
-    if !lower.contains("pam") {
-        return false;
-    }
-    !SYSTEM_LIB_PREFIXES
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
-}
 
 /// Walk all process VMAs and report PAM libraries loaded from non-system paths.
 ///
@@ -52,27 +43,8 @@ pub fn classify_pam_hook(path: &str) -> bool {
 pub fn walk_pam_hooks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<PamHookInfo>> {
-    let init_task_addr = match reader.symbols().symbol_address("init_task") {
-        Some(a) => a,
-        None => return Ok(vec![]),
-    };
-
-    let tasks_offset = match reader.symbols().field_offset("task_struct", "tasks") {
-        Some(o) => o,
-        None => return Ok(vec![]),
-    };
-
-    let head_vaddr = init_task_addr + tasks_offset;
-    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
-
-    let mut findings = Vec::new();
-    scan_process_pam(reader, init_task_addr, &mut findings);
-    for &task_addr in &task_addrs {
-        scan_process_pam(reader, task_addr, &mut findings);
+        todo!()
     }
-
-    Ok(findings)
-}
 
 /// Scan a single process's VMAs for PAM-related file-backed mappings.
 fn scan_process_pam<P: PhysicalMemoryProvider>(
@@ -80,63 +52,8 @@ fn scan_process_pam<P: PhysicalMemoryProvider>(
     task_addr: u64,
     out: &mut Vec<PamHookInfo>,
 ) {
-    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    if mm_ptr == 0 {
-        return; // kernel thread
+        todo!()
     }
-
-    let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    let comm = reader
-        .read_field_string(task_addr, "task_struct", "comm", 16)
-        .unwrap_or_default();
-
-    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    let mut vma_addr = mmap_ptr;
-    while vma_addr != 0 {
-        let vm_file: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_file") {
-            Ok(v) => v,
-            Err(_) => {
-                vma_addr = reader
-                    .read_field(vma_addr, "vm_area_struct", "vm_next")
-                    .unwrap_or(0);
-                continue;
-            }
-        };
-
-        if vm_file != 0 {
-            // Read dentry name via vm_file -> f_path -> dentry -> d_name -> name
-            if let Some(library_path) = read_dentry_name(reader, vm_file) {
-                if library_path.to_lowercase().contains("pam") {
-                    let is_system_path = SYSTEM_LIB_PREFIXES
-                        .iter()
-                        .any(|prefix| library_path.starts_with(prefix));
-                    let is_suspicious = classify_pam_hook(&library_path);
-                    out.push(PamHookInfo {
-                        pid,
-                        comm: comm.clone(),
-                        library_path,
-                        is_system_path,
-                        is_suspicious,
-                    });
-                }
-            }
-        }
-
-        vma_addr = reader
-            .read_field(vma_addr, "vm_area_struct", "vm_next")
-            .unwrap_or(0);
-    }
-}
 
 /// Attempt to read the dentry name from a `struct file *`.
 ///
@@ -145,21 +62,8 @@ fn read_dentry_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     file_ptr: u64,
 ) -> Option<String> {
-    // f_path is embedded in file at field "f_path"; dentry is inside path
-    let f_path_dentry: u64 = reader.read_field(file_ptr, "file", "f_path").ok()?;
-    if f_path_dentry == 0 {
-        return None;
+        todo!()
     }
-    // dentry -> d_name (qstr) -> name (pointer to char)
-    let name_ptr: u64 = reader.read_field(f_path_dentry, "dentry", "d_name").ok()?;
-    if name_ptr == 0 {
-        return None;
-    }
-    // Read null-terminated string from name_ptr (up to 256 bytes)
-    let bytes = reader.read_bytes(name_ptr, 256).ok()?;
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8(bytes[..end].to_vec()).ok()
-}
 
 #[cfg(test)]
 mod tests {
@@ -175,33 +79,27 @@ mod tests {
 
     #[test]
     fn classify_pam_hook_tmp_path_suspicious() {
-        assert!(classify_pam_hook("/tmp/libpam_evil.so"));
+        todo!()
     }
 
     #[test]
     fn classify_pam_hook_home_path_suspicious() {
-        assert!(classify_pam_hook(
-            "/home/attacker/.local/libpam_backdoor.so"
-        ));
+        todo!()
     }
 
     #[test]
     fn classify_pam_hook_system_lib_not_suspicious() {
-        assert!(!classify_pam_hook("/lib/x86_64-linux-gnu/libpam.so.0"));
-        assert!(!classify_pam_hook("/usr/lib/libpam.so.0"));
-        assert!(!classify_pam_hook("/usr/lib64/libpam.so.0"));
-        assert!(!classify_pam_hook("/lib64/libpam.so.0"));
-        assert!(!classify_pam_hook("/usr/local/lib/libpam.so.0"));
+        todo!()
     }
 
     #[test]
     fn classify_pam_hook_empty_path_not_suspicious() {
-        assert!(!classify_pam_hook(""));
+        todo!()
     }
 
     #[test]
     fn classify_pam_hook_devshm_suspicious() {
-        assert!(classify_pam_hook("/dev/shm/libpam_hook.so"));
+        todo!()
     }
 
     // ---------------------------------------------------------------------------
@@ -209,27 +107,12 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     fn make_minimal_reader_no_init_task() -> ObjectReader<SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 64)
-            .add_field("task_struct", "pid", 0, "int")
-            .add_field("task_struct", "tasks", 8, "list_head")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            // No "init_task" symbol registered
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     #[test]
     fn walk_pam_hooks_missing_init_task_returns_empty() {
-        let reader = make_minimal_reader_no_init_task();
-        let result = walk_pam_hooks(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     // ---------------------------------------------------------------------------
@@ -237,49 +120,12 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     fn make_kernel_thread_reader() -> ObjectReader<SyntheticPhysMem> {
-        let vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let paddr: u64 = 0x0080_0000;
-        let mut data = vec![0u8; 4096];
-
-        // init_task: pid=0, tasks list → self, mm=NULL
-        data[0..4].copy_from_slice(&0u32.to_le_bytes());
-        let tasks_addr = vaddr + 16;
-        data[16..24].copy_from_slice(&tasks_addr.to_le_bytes());
-        data[24..32].copy_from_slice(&tasks_addr.to_le_bytes());
-        data[32..41].copy_from_slice(b"swapper/0");
-        data[48..56].copy_from_slice(&0u64.to_le_bytes()); // mm = NULL
-
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "int")
-            .add_field("task_struct", "tasks", 16, "list_head")
-            .add_field("task_struct", "comm", 32, "char")
-            .add_field("task_struct", "mm", 48, "pointer")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            .add_struct("mm_struct", 64)
-            .add_field("mm_struct", "mmap", 8, "pointer")
-            .add_struct("vm_area_struct", 64)
-            .add_field("vm_area_struct", "vm_next", 16, "pointer")
-            .add_field("vm_area_struct", "vm_file", 40, "pointer")
-            .add_symbol("init_task", vaddr)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(vaddr, paddr, ptflags::WRITABLE)
-            .write_phys(paddr, &data)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     #[test]
     fn walk_pam_hooks_kernel_thread_returns_empty() {
-        let reader = make_kernel_thread_reader();
-        let result = walk_pam_hooks(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     // ---------------------------------------------------------------------------
@@ -288,26 +134,22 @@ mod tests {
 
     #[test]
     fn classify_pam_hook_no_pam_in_path_not_suspicious() {
-        // Path that is not a system path but also doesn't contain "pam"
-        assert!(!classify_pam_hook("/tmp/libssl.so"));
-        assert!(!classify_pam_hook("/home/user/.local/libfoo.so"));
+        todo!()
     }
 
     #[test]
     fn classify_pam_hook_uppercase_pam_suspicious() {
-        // Classification is case-insensitive; "PAM" should be detected
-        assert!(classify_pam_hook("/tmp/libPAM_evil.so"));
+        todo!()
     }
 
     #[test]
     fn classify_pam_hook_mixed_case_pam_suspicious() {
-        assert!(classify_pam_hook("/opt/libPam.so"));
+        todo!()
     }
 
     #[test]
     fn classify_pam_hook_system_lib64_not_suspicious() {
-        // /usr/lib64 prefix — must not be flagged
-        assert!(!classify_pam_hook("/usr/lib64/security/libpam_unix.so"));
+        todo!()
     }
 
     // ---------------------------------------------------------------------------
@@ -316,69 +158,12 @@ mod tests {
 
     #[test]
     fn walk_pam_hooks_symbol_present_empty_list() {
-        // init_task present with self-pointing tasks list and mm==NULL.
-        // walk body runs but scan_process_pam returns early on mm==0.
-        let sym_vaddr: u64 = 0xFFFF_8800_0040_0000;
-        let sym_paddr: u64 = 0x0050_0000;
-        let tasks_offset = 16u64;
-
-        let mut page = [0u8; 4096];
-        // pid = 0 (swapper)
-        page[0..4].copy_from_slice(&0u32.to_le_bytes());
-        // tasks: self-pointing
-        let list_self = sym_vaddr + tasks_offset;
-        page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&list_self.to_le_bytes());
-        page[tasks_offset as usize + 8..tasks_offset as usize + 16]
-            .copy_from_slice(&list_self.to_le_bytes());
-        // comm = "swapper"
-        page[32..39].copy_from_slice(b"swapper");
-        // mm = 0 (kernel thread)
-        page[48..56].copy_from_slice(&0u64.to_le_bytes());
-
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "unsigned int")
-            .add_field("task_struct", "tasks", 16, "pointer")
-            .add_field("task_struct", "comm", 32, "char")
-            .add_field("task_struct", "mm", 48, "pointer")
-            .add_symbol("init_task", sym_vaddr)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr, sym_paddr, ptflags::WRITABLE)
-            .write_phys(sym_paddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_pam_hooks(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "kernel thread with mm==NULL should produce no PAM findings");
+        todo!()
     }
 
     #[test]
     fn walk_pam_hooks_missing_tasks_field_returns_empty() {
-        // init_task is present but "tasks" field offset is absent.
-        // walk_list will not find the list offset so we expect graceful return.
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 64)
-            .add_field("task_struct", "pid", 0, "int")
-            // tasks field intentionally omitted
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // Missing tasks offset → Ok(empty) per graceful degradation
-        let result = walk_pam_hooks(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     // ---------------------------------------------------------------------------
@@ -395,134 +180,7 @@ mod tests {
     // ---------------------------------------------------------------------------
     #[test]
     fn walk_pam_hooks_detects_suspicious_pam_lib() {
-        use memf_core::object_reader::ObjectReader;
-
-        let task_vaddr: u64 = 0xFFFF_D800_0200_0000;
-        let mm_vaddr: u64 = 0xFFFF_D800_0201_0000;
-        let vma_vaddr: u64 = 0xFFFF_D800_0202_0000;
-        let file_vaddr: u64 = 0xFFFF_D800_0203_0000;
-        let dentry_vaddr: u64 = 0xFFFF_D800_0204_0000;
-        let name_vaddr: u64 = 0xFFFF_D800_0205_0000;
-
-        let task_paddr: u64 = 0x030_000;
-        let mm_paddr: u64 = 0x031_000;
-        let vma_paddr: u64 = 0x032_000;
-        let file_paddr: u64 = 0x033_000;
-        let dentry_paddr: u64 = 0x034_000;
-        let name_paddr: u64 = 0x035_000;
-
-        // Offsets
-        let tasks_offset: u64 = 8;
-        let task_comm_offset: u64 = 24;
-        let task_mm_offset: u64 = 40;
-        let task_pid_offset: u64 = 0;
-
-        // mm_struct.mmap at offset 0
-        let mm_mmap_offset: u64 = 0;
-        // vm_area_struct: vm_next@0, vm_file@16
-        let vma_vm_next_offset: u64 = 0;
-        let vma_vm_file_offset: u64 = 16;
-        // file.f_path at offset 0; read_dentry_name reads file.f_path (pointer) → dentry
-        // pam_hooks' read_dentry_name: reads file.f_path (via read_field → u64 pointer to dentry),
-        // then dentry.d_name (via read_field → u64 pointer to char string).
-        let file_fpath_offset: u64 = 0;
-        let dentry_dname_offset: u64 = 0;
-
-        // Build task page
-        let mut task_page = [0u8; 4096];
-        task_page[task_pid_offset as usize..task_pid_offset as usize + 4]
-            .copy_from_slice(&5000u32.to_le_bytes());
-        let list_self = task_vaddr + tasks_offset;
-        task_page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&list_self.to_le_bytes());
-        task_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
-            .copy_from_slice(&list_self.to_le_bytes());
-        task_page[task_comm_offset as usize..task_comm_offset as usize + 4]
-            .copy_from_slice(b"sshd");
-        task_page[task_mm_offset as usize..task_mm_offset as usize + 8]
-            .copy_from_slice(&mm_vaddr.to_le_bytes());
-
-        // Build mm_struct: mmap = vma_vaddr
-        let mut mm_page = [0u8; 4096];
-        mm_page[mm_mmap_offset as usize..mm_mmap_offset as usize + 8]
-            .copy_from_slice(&vma_vaddr.to_le_bytes());
-
-        // Build VMA: vm_next=0 (end of list), vm_file=file_vaddr
-        let mut vma_page = [0u8; 4096];
-        vma_page[vma_vm_next_offset as usize..vma_vm_next_offset as usize + 8]
-            .copy_from_slice(&0u64.to_le_bytes()); // no next VMA
-        vma_page[vma_vm_file_offset as usize..vma_vm_file_offset as usize + 8]
-            .copy_from_slice(&file_vaddr.to_le_bytes());
-
-        // Build file page: f_path (offset 0) = dentry_vaddr
-        // pam_hooks::read_dentry_name reads:
-        //   f_path_dentry = reader.read_field(file_ptr, "file", "f_path") → dentry_vaddr
-        //   name_ptr = reader.read_field(f_path_dentry, "dentry", "d_name") → name_vaddr
-        let mut file_page = [0u8; 4096];
-        file_page[file_fpath_offset as usize..file_fpath_offset as usize + 8]
-            .copy_from_slice(&dentry_vaddr.to_le_bytes());
-
-        // Build dentry page: d_name (offset 0) = name_vaddr
-        let mut dentry_page = [0u8; 4096];
-        dentry_page[dentry_dname_offset as usize..dentry_dname_offset as usize + 8]
-            .copy_from_slice(&name_vaddr.to_le_bytes());
-
-        // Build name page: "/tmp/libpam_rootkit.so\0"
-        let libname = b"/tmp/libpam_rootkit.so\0";
-        let mut name_page = [0u8; 4096];
-        name_page[..libname.len()].copy_from_slice(libname);
-
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 256)
-            .add_field("task_struct", "pid", task_pid_offset, "unsigned int")
-            .add_field("task_struct", "tasks", tasks_offset, "list_head")
-            .add_field("task_struct", "comm", task_comm_offset, "char")
-            .add_field("task_struct", "mm", task_mm_offset, "pointer")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0u64, "pointer")
-            .add_field("list_head", "prev", 8u64, "pointer")
-            .add_struct("mm_struct", 256)
-            .add_field("mm_struct", "mmap", mm_mmap_offset, "pointer")
-            .add_struct("vm_area_struct", 256)
-            .add_field("vm_area_struct", "vm_next", vma_vm_next_offset, "pointer")
-            .add_field("vm_area_struct", "vm_file", vma_vm_file_offset, "pointer")
-            .add_struct("file", 256)
-            .add_field("file", "f_path", file_fpath_offset, "pointer")
-            .add_struct("dentry", 256)
-            .add_field("dentry", "d_name", dentry_dname_offset, "pointer")
-            .add_symbol("init_task", task_vaddr)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
-            .write_phys(task_paddr, &task_page)
-            .map_4k(mm_vaddr, mm_paddr, ptflags::WRITABLE)
-            .write_phys(mm_paddr, &mm_page)
-            .map_4k(vma_vaddr, vma_paddr, ptflags::WRITABLE)
-            .write_phys(vma_paddr, &vma_page)
-            .map_4k(file_vaddr, file_paddr, ptflags::WRITABLE)
-            .write_phys(file_paddr, &file_page)
-            .map_4k(dentry_vaddr, dentry_paddr, ptflags::WRITABLE)
-            .write_phys(dentry_paddr, &dentry_page)
-            .map_4k(name_vaddr, name_paddr, ptflags::WRITABLE)
-            .write_phys(name_paddr, &name_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
-            ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_pam_hooks(&reader).expect("walk should not error");
-        assert_eq!(result.len(), 1, "should detect exactly one suspicious PAM entry");
-        let entry = &result[0];
-        assert_eq!(entry.pid, 5000);
-        assert!(entry.is_suspicious, "non-system PAM path must be suspicious");
-        assert!(!entry.is_system_path, "path must not be considered a system path");
-        assert!(
-            entry.library_path.contains("pam"),
-            "library_path should contain 'pam'"
-        );
+        todo!()
     }
 
     // ---------------------------------------------------------------------------
@@ -530,73 +188,6 @@ mod tests {
     // ---------------------------------------------------------------------------
     #[test]
     fn walk_pam_hooks_null_vm_file_skipped() {
-        use memf_core::object_reader::ObjectReader;
-
-        let task_vaddr: u64 = 0xFFFF_D900_0200_0000;
-        let mm_vaddr: u64 = 0xFFFF_D900_0201_0000;
-        let vma_vaddr: u64 = 0xFFFF_D900_0202_0000;
-
-        let task_paddr: u64 = 0x036_000;
-        let mm_paddr: u64 = 0x037_000;
-        let vma_paddr: u64 = 0x038_000;
-
-        let tasks_offset: u64 = 8;
-        let task_mm_offset: u64 = 40;
-
-        let mut task_page = [0u8; 4096];
-        task_page[0..4].copy_from_slice(&6000u32.to_le_bytes());
-        let list_self = task_vaddr + tasks_offset;
-        task_page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&list_self.to_le_bytes());
-        task_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
-            .copy_from_slice(&list_self.to_le_bytes());
-        task_page[task_mm_offset as usize..task_mm_offset as usize + 8]
-            .copy_from_slice(&mm_vaddr.to_le_bytes());
-
-        let mut mm_page = [0u8; 4096];
-        mm_page[0..8].copy_from_slice(&vma_vaddr.to_le_bytes());
-
-        // VMA with vm_file = 0 (anonymous mapping)
-        let mut vma_page = [0u8; 4096];
-        vma_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // vm_next = 0
-        vma_page[16..24].copy_from_slice(&0u64.to_le_bytes()); // vm_file = 0
-
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 256)
-            .add_field("task_struct", "pid", 0u64, "unsigned int")
-            .add_field("task_struct", "tasks", tasks_offset, "list_head")
-            .add_field("task_struct", "comm", 24u64, "char")
-            .add_field("task_struct", "mm", task_mm_offset, "pointer")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0u64, "pointer")
-            .add_field("list_head", "prev", 8u64, "pointer")
-            .add_struct("mm_struct", 256)
-            .add_field("mm_struct", "mmap", 0u64, "pointer")
-            .add_struct("vm_area_struct", 256)
-            .add_field("vm_area_struct", "vm_next", 0u64, "pointer")
-            .add_field("vm_area_struct", "vm_file", 16u64, "pointer")
-            .add_struct("file", 256)
-            .add_field("file", "f_path", 0u64, "pointer")
-            .add_struct("dentry", 256)
-            .add_field("dentry", "d_name", 0u64, "pointer")
-            .add_symbol("init_task", task_vaddr)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
-            .write_phys(task_paddr, &task_page)
-            .map_4k(mm_vaddr, mm_paddr, ptflags::WRITABLE)
-            .write_phys(mm_paddr, &mm_page)
-            .map_4k(vma_vaddr, vma_paddr, ptflags::WRITABLE)
-            .write_phys(vma_paddr, &vma_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<memf_core::test_builders::SyntheticPhysMem> =
-            ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_pam_hooks(&reader).expect("walk should not error");
-        assert!(result.is_empty(), "anonymous VMA (vm_file==0) should produce no PAM findings");
+        todo!()
     }
 }
