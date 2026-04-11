@@ -33,84 +33,21 @@ pub struct ClipboardEntry {
 
 /// Map a clipboard format code to a human-readable name.
 pub fn format_name(format: u32) -> &'static str {
-    match format {
-        1 => "CF_TEXT",
-        2 => "CF_BITMAP",
-        3 => "CF_METAFILEPICT",
-        4 => "CF_SYLK",
-        5 => "CF_DIF",
-        6 => "CF_TIFF",
-        7 => "CF_OEMTEXT",
-        8 => "CF_DIB",
-        9 => "CF_PALETTE",
-        10 => "CF_PENDATA",
-        11 => "CF_RIFF",
-        12 => "CF_WAVE",
-        13 => "CF_UNICODETEXT",
-        14 => "CF_ENHMETAFILE",
-        15 => "CF_HDROP",
-        16 => "CF_LOCALE",
-        17 => "CF_DIBV5",
-        _ => "Unknown",
+        todo!()
     }
-}
 
 /// Classify clipboard text content as suspicious.
 ///
 /// Returns `true` for content that may indicate credential theft,
 /// encoded commands, or other malicious activity.
 pub fn classify_clipboard(preview: &str) -> bool {
-    if preview.is_empty() {
-        return false;
+        todo!()
     }
-
-    let lower = preview.to_ascii_lowercase();
-
-    // Contains "password" or "passwd" (case-insensitive)
-    if lower.contains("password") || lower.contains("passwd") {
-        return true;
-    }
-
-    // Contains PowerShell encoded commands (-enc, -encodedcommand)
-    if lower.contains("-enc ") || lower.contains("-encodedcommand ") {
-        return true;
-    }
-
-    // Contains URLs with raw IP addresses (http(s)://digits.digits.digits.digits)
-    if contains_ip_url(&lower) {
-        return true;
-    }
-
-    // Very long base64-like strings (>100 chars, no spaces)
-    if preview.len() > 100 && !preview.contains(' ') {
-        return true;
-    }
-
-    false
-}
 
 /// Check whether text contains an HTTP(S) URL with a raw IP address.
 fn contains_ip_url(text: &str) -> bool {
-    for prefix in &["http://", "https://"] {
-        if let Some(start) = text.find(prefix) {
-            let after = &text[start + prefix.len()..];
-            // Check if the host portion starts with a digit (simple IP heuristic)
-            if let Some(first) = after.chars().next() {
-                if first.is_ascii_digit() {
-                    // Verify it looks like an IP: digits and dots before the next / or :
-                    let host_end = after
-                        .find(|c: char| c == '/' || c == ':')
-                        .unwrap_or(after.len());
-                    let host = &after[..host_end];
-                    if host.chars().all(|c| c.is_ascii_digit() || c == '.') && host.contains('.') {
-                        return true;
-                    }
-                }
-            }
-        }
+        todo!()
     }
-    false
-}
 
 /// Recover clipboard entries from Windows kernel memory.
 ///
@@ -120,168 +57,24 @@ fn contains_ip_url(text: &str) -> bool {
 pub fn walk_clipboard<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<ClipboardEntry>> {
-    // Look up grpWinStaList -> _WINSTATION_OBJECT list head.
-    let winsta_head = match reader.symbols().symbol_address("grpWinStaList") {
-        Some(addr) => addr,
-        None => return Ok(Vec::new()),
-    };
-
-    let clip_base_off = reader
-        .symbols()
-        .field_offset("_WINSTATION_OBJECT", "pClipBase")
-        .unwrap_or(0x58);
-
-    let num_formats_off = reader
-        .symbols()
-        .field_offset("_WINSTATION_OBJECT", "cNumClipFormats")
-        .unwrap_or(0x60);
-
-    let clip_fmt_off = reader
-        .symbols()
-        .field_offset("_CLIP", "fmt")
-        .unwrap_or(0x00);
-
-    let clip_hdata_off = reader
-        .symbols()
-        .field_offset("_CLIP", "hData")
-        .unwrap_or(0x08);
-
-    let clip_struct_size = reader.symbols().struct_size("_CLIP").unwrap_or(0x10);
-
-    // Read the _WINSTATION_OBJECT pointer from grpWinStaList.
-    let winsta_ptr = match reader.read_bytes(winsta_head, 8) {
-        Ok(bytes) if bytes.len() == 8 => {
-            let ptr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            if ptr == 0 {
-                return Ok(Vec::new());
-            }
-            ptr
-        }
-        _ => return Ok(Vec::new()),
-    };
-
-    // Read cNumClipFormats to know how many _CLIP entries exist.
-    let num_formats = match reader.read_bytes(winsta_ptr + num_formats_off, 4) {
-        Ok(bytes) if bytes.len() == 4 => {
-            u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize
-        }
-        _ => return Ok(Vec::new()),
-    };
-
-    if num_formats == 0 || num_formats > MAX_CLIP_ENTRIES {
-        return Ok(Vec::new());
+        todo!()
     }
-
-    // Read pClipBase pointer -> array of _CLIP structures.
-    let clip_base = match reader.read_bytes(winsta_ptr + clip_base_off, 8) {
-        Ok(bytes) if bytes.len() == 8 => {
-            let ptr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-            if ptr == 0 {
-                return Ok(Vec::new());
-            }
-            ptr
-        }
-        _ => return Ok(Vec::new()),
-    };
-
-    let mut entries = Vec::new();
-
-    for i in 0..num_formats {
-        let clip_addr = clip_base + (i as u64) * clip_struct_size;
-
-        // Read format code.
-        let fmt = match reader.read_bytes(clip_addr + clip_fmt_off, 4) {
-            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-            _ => continue,
-        };
-
-        // Read data handle.
-        let h_data = match reader.read_bytes(clip_addr + clip_hdata_off, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-            _ => continue,
-        };
-
-        // Try to read text content for text formats.
-        let (data_size, preview) = if fmt == 1 || fmt == 7 {
-            // CF_TEXT / CF_OEMTEXT: ANSI string
-            read_ansi_preview(reader, h_data)
-        } else if fmt == 13 {
-            // CF_UNICODETEXT: UTF-16LE string
-            read_unicode_preview(reader, h_data)
-        } else {
-            (0, String::new())
-        };
-
-        let name = format_name(fmt).to_string();
-        let is_suspicious = classify_clipboard(&preview);
-
-        entries.push(ClipboardEntry {
-            format: fmt,
-            format_name: name,
-            data_size,
-            preview,
-            owner_pid: 0, // Owner PID requires walking the clipboard owner chain
-            is_suspicious,
-        });
-    }
-
-    Ok(entries)
-}
 
 /// Read an ANSI (single-byte) string from a memory address for preview.
 fn read_ansi_preview<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     addr: u64,
 ) -> (usize, String) {
-    if addr == 0 {
-        return (0, String::new());
+        todo!()
     }
-
-    let max_read = 512;
-    match reader.read_bytes(addr, max_read) {
-        Ok(buf) => {
-            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-            let text = String::from_utf8_lossy(&buf[..end]);
-            let preview: String = text.chars().take(256).collect();
-            (end, preview)
-        }
-        Err(_) => (0, String::new()),
-    }
-}
 
 /// Read a UTF-16LE string from a memory address for preview.
 fn read_unicode_preview<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     addr: u64,
 ) -> (usize, String) {
-    if addr == 0 {
-        return (0, String::new());
+        todo!()
     }
-
-    let max_read = 1024;
-    match reader.read_bytes(addr, max_read) {
-        Ok(buf) => {
-            // Find null terminator (two zero bytes on u16 boundary)
-            let mut end = buf.len();
-            for i in (0..buf.len()).step_by(2) {
-                if i + 1 < buf.len() && buf[i] == 0 && buf[i + 1] == 0 {
-                    end = i;
-                    break;
-                }
-            }
-
-            let u16s: Vec<u16> = buf[..end]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-
-            let text = String::from_utf16_lossy(&u16s);
-            let preview: String = text.chars().take(256).collect();
-            (end, preview)
-        }
-        Err(_) => (0, String::new()),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -297,157 +90,107 @@ mod tests {
     /// Contains "password" (case-insensitive) → suspicious.
     #[test]
     fn classify_clipboard_password_suspicious() {
-        assert!(classify_clipboard("my Password is hunter2"));
-        assert!(classify_clipboard("PASSWORD: secret123"));
-        assert!(classify_clipboard("old passwd: abc"));
+        todo!()
     }
 
     /// Contains PowerShell encoded command → suspicious.
     #[test]
     fn classify_clipboard_powershell_encoded_suspicious() {
-        assert!(classify_clipboard(
-            "powershell.exe -enc ZQBjAGgAbwAgACIASABlAGwAbABvACIA"
-        ));
-        assert!(classify_clipboard(
-            "powershell -EncodedCommand ZQBjAGgAbwAgACIASABlAGwAbABvACIA"
-        ));
+        todo!()
     }
 
     /// Normal text → benign.
     #[test]
     fn classify_clipboard_normal_text_benign() {
-        assert!(!classify_clipboard("Hello, world!"));
-        assert!(!classify_clipboard("Meeting at 3pm tomorrow"));
-        assert!(!classify_clipboard(
-            "The quick brown fox jumps over the lazy dog"
-        ));
+        todo!()
     }
 
     /// Long base64-like string (>100 chars, no spaces) → suspicious.
     #[test]
     fn classify_clipboard_long_base64_suspicious() {
-        let long_b64 = "a".repeat(101);
-        assert!(classify_clipboard(&long_b64));
-        // Short strings without spaces are NOT suspicious
-        assert!(!classify_clipboard("aGVsbG8="));
+        todo!()
     }
 
     /// Empty → not suspicious.
     #[test]
     fn classify_clipboard_empty_benign() {
-        assert!(!classify_clipboard(""));
+        todo!()
     }
 
     /// URL with raw IP address → suspicious.
     #[test]
     fn classify_clipboard_url_with_ip_suspicious() {
-        assert!(classify_clipboard("http://192.168.1.1/payload.exe"));
-        assert!(classify_clipboard("https://10.0.0.5:8080/cmd"));
+        todo!()
     }
 
     /// URL with hostname (not raw IP) → benign.
     #[test]
     fn classify_clipboard_url_with_hostname_benign() {
-        assert!(!classify_clipboard("https://example.com/page"));
-        assert!(!classify_clipboard("http://www.google.com/search?q=test"));
+        todo!()
     }
 
     /// Exactly 100 chars, no spaces — not long enough to be suspicious.
     #[test]
     fn classify_clipboard_exactly_100_chars_no_spaces_benign() {
-        let s = "a".repeat(100);
-        // Must be > 100, so exactly 100 is benign.
-        assert!(!classify_clipboard(&s));
+        todo!()
     }
 
     /// 101 chars with a space — not suspicious (space breaks the no-space rule).
     #[test]
     fn classify_clipboard_101_chars_with_space_benign() {
-        let s = format!("{} {}", "a".repeat(50), "b".repeat(50));
-        assert_eq!(s.len(), 101);
-        assert!(!classify_clipboard(&s));
+        todo!()
     }
 
     /// passwd variant triggers suspicious flag.
     #[test]
     fn classify_clipboard_passwd_variant_suspicious() {
-        assert!(classify_clipboard("my passwd is secret"));
-        assert!(classify_clipboard("enter PASSWD:"));
+        todo!()
     }
 
     /// -encodedcommand (without trailing space) does not trigger false positive.
     #[test]
     fn classify_clipboard_encodedcommand_no_trailing_space_benign() {
-        // The check is for "-encodedcommand " (with trailing space) — without space is benign.
-        assert!(!classify_clipboard("info about -encodedcommandline option"));
+        todo!()
     }
 
     /// https URL with IP but no slash or colon after IP → still suspicious.
     #[test]
     fn classify_clipboard_https_ip_no_path_suspicious() {
-        assert!(classify_clipboard("https://172.16.0.1"));
+        todo!()
     }
 
     // ── ClipboardEntry serialization ──────────────────────────────────
 
     #[test]
     fn clipboard_entry_serializes() {
-        let entry = ClipboardEntry {
-            format: 1,
-            format_name: "CF_TEXT".to_string(),
-            data_size: 42,
-            preview: "hello world".to_string(),
-            owner_pid: 1234,
-            is_suspicious: false,
-        };
-
-        let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("\"format\":1"));
-        assert!(json.contains("\"format_name\":\"CF_TEXT\""));
-        assert!(json.contains("\"data_size\":42"));
-        assert!(json.contains("\"preview\":\"hello world\""));
-        assert!(json.contains("\"owner_pid\":1234"));
-        assert!(json.contains("\"is_suspicious\":false"));
+        todo!()
     }
 
     #[test]
     fn clipboard_entry_suspicious_serializes() {
-        let entry = ClipboardEntry {
-            format: 13,
-            format_name: "CF_UNICODETEXT".to_string(),
-            data_size: 256,
-            preview: "password: hunter2".to_string(),
-            owner_pid: 0,
-            is_suspicious: true,
-        };
-
-        let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("\"is_suspicious\":true"));
-        assert!(json.contains("\"format_name\":\"CF_UNICODETEXT\""));
+        todo!()
     }
 
     // ── contains_ip_url edge cases ────────────────────────────────────
 
     #[test]
     fn contains_ip_url_with_port_only_suspicious() {
-        // https://10.0.0.1:443 — has colon after IP (port), still recognized as IP.
-        assert!(contains_ip_url("https://10.0.0.1:443"));
+        todo!()
     }
 
     #[test]
     fn contains_ip_url_hostname_not_ip() {
-        assert!(!contains_ip_url("http://malware-c2.ru/cmd"));
+        todo!()
     }
 
     #[test]
     fn contains_ip_url_ip_without_dot_not_recognized() {
-        // "1234" with no dot — not a valid IP pattern.
-        assert!(!contains_ip_url("http://12345/path"));
+        todo!()
     }
 
     #[test]
     fn contains_ip_url_empty_string() {
-        assert!(!contains_ip_url(""));
+        todo!()
     }
 
     // ── format_name tests ─────────────────────────────────────────────
@@ -455,24 +198,7 @@ mod tests {
     /// Known clipboard formats map to correct names.
     #[test]
     fn format_name_known_formats() {
-        assert_eq!(format_name(1), "CF_TEXT");
-        assert_eq!(format_name(2), "CF_BITMAP");
-        assert_eq!(format_name(3), "CF_METAFILEPICT");
-        assert_eq!(format_name(4), "CF_SYLK");
-        assert_eq!(format_name(5), "CF_DIF");
-        assert_eq!(format_name(6), "CF_TIFF");
-        assert_eq!(format_name(7), "CF_OEMTEXT");
-        assert_eq!(format_name(8), "CF_DIB");
-        assert_eq!(format_name(9), "CF_PALETTE");
-        assert_eq!(format_name(10), "CF_PENDATA");
-        assert_eq!(format_name(11), "CF_RIFF");
-        assert_eq!(format_name(12), "CF_WAVE");
-        assert_eq!(format_name(13), "CF_UNICODETEXT");
-        assert_eq!(format_name(14), "CF_ENHMETAFILE");
-        assert_eq!(format_name(15), "CF_HDROP");
-        assert_eq!(format_name(16), "CF_LOCALE");
-        assert_eq!(format_name(17), "CF_DIBV5");
-        assert_eq!(format_name(9999), "Unknown");
+        todo!()
     }
 
     // ── read_ansi_preview and read_unicode_preview coverage ──────────
@@ -480,111 +206,43 @@ mod tests {
     /// read_ansi_preview from a mapped page returns text correctly.
     #[test]
     fn read_ansi_preview_mapped_text() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let addr: u64 = 0x0010_0000;
-        let paddr: u64 = 0x0010_0000;
-        let mut page = vec![0u8; 4096];
-        let text = b"hello world\0";
-        page[..text.len()].copy_from_slice(text);
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(addr, paddr, flags::WRITABLE)
-            .write_phys(paddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let (size, preview) = read_ansi_preview(&reader, addr);
-        assert_eq!(preview, "hello world");
-        assert_eq!(size, 11); // length before null
+        todo!()
     }
 
     /// read_ansi_preview with addr=0 returns empty.
     #[test]
     fn read_ansi_preview_zero_addr_empty() {
-        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-        let (size, preview) = read_ansi_preview(&reader, 0);
-        assert_eq!(size, 0);
-        assert!(preview.is_empty());
+        todo!()
     }
 
     /// read_ansi_preview from unmapped address returns empty.
     #[test]
     fn read_ansi_preview_unmapped_addr_empty() {
-        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-        let (size, preview) = read_ansi_preview(&reader, 0xDEAD_BEEF_0000);
-        assert_eq!(size, 0);
-        assert!(preview.is_empty());
+        todo!()
     }
 
     /// read_unicode_preview with addr=0 returns empty.
     #[test]
     fn read_unicode_preview_zero_addr_empty() {
-        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-        let (size, preview) = read_unicode_preview(&reader, 0);
-        assert_eq!(size, 0);
-        assert!(preview.is_empty());
+        todo!()
     }
 
     /// read_unicode_preview from unmapped address returns empty.
     #[test]
     fn read_unicode_preview_unmapped_empty() {
-        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-        let (size, preview) = read_unicode_preview(&reader, 0xDEAD_BEEF_0000);
-        assert_eq!(size, 0);
-        assert!(preview.is_empty());
+        todo!()
     }
 
     /// read_unicode_preview decodes a UTF-16LE string from mapped memory.
     #[test]
     fn read_unicode_preview_mapped_text() {
-        use memf_core::test_builders::flags;
-        let isf = IsfBuilder::new().add_struct("_CLIP", 0x10).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let addr: u64 = 0x0020_0000;
-        let paddr: u64 = 0x0020_0000;
-        let mut page = vec![0u8; 4096];
-        // "Hi" in UTF-16LE = [0x48, 0x00, 0x69, 0x00, 0x00, 0x00]
-        let utf16: &[u8] = &[0x48, 0x00, 0x69, 0x00, 0x00, 0x00];
-        page[..utf16.len()].copy_from_slice(utf16);
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(addr, paddr, flags::WRITABLE)
-            .write_phys(paddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let (size, preview) = read_unicode_preview(&reader, addr);
-        assert_eq!(preview, "Hi");
-        assert_eq!(size, 4); // 2 chars * 2 bytes, stopping at null
+        todo!()
     }
 
     /// MAX_CLIP_ENTRIES constant is reasonable.
     #[test]
     fn max_clip_entries_constant_sensible() {
-        assert!(MAX_CLIP_ENTRIES > 0);
-        assert!(MAX_CLIP_ENTRIES <= 4096);
+        todo!()
     }
 
     // ── walk_clipboard tests — walker body coverage ──────────────────
@@ -592,325 +250,49 @@ mod tests {
     /// walk_clipboard: grpWinStaList symbol present but memory read fails → empty.
     #[test]
     fn walk_clipboard_symbol_but_unreadable_memory() {
-        use memf_core::test_builders::flags;
-        // Symbol at an unmapped address → reading 8 bytes fails → empty.
-        let sym_addr: u64 = 0xFFFF_8000_9999_0000;
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-        let result = walk_clipboard(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// walk_clipboard: grpWinStaList points to a 0 winsta ptr → empty.
     #[test]
     fn walk_clipboard_zero_winsta_ptr_empty() {
-        use memf_core::test_builders::flags;
-        let sym_addr: u64 = 0xFFFF_8000_5000_0000;
-        let sym_paddr: u64 = 0x0050_0000;
-
-        let mut page = vec![0u8; 4096];
-        // Write 0 as winsta pointer.
-        page[0..8].copy_from_slice(&0u64.to_le_bytes());
-
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// walk_clipboard: grpWinStaList → valid winsta but cNumClipFormats=0 → empty.
     #[test]
     fn walk_clipboard_zero_num_formats_empty() {
-        use memf_core::test_builders::flags;
-        let sym_addr: u64 = 0xFFFF_8000_5100_0000;
-        let sym_paddr: u64 = 0x0051_0000;
-        let winsta_addr: u64 = 0x0000_7FF0_4000_0000;
-        let winsta_paddr: u64 = 0x0052_0000;
-
-        // sym page: 8 bytes = winsta_addr.
-        let mut sym_page = vec![0u8; 4096];
-        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
-
-        // winsta page: cNumClipFormats at default offset 0x60 = 0.
-        let winsta_page = vec![0u8; 4096];
-
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
-            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &sym_page)
-            .write_phys(winsta_paddr, &winsta_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// walk_clipboard: num_formats > MAX_CLIP_ENTRIES → empty (safety guard).
     #[test]
     fn walk_clipboard_too_many_formats_empty() {
-        use memf_core::test_builders::flags;
-        let sym_addr: u64 = 0xFFFF_8000_5200_0000;
-        let sym_paddr: u64 = 0x0053_0000;
-        let winsta_addr: u64 = 0x0000_7FF0_5000_0000;
-        let winsta_paddr: u64 = 0x0054_0000;
-
-        let mut sym_page = vec![0u8; 4096];
-        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
-        let mut winsta_page = vec![0u8; 4096];
-        // cNumClipFormats at default offset 0x60 = MAX_CLIP_ENTRIES + 1 = 257
-        let too_many: u32 = MAX_CLIP_ENTRIES as u32 + 1;
-        winsta_page[0x60..0x64].copy_from_slice(&too_many.to_le_bytes());
-
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
-            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &sym_page)
-            .write_phys(winsta_paddr, &winsta_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert!(result.is_empty(), "num_formats > MAX_CLIP_ENTRIES should return empty");
+        todo!()
     }
 
     /// walk_clipboard: pClipBase pointer is zero → empty.
     #[test]
     fn walk_clipboard_zero_clip_base_empty() {
-        use memf_core::test_builders::flags;
-        let sym_addr: u64 = 0xFFFF_8000_5300_0000;
-        let sym_paddr: u64 = 0x0055_0000;
-        let winsta_addr: u64 = 0x0000_7FF0_6000_0000;
-        let winsta_paddr: u64 = 0x0056_0000;
-
-        let mut sym_page = vec![0u8; 4096];
-        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
-        let mut winsta_page = vec![0u8; 4096];
-        // cNumClipFormats at 0x60 = 1 (valid)
-        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
-        // pClipBase at 0x58 = 0 (null)
-
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
-            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &sym_page)
-            .write_phys(winsta_paddr, &winsta_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert!(result.is_empty(), "null pClipBase should return empty");
+        todo!()
     }
 
     /// walk_clipboard: full path with one CF_TEXT entry (suspicious password content).
     #[test]
     fn walk_clipboard_cf_text_entry_suspicious() {
-        use memf_core::test_builders::flags;
-
-        // Layout:
-        //   sym_addr   → winsta_addr (pointer)
-        //   winsta_addr: cNumClipFormats=1 at +0x60, pClipBase=clip_addr at +0x58
-        //   clip_addr  : fmt=1 (CF_TEXT) at +0x00, hData=text_addr at +0x08
-        //   text_addr  : "password: hunter2\0"
-        let sym_addr: u64    = 0xFFFF_8000_5400_0000;
-        let sym_paddr: u64   = 0x0057_0000;
-        let winsta_addr: u64 = 0x0000_7FF0_7000_0000;
-        let winsta_paddr: u64 = 0x0058_0000;
-        let clip_addr: u64   = 0x0000_7FF0_7001_0000;
-        let clip_paddr: u64  = 0x0059_0000;
-        let text_addr: u64   = 0x0000_7FF0_7002_0000;
-        let text_paddr: u64  = 0x005A_0000;
-
-        let mut sym_page = vec![0u8; 4096];
-        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
-
-        let mut winsta_page = vec![0u8; 4096];
-        winsta_page[0x58..0x60].copy_from_slice(&clip_addr.to_le_bytes()); // pClipBase
-        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());       // cNumClipFormats
-
-        let mut clip_page = vec![0u8; 4096];
-        clip_page[0x00..0x04].copy_from_slice(&1u32.to_le_bytes()); // fmt = CF_TEXT
-        clip_page[0x08..0x10].copy_from_slice(&text_addr.to_le_bytes()); // hData
-
-        let text = b"password: hunter2\0";
-        let mut text_page = vec![0u8; 4096];
-        text_page[..text.len()].copy_from_slice(text);
-
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_struct("_CLIP", 0x10)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
-            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
-            .map_4k(clip_addr, clip_paddr, flags::WRITABLE)
-            .map_4k(text_addr, text_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &sym_page)
-            .write_phys(winsta_paddr, &winsta_page)
-            .write_phys(clip_paddr, &clip_page)
-            .write_phys(text_paddr, &text_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].format, 1);
-        assert_eq!(result[0].format_name, "CF_TEXT");
-        assert_eq!(result[0].preview, "password: hunter2");
-        assert!(result[0].is_suspicious, "password content should be flagged suspicious");
+        todo!()
     }
 
     /// walk_clipboard: CF_UNICODETEXT entry with benign content.
     #[test]
     fn walk_clipboard_cf_unicodetext_entry_benign() {
-        use memf_core::test_builders::flags;
-
-        let sym_addr: u64    = 0xFFFF_8000_5500_0000;
-        let sym_paddr: u64   = 0x005B_0000;
-        let winsta_addr: u64 = 0x0000_7FF0_8000_0000;
-        let winsta_paddr: u64 = 0x005C_0000;
-        let clip_addr: u64   = 0x0000_7FF0_8001_0000;
-        let clip_paddr: u64  = 0x005D_0000;
-        let text_addr: u64   = 0x0000_7FF0_8002_0000;
-        let text_paddr: u64  = 0x005E_0000;
-
-        let mut sym_page = vec![0u8; 4096];
-        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
-
-        let mut winsta_page = vec![0u8; 4096];
-        winsta_page[0x58..0x60].copy_from_slice(&clip_addr.to_le_bytes());
-        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
-
-        let mut clip_page = vec![0u8; 4096];
-        clip_page[0x00..0x04].copy_from_slice(&13u32.to_le_bytes()); // CF_UNICODETEXT
-        clip_page[0x08..0x10].copy_from_slice(&text_addr.to_le_bytes());
-
-        // "Hello" as UTF-16LE + null terminator
-        let hello_utf16: Vec<u8> = "Hello"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .chain([0u8, 0u8])
-            .collect();
-        let mut text_page = vec![0u8; 4096];
-        text_page[..hello_utf16.len()].copy_from_slice(&hello_utf16);
-
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_struct("_CLIP", 0x10)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
-            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
-            .map_4k(clip_addr, clip_paddr, flags::WRITABLE)
-            .map_4k(text_addr, text_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &sym_page)
-            .write_phys(winsta_paddr, &winsta_page)
-            .write_phys(clip_paddr, &clip_page)
-            .write_phys(text_paddr, &text_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].format, 13);
-        assert_eq!(result[0].format_name, "CF_UNICODETEXT");
-        assert_eq!(result[0].preview, "Hello");
-        assert!(!result[0].is_suspicious);
+        todo!()
     }
 
     /// walk_clipboard: unknown (non-text) format produces an entry with empty preview.
     #[test]
     fn walk_clipboard_unknown_format_no_preview() {
-        use memf_core::test_builders::flags;
-
-        let sym_addr: u64    = 0xFFFF_8000_5600_0000;
-        let sym_paddr: u64   = 0x005F_0000;
-        let winsta_addr: u64 = 0x0000_7FF0_9000_0000;
-        let winsta_paddr: u64 = 0x0060_0000;
-        let clip_addr: u64   = 0x0000_7FF0_9001_0000;
-        let clip_paddr: u64  = 0x0061_0000;
-
-        let mut sym_page = vec![0u8; 4096];
-        sym_page[0..8].copy_from_slice(&winsta_addr.to_le_bytes());
-
-        let mut winsta_page = vec![0u8; 4096];
-        winsta_page[0x58..0x60].copy_from_slice(&clip_addr.to_le_bytes());
-        winsta_page[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
-
-        let mut clip_page = vec![0u8; 4096];
-        clip_page[0x00..0x04].copy_from_slice(&8u32.to_le_bytes()); // CF_DIB (non-text)
-        clip_page[0x08..0x10].copy_from_slice(&0xDEAD_BEEFu64.to_le_bytes()); // hData
-
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .add_struct("_CLIP", 0x10)
-            .add_symbol("grpWinStaList", sym_addr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_addr, sym_paddr, flags::WRITABLE)
-            .map_4k(winsta_addr, winsta_paddr, flags::WRITABLE)
-            .map_4k(clip_addr, clip_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &sym_page)
-            .write_phys(winsta_paddr, &winsta_page)
-            .write_phys(clip_paddr, &clip_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].format, 8);
-        assert_eq!(result[0].format_name, "CF_DIB");
-        assert!(result[0].preview.is_empty(), "non-text format should have empty preview");
-        assert!(!result[0].is_suspicious);
+        todo!()
     }
 
     // ── walk_clipboard tests ──────────────────────────────────────────
@@ -918,15 +300,6 @@ mod tests {
     /// No grpWinStaList symbol → empty Vec.
     #[test]
     fn walk_clipboard_no_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("_WINSTATION_OBJECT", 0x100)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_clipboard(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 }
