@@ -50,79 +50,8 @@ const MAX_ENTRIES: usize = 65_536;
 pub fn extract_dmesg<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<DmesgEntry>> {
-    // Look up log_buf symbol; if absent, this isn't a compatible image.
-    let log_buf_sym = match reader.symbols().symbol_address("log_buf") {
-        Some(addr) => addr,
-        None => return Ok(Vec::new()),
-    };
-
-    // log_buf is a pointer — dereference it to get the actual buffer address.
-    let buf_vaddr: u64 = {
-        let mut buf = [0u8; 8];
-        reader.vas().read_virt(log_buf_sym, &mut buf)?;
-        u64::from_le_bytes(buf)
-    };
-
-    // Look up log_buf_len symbol and read the buffer length (u32).
-    let log_buf_len_sym = match reader.symbols().symbol_address("log_buf_len") {
-        Some(addr) => addr,
-        None => return Ok(Vec::new()),
-    };
-    let buf_len: u32 = {
-        let mut buf = [0u8; 4];
-        reader.vas().read_virt(log_buf_len_sym, &mut buf)?;
-        u32::from_le_bytes(buf)
-    };
-    let buf_len = buf_len as usize;
-
-    if buf_len == 0 {
-        return Ok(Vec::new());
+        todo!()
     }
-
-    // Read the entire ring buffer into local memory.
-    let ring = reader.read_bytes(buf_vaddr, buf_len)?;
-
-    // Iterate printk_log records.
-    let mut entries = Vec::new();
-    let mut offset: usize = 0;
-
-    while offset + PRINTK_HEADER_SIZE <= buf_len && entries.len() < MAX_ENTRIES {
-        // Parse header fields (all little-endian).
-        let ts_nsec = u64::from_le_bytes(ring[offset..offset + 8].try_into().unwrap());
-        let len = u16::from_le_bytes(ring[offset + 8..offset + 10].try_into().unwrap()) as usize;
-        let text_len =
-            u16::from_le_bytes(ring[offset + 10..offset + 12].try_into().unwrap()) as usize;
-        let _dict_len = u16::from_le_bytes(ring[offset + 12..offset + 14].try_into().unwrap());
-        let facility = ring[offset + 14];
-        let level = ring[offset + 15];
-
-        // len == 0 signals end of valid records.
-        if len == 0 {
-            break;
-        }
-
-        // Sanity: record must not exceed remaining buffer.
-        if offset + len > buf_len {
-            break;
-        }
-
-        // Extract text immediately following the header.
-        let text_start = offset + PRINTK_HEADER_SIZE;
-        let text_end = text_start + text_len.min(buf_len - text_start);
-        let message = String::from_utf8_lossy(&ring[text_start..text_end]).into_owned();
-
-        entries.push(DmesgEntry {
-            timestamp_ns: ts_nsec,
-            level,
-            facility,
-            message,
-        });
-
-        offset += len;
-    }
-
-    Ok(entries)
-}
 
 #[cfg(test)]
 mod tests {
@@ -135,138 +64,24 @@ mod tests {
 
     /// Helper: build an ObjectReader from ISF and page table builders.
     fn make_reader(isf: &IsfBuilder, ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
-        let json = isf.build_json();
-        let resolver = IsfResolver::from_value(&json).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     /// No `log_buf` symbol present -> returns empty Vec (not an error).
     #[test]
     fn extract_dmesg_no_symbol() {
-        let isf = IsfBuilder::new().add_struct("printk_log", 16);
-        let ptb = PageTableBuilder::new();
-        let reader = make_reader(&isf, ptb);
-
-        let entries = extract_dmesg(&reader).unwrap();
-        assert!(
-            entries.is_empty(),
-            "expected empty Vec when log_buf symbol is missing"
-        );
+        todo!()
     }
 
     /// `log_buf` symbol exists and points to a zero-filled buffer -> empty Vec.
     #[test]
     fn extract_dmesg_empty_buffer() {
-        // Layout:
-        //   log_buf symbol (vaddr) -> pointer to buffer vaddr
-        //   log_buf_len symbol (vaddr) -> u32 buffer length
-        //   buffer: all zeros (no records)
-        let log_buf_sym_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let log_buf_len_sym_vaddr: u64 = 0xFFFF_8000_0010_1000;
-        let buf_vaddr: u64 = 0xFFFF_8000_0020_0000;
-
-        let log_buf_sym_paddr: u64 = 0x0010_0000; // 1 MB
-        let log_buf_len_sym_paddr: u64 = 0x0010_1000;
-        let buf_paddr: u64 = 0x0020_0000; // 2 MB
-
-        let buf_len: u32 = 4096;
-
-        let isf = IsfBuilder::new()
-            .add_symbol("log_buf", log_buf_sym_vaddr)
-            .add_symbol("log_buf_len", log_buf_len_sym_vaddr);
-
-        let ptb = PageTableBuilder::new()
-            // Map the symbol locations
-            .map_4k(log_buf_sym_vaddr, log_buf_sym_paddr, flags::WRITABLE)
-            .map_4k(
-                log_buf_len_sym_vaddr,
-                log_buf_len_sym_paddr,
-                flags::WRITABLE,
-            )
-            // Map the buffer itself (one 4k page, zero-filled by default)
-            .map_4k(buf_vaddr, buf_paddr, flags::WRITABLE)
-            // Write the pointer value at log_buf symbol location
-            .write_phys_u64(log_buf_sym_paddr, buf_vaddr)
-            // Write the buffer length at log_buf_len symbol location
-            .write_phys(log_buf_len_sym_paddr, &buf_len.to_le_bytes());
-
-        let reader = make_reader(&isf, ptb);
-        let entries = extract_dmesg(&reader).unwrap();
-        assert!(
-            entries.is_empty(),
-            "expected empty Vec for zero-filled buffer"
-        );
+        todo!()
     }
 
     /// Single valid printk_log record in the buffer -> one DmesgEntry.
     #[test]
     fn extract_dmesg_single_entry() {
-        // printk_log header layout (16 bytes):
-        //   offset 0: ts_nsec  (u64) — timestamp nanoseconds
-        //   offset 8: len      (u16) — total record length
-        //   offset 10: text_len (u16)
-        //   offset 12: dict_len (u16)
-        //   offset 14: facility (u8)
-        //   offset 15: level    (u8)
-        //   offset 16: text data (text_len bytes)
-        //   (padding to align to len)
-        let log_buf_sym_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let log_buf_len_sym_vaddr: u64 = 0xFFFF_8000_0010_1000;
-        let buf_vaddr: u64 = 0xFFFF_8000_0020_0000;
-
-        let log_buf_sym_paddr: u64 = 0x0010_0000;
-        let log_buf_len_sym_paddr: u64 = 0x0010_1000;
-        let buf_paddr: u64 = 0x0020_0000;
-
-        let message = b"Hello from kernel";
-        let text_len = message.len() as u16; // 17
-        let dict_len: u16 = 0;
-        // Total record length: header(16) + text(17) + dict(0) = 33, aligned to 4 -> 36
-        let record_len: u16 = ((16 + text_len + dict_len + 3) / 4 * 4) as u16;
-        let ts_nsec: u64 = 1_000_000_000; // 1 second
-        let facility: u8 = 0; // kern
-        let level: u8 = 6; // info
-
-        let buf_len: u32 = 4096;
-
-        let isf = IsfBuilder::new()
-            .add_symbol("log_buf", log_buf_sym_vaddr)
-            .add_symbol("log_buf_len", log_buf_len_sym_vaddr);
-
-        // Build the printk_log record in a local buffer
-        let mut record = vec![0u8; record_len as usize];
-        record[0..8].copy_from_slice(&ts_nsec.to_le_bytes());
-        record[8..10].copy_from_slice(&record_len.to_le_bytes());
-        record[10..12].copy_from_slice(&text_len.to_le_bytes());
-        record[12..14].copy_from_slice(&dict_len.to_le_bytes());
-        record[14] = facility;
-        record[15] = level;
-        record[16..16 + message.len()].copy_from_slice(message);
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(log_buf_sym_vaddr, log_buf_sym_paddr, flags::WRITABLE)
-            .map_4k(
-                log_buf_len_sym_vaddr,
-                log_buf_len_sym_paddr,
-                flags::WRITABLE,
-            )
-            .map_4k(buf_vaddr, buf_paddr, flags::WRITABLE)
-            // log_buf pointer
-            .write_phys_u64(log_buf_sym_paddr, buf_vaddr)
-            // log_buf_len
-            .write_phys(log_buf_len_sym_paddr, &buf_len.to_le_bytes())
-            // The actual record data
-            .write_phys(buf_paddr, &record);
-
-        let reader = make_reader(&isf, ptb);
-        let entries = extract_dmesg(&reader).unwrap();
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].timestamp_ns, 1_000_000_000);
-        assert_eq!(entries[0].level, 6);
-        assert_eq!(entries[0].facility, 0);
-        assert_eq!(entries[0].message, "Hello from kernel");
+        todo!()
     }
 }
