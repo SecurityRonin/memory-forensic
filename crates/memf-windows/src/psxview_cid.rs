@@ -33,6 +33,9 @@ pub struct CidTableEntry {
     pub is_hidden: bool,
 }
 
+/// Maximum number of CID table entries to scan (safety limit).
+const MAX_CID_ENTRIES: u64 = 16384;
+
 /// Walk `PspCidTable` and return one [`CidTableEntry`] per process found.
 ///
 /// Returns an empty `Vec` when the `PspCidTable` symbol is absent
@@ -41,22 +44,111 @@ pub fn walk_psp_cid_table<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<CidTableEntry>> {
     // Graceful degradation: require PspCidTable symbol.
-    if reader.symbols().symbol_address("PspCidTable").is_none() {
+    let cid_table_ptr = match reader.symbols().symbol_address("PspCidTable") {
+        Some(addr) => addr,
+        None => return Ok(Vec::new()),
+    };
+
+    // PspCidTable stores a pointer to _HANDLE_TABLE; dereference it.
+    let ht_addr: u64 = {
+        let bytes = reader.read_bytes(cid_table_ptr, 8)?;
+        u64::from_le_bytes(
+            bytes
+                .try_into()
+                .map_err(|_| crate::Error::Walker("failed to read PspCidTable pointer".into()))?,
+        )
+    };
+
+    if ht_addr == 0 {
         return Ok(Vec::new());
     }
 
-    // In a full implementation we would:
-    // 1. Read *PspCidTable → _EX_HANDLE_TABLE address.
-    // 2. Read _EX_HANDLE_TABLE.TableCode.
-    // 3. Mask low 2 bits to get table level (handle only level 0 for now).
-    // 4. Walk 16-byte _EX_HANDLE_TABLE_ENTRY slots, clear low bit to get
-    //    the object pointer, subtract _OBJECT_HEADER size to get the header,
-    //    advance past the header to get the _EPROCESS body.
-    // 5. Read UniqueProcessId and ImageFileName from each _EPROCESS.
-    //
-    // For now return empty — the walker degrades gracefully when the symbol
-    // exists but the handle-table walk is not yet implemented.
-    Ok(Vec::new())
+    // Read TableCode from the _HANDLE_TABLE
+    let table_code: u64 = reader.read_field(ht_addr, "_HANDLE_TABLE", "TableCode")?;
+
+    // Level = low 2 bits of TableCode
+    let level = table_code & 0x3;
+    let base_addr = table_code & !0x3;
+
+    if base_addr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Only support level-0 (flat) tables for now
+    if level != 0 {
+        return Err(crate::Error::Walker(format!(
+            "PspCidTable level-{level} not yet supported; results incomplete"
+        )));
+    }
+
+    let entry_size = reader
+        .symbols()
+        .struct_size("_HANDLE_TABLE_ENTRY")
+        .ok_or_else(|| crate::Error::Walker("missing _HANDLE_TABLE_ENTRY size".into()))?;
+
+    // Read NextHandleNeedingPool to determine entry count
+    let next_handle: u32 = reader.read_field(ht_addr, "_HANDLE_TABLE", "NextHandleNeedingPool")?;
+
+    // Number of entries = next_handle / 4 (handle values are index * 4)
+    let num_entries = u64::from(next_handle) / 4;
+    let num_entries = num_entries.min(MAX_CID_ENTRIES);
+
+    let mut entries = Vec::new();
+
+    // In PspCidTable, handle value = index * 4 = PID for processes.
+    // Index 0 is reserved.
+    for idx in 1..num_entries {
+        let entry_addr = base_addr + idx * entry_size;
+
+        let obj_ptr: u64 =
+            match reader.read_field(entry_addr, "_HANDLE_TABLE_ENTRY", "ObjectPointerBits") {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+        if obj_ptr == 0 {
+            continue;
+        }
+
+        // ObjectPointerBits is shifted right by 4; reconstruct the pointer
+        // with kernel canonical high bits set.
+        let object_addr = (obj_ptr << 4) | 0xFFFF_0000_0000_0000;
+
+        // object_addr points to _OBJECT_HEADER; the body (_EPROCESS) follows
+        // at the Body field offset (typically 0x30).
+        let body_offset = reader
+            .symbols()
+            .field_offset("_OBJECT_HEADER", "Body")
+            .unwrap_or(0x30);
+        let eprocess_addr = object_addr.wrapping_add(body_offset);
+
+        // Verify this is a process by reading PID and checking it matches
+        let pid: u64 = match reader.read_field(eprocess_addr, "_EPROCESS", "UniqueProcessId") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // In PspCidTable, handle value = pid = idx * 4
+        let expected_pid = idx * 4;
+        if pid != expected_pid {
+            // Not a process entry (could be a thread), or corrupted
+            continue;
+        }
+
+        let image_name = reader
+            .read_field_string(eprocess_addr, "_EPROCESS", "ImageFileName", 15)
+            .unwrap_or_default();
+
+        entries.push(CidTableEntry {
+            pid: pid as u32,
+            eprocess_addr,
+            image_name,
+            in_active_list: false, // caller must cross-reference
+            is_hidden: false,      // caller must compute
+        });
+    }
+
+    Ok(entries)
 }
 
 /// Returns `true` when a PID found in `PspCidTable` is absent from

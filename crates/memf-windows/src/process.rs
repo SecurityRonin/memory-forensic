@@ -55,6 +55,21 @@ fn read_process_info<P: PhysicalMemoryProvider>(
     let kproc_addr = eproc_addr.wrapping_add(pcb_offset);
     let cr3: u64 = reader.read_field(kproc_addr, "_KPROCESS", "DirectoryTableBase")?;
 
+    // TODO(thread_count): read _EPROCESS.ActiveThreads (u32) once the ISF
+    // preset exposes it.  The field lives at a version-dependent offset (e.g.
+    // 0x4B4 on Win10 20H2) and is not yet present in windows_kernel_preset.
+    let thread_count: u32 = reader
+        .read_field::<u32>(eproc_addr, "_EPROCESS", "ActiveThreads")
+        .unwrap_or(0);
+
+    // TODO(is_wow64): read _EPROCESS.Wow64Process (pointer) and check != 0
+    // once the ISF preset exposes it.  The field lives at a version-dependent
+    // offset (e.g. 0x548 on Win10) and is not yet present in the preset.
+    let is_wow64: bool = reader
+        .read_field::<u64>(eproc_addr, "_EPROCESS", "Wow64Process")
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
     Ok(WinProcessInfo {
         pid,
         ppid,
@@ -64,8 +79,8 @@ fn read_process_info<P: PhysicalMemoryProvider>(
         cr3,
         peb_addr,
         vaddr: eproc_addr,
-        thread_count: 0,
-        is_wow64: false,
+        thread_count,
+        is_wow64,
     })
 }
 

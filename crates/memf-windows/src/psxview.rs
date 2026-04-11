@@ -139,7 +139,9 @@ fn walk_cid_table<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result
 
     // Only support level-0 (flat) tables for now
     if level != 0 {
-        return Ok(Vec::new());
+        return Err(crate::Error::Walker(format!(
+            "PspCidTable level-{level} not yet supported; results incomplete"
+        )));
     }
 
     let entry_size = reader

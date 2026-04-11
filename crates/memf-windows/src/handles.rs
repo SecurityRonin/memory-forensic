@@ -88,9 +88,9 @@ pub fn walk_handles<P: PhysicalMemoryProvider>(
                 continue;
             }
 
-            // The object_addr is the _OBJECT_HEADER address.
-            // In our layout, obj_ptr is stored directly as the address.
-            let object_addr = obj_ptr;
+            // ObjectPointerBits is shifted right by 4 in the kernel; reconstruct
+            // the full pointer by shifting left 4 and ORing in canonical high bits.
+            let object_addr = (obj_ptr << 4) | 0xFFFF_0000_0000_0000;
 
             // Read GrantedAccessBits
             let granted_access: u32 = reader
@@ -114,7 +114,9 @@ pub fn walk_handles<P: PhysicalMemoryProvider>(
             // Look up type name via ObTypeIndexTable[TypeIndex]
             let object_type = resolve_type_name(reader, ob_type_table_addr, type_index);
 
-            let handle_value = (idx as u32) * 4;
+            let handle_value = u32::try_from(idx)
+                .unwrap_or(u32::MAX)
+                .saturating_mul(4);
 
             results.push(WinHandleInfo {
                 pid: proc.pid,
@@ -274,18 +276,12 @@ mod tests {
             let entry_offset = ((i + 1) as u64) * ENTRY_SIZE;
             let entry_paddr = entry_page_paddr + entry_offset;
 
-            // ObjectPointerBits: on Win10+, the actual pointer is stored
-            // shifted right by 4, in bits [63:4]. We encode it the same way:
-            // value = (obj_header_vaddr >> 4) << 4 with low bits as lock etc.
-            // For simplicity in our test layout, just store the address with
-            // low bits clear — the walker masks off low 4 bits anyway.
-            // The encoded value has the pointer in the upper bits.
-            // In real Windows: ObjectPointerBits = (addr >> 4) | flags
-            // For level-0 tables, the raw u64 at the entry is:
-            //   bits[63:1] = pointer >> 1 (with bit 0 = lock)
-            // Simplified: we store (obj_header_vaddr >> 4) << 4 for tests.
+            // ObjectPointerBits: the kernel stores (addr >> 4) with the top
+            // canonical bits stripped.  The walker reconstructs the address as
+            // (obj_ptr << 4) | 0xFFFF_0000_0000_0000.
+            let obj_ptr_bits = (obj_header_vaddr & 0x0000_FFFF_FFFF_FFFF) >> 4;
             ptb = ptb
-                .write_phys_u64(entry_paddr + ENTRY_OBJECT_PTR, obj_header_vaddr)
+                .write_phys_u64(entry_paddr + ENTRY_OBJECT_PTR, obj_ptr_bits)
                 .write_phys(
                     entry_paddr + ENTRY_GRANTED_ACCESS,
                     &granted_access.to_le_bytes(),
@@ -460,10 +456,10 @@ mod tests {
             .write_phys_u64(handle_table_paddr + HANDLE_TABLE_CODE, entry_page_vaddr)
             .write_phys(handle_table_paddr + 0x3C, &next_handle.to_le_bytes())
             // Entry index 1: zeroed (free slot) — entry_page_paddr + 16 stays 0
-            // Entry index 2: real handle
+            // Entry index 2: real handle — encode as kernel does: (addr >> 4) with top bits stripped
             .write_phys_u64(
                 entry_page_paddr + 2 * ENTRY_SIZE + ENTRY_OBJECT_PTR,
-                obj_header_vaddr,
+                (obj_header_vaddr & 0x0000_FFFF_FFFF_FFFF) >> 4,
             )
             .write_phys(
                 entry_page_paddr + 2 * ENTRY_SIZE + ENTRY_GRANTED_ACCESS,
