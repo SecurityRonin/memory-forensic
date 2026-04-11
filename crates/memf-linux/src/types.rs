@@ -780,7 +780,7 @@ pub struct ArpEntryInfo {
 // ---------------------------------------------------------------------------
 
 /// An iptables/nftables rule recovered from kernel memory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NetfilterRuleInfo {
     /// Table name (e.g. "filter", "nat", "mangle").
     pub table: String,
