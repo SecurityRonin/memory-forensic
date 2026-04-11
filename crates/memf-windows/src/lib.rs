@@ -52,6 +52,7 @@ pub mod peb_masquerade;
 pub mod pipes;
 pub mod pool_scan;
 pub mod pool_tag;
+pub mod symlinks;
 pub mod prefetch;
 pub mod process;
 pub mod psxview;
