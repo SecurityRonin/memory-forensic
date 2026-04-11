@@ -1,25 +1,70 @@
 /// Command substrings indicative of log-wiping activity.
-pub const LOG_WIPE_COMMANDS: &[&str] = &[];
+pub const LOG_WIPE_COMMANDS: &[&str] = &[
+    "wevtutil cl",
+    "wevtutil cl System",
+    "wevtutil cl Security",
+    "wevtutil cl Application",
+    "auditpol /clear",
+    "Clear-EventLog",
+    "Remove-EventLog",
+    "echo > /var/log",
+    "truncate -s 0",
+    "> /var/log/auth.log",
+    "shred ",
+    "srm ",
+    "secure-delete",
+];
 
 /// Well-known Linux rootkit names.
-pub const KNOWN_ROOTKIT_NAMES: &[&str] = &[];
+pub const KNOWN_ROOTKIT_NAMES: &[&str] = &[
+    "reptile",
+    "diamorphine",
+    "azazel",
+    "necurs",
+    "rkperfect",
+    "knark",
+    "suterusu",
+    "Adore",
+    "rkit",
+    "enyelkm",
+    "beurk",
+    "jynx",
+    "jynx2",
+    "vlany",
+];
 
 /// Substrings indicative of timestamp-manipulation (timestomping) activity.
-pub const TIMESTOMP_INDICATORS: &[&str] = &[];
+pub const TIMESTOMP_INDICATORS: &[&str] = &[
+    "timestomp",
+    "touch -t",
+    "touch -d",
+    "SetFileTime",
+    "NtSetInformationFile",
+    "ChangeFileTime",
+];
 
 /// Returns `true` if `cmd` contains a log-wipe pattern (case-insensitive).
-pub fn is_log_wipe_command(_cmd: &str) -> bool {
-    false
+pub fn is_log_wipe_command(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    LOG_WIPE_COMMANDS
+        .iter()
+        .any(|p| lower.contains(&p.to_ascii_lowercase()))
 }
 
 /// Returns `true` if `name` matches a known rootkit name (case-insensitive).
-pub fn is_known_rootkit(_name: &str) -> bool {
-    false
+pub fn is_known_rootkit(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    KNOWN_ROOTKIT_NAMES
+        .iter()
+        .any(|r| r.to_ascii_lowercase() == lower)
 }
 
 /// Returns `true` if `s` contains a timestomp indicator (case-insensitive).
-pub fn is_timestomp_indicator(_s: &str) -> bool {
-    false
+pub fn is_timestomp_indicator(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    TIMESTOMP_INDICATORS
+        .iter()
+        .any(|t| lower.contains(&t.to_ascii_lowercase()))
 }
 
 #[cfg(test)]

@@ -1,9 +1,28 @@
 /// Well-known suspicious/attacker-favoured TCP/UDP ports.
-pub const SUSPICIOUS_PORTS: &[u16] = &[];
+pub const SUSPICIOUS_PORTS: &[u16] = &[
+    4444,  // Metasploit default
+    50050, // Cobalt Strike teamserver
+    31337, // eleet / Back Orifice
+    1337,  // leet
+    8888,  // common C2 / jupyter abuse
+    9999,  // common C2
+    4445,  // Metasploit variant
+    1234,  // common test/C2 port
+    6666,  // IRC / C2
+    7777,  // common C2
+    8080,  // HTTP proxy / C2 (beyond the HTTP norm)
+    9001,  // Tor relay
+    9030,  // Tor directory
+    4899,  // Radmin
+    5900,  // VNC
+    5985,  // WinRM HTTP
+    5986,  // WinRM HTTPS
+    47001, // WinRM alt
+];
 
 /// Returns `true` if `port` appears in [`SUSPICIOUS_PORTS`].
-pub fn is_suspicious_port(_port: u16) -> bool {
-    false
+pub fn is_suspicious_port(port: u16) -> bool {
+    SUSPICIOUS_PORTS.contains(&port)
 }
 
 #[cfg(test)]

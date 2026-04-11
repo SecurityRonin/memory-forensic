@@ -1,16 +1,31 @@
 /// Returns `true` if `path` is a trusted Windows system library directory (case-insensitive).
-pub fn is_trusted_windows_lib_path(_path: &str) -> bool {
-    false
+pub fn is_trusted_windows_lib_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("system32")
+        || lower.contains("syswow64")
+        || lower.contains("winsxs")
+        || lower.contains("windows\\system")
+        || lower.contains("program files\\windows defender")
 }
 
 /// Returns `true` if `path` is a trusted Linux system library directory.
-pub fn is_trusted_linux_lib_path(_path: &str) -> bool {
-    false
+pub fn is_trusted_linux_lib_path(path: &str) -> bool {
+    path.starts_with("/lib")
+        || path.starts_with("/lib64")
+        || path.starts_with("/usr/lib")
+        || path.starts_with("/usr/lib64")
+        || path.starts_with("/usr/local/lib")
 }
 
 /// Returns `true` if `path` refers to a temp/scratch directory commonly abused by malware.
-pub fn is_suspicious_temp_path(_path: &str) -> bool {
-    false
+pub fn is_suspicious_temp_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("\\temp\\")
+        || lower.contains("\\tmp\\")
+        || lower.contains("/tmp/")
+        || lower.contains("\\appdata\\local\\temp")
+        || lower.contains("%temp%")
+        || lower.contains("%tmp%")
 }
 
 #[cfg(test)]

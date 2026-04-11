@@ -1,17 +1,69 @@
 /// Windows Living-Off-the-Land binaries (include `.exe` suffix).
-pub const WINDOWS_LOLBINS: &[&str] = &[];
+pub const WINDOWS_LOLBINS: &[&str] = &[
+    "certutil.exe",
+    "mshta.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "regsvr32.exe",
+    "rundll32.exe",
+    "msiexec.exe",
+    "bitsadmin.exe",
+    "msbuild.exe",
+    "installutil.exe",
+    "regasm.exe",
+    "regsvcs.exe",
+    "cmstp.exe",
+    "odbcconf.exe",
+    "mavinject.exe",
+    "ieexec.exe",
+    "xwizard.exe",
+    "presentationhost.exe",
+    "msdeploy.exe",
+    "wmic.exe",
+    "powershell.exe",
+    "pwsh.exe",
+];
 
 /// Linux Living-Off-the-Land binaries.
-pub const LINUX_LOLBINS: &[&str] = &[];
+pub const LINUX_LOLBINS: &[&str] = &[
+    "bash",
+    "sh",
+    "python",
+    "python3",
+    "perl",
+    "ruby",
+    "php",
+    "nc",
+    "ncat",
+    "socat",
+    "tclsh",
+    "openssl",
+    "curl",
+    "wget",
+    "lua",
+    "awk",
+    "find",
+    "vim",
+    "less",
+    "git",
+    "env",
+    "node",
+    "dd",
+    "strace",
+    "gdb",
+    "nmap",
+];
 
 /// Returns `true` if `name` matches a known Windows LOLBin (case-insensitive).
-pub fn is_windows_lolbin(_name: &str) -> bool {
-    false
+pub fn is_windows_lolbin(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    WINDOWS_LOLBINS.iter().any(|b| b.to_ascii_lowercase() == lower)
 }
 
 /// Returns `true` if `name` matches a known Linux LOLBin (case-insensitive).
-pub fn is_linux_lolbin(_name: &str) -> bool {
-    false
+pub fn is_linux_lolbin(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    LINUX_LOLBINS.iter().any(|b| b.to_ascii_lowercase() == lower)
 }
 
 #[cfg(test)]

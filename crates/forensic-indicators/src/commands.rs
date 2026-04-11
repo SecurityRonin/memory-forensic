@@ -1,25 +1,72 @@
 /// Substrings indicative of reverse-shell command lines.
-pub const REVERSE_SHELL_PATTERNS: &[&str] = &[];
+pub const REVERSE_SHELL_PATTERNS: &[&str] = &[
+    "bash -i",
+    "sh -i",
+    "pty.spawn",
+    "nc -e",
+    "nc -c",
+    "ncat -e",
+    "/bin/sh -i",
+    "python -c",
+    "perl -e",
+    "ruby -e",
+    "lua -e",
+    "php -r",
+    "socat exec",
+    "openssl s_client",
+];
 
 /// Substrings indicative of PowerShell abuse / download-cradles.
-pub const POWERSHELL_ABUSE_PATTERNS: &[&str] = &[];
+pub const POWERSHELL_ABUSE_PATTERNS: &[&str] = &[
+    "IEX",
+    "Invoke-Expression",
+    "DownloadString",
+    "WebClient",
+    "Net.WebRequest",
+    "-EncodedCommand",
+    "-enc ",
+    "-ep bypass",
+    "-ExecutionPolicy Bypass",
+    "FromBase64String",
+    "Invoke-Mimikatz",
+    "Invoke-Shellcode",
+];
 
 /// Substrings indicative of file-download tool usage.
-pub const DOWNLOAD_TOOL_PATTERNS: &[&str] = &[];
+pub const DOWNLOAD_TOOL_PATTERNS: &[&str] = &[
+    "certutil -urlcache",
+    "certutil -decode",
+    "bitsadmin /transfer",
+    "wget ",
+    "curl ",
+    "Invoke-WebRequest",
+    "Start-BitsTransfer",
+    "mshta http",
+    "regsvr32 /s /n /u /i:http",
+];
 
 /// Returns `true` if `cmd` contains a reverse-shell pattern (case-insensitive).
-pub fn is_reverse_shell_pattern(_cmd: &str) -> bool {
-    false
+pub fn is_reverse_shell_pattern(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    REVERSE_SHELL_PATTERNS
+        .iter()
+        .any(|p| lower.contains(&p.to_ascii_lowercase()))
 }
 
 /// Returns `true` if `cmd` contains a PowerShell abuse pattern (case-insensitive).
-pub fn is_powershell_abuse(_cmd: &str) -> bool {
-    false
+pub fn is_powershell_abuse(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    POWERSHELL_ABUSE_PATTERNS
+        .iter()
+        .any(|p| lower.contains(&p.to_ascii_lowercase()))
 }
 
 /// Returns `true` if `cmd` contains a download-tool usage pattern (case-insensitive).
-pub fn is_download_tool_usage(_cmd: &str) -> bool {
-    false
+pub fn is_download_tool_usage(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    DOWNLOAD_TOOL_PATTERNS
+        .iter()
+        .any(|p| lower.contains(&p.to_ascii_lowercase()))
 }
 
 #[cfg(test)]

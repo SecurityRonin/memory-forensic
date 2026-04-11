@@ -1,17 +1,56 @@
 /// Legitimate Windows process names commonly masqueraded by attackers.
-pub const WINDOWS_MASQUERADE_TARGETS: &[&str] = &[];
+pub const WINDOWS_MASQUERADE_TARGETS: &[&str] = &[
+    "svchost.exe",
+    "lsass.exe",
+    "csrss.exe",
+    "spoolsv.exe",
+    "dllhost.exe",
+    "conhost.exe",
+    "wermgr.exe",
+    "services.exe",
+    "winlogon.exe",
+    "smss.exe",
+    "taskhost.exe",
+    "taskhostw.exe",
+    "explorer.exe",
+    "system",
+    "registry",
+];
 
 /// Well-known malware / offensive-tool process names.
-pub const KNOWN_MALWARE_PROCESS_NAMES: &[&str] = &[];
+pub const KNOWN_MALWARE_PROCESS_NAMES: &[&str] = &[
+    "xmrig",
+    "mimikatz",
+    "meterpreter",
+    "beacon",
+    "empire",
+    "cobaltstrike",
+    "ngrok",
+    "frp",
+    "chisel",
+    "ligolo",
+    "sliver",
+    "havoc",
+    "brute",
+    "pwncat",
+    "reptile",
+    "diamorphine",
+];
 
 /// Returns `true` if `name` is a high-value masquerade target (case-insensitive).
-pub fn is_masquerade_target(_name: &str) -> bool {
-    false
+pub fn is_masquerade_target(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    WINDOWS_MASQUERADE_TARGETS
+        .iter()
+        .any(|t| t.to_ascii_lowercase() == lower)
 }
 
 /// Returns `true` if `name` matches a known malware process name (case-insensitive).
-pub fn is_known_malware_process(_name: &str) -> bool {
-    false
+pub fn is_known_malware_process(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    KNOWN_MALWARE_PROCESS_NAMES
+        .iter()
+        .any(|t| t.to_ascii_lowercase() == lower)
 }
 
 #[cfg(test)]
