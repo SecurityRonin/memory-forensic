@@ -63,32 +63,8 @@ pub struct DeletedExeInfo {
 /// - Kernel threads with empty exe paths
 /// - Processes with empty comm (likely kernel threads)
 pub fn classify_deleted_exe(exe_path: &str, comm: &str) -> bool {
-    // Not deleted at all -> not suspicious
-    if !exe_path.contains("(deleted)") {
-        return false;
+        todo!()
     }
-
-    // Empty exe path -> kernel thread, not suspicious
-    if exe_path.is_empty() {
-        return false;
-    }
-
-    // Empty comm -> likely kernel thread, not suspicious
-    if comm.is_empty() {
-        return false;
-    }
-
-    // Check against known-benign process names
-    let comm_lower = comm.to_lowercase();
-    for &benign in KNOWN_BENIGN_COMMS {
-        if comm_lower == benign {
-            return false;
-        }
-    }
-
-    // All other deleted executables are suspicious
-    true
-}
 
 /// Walk the task list and detect processes running from deleted executables.
 ///
@@ -100,35 +76,8 @@ pub fn classify_deleted_exe(exe_path: &str, comm: &str) -> bool {
 pub fn walk_deleted_exe<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<DeletedExeInfo>> {
-    let init_task_addr = reader
-        .symbols()
-        .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
-
-    let tasks_offset = reader
-        .symbols()
-        .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
-
-    let head_vaddr = init_task_addr + tasks_offset;
-    let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
-
-    let mut results = Vec::new();
-
-    // Include init_task itself
-    if let Some(info) = read_deleted_exe_info(reader, init_task_addr) {
-        results.push(info);
+        todo!()
     }
-
-    for &task_addr in &task_addrs {
-        if let Some(info) = read_deleted_exe_info(reader, task_addr) {
-            results.push(info);
-        }
-    }
-
-    results.sort_by_key(|r| r.pid);
-    Ok(results)
-}
 
 /// Read the executable path for a single task and classify it.
 ///
@@ -137,37 +86,8 @@ fn read_deleted_exe_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     task_addr: u64,
 ) -> Option<DeletedExeInfo> {
-    let pid: u32 = reader.read_field(task_addr, "task_struct", "pid").ok()?;
-    let comm = reader
-        .read_field_string(task_addr, "task_struct", "comm", 16)
-        .unwrap_or_default();
-
-    // Kernel threads have mm == NULL — skip them.
-    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm").ok()?;
-    if mm_ptr == 0 {
-        return None;
+        todo!()
     }
-
-    // Follow mm->exe_file (pointer to struct file).
-    let exe_file_ptr: u64 = reader.read_field(mm_ptr, "mm_struct", "exe_file").ok()?;
-    if exe_file_ptr == 0 {
-        return None;
-    }
-
-    // Navigate exe_file->f_path.dentry to read the path name.
-    let exe_path = read_file_dentry_name(reader, exe_file_ptr).unwrap_or_default();
-
-    let is_deleted = exe_path.contains("(deleted)");
-    let is_suspicious = classify_deleted_exe(&exe_path, &comm);
-
-    Some(DeletedExeInfo {
-        pid,
-        comm,
-        exe_path,
-        is_deleted,
-        is_suspicious,
-    })
-}
 
 /// Read the dentry name from a `struct file` pointer via `f_path.dentry->d_name`.
 ///
@@ -178,29 +98,8 @@ fn read_file_dentry_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     file_ptr: u64,
 ) -> Option<String> {
-    let f_path_offset = reader.symbols().field_offset("file", "f_path")?;
-    let dentry_in_path = reader.symbols().field_offset("path", "dentry")?;
-    let d_name_offset = reader.symbols().field_offset("dentry", "d_name")?;
-    let name_in_qstr = reader.symbols().field_offset("qstr", "name")?;
-
-    // file.f_path is embedded; dentry is a pointer within the embedded path struct.
-    let dentry_addr = file_ptr + f_path_offset + dentry_in_path;
-    let dentry_raw = reader.read_bytes(dentry_addr, 8).ok()?;
-    let dentry_ptr = u64::from_le_bytes(dentry_raw.try_into().ok()?);
-    if dentry_ptr == 0 {
-        return None;
+        todo!()
     }
-
-    // dentry.d_name is an embedded qstr; name is a pointer within qstr.
-    let name_addr = dentry_ptr + d_name_offset + name_in_qstr;
-    let name_raw = reader.read_bytes(name_addr, 8).ok()?;
-    let name_ptr = u64::from_le_bytes(name_raw.try_into().ok()?);
-    if name_ptr == 0 {
-        return None;
-    }
-
-    reader.read_string(name_ptr, 256).ok()
-}
 
 #[cfg(test)]
 mod tests {
@@ -215,174 +114,84 @@ mod tests {
 
     #[test]
     fn classify_normal_benign() {
-        // A normal executable that is NOT deleted should never be suspicious.
-        assert!(
-            !classify_deleted_exe("/usr/bin/nginx", "nginx"),
-            "a live (non-deleted) executable must not be flagged suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_deleted_suspicious() {
-        // A deleted executable from an unknown process IS suspicious.
-        assert!(
-            classify_deleted_exe("/tmp/.x11 (deleted)", "payload"),
-            "a deleted exe from unknown process 'payload' must be suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_deleted_apt_benign() {
-        // apt running from a deleted exe during upgrade is benign.
-        assert!(
-            !classify_deleted_exe("/usr/bin/apt (deleted)", "apt"),
-            "apt with deleted exe during package upgrade must not be suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_deleted_dpkg_benign() {
-        // dpkg running from a deleted exe during upgrade is benign.
-        assert!(
-            !classify_deleted_exe("/usr/bin/dpkg (deleted)", "dpkg"),
-            "dpkg with deleted exe during package upgrade must not be suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_kernel_thread_benign() {
-        // Kernel threads have empty comm or empty exe path — not suspicious.
-        assert!(
-            !classify_deleted_exe("", ""),
-            "kernel thread with empty exe and comm must not be suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_empty_path_benign() {
-        // Empty exe path (kernel thread) with a comm name should not be suspicious
-        // even though it technically can't contain "(deleted)" — test the guard.
-        assert!(
-            !classify_deleted_exe("", "kworker/0:1"),
-            "empty exe path must not be flagged suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_deleted_yum_benign() {
-        // yum running from a deleted exe during upgrade is benign.
-        assert!(
-            !classify_deleted_exe("/usr/bin/yum (deleted)", "yum"),
-            "yum with deleted exe during package upgrade must not be suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_deleted_with_suspicious_name() {
-        // A process with a suspicious-looking name running from /dev/shm (deleted).
-        assert!(
-            classify_deleted_exe("/dev/shm/.hidden (deleted)", "a]"),
-            "deleted exe from /dev/shm with obfuscated name must be suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_deleted_empty_comm_benign() {
-        // Deleted path but empty comm → kernel thread, not suspicious
-        assert!(
-            !classify_deleted_exe("/tmp/.evil (deleted)", ""),
-            "empty comm with deleted exe must not be suspicious"
-        );
+        todo!()
     }
 
     #[test]
     fn classify_all_known_benign_comms() {
-        // Every entry in KNOWN_BENIGN_COMMS must be suppressed
-        for comm in KNOWN_BENIGN_COMMS {
-            let path = format!("/usr/bin/{comm} (deleted)");
-            assert!(
-                !classify_deleted_exe(&path, comm),
-                "known-benign comm '{comm}' must not be flagged suspicious"
-            );
-        }
+        todo!()
     }
 
     #[test]
     fn classify_benign_comm_case_insensitive() {
-        // Classification is case-insensitive for known-benign names
-        assert!(!classify_deleted_exe("/usr/bin/APT (deleted)", "APT"));
-        assert!(!classify_deleted_exe("/usr/bin/Dpkg (deleted)", "Dpkg"));
-        assert!(!classify_deleted_exe("/usr/bin/YUM (deleted)", "YUM"));
+        todo!()
     }
 
     #[test]
     fn classify_near_benign_name_suspicious() {
-        // "apt2" is NOT in the benign list → suspicious
-        assert!(classify_deleted_exe("/usr/bin/apt2 (deleted)", "apt2"));
-        // "dpkg-query" is not in the list → suspicious
-        assert!(classify_deleted_exe("/usr/bin/dpkg-query (deleted)", "dpkg-query"));
+        todo!()
     }
 
     #[test]
     fn classify_deleted_exe_info_struct_fields() {
-        let info = DeletedExeInfo {
-            pid: 999,
-            comm: "evil".to_string(),
-            exe_path: "/tmp/.x (deleted)".to_string(),
-            is_deleted: true,
-            is_suspicious: true,
-        };
-        let cloned = info.clone();
-        assert_eq!(cloned.pid, 999);
-        assert!(cloned.is_deleted);
-        assert!(cloned.is_suspicious);
-        let dbg = format!("{:?}", cloned);
-        assert!(dbg.contains("evil"));
+        todo!()
     }
 
     #[test]
     fn classify_deleted_exe_info_serializes_to_json() {
-        let info = DeletedExeInfo {
-            pid: 42,
-            comm: "malware".to_string(),
-            exe_path: "/dev/shm/.bin (deleted)".to_string(),
-            is_deleted: true,
-            is_suspicious: true,
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"pid\":42"));
-        assert!(json.contains("\"is_deleted\":true"));
-        assert!(json.contains("\"is_suspicious\":true"));
+        todo!()
     }
 
     // --- walk_deleted_exe integration test ---
 
     /// Helper: build an ObjectReader with no init_task symbol.
     fn make_reader_no_symbol() -> ObjectReader<SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 0, "int")
-            .add_field("task_struct", "tasks", 16, "list_head")
-            .add_struct("list_head", 16)
-            .add_field("list_head", "next", 0, "pointer")
-            .add_field("list_head", "prev", 8, "pointer")
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     #[test]
     fn walk_no_symbol_returns_error() {
-        // Without init_task symbol, walk should return an error (not panic).
-        let reader = make_reader_no_symbol();
-        let result = walk_deleted_exe(&reader);
-        assert!(
-            result.is_err(),
-            "walk_deleted_exe must error when init_task symbol is missing"
-        );
+        todo!()
     }
 
     // --- walk_deleted_exe: symbol present, self-pointing tasks list, mm != 0, exe_file == 0 ---
@@ -390,60 +199,7 @@ mod tests {
     // mm_struct.exe_file == 0 → returns None → result stays empty.
     #[test]
     fn walk_deleted_exe_mm_non_null_exe_file_null_returns_empty() {
-        let tasks_offset: u64 = 0x10;
-        let mm_offset: u64    = 0x30;
-        let sym_vaddr: u64    = 0xFFFF_8800_0090_0000;
-        let sym_paddr: u64    = 0x0090_0000; // < 16 MB
-        let mm_vaddr: u64     = 0xFFFF_8800_0091_0000;
-        let mm_paddr: u64     = 0x0091_0000;
-
-        // task page
-        let mut task_page = [0u8; 4096];
-        // pid = 5
-        task_page[0..4].copy_from_slice(&5u32.to_le_bytes());
-        // tasks self-pointing
-        let self_ptr = sym_vaddr + tasks_offset;
-        task_page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&self_ptr.to_le_bytes());
-        // mm at offset 0x30 → non-zero (points to mm page)
-        task_page[mm_offset as usize..mm_offset as usize + 8]
-            .copy_from_slice(&mm_vaddr.to_le_bytes());
-        // comm = "worker"
-        task_page[0x20..0x26].copy_from_slice(b"worker");
-
-        // mm page: exe_file at offset 0x18 = 0 (null)
-        let mm_page = [0u8; 4096];
-
-        let isf = IsfBuilder::new()
-            .add_symbol("init_task", sym_vaddr)
-            .add_struct("list_head", 0x10)
-            .add_field("list_head", "next", 0x00, "pointer")
-            .add_field("list_head", "prev", 0x08, "pointer")
-            .add_struct("task_struct", 0x400)
-            .add_field("task_struct", "tasks", tasks_offset, "pointer")
-            .add_field("task_struct", "pid", 0x00, "unsigned int")
-            .add_field("task_struct", "comm", 0x20, "char")
-            .add_field("task_struct", "mm", mm_offset, "pointer")
-            .add_struct("mm_struct", 0x200)
-            .add_field("mm_struct", "exe_file", 0x18, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &task_page)
-            .map_4k(mm_vaddr, mm_paddr, flags::WRITABLE)
-            .write_phys(mm_paddr, &mm_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_deleted_exe(&reader).unwrap();
-        assert!(
-            result.is_empty(),
-            "mm non-null but exe_file==0 → read_deleted_exe_info returns None → empty"
-        );
+        todo!()
     }
 
     // --- walk_deleted_exe: exe_file non-null, dentry chain fully readable, non-deleted path ---
@@ -451,103 +207,7 @@ mod tests {
     // read_file_dentry_name (lines 177-203) on a path without "(deleted)".
     #[test]
     fn walk_deleted_exe_full_chain_no_deleted_marker() {
-        use memf_core::test_builders::flags as ptf;
-
-        // Layout (all physical addrs < 16 MB):
-        //   sym_vaddr  = init_task                tasks @ 0x10, mm @ 0x30, pid @ 0, comm @ 0x20
-        //   mm_vaddr   = mm_struct                exe_file @ 0x18
-        //   file_vaddr = struct file              f_path embedded (f_path_offset=0x10)
-        //   dentry_vaddr = dentry struct          d_name embedded (d_name_offset=0x08)
-        //   name_vaddr   = actual name string     "/usr/bin/bash\0"
-        let sym_vaddr: u64    = 0xFFFF_8800_00A0_0000;
-        let sym_paddr: u64    = 0x00A0_0000;
-        let mm_vaddr: u64     = 0xFFFF_8800_00A1_0000;
-        let mm_paddr: u64     = 0x00A1_0000;
-        let file_vaddr: u64   = 0xFFFF_8800_00A2_0000;
-        let file_paddr: u64   = 0x00A2_0000;
-        let dentry_vaddr: u64 = 0xFFFF_8800_00A3_0000;
-        let dentry_paddr: u64 = 0x00A3_0000;
-        let name_vaddr: u64   = 0xFFFF_8800_00A4_0000;
-        let name_paddr: u64   = 0x00A4_0000;
-
-        let tasks_offset: u64   = 0x10;
-        let mm_offset: u64      = 0x30;
-        let f_path_offset: u64  = 0x10; // offset of embedded path inside file
-        let dentry_in_path: u64 = 0x00; // offset of dentry* inside path
-        let d_name_offset: u64  = 0x08; // offset of embedded qstr inside dentry
-        let name_in_qstr: u64   = 0x00; // offset of name* inside qstr
-
-        // init_task page
-        let mut task_page = [0u8; 4096];
-        task_page[0..4].copy_from_slice(&7u32.to_le_bytes()); // pid=7
-        let self_ptr = sym_vaddr + tasks_offset;
-        task_page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&self_ptr.to_le_bytes());
-        task_page[0x20..0x25].copy_from_slice(b"bash\0");
-        task_page[mm_offset as usize..mm_offset as usize + 8]
-            .copy_from_slice(&mm_vaddr.to_le_bytes());
-
-        // mm_struct page: exe_file at 0x18
-        let mut mm_page = [0u8; 4096];
-        mm_page[0x18..0x20].copy_from_slice(&file_vaddr.to_le_bytes());
-
-        // file page: dentry ptr at f_path_offset + dentry_in_path = 0x10
-        let mut file_page = [0u8; 4096];
-        file_page[0x10..0x18].copy_from_slice(&dentry_vaddr.to_le_bytes());
-
-        // dentry page: name ptr at d_name_offset + name_in_qstr = 0x08
-        let mut dentry_page = [0u8; 4096];
-        dentry_page[0x08..0x10].copy_from_slice(&name_vaddr.to_le_bytes());
-
-        // name string page
-        let mut name_page = [0u8; 4096];
-        name_page[..14].copy_from_slice(b"/usr/bin/bash\0");
-
-        let isf = IsfBuilder::new()
-            .add_symbol("init_task", sym_vaddr)
-            .add_struct("list_head", 0x10)
-            .add_field("list_head", "next", 0x00, "pointer")
-            .add_field("list_head", "prev", 0x08, "pointer")
-            .add_struct("task_struct", 0x400)
-            .add_field("task_struct", "tasks", tasks_offset, "pointer")
-            .add_field("task_struct", "pid", 0x00, "unsigned int")
-            .add_field("task_struct", "comm", 0x20, "char")
-            .add_field("task_struct", "mm", mm_offset, "pointer")
-            .add_struct("mm_struct", 0x200)
-            .add_field("mm_struct", "exe_file", 0x18, "pointer")
-            .add_struct("file", 0x200)
-            .add_field("file", "f_path", f_path_offset, "pointer")
-            .add_struct("path", 0x20)
-            .add_field("path", "dentry", dentry_in_path, "pointer")
-            .add_struct("dentry", 0x200)
-            .add_field("dentry", "d_name", d_name_offset, "pointer")
-            .add_struct("qstr", 0x20)
-            .add_field("qstr", "name", name_in_qstr, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
-            .write_phys(sym_paddr, &task_page)
-            .map_4k(mm_vaddr, mm_paddr, ptf::WRITABLE)
-            .write_phys(mm_paddr, &mm_page)
-            .map_4k(file_vaddr, file_paddr, ptf::WRITABLE)
-            .write_phys(file_paddr, &file_page)
-            .map_4k(dentry_vaddr, dentry_paddr, ptf::WRITABLE)
-            .write_phys(dentry_paddr, &dentry_page)
-            .map_4k(name_vaddr, name_paddr, ptf::WRITABLE)
-            .write_phys(name_paddr, &name_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_deleted_exe(&reader).unwrap();
-        // init_task (pid=7, comm="bash") has a fully readable exe path that is NOT deleted.
-        assert_eq!(result.len(), 1, "init_task with full dentry chain should produce one entry");
-        assert_eq!(result[0].pid, 7);
-        assert!(!result[0].is_deleted, "path without (deleted) must not be flagged");
-        assert!(!result[0].is_suspicious);
+        todo!()
     }
 
     // --- walk_deleted_exe: symbol present, self-pointing tasks list, mm == 0 → exercises body ---
@@ -555,43 +215,7 @@ mod tests {
     // so it is skipped, and walk_list returns empty → result is empty but no error.
     #[test]
     fn walk_deleted_exe_symbol_present_kernel_thread_returns_empty() {
-        // tasks at offset 0x10; pid at 0x00; comm at 0x20; mm at 0x30.
-        let tasks_offset: u64 = 0x10;
-        let sym_vaddr: u64 = 0xFFFF_8800_0080_0000;
-        let sym_paddr: u64 = 0x0080_0000; // unique, < 16 MB
-
-        let isf = IsfBuilder::new()
-            .add_symbol("init_task", sym_vaddr)
-            .add_struct("list_head", 0x10)
-            .add_field("list_head", "next", 0x00, "pointer")
-            .add_struct("task_struct", 0x400)
-            .add_field("task_struct", "tasks", tasks_offset, "pointer")
-            .add_field("task_struct", "pid", 0x00, "unsigned int")
-            .add_field("task_struct", "comm", 0x20, "char")
-            .add_field("task_struct", "mm", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        // Build init_task page: tasks.next self-pointing, mm = 0 (kernel thread).
-        let mut page = [0u8; 4096];
-        let self_ptr = sym_vaddr + tasks_offset;
-        page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&self_ptr.to_le_bytes());
-        // mm at 0x30 remains 0 → read_deleted_exe_info returns None.
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr, sym_paddr, flags::WRITABLE)
-            .write_phys(sym_paddr, &page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_deleted_exe(&reader).unwrap();
-        assert!(
-            result.is_empty(),
-            "init_task with mm=0 → skipped as kernel thread → empty results"
-        );
+        todo!()
     }
 
     // --- walk_deleted_exe: walk_list returns a non-empty task list → exercises the for loop body ---
@@ -599,173 +223,13 @@ mod tests {
     // → read_deleted_exe_info returns None → loop body runs but produces no result.
     #[test]
     fn walk_deleted_exe_task_list_loop_body_covered() {
-        use memf_core::test_builders::flags;
-
-        let tasks_offset: u64 = 0x10;
-        let mm_offset: u64    = 0x30;
-
-        // init_task (kernel thread, mm=0)
-        let init_vaddr: u64 = 0xFFFF_8800_00B0_0000;
-        let init_paddr: u64 = 0x00B0_0000;
-
-        // task2 (non-kernel, mm != 0 → exe_file = 0 → skipped)
-        let task2_vaddr: u64 = 0xFFFF_8800_00B1_0000;
-        let task2_paddr: u64 = 0x00B1_0000;
-
-        // mm page for task2
-        let mm2_vaddr: u64 = 0xFFFF_8800_00B2_0000;
-        let mm2_paddr: u64 = 0x00B2_0000;
-
-        // init_task page: tasks.next → task2, mm = 0
-        let mut init_page = [0u8; 4096];
-        // tasks.next at offset 0x10 → task2_vaddr (pointing at task2's tasks field)
-        let task2_tasks_vaddr = task2_vaddr + tasks_offset;
-        init_page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&task2_tasks_vaddr.to_le_bytes());
-        // mm at 0x30 = 0
-        // pid = 0 at offset 0
-
-        // task2 page: tasks.next → back to init_task tasks (forms a cycle-terminating list)
-        let mut task2_page = [0u8; 4096];
-        let init_tasks_vaddr = init_vaddr + tasks_offset;
-        task2_page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&init_tasks_vaddr.to_le_bytes()); // tasks.next → head
-        // pid at 0x00 = 8
-        task2_page[0x00..0x04].copy_from_slice(&8u32.to_le_bytes());
-        // comm at 0x20 = "proc2"
-        task2_page[0x20..0x25].copy_from_slice(b"proc2");
-        // mm at 0x30 = mm2_vaddr (non-zero → has mm, exe_file at offset 0x18 = 0 → skipped)
-        task2_page[mm_offset as usize..mm_offset as usize + 8]
-            .copy_from_slice(&mm2_vaddr.to_le_bytes());
-
-        // mm2 page: exe_file at offset 0x18 = 0 → read_deleted_exe_info returns None
-        let mm2_page = [0u8; 4096];
-
-        let isf = IsfBuilder::new()
-            .add_symbol("init_task", init_vaddr)
-            .add_struct("list_head", 0x10)
-            .add_field("list_head", "next", 0x00, "pointer")
-            .add_field("list_head", "prev", 0x08, "pointer")
-            .add_struct("task_struct", 0x400)
-            .add_field("task_struct", "tasks", tasks_offset, "pointer")
-            .add_field("task_struct", "pid", 0x00, "unsigned int")
-            .add_field("task_struct", "comm", 0x20, "char")
-            .add_field("task_struct", "mm", mm_offset, "pointer")
-            .add_struct("mm_struct", 0x200)
-            .add_field("mm_struct", "exe_file", 0x18, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(init_vaddr, init_paddr, flags::WRITABLE)
-            .write_phys(init_paddr, &init_page)
-            .map_4k(task2_vaddr, task2_paddr, flags::WRITABLE)
-            .write_phys(task2_paddr, &task2_page)
-            .map_4k(mm2_vaddr, mm2_paddr, flags::WRITABLE)
-            .write_phys(mm2_paddr, &mm2_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        // walk_list should find task2 in the list. init_task has mm=0 → skipped.
-        // task2 has exe_file=0 → skipped. Result is empty but loop body executed.
-        let result = walk_deleted_exe(&reader).unwrap();
-        assert!(
-            result.is_empty(),
-            "both tasks skipped (mm=0 or exe_file=0) → empty results, but loop body was exercised"
-        );
+        todo!()
     }
 
     // --- walk_deleted_exe: full chain produces a (deleted) exe entry ---
     // Exercises lines 119-120 (init_task result pushed) and 160-162 (is_deleted=true, is_suspicious).
     #[test]
     fn walk_deleted_exe_full_chain_with_deleted_marker() {
-        use memf_core::test_builders::flags as ptf;
-
-        let sym_vaddr: u64    = 0xFFFF_8800_00C0_0000;
-        let sym_paddr: u64    = 0x00C0_0000;
-        let mm_vaddr: u64     = 0xFFFF_8800_00C1_0000;
-        let mm_paddr: u64     = 0x00C1_0000;
-        let file_vaddr: u64   = 0xFFFF_8800_00C2_0000;
-        let file_paddr: u64   = 0x00C2_0000;
-        let dentry_vaddr: u64 = 0xFFFF_8800_00C3_0000;
-        let dentry_paddr: u64 = 0x00C3_0000;
-        let name_vaddr: u64   = 0xFFFF_8800_00C4_0000;
-        let name_paddr: u64   = 0x00C4_0000;
-
-        let tasks_offset: u64   = 0x10;
-        let mm_offset: u64      = 0x30;
-        let f_path_offset: u64  = 0x10;
-        let dentry_in_path: u64 = 0x00;
-        let d_name_offset: u64  = 0x08;
-        let name_in_qstr: u64   = 0x00;
-
-        let mut task_page = [0u8; 4096];
-        task_page[0..4].copy_from_slice(&3u32.to_le_bytes()); // pid=3
-        let self_ptr = sym_vaddr + tasks_offset;
-        task_page[tasks_offset as usize..tasks_offset as usize + 8]
-            .copy_from_slice(&self_ptr.to_le_bytes()); // self-pointing
-        task_page[0x20..0x27].copy_from_slice(b"payload");
-        task_page[mm_offset as usize..mm_offset as usize + 8]
-            .copy_from_slice(&mm_vaddr.to_le_bytes());
-
-        let mut mm_page = [0u8; 4096];
-        mm_page[0x18..0x20].copy_from_slice(&file_vaddr.to_le_bytes());
-
-        let mut file_page = [0u8; 4096];
-        file_page[0x10..0x18].copy_from_slice(&dentry_vaddr.to_le_bytes());
-
-        let mut dentry_page = [0u8; 4096];
-        dentry_page[0x08..0x10].copy_from_slice(&name_vaddr.to_le_bytes());
-
-        let mut name_page = [0u8; 4096];
-        let name_str = b"/tmp/.x11 (deleted)\0";
-        name_page[..name_str.len()].copy_from_slice(name_str);
-
-        let isf = IsfBuilder::new()
-            .add_symbol("init_task", sym_vaddr)
-            .add_struct("list_head", 0x10)
-            .add_field("list_head", "next", 0x00, "pointer")
-            .add_field("list_head", "prev", 0x08, "pointer")
-            .add_struct("task_struct", 0x400)
-            .add_field("task_struct", "tasks", tasks_offset, "pointer")
-            .add_field("task_struct", "pid", 0x00, "unsigned int")
-            .add_field("task_struct", "comm", 0x20, "char")
-            .add_field("task_struct", "mm", mm_offset, "pointer")
-            .add_struct("mm_struct", 0x200)
-            .add_field("mm_struct", "exe_file", 0x18, "pointer")
-            .add_struct("file", 0x200)
-            .add_field("file", "f_path", f_path_offset, "pointer")
-            .add_struct("path", 0x20)
-            .add_field("path", "dentry", dentry_in_path, "pointer")
-            .add_struct("dentry", 0x200)
-            .add_field("dentry", "d_name", d_name_offset, "pointer")
-            .add_struct("qstr", 0x20)
-            .add_field("qstr", "name", name_in_qstr, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
-            .write_phys(sym_paddr, &task_page)
-            .map_4k(mm_vaddr, mm_paddr, ptf::WRITABLE)
-            .write_phys(mm_paddr, &mm_page)
-            .map_4k(file_vaddr, file_paddr, ptf::WRITABLE)
-            .write_phys(file_paddr, &file_page)
-            .map_4k(dentry_vaddr, dentry_paddr, ptf::WRITABLE)
-            .write_phys(dentry_paddr, &dentry_page)
-            .map_4k(name_vaddr, name_paddr, ptf::WRITABLE)
-            .write_phys(name_paddr, &name_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_deleted_exe(&reader).unwrap();
-        assert_eq!(result.len(), 1, "init_task with deleted exe → one entry");
-        assert_eq!(result[0].pid, 3);
-        assert!(result[0].is_deleted, "exe_path contains (deleted) → is_deleted=true");
-        assert!(result[0].is_suspicious, "payload with deleted exe → suspicious");
+        todo!()
     }
 }
