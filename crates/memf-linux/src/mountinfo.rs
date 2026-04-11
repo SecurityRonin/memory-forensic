@@ -9,8 +9,12 @@ use memf_format::PhysicalMemoryProvider;
 use crate::Result;
 
 /// Information about a single kernel mount entry.
+///
+/// This is the richer forensic type produced by [`walk_mounts`], distinct from
+/// [`crate::MountInfo`] in `types.rs` which is the simpler 3-field type used by
+/// the `fs` walker. The two serve different purposes and are kept separate.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct MountInfo {
+pub struct MountEntry {
     /// Kernel mount id.
     pub mnt_id: u32,
     /// Parent mount id.
@@ -53,7 +57,7 @@ pub fn classify_mount(fs_type: &str, dev_name: &str, mnt_root: &str) -> bool {
 /// Walk mount list and return all mounted filesystems.
 ///
 /// Returns `Ok(Vec::new())` when `init_task` symbol is absent.
-pub fn walk_mounts<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<MountInfo>> {
+pub fn walk_mounts<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<MountEntry>> {
     let _ = reader;
     Ok(Vec::new())
 }
@@ -151,10 +155,10 @@ mod tests {
         assert!(!classify_mount("sysfs", "sysfs", "/sys"), "sysfs must not be suspicious");
     }
 
-    // MountInfo struct: instantiation, Clone, Debug, Serialize coverage.
+    // MountEntry struct: instantiation, Clone, Debug, Serialize coverage.
     #[test]
     fn mount_info_struct_clone_debug_serialize() {
-        let info = MountInfo {
+        let info = MountEntry {
             mnt_id: 1,
             parent_id: 0,
             dev_name: "/dev/sda1".to_string(),
@@ -174,7 +178,7 @@ mod tests {
 
     #[test]
     fn mount_info_suspicious_struct() {
-        let info = MountInfo {
+        let info = MountEntry {
             mnt_id: 42,
             parent_id: 1,
             dev_name: "none".to_string(),

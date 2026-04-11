@@ -22,10 +22,15 @@ const HIGH_VALUE_TARGETS: &[&str] = &["sshd", "login", "passwd", "sudo", "su", "
 /// A detected ptrace relationship between a tracer and a tracee process.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PtraceRelationship {
+    /// PID of the process performing the trace.
     pub tracer_pid: u32,
+    /// Name of the tracer process.
     pub tracer_name: String,
+    /// PID of the process being traced.
     pub tracee_pid: u32,
+    /// Name of the tracee process.
     pub tracee_name: String,
+    /// True if this ptrace relationship is anomalous (non-debugger tracing a high-value target).
     pub is_suspicious: bool,
 }
 

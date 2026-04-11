@@ -206,6 +206,14 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
                 })
                 .unwrap_or(0);
 
+            // owner_pid is intentionally left as 0 here. Resolving the true owning
+            // PID from a unix_sock requires following the sk_peer_pid pointer chain
+            // (unix_sock -> sock.sk_peer_pid -> struct pid -> upid -> pid_ns + nr),
+            // which demands multiple ISF field lookups not currently worth the
+            // complexity cost. As a consequence, abstract sockets with a real high-PID
+            // owner are not flagged by the pid >= 1000 branch of classify_unix_socket;
+            // only the /tmp and /dev/shm path-based detection remains active.
+            // TODO: resolve owner_pid via sk_peer_pid when ISF coverage improves.
             let is_suspicious = classify_unix_socket(&path, 0);
 
             results.push(UnixSocketInfo {
@@ -213,7 +221,7 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
                 path,
                 socket_type: socket_type_name(sk_type).to_string(),
                 state: state_str,
-                owner_pid: 0,
+                owner_pid: 0, // unresolved — see comment above
                 peer_pid: 0,
                 is_suspicious,
             });

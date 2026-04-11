@@ -27,18 +27,31 @@ const PAGE_SIZE: u64 = 4096;
 /// Detailed process information similar to `ps aux` output.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PsAuxInfo {
+    /// Process ID.
     pub pid: u32,
+    /// Parent process ID.
     pub ppid: u32,
+    /// User ID of the process owner.
     pub uid: u32,
+    /// Group ID of the process owner.
     pub gid: u32,
+    /// Process name from `task_struct.comm` (up to 15 bytes).
     pub comm: String,
+    /// Human-readable process state (Running, Sleeping, Zombie, etc.).
     pub state: String,
+    /// Nice value (-20 to 19; higher = lower priority).
     pub nice: i32,
+    /// Virtual memory size in bytes.
     pub vsize: u64,
+    /// Resident set size in 4 KiB pages.
     pub rss: u64,
+    /// Controlling terminal name, or `"?"` if none.
     pub tty: String,
+    /// Process start time in kernel jiffies.
     pub start_time: u64,
+    /// Raw `task_struct.flags` value (includes `PF_KTHREAD` etc.).
     pub flags: u64,
+    /// True if heuristics flag this process as anomalous.
     pub is_suspicious: bool,
 }
 

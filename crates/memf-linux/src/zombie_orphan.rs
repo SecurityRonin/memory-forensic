@@ -20,14 +20,23 @@ const SUSPICIOUS_DAEMON_NAMES: &[&str] = &[
 /// Information about a zombie or orphan process found in memory.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ZombieOrphanInfo {
+    /// Process ID.
     pub pid: u32,
+    /// PID of the current parent (may be 1/init after reparenting).
     pub ppid: u32,
+    /// Process name from `task_struct.comm`.
     pub comm: String,
+    /// Human-readable process state string.
     pub state: String,
+    /// Exit code stored in `task_struct.exit_code`.
     pub exit_code: i32,
+    /// PID of the original parent before any reparenting.
     pub original_ppid: u32,
+    /// True if the process is in zombie state (exited, not yet reaped).
     pub is_zombie: bool,
+    /// True if the process was reparented to init (PID 1).
     pub is_orphan: bool,
+    /// True if heuristics flag this entry as anomalous.
     pub is_suspicious: bool,
 }
 
