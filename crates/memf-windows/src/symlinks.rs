@@ -41,7 +41,6 @@ const STANDARD_DOSDEVICE_TARGETS: &[&str] = &[
     "\\Device\\NamedPipe",
     "\\Device\\Mailslot",
     "\\Device\\Null",
-    "\\Device\\Mup",
     "\\??\\",
 ];
 

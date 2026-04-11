@@ -50,7 +50,9 @@ fn read_callback_array<P: PhysicalMemoryProvider>(
         let entry = u64::from_le_bytes(raw[offset..offset + 8].try_into().expect("8 bytes"));
 
         if entry == 0 {
-            break;
+            // PspCreateProcessNotifyRoutine is a sparse array — null slots can
+            // appear between valid entries, so continue scanning all 64 slots.
+            continue;
         }
 
         let address = entry & !0xF;

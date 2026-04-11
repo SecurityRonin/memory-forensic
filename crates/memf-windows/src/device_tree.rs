@@ -128,7 +128,8 @@ pub fn classify_device(driver_name: &str, device_type: u32) -> bool {
     if device_type == 0 {
         return true;
     }
-    if device_type > 0x40 {
+    // 0x45 (Pmi) is the highest known DDK device type; only flag truly unknown values.
+    if device_type > 0x45 {
         return true;
     }
     false

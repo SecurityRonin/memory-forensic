@@ -140,6 +140,9 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
             continue;
         }
         let handler_module = resolve_module(handler_addr, modules);
+        // A handler is only flagged as hooked when it is BOTH outside the driver's
+        // own range AND unresolvable to any known module — a handler that lives in
+        // another legitimate kernel module (e.g. ntoskrnl) is not considered a hook.
         let is_hooked = classify_irp_hook(handler_addr, driver_base, driver_size)
             && handler_module == "<unknown>";
         results.push(DriverIrpHookInfo {
@@ -180,16 +183,23 @@ pub fn walk_driver_irp<P: PhysicalMemoryProvider>(
         "InLoadOrderLinks",
     )?;
 
-    let results = Vec::new();
+    let mut results = Vec::new();
     let limit = entries.len().min(MAX_DRIVERS);
 
     for entry_addr in entries.into_iter().take(limit) {
-        let _dll_base: u64 =
+        let dll_base: u64 =
             match reader.read_field(entry_addr, "_KLDR_DATA_TABLE_ENTRY", "DllBase") {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-        let _ = &modules;
+        // Find the matching driver object by base address and check its IRP table.
+        if let Some(drv) = modules.iter().find(|m| m.base_addr == dll_base) {
+            if drv.vaddr != 0 {
+                if let Ok(entries) = check_driver_object(reader, drv.vaddr, &modules) {
+                    results.extend(entries);
+                }
+            }
+        }
     }
 
     Ok(results)

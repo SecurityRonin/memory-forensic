@@ -53,6 +53,10 @@ pub fn classify_timer(dpc_routine: u64, kernel_base: u64, kernel_size: u64) -> b
     if dpc_routine == 0 {
         return false;
     }
+    // If kernel_size == 0 the range is unknown — cannot classify, assume benign.
+    if kernel_size == 0 {
+        return false;
+    }
     !(dpc_routine >= kernel_base && dpc_routine < kernel_base.wrapping_add(kernel_size))
 }
 
@@ -358,9 +362,10 @@ mod tests {
 
     #[test]
     fn classify_timer_zero_size_kernel_suspicious() {
+        // zero-size range = unknown range = cannot classify = assume benign (not suspicious)
         let kernel_base: u64 = 0xfffff800_04000000;
         let routine = kernel_base;
-        assert!(classify_timer(routine, kernel_base, 0));
+        assert!(!classify_timer(routine, kernel_base, 0));
     }
 
     #[test]
