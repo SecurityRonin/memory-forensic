@@ -1,5 +1,16 @@
 //! Conversion traits for producing forensic events from walker output.
 
+use crate::event::ForensicEvent;
+
+/// Trait for types that can produce a list of [`ForensicEvent`]s.
+///
+/// Implement this on walker output structs to enable automatic
+/// correlation and reporting.
+pub trait IntoForensicEvents {
+    /// Consume this value and produce forensic events.
+    fn into_forensic_events(self) -> Vec<ForensicEvent>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

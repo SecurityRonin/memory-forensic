@@ -1,5 +1,307 @@
 //! ForensicEvent model, Entity, Finding, Severity, and Protocol types.
 
+use crate::mitre::MitreAttackId;
+use serde::Serialize;
+use std::fmt;
+use std::net::SocketAddr;
+
+/// A single forensic event produced by a walker's analysis.
+///
+/// Represents a finding tied to a specific entity, with optional temporal
+/// context, MITRE ATT&CK mapping, and confidence scoring.
+#[derive(Debug, Clone, Serialize)]
+pub struct ForensicEvent {
+    /// When the event occurred (if determinable from the memory image).
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// The walker that produced this event.
+    pub source_walker: &'static str,
+    /// The entity this event relates to.
+    pub entity: Entity,
+    /// What was found.
+    pub finding: Finding,
+    /// How severe the finding is.
+    pub severity: Severity,
+    /// Associated MITRE ATT&CK technique IDs.
+    pub mitre_attack: Vec<MitreAttackId>,
+    /// Confidence score in the range `[0.0, 1.0]`.
+    pub confidence: f64,
+    /// Raw bytes backing this finding (e.g. suspicious PE header).
+    pub raw_evidence: Vec<u8>,
+}
+
+impl ForensicEvent {
+    /// Returns a new [`ForensicEventBuilder`].
+    pub fn builder() -> ForensicEventBuilder {
+        ForensicEventBuilder::default()
+    }
+
+    /// Returns `true` if severity >= High **or** confidence >= 0.8.
+    pub fn is_suspicious(&self) -> bool {
+        self.severity >= Severity::High || self.confidence >= 0.8
+    }
+}
+
+/// Fluent builder for [`ForensicEvent`].
+#[derive(Debug, Default)]
+pub struct ForensicEventBuilder {
+    timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    source_walker: Option<&'static str>,
+    entity: Option<Entity>,
+    finding: Option<Finding>,
+    severity: Option<Severity>,
+    mitre_attack: Vec<MitreAttackId>,
+    confidence: Option<f64>,
+    raw_evidence: Vec<u8>,
+}
+
+impl ForensicEventBuilder {
+    /// Set the source walker name.
+    pub fn source_walker(mut self, walker: &'static str) -> Self {
+        self.source_walker = Some(walker);
+        self
+    }
+
+    /// Set the entity.
+    pub fn entity(mut self, entity: Entity) -> Self {
+        self.entity = Some(entity);
+        self
+    }
+
+    /// Set the finding.
+    pub fn finding(mut self, finding: Finding) -> Self {
+        self.finding = Some(finding);
+        self
+    }
+
+    /// Set the severity.
+    pub fn severity(mut self, severity: Severity) -> Self {
+        self.severity = Some(severity);
+        self
+    }
+
+    /// Set the timestamp.
+    pub fn timestamp(mut self, ts: chrono::DateTime<chrono::Utc>) -> Self {
+        self.timestamp = Some(ts);
+        self
+    }
+
+    /// Set the confidence score (clamped to `[0.0, 1.0]`).
+    pub fn confidence(mut self, c: f64) -> Self {
+        self.confidence = Some(c);
+        self
+    }
+
+    /// Set the raw evidence bytes.
+    pub fn raw_evidence(mut self, evidence: Vec<u8>) -> Self {
+        self.raw_evidence = evidence;
+        self
+    }
+
+    /// Set the MITRE ATT&CK IDs.
+    pub fn mitre_attack(mut self, ids: Vec<MitreAttackId>) -> Self {
+        self.mitre_attack = ids;
+        self
+    }
+
+    /// Build the [`ForensicEvent`], consuming the builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `source_walker`, `entity`, `finding`, or `severity` were not set.
+    pub fn build(self) -> ForensicEvent {
+        let confidence = self.confidence.unwrap_or(0.5).clamp(0.0, 1.0);
+        ForensicEvent {
+            timestamp: self.timestamp,
+            source_walker: self.source_walker.expect("source_walker is required"),
+            entity: self.entity.expect("entity is required"),
+            finding: self.finding.expect("finding is required"),
+            severity: self.severity.expect("severity is required"),
+            mitre_attack: self.mitre_attack,
+            confidence,
+            raw_evidence: self.raw_evidence,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entity
+// ---------------------------------------------------------------------------
+
+/// An entity observed in a memory image.
+#[derive(Debug, Clone, Serialize)]
+pub enum Entity {
+    /// A process.
+    Process {
+        /// Process identifier.
+        pid: u32,
+        /// Process name.
+        name: String,
+        /// Parent process identifier.
+        ppid: Option<u32>,
+    },
+    /// A thread.
+    Thread {
+        /// Thread identifier.
+        tid: u32,
+        /// Owning process identifier.
+        owning_pid: u32,
+    },
+    /// A loaded module / shared library.
+    Module {
+        /// Module name.
+        name: String,
+        /// Base virtual address.
+        base: u64,
+        /// Size in bytes.
+        size: u64,
+    },
+    /// A network connection.
+    Connection {
+        /// Source address.
+        src: SocketAddr,
+        /// Destination address.
+        dst: SocketAddr,
+        /// Transport protocol.
+        proto: Protocol,
+    },
+    /// A kernel-mode driver.
+    Driver {
+        /// Driver name.
+        name: String,
+        /// Base virtual address.
+        base: u64,
+    },
+    /// A registry key (Windows).
+    RegistryKey {
+        /// Full registry path.
+        path: String,
+    },
+    /// A file reference.
+    File {
+        /// File path.
+        path: String,
+    },
+}
+
+impl fmt::Display for Entity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Process { pid, name, .. } => write!(f, "Process({name}/{pid})"),
+            Self::Thread { tid, owning_pid } => {
+                write!(f, "Thread({tid} owned by {owning_pid})")
+            }
+            Self::Module { name, base, .. } => write!(f, "Module({name} @ {base:#x})"),
+            Self::Connection { src, dst, proto } => {
+                write!(f, "Connection({proto} {src} -> {dst})")
+            }
+            Self::Driver { name, base } => write!(f, "Driver({name} @ {base:#x})"),
+            Self::RegistryKey { path } => write!(f, "RegistryKey({path})"),
+            Self::File { path } => write!(f, "File({path})"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Protocol
+// ---------------------------------------------------------------------------
+
+/// Transport-layer protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Protocol {
+    /// TCP.
+    Tcp,
+    /// UDP.
+    Udp,
+    /// ICMP.
+    Icmp,
+    /// Unknown or unsupported protocol.
+    Unknown,
+}
+
+impl fmt::Display for Protocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp => write!(f, "Tcp"),
+            Self::Udp => write!(f, "Udp"),
+            Self::Icmp => write!(f, "Icmp"),
+            Self::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Severity
+// ---------------------------------------------------------------------------
+
+/// Severity classification for a forensic finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum Severity {
+    /// Informational — no immediate concern.
+    Info,
+    /// Low severity.
+    Low,
+    /// Medium severity.
+    Medium,
+    /// High severity.
+    High,
+    /// Critical severity.
+    Critical,
+}
+
+impl Severity {
+    /// Returns a numeric weight for this severity level.
+    pub fn weight(self) -> u32 {
+        match self {
+            Self::Info => 1,
+            Self::Low => 5,
+            Self::Medium => 15,
+            Self::High => 40,
+            Self::Critical => 100,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finding
+// ---------------------------------------------------------------------------
+
+/// The type of suspicious finding detected.
+#[derive(Debug, Clone, Serialize)]
+pub enum Finding {
+    /// Process hollowing (T1055.012).
+    ProcessHollowing,
+    /// C2 beaconing behavior.
+    NetworkBeaconing,
+    /// Credential theft or dumping.
+    CredentialAccess,
+    /// Privilege escalation attempt.
+    PrivilegeEscalation,
+    /// Persistence mechanism installed.
+    PersistenceMechanism,
+    /// Defense evasion technique.
+    DefenseEvasion,
+    /// Lateral movement activity.
+    LateralMovement,
+    /// Custom / unclassified finding.
+    Other(String),
+}
+
+impl Finding {
+    /// Returns a human-readable display name.
+    pub fn display_name(&self) -> &str {
+        match self {
+            Self::ProcessHollowing => "Process Hollowing",
+            Self::NetworkBeaconing => "Network Beaconing",
+            Self::CredentialAccess => "Credential Access",
+            Self::PrivilegeEscalation => "Privilege Escalation",
+            Self::PersistenceMechanism => "Persistence Mechanism",
+            Self::DefenseEvasion => "Defense Evasion",
+            Self::LateralMovement => "Lateral Movement",
+            Self::Other(s) => s,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

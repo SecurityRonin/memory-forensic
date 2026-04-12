@@ -1,5 +1,49 @@
 //! MITRE ATT&CK identifier types and validation.
 
+use serde::Serialize;
+
+/// A validated MITRE ATT&CK technique identifier (e.g. `T1055`, `T1055.001`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MitreAttackId(String);
+
+/// Error returned when a MITRE ATT&CK ID fails validation.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid MITRE ATT&CK ID: {0}")]
+pub struct InvalidMitreId(String);
+
+impl MitreAttackId {
+    /// Create a new `MitreAttackId` after validating the format.
+    ///
+    /// Accepts `T<digits>` or `T<digits>.<digits>` (e.g. `T1055`, `T1055.001`).
+    pub fn new(id: &str) -> Result<Self, InvalidMitreId> {
+        if !Self::is_valid(id) {
+            return Err(InvalidMitreId(id.to_string()));
+        }
+        Ok(Self(id.to_string()))
+    }
+
+    /// Returns the ID as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn is_valid(id: &str) -> bool {
+        // Must start with 'T' followed by digits, optionally '.digits'
+        let Some(rest) = id.strip_prefix('T') else {
+            return false;
+        };
+
+        if let Some((technique, sub)) = rest.split_once('.') {
+            !technique.is_empty()
+                && technique.chars().all(|c| c.is_ascii_digit())
+                && !sub.is_empty()
+                && sub.chars().all(|c| c.is_ascii_digit())
+        } else {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
