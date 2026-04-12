@@ -944,6 +944,295 @@ mod tests {
         assert!(fi.is_suspicious, "executable regular file must be suspicious");
     }
 
+    // --- dentry-based filename resolution ---
+
+    /// Full path: inode has `i_dentry.first` pointing into a mapped dentry.
+    /// `dentry.d_name.name` points to a mapped string "secret.txt\0".
+    /// Asserts that `TmpfsFileInfo.filename == "secret.txt"`.
+    #[test]
+    fn inode_with_dentry_returns_filename() {
+        use memf_core::test_builders::flags as ptf;
+
+        // Virtual address layout (all physical addrs < 16 MB):
+        //   sym_vaddr         — super_blocks list head
+        //   sb_vaddr          — the single super_block
+        //   fstype_vaddr      — file_system_type
+        //   name_vaddr        — "tmpfs\0"
+        //   inode_vaddr       — the inode
+        //   dentry_vaddr      — the dentry
+        //   dname_str_vaddr   — "secret.txt\0"
+
+        let sym_vaddr:      u64 = 0xFFFF_8800_0060_0000;
+        let sym_paddr:      u64 = 0x0060_0000;
+        let sb_vaddr:       u64 = 0xFFFF_8800_0061_0000;
+        let sb_paddr:       u64 = 0x0061_0000;
+        let fstype_vaddr:   u64 = 0xFFFF_8800_0062_0000;
+        let fstype_paddr:   u64 = 0x0062_0000;
+        let fsname_vaddr:   u64 = 0xFFFF_8800_0063_0000;
+        let fsname_paddr:   u64 = 0x0063_0000;
+        let inode_vaddr:    u64 = 0xFFFF_8800_0064_0000;
+        let inode_paddr:    u64 = 0x0064_0000;
+        let dentry_vaddr:   u64 = 0xFFFF_8800_0065_0000;
+        let dentry_paddr:   u64 = 0x0065_0000;
+        let dname_str_vaddr: u64 = 0xFFFF_8800_0066_0000;
+        let dname_str_paddr: u64 = 0x0066_0000;
+
+        // super_block field offsets
+        let s_list_off:    u64 = 0x00;
+        let s_type_off:    u64 = 0x08;
+        let s_inodes_off:  u64 = 0x20;
+
+        // inode field offsets
+        let i_sb_list_off: u64 = 0x08;
+        let i_ino_off:     u64 = 0x10;
+        let i_size_off:    u64 = 0x18;
+        let i_uid_off:     u64 = 0x20;
+        let i_gid_off:     u64 = 0x24;
+        let i_mode_off:    u64 = 0x28;
+        let i_atime_off:   u64 = 0x30;
+        let i_mtime_off:   u64 = 0x38;
+        let i_ctime_off:   u64 = 0x40;
+        let i_dentry_off:  u64 = 0x48; // hlist_head.first pointer
+
+        // dentry field offsets
+        let d_alias_off:   u64 = 0x00; // hlist_node embedded at start of dentry
+        let d_name_off:    u64 = 0x20; // qstr struct
+        let d_name_name_off: u64 = d_name_off + 0x08; // name pointer within qstr (after hash+len)
+
+        // The hlist_node pointer stored in inode.i_dentry.first points at
+        // dentry.d_alias (which is at dentry_vaddr + d_alias_off).
+        let hlist_node_ptr = dentry_vaddr + d_alias_off;
+
+        // inode list pointers
+        let inode_list_head = sb_vaddr + s_inodes_off;
+        let inode_list_node = inode_vaddr + i_sb_list_off;
+
+        // super_blocks list-head page: first 8 bytes = sb.s_list
+        let mut sym_page = [0u8; 4096];
+        sym_page[0..8].copy_from_slice(&sb_vaddr.to_le_bytes());
+
+        // super_block page
+        let mut sb_page = [0u8; 4096];
+        sb_page[s_list_off as usize..s_list_off as usize + 8]
+            .copy_from_slice(&sym_vaddr.to_le_bytes()); // s_list.next = head (loop ends)
+        sb_page[s_type_off as usize..s_type_off as usize + 8]
+            .copy_from_slice(&fstype_vaddr.to_le_bytes());
+        sb_page[s_inodes_off as usize..s_inodes_off as usize + 8]
+            .copy_from_slice(&inode_list_node.to_le_bytes());
+
+        // file_system_type page: first 8 bytes = fsname_vaddr
+        let mut fstype_page = [0u8; 4096];
+        fstype_page[0..8].copy_from_slice(&fsname_vaddr.to_le_bytes());
+
+        // fs name page: "tmpfs\0"
+        let mut fsname_page = [0u8; 4096];
+        fsname_page[..6].copy_from_slice(b"tmpfs\0");
+
+        // inode page
+        let mut inode_page = [0u8; 4096];
+        inode_page[i_sb_list_off as usize..i_sb_list_off as usize + 8]
+            .copy_from_slice(&inode_list_head.to_le_bytes()); // wrap back → inner loop ends
+        inode_page[i_ino_off as usize..i_ino_off as usize + 8]
+            .copy_from_slice(&42u64.to_le_bytes());
+        inode_page[i_size_off as usize..i_size_off as usize + 8]
+            .copy_from_slice(&512u64.to_le_bytes());
+        inode_page[i_uid_off as usize..i_uid_off as usize + 4]
+            .copy_from_slice(&1000u32.to_le_bytes());
+        inode_page[i_gid_off as usize..i_gid_off as usize + 4]
+            .copy_from_slice(&1000u32.to_le_bytes());
+        inode_page[i_mode_off as usize..i_mode_off as usize + 4]
+            .copy_from_slice(&0o100_644u32.to_le_bytes());
+        inode_page[i_atime_off as usize..i_atime_off as usize + 8]
+            .copy_from_slice(&100u64.to_le_bytes());
+        inode_page[i_mtime_off as usize..i_mtime_off as usize + 8]
+            .copy_from_slice(&200u64.to_le_bytes());
+        inode_page[i_ctime_off as usize..i_ctime_off as usize + 8]
+            .copy_from_slice(&300u64.to_le_bytes());
+        // i_dentry.first = hlist_node_ptr (points at dentry.d_alias)
+        inode_page[i_dentry_off as usize..i_dentry_off as usize + 8]
+            .copy_from_slice(&hlist_node_ptr.to_le_bytes());
+
+        // dentry page
+        let mut dentry_page = [0u8; 4096];
+        // d_name.name pointer at d_name_name_off within dentry page
+        dentry_page[d_name_name_off as usize..d_name_name_off as usize + 8]
+            .copy_from_slice(&dname_str_vaddr.to_le_bytes());
+
+        // filename string page: "secret.txt\0"
+        let mut dname_str_page = [0u8; 4096];
+        dname_str_page[..11].copy_from_slice(b"secret.txt\0");
+
+        let isf = IsfBuilder::new()
+            .add_symbol("super_blocks", sym_vaddr)
+            .add_struct("super_block", 0x400)
+            .add_field("super_block", "s_list", s_list_off, "pointer")
+            .add_field("super_block", "s_type", s_type_off, "pointer")
+            .add_field("super_block", "s_inodes", s_inodes_off, "pointer")
+            .add_struct("inode", 0x200)
+            .add_field("inode", "i_sb_list", i_sb_list_off, "pointer")
+            .add_field("inode", "i_ino", i_ino_off, "unsigned long")
+            .add_field("inode", "i_size", i_size_off, "long long")
+            .add_field("inode", "i_uid", i_uid_off, "unsigned int")
+            .add_field("inode", "i_gid", i_gid_off, "unsigned int")
+            .add_field("inode", "i_mode", i_mode_off, "unsigned int")
+            .add_field("inode", "i_atime", i_atime_off, "long long")
+            .add_field("inode", "i_mtime", i_mtime_off, "long long")
+            .add_field("inode", "i_ctime", i_ctime_off, "long long")
+            .add_field("inode", "i_dentry", i_dentry_off, "pointer")
+            .add_struct("dentry", 0x200)
+            .add_field("dentry", "d_alias", d_alias_off, "pointer")
+            .add_field("dentry", "d_name_name", d_name_name_off, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr,       sym_paddr,       ptf::WRITABLE)
+            .write_phys(sym_paddr,       &sym_page)
+            .map_4k(sb_vaddr,        sb_paddr,        ptf::WRITABLE)
+            .write_phys(sb_paddr,        &sb_page)
+            .map_4k(fstype_vaddr,    fstype_paddr,    ptf::WRITABLE)
+            .write_phys(fstype_paddr,    &fstype_page)
+            .map_4k(fsname_vaddr,    fsname_paddr,    ptf::WRITABLE)
+            .write_phys(fsname_paddr,    &fsname_page)
+            .map_4k(inode_vaddr,     inode_paddr,     ptf::WRITABLE)
+            .write_phys(inode_paddr,     &inode_page)
+            .map_4k(dentry_vaddr,    dentry_paddr,    ptf::WRITABLE)
+            .write_phys(dentry_paddr,    &dentry_page)
+            .map_4k(dname_str_vaddr, dname_str_paddr, ptf::WRITABLE)
+            .write_phys(dname_str_paddr, &dname_str_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tmpfs_files(&reader).unwrap();
+        assert_eq!(result.len(), 1, "should find exactly one inode");
+        assert_eq!(
+            result[0].filename, "secret.txt",
+            "filename must be resolved from dentry d_name.name"
+        );
+    }
+
+    /// Inode with `i_dentry.first == 0` (null hlist) — filename must be empty.
+    #[test]
+    fn inode_without_dentry_returns_empty_filename() {
+        use memf_core::test_builders::flags as ptf;
+
+        let sym_vaddr:    u64 = 0xFFFF_8800_0067_0000;
+        let sym_paddr:    u64 = 0x0067_0000;
+        let sb_vaddr:     u64 = 0xFFFF_8800_0068_0000;
+        let sb_paddr:     u64 = 0x0068_0000;
+        let fstype_vaddr: u64 = 0xFFFF_8800_0069_0000;
+        let fstype_paddr: u64 = 0x0069_0000;
+        let fsname_vaddr: u64 = 0xFFFF_8800_006A_0000;
+        let fsname_paddr: u64 = 0x006A_0000;
+        let inode_vaddr:  u64 = 0xFFFF_8800_006B_0000;
+        let inode_paddr:  u64 = 0x006B_0000;
+
+        let s_list_off:   u64 = 0x00;
+        let s_type_off:   u64 = 0x08;
+        let s_inodes_off: u64 = 0x20;
+        let i_sb_list_off: u64 = 0x08;
+        let i_ino_off:    u64 = 0x10;
+        let i_size_off:   u64 = 0x18;
+        let i_uid_off:    u64 = 0x20;
+        let i_gid_off:    u64 = 0x24;
+        let i_mode_off:   u64 = 0x28;
+        let i_atime_off:  u64 = 0x30;
+        let i_mtime_off:  u64 = 0x38;
+        let i_ctime_off:  u64 = 0x40;
+        let i_dentry_off: u64 = 0x48;
+
+        let inode_list_head = sb_vaddr + s_inodes_off;
+        let inode_list_node = inode_vaddr + i_sb_list_off;
+
+        let mut sym_page = [0u8; 4096];
+        sym_page[0..8].copy_from_slice(&sb_vaddr.to_le_bytes());
+
+        let mut sb_page = [0u8; 4096];
+        sb_page[s_list_off as usize..s_list_off as usize + 8]
+            .copy_from_slice(&sym_vaddr.to_le_bytes());
+        sb_page[s_type_off as usize..s_type_off as usize + 8]
+            .copy_from_slice(&fstype_vaddr.to_le_bytes());
+        sb_page[s_inodes_off as usize..s_inodes_off as usize + 8]
+            .copy_from_slice(&inode_list_node.to_le_bytes());
+
+        let mut fstype_page = [0u8; 4096];
+        fstype_page[0..8].copy_from_slice(&fsname_vaddr.to_le_bytes());
+
+        let mut fsname_page = [0u8; 4096];
+        fsname_page[..6].copy_from_slice(b"tmpfs\0");
+
+        let mut inode_page = [0u8; 4096];
+        inode_page[i_sb_list_off as usize..i_sb_list_off as usize + 8]
+            .copy_from_slice(&inode_list_head.to_le_bytes());
+        inode_page[i_ino_off as usize..i_ino_off as usize + 8]
+            .copy_from_slice(&99u64.to_le_bytes());
+        inode_page[i_size_off as usize..i_size_off as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+        inode_page[i_uid_off as usize..i_uid_off as usize + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+        inode_page[i_gid_off as usize..i_gid_off as usize + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+        inode_page[i_mode_off as usize..i_mode_off as usize + 4]
+            .copy_from_slice(&0o100_644u32.to_le_bytes());
+        inode_page[i_atime_off as usize..i_atime_off as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+        inode_page[i_mtime_off as usize..i_mtime_off as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+        inode_page[i_ctime_off as usize..i_ctime_off as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+        // i_dentry.first = 0 (null — no dentry)
+        inode_page[i_dentry_off as usize..i_dentry_off as usize + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("super_blocks", sym_vaddr)
+            .add_struct("super_block", 0x400)
+            .add_field("super_block", "s_list", s_list_off, "pointer")
+            .add_field("super_block", "s_type", s_type_off, "pointer")
+            .add_field("super_block", "s_inodes", s_inodes_off, "pointer")
+            .add_struct("inode", 0x200)
+            .add_field("inode", "i_sb_list", i_sb_list_off, "pointer")
+            .add_field("inode", "i_ino", i_ino_off, "unsigned long")
+            .add_field("inode", "i_size", i_size_off, "long long")
+            .add_field("inode", "i_uid", i_uid_off, "unsigned int")
+            .add_field("inode", "i_gid", i_gid_off, "unsigned int")
+            .add_field("inode", "i_mode", i_mode_off, "unsigned int")
+            .add_field("inode", "i_atime", i_atime_off, "long long")
+            .add_field("inode", "i_mtime", i_mtime_off, "long long")
+            .add_field("inode", "i_ctime", i_ctime_off, "long long")
+            .add_field("inode", "i_dentry", i_dentry_off, "pointer")
+            .add_struct("dentry", 0x200)
+            .add_field("dentry", "d_alias", 0x00, "pointer")
+            .add_field("dentry", "d_name_name", 0x28, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(sym_vaddr,    sym_paddr,    ptf::WRITABLE)
+            .write_phys(sym_paddr,    &sym_page)
+            .map_4k(sb_vaddr,     sb_paddr,     ptf::WRITABLE)
+            .write_phys(sb_paddr,     &sb_page)
+            .map_4k(fstype_vaddr, fstype_paddr, ptf::WRITABLE)
+            .write_phys(fstype_paddr, &fstype_page)
+            .map_4k(fsname_vaddr, fsname_paddr, ptf::WRITABLE)
+            .write_phys(fsname_paddr, &fsname_page)
+            .map_4k(inode_vaddr,  inode_paddr,  ptf::WRITABLE)
+            .write_phys(inode_paddr,  &inode_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tmpfs_files(&reader).unwrap();
+        assert_eq!(result.len(), 1, "should find exactly one inode");
+        assert_eq!(
+            result[0].filename, "",
+            "null i_dentry.first → filename must be empty string"
+        );
+    }
+
     // --- classify_tmpfs_file: TmpfsFileInfo struct coverage ---
     #[test]
     fn tmpfs_file_info_clone_debug_serialize() {
