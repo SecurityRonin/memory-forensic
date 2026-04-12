@@ -889,6 +889,141 @@ mod tests {
         assert!(result[0].path.is_empty(), "abstract with empty inner name must produce empty path");
     }
 
+    // --- walk_unix_sockets: owner_pid resolved from sk_peer_pid chain ---
+    // ISF supplies skc_peer_pid offset on sock_common, and nr offset on pid.
+    // Walker reads sock_common.skc_peer_pid (a pointer), then pid.numbers[0].nr (u32).
+    #[test]
+    fn owner_pid_resolved_from_sk_peer_pid() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Layout:
+        //   table page  → bucket[0] = node_vaddr
+        //   node page   → unix_sock (sock_common.skc_peer_pid at offset 0x40 = pid_vaddr)
+        //   pid page    → struct pid (numbers[0].nr at offset 0x20 = 1234u32)
+        //
+        // ISF provides:
+        //   sock_common.skc_peer_pid at offset 0x40
+        //   pid.nr at offset 0x20  (represents numbers[0].nr flattened)
+
+        let table_vaddr: u64 = 0xFFFF_8800_0090_0000;
+        let table_paddr: u64 = 0x0090_0000;
+        let node_vaddr:  u64 = 0xFFFF_8800_0091_0000;
+        let node_paddr:  u64 = 0x0091_0000;
+        let pid_vaddr:   u64 = 0xFFFF_8800_0092_0000;
+        let pid_paddr:   u64 = 0x0092_0000;
+
+        // Chosen ISF-driven offsets (will be returned by field_offset calls):
+        let skc_peer_pid_off: usize = 0x40; // sock_common.skc_peer_pid
+        let pid_nr_off:       usize = 0x20; // pid.numbers[0].nr
+
+        let mut table_page = [0u8; 4096];
+        table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        let mut node_page = [0u8; 4096];
+        // hlist next = 0 (terminates immediately)
+        node_page[0..8].copy_from_slice(&0u64.to_le_bytes());
+        // sk_type = 1 (STREAM) at default 0x12
+        node_page[0x12..0x14].copy_from_slice(&1u16.to_le_bytes());
+        // sk_state = 3 (CONNECTED) at default 0x14
+        node_page[0x14] = 3u8;
+        // sock_common.skc_peer_pid pointer at skc_peer_pid_off → pid_vaddr
+        node_page[skc_peer_pid_off..skc_peer_pid_off + 8]
+            .copy_from_slice(&pid_vaddr.to_le_bytes());
+
+        let mut pid_page = [0u8; 4096];
+        // pid.numbers[0].nr = 1234 at pid_nr_off
+        pid_page[pid_nr_off..pid_nr_off + 4].copy_from_slice(&1234u32.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("unix_socket_table", table_vaddr)
+            // sock_common struct with skc_peer_pid field
+            .add_struct("sock_common", 0x80)
+            .add_field("sock_common", "skc_peer_pid", skc_peer_pid_off as u64, "pointer")
+            // pid struct with nr field (represents numbers[0].nr)
+            .add_struct("pid", 0x60)
+            .add_field("pid", "nr", pid_nr_off as u64, "unsigned int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, ptf::WRITABLE)
+            .write_phys(table_paddr, &table_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .map_4k(pid_vaddr, pid_paddr, ptf::WRITABLE)
+            .write_phys(pid_paddr, &pid_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        assert_eq!(result.len(), 1, "expected exactly one socket entry");
+        assert_eq!(
+            result[0].owner_pid, 1234,
+            "owner_pid must be resolved from pid.numbers[0].nr via skc_peer_pid chain"
+        );
+    }
+
+    // --- walk_unix_sockets: skc_peer_pid == 0 → owner_pid stays 0 ---
+    #[test]
+    fn owner_pid_zero_when_peer_pid_null() {
+        use memf_core::test_builders::{flags as ptf, PageTableBuilder, SyntheticPhysMem};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // ISF provides skc_peer_pid and pid.nr, but skc_peer_pid value is 0.
+        // Walker must leave owner_pid = 0 when the pointer is null.
+
+        let table_vaddr: u64 = 0xFFFF_8800_0093_0000;
+        let table_paddr: u64 = 0x0093_0000;
+        let node_vaddr:  u64 = 0xFFFF_8800_0094_0000;
+        let node_paddr:  u64 = 0x0094_0000;
+
+        let skc_peer_pid_off: usize = 0x40;
+
+        let mut table_page = [0u8; 4096];
+        table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
+
+        let mut node_page = [0u8; 4096];
+        node_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // hlist next = 0
+        node_page[0x12..0x14].copy_from_slice(&1u16.to_le_bytes()); // STREAM
+        node_page[0x14] = 1u8; // UNCONNECTED
+        // skc_peer_pid at skc_peer_pid_off = 0 (null pointer)
+        node_page[skc_peer_pid_off..skc_peer_pid_off + 8]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("unix_socket_table", table_vaddr)
+            .add_struct("sock_common", 0x80)
+            .add_field("sock_common", "skc_peer_pid", skc_peer_pid_off as u64, "pointer")
+            .add_struct("pid", 0x60)
+            .add_field("pid", "nr", 0x20u64, "unsigned int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, ptf::WRITABLE)
+            .write_phys(table_paddr, &table_page)
+            .map_4k(node_vaddr, node_paddr, ptf::WRITABLE)
+            .write_phys(node_paddr, &node_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_unix_sockets(&reader).unwrap();
+        assert_eq!(result.len(), 1, "expected exactly one socket entry");
+        assert_eq!(
+            result[0].owner_pid, 0,
+            "owner_pid must remain 0 when skc_peer_pid is null"
+        );
+    }
+
     // --- walk_unix_sockets: sk_socket non-null → inode read from socket+0x18 ---
     #[test]
     fn walk_unix_sockets_non_null_sk_socket_reads_inode() {
