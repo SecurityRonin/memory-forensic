@@ -21,10 +21,6 @@ use crate::unicode::read_unicode_string;
 /// Maximum number of ETW loggers to enumerate (safety limit).
 const MAX_LOGGERS: usize = 256;
 
-/// Maximum buffers per logger to walk (safety limit).
-#[allow(dead_code)]
-const MAX_BUFFERS_PER_LOGGER: usize = 1024;
-
 /// Information about an active ETW trace session recovered from memory.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EtwSessionInfo {
@@ -97,7 +93,7 @@ pub fn walk_etw_sessions<P: PhysicalMemoryProvider>(
         let ptr_addr = array_addr + (i as u64) * 8;
         let ctx_addr = match reader.read_bytes(ptr_addr, 8) {
             Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-            _ => break, // End of mapped memory — stop scanning.
+            _ => continue, // Slot unreadable (page absent) — skip, keep scanning.
         };
 
         if ctx_addr == 0 {

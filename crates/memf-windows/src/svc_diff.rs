@@ -117,7 +117,15 @@ pub fn walk_svc_diff<P: PhysicalMemoryProvider>(
             .unwrap_or_default()
             .into_iter()
             .find(|v| v.name.eq_ignore_ascii_case("Start"))
-            .and_then(|v| v.data_preview.parse::<u32>().ok())
+            .map(|v| {
+                let s = v.data_preview.trim();
+                // Handle "0x00000002 (2)" format (REG_DWORD display) and plain "2" format.
+                if let Some(dec) = s.split('(').nth(1).and_then(|p| p.split(')').next()) {
+                    dec.trim().parse::<u32>().unwrap_or(3)
+                } else {
+                    s.parse::<u32>().unwrap_or(3)
+                }
+            })
             .unwrap_or(3); // Default to Demand start.
         reg_map.insert(svc_name.to_ascii_lowercase(), start_type);
     }
@@ -188,7 +196,20 @@ fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
 }
 
 fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<Vec<u8>> {
-    reader.read_bytes(vaddr + 4, 4096).ok()
+    // Read the 4-byte cell size header first. Allocated cells have a negative
+    // (two's-complement) size; the data length is abs(size) - 4, capped at 64 KiB.
+    let size_bytes = reader.read_bytes(vaddr, 4).ok()?;
+    let raw_size = i32::from_le_bytes(size_bytes[..4].try_into().ok()?);
+    let data_len = if raw_size < 0 {
+        ((-raw_size as u32).saturating_sub(4) as usize).min(65536)
+    } else {
+        // Free cell (positive size) — still try to read it, capped.
+        (raw_size.saturating_sub(4) as usize).min(65536)
+    };
+    if data_len == 0 {
+        return Some(Vec::new());
+    }
+    reader.read_bytes(vaddr + 4, data_len).ok()
 }
 
 fn key_node_name(data: &[u8]) -> String {
