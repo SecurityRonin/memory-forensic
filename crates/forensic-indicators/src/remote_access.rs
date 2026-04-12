@@ -112,14 +112,39 @@ pub const ALL_LOLRMM_PATHS: &[&str] = &[
 
 /// Returns true if the given registry path matches a known LOLRMM remote access tool
 /// indicator (case-insensitive contains match).
-pub fn is_remote_access_tool_path(_path: &str) -> bool {
-    todo!("implement is_remote_access_tool_path")
+pub fn is_remote_access_tool_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ALL_LOLRMM_PATHS
+        .iter()
+        .any(|entry| lower.contains(&entry.to_ascii_lowercase()))
 }
 
 /// Returns the tool name if the path matches a known LOLRMM remote access tool,
 /// or None if not recognized.
-pub fn identify_remote_access_tool(_path: &str) -> Option<&'static str> {
-    todo!("implement identify_remote_access_tool")
+pub fn identify_remote_access_tool(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    let matches = |entries: &[&str]| {
+        entries
+            .iter()
+            .any(|e| lower.contains(&e.to_ascii_lowercase()))
+    };
+    if matches(TEAMVIEWER_PATHS) {
+        Some("TeamViewer")
+    } else if matches(ANYDESK_PATHS) {
+        Some("AnyDesk")
+    } else if matches(SPLASHTOP_PATHS) {
+        Some("Splashtop")
+    } else if matches(ATERA_PATHS) {
+        Some("Atera")
+    } else if matches(GOTOASSIST_PATHS) {
+        Some("GoToAssist")
+    } else if matches(ACTION1_PATHS) {
+        Some("Action1")
+    } else if matches(MANAGEENGINE_PATHS) {
+        Some("ManageEngine")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
