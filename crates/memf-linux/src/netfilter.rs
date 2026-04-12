@@ -644,6 +644,121 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------------------
+    // parse_table_rules tests
+    // ---------------------------------------------------------------------------
+
+    /// Build a reader wired up with `xt_table` and `xt_table_info` ISF types plus
+    /// the real entry data so that `parse_table_rules` can follow the full chain:
+    ///   xt_table.private → xt_table_info → (entries vaddr, size) → ipt_entry region
+    fn make_parse_table_rules_reader(
+        private_ptr: u64, // value stored in xt_table.private (0 = null test)
+        table_vaddr: u64,
+        table_paddr: u64,
+        table_info_vaddr: u64,
+        table_info_paddr: u64,
+        entries_vaddr: u64,
+        entries_paddr: u64,
+        entry_data: &[u8],
+    ) -> ObjectReader<SyntheticPhysMem> {
+        // ISF: add xt_table.private (pointer), xt_table_info.entries (pointer),
+        //      xt_table_info.size (unsigned long)
+        let isf = IsfBuilder::new()
+            // xt_table: only need the fields parse_table_rules reads
+            .add_struct("xt_table", 256)
+            .add_field("xt_table", "private", 0x00u64, "pointer")
+            // xt_table_info: entries at offset 0, size at offset 8
+            .add_struct("xt_table_info", 256)
+            .add_field("xt_table_info", "entries", 0x00u64, "pointer")
+            .add_field("xt_table_info", "size", 0x08u64, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let entry_size = entry_data.len() as u64;
+
+        // xt_table page: private pointer at offset 0
+        let mut table_page = [0u8; 4096];
+        table_page[0x00..0x08].copy_from_slice(&private_ptr.to_le_bytes());
+
+        // xt_table_info page: entries pointer at offset 0, size at offset 8
+        let mut info_page = [0u8; 4096];
+        info_page[0x00..0x08].copy_from_slice(&entries_vaddr.to_le_bytes());
+        info_page[0x08..0x10].copy_from_slice(&entry_size.to_le_bytes());
+
+        let mut builder = PageTableBuilder::new()
+            .map_4k(table_vaddr, table_paddr, flags::PRESENT | flags::WRITABLE)
+            .write_phys(table_paddr, &table_page);
+
+        if private_ptr != 0 {
+            builder = builder
+                .map_4k(table_info_vaddr, table_info_paddr, flags::PRESENT | flags::WRITABLE)
+                .write_phys(table_info_paddr, &info_page)
+                .map_4k(entries_vaddr, entries_paddr, flags::PRESENT | flags::WRITABLE)
+                .write_phys(entries_paddr, entry_data);
+        }
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// parse_table_rules should follow xt_table.private → xt_table_info → ipt_entry region
+    /// and return at least one NetfilterRuleInfo when given a valid ipt_entry.
+    #[test]
+    fn parse_table_rules_returns_rules_from_xt_table() {
+        let entry_data = make_ipt_entry_data(0, 0, 6, "ACCEPT");
+
+        let table_vaddr: u64      = 0xFFFF_8000_0100_0000;
+        let table_paddr: u64      = 0x0010_0000;
+        let table_info_vaddr: u64 = 0xFFFF_8000_0101_0000;
+        let table_info_paddr: u64 = 0x0011_0000;
+        let entries_vaddr: u64    = 0xFFFF_8000_0102_0000;
+        let entries_paddr: u64    = 0x0012_0000;
+
+        let reader = make_parse_table_rules_reader(
+            table_info_vaddr, // private → points to xt_table_info
+            table_vaddr,
+            table_paddr,
+            table_info_vaddr,
+            table_info_paddr,
+            entries_vaddr,
+            entries_paddr,
+            &entry_data,
+        );
+
+        let rules = parse_table_rules(&reader, table_vaddr, "filter").unwrap();
+        assert!(
+            !rules.is_empty(),
+            "parse_table_rules should return at least one rule from the ipt_entry region"
+        );
+        assert_eq!(rules[0].target, "ACCEPT");
+        assert_eq!(rules[0].protocol, "tcp");
+    }
+
+    /// When xt_table.private is 0 (null), parse_table_rules must return an empty Vec.
+    #[test]
+    fn parse_table_rules_empty_when_private_null() {
+        let table_vaddr: u64 = 0xFFFF_8000_0110_0000;
+        let table_paddr: u64 = 0x0013_0000;
+
+        let reader = make_parse_table_rules_reader(
+            0, // private = null
+            table_vaddr,
+            table_paddr,
+            0, // unused
+            0,
+            0,
+            0,
+            &[],
+        );
+
+        let rules = parse_table_rules(&reader, table_vaddr, "filter").unwrap();
+        assert!(
+            rules.is_empty(),
+            "null xt_table.private must produce an empty rule list"
+        );
+    }
+
     // --- NetfilterRuleInfo: Clone + Debug coverage ---
     #[test]
     fn netfilter_rule_info_clone_debug() {
