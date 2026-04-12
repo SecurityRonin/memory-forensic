@@ -8,5 +8,7 @@
 
 pub mod event;
 pub mod mitre;
+pub mod process_tree;
+pub mod scoring;
 pub mod timeline;
 pub mod traits;
