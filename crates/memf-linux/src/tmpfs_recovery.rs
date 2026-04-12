@@ -183,14 +183,41 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
                     .read_field(inode_addr, "inode", "i_ctime")
                     .unwrap_or(0);
 
-                // Filename is not stored in the inode itself; it lives only in the dentry
-                // cache. Without a dentry lookup here, we cannot recover the name, so it
-                // is left empty. As a result, `classify_tmpfs_file`'s hidden-dot-file
-                // branch (`starts_with('.')`) is effectively disabled for entries produced
-                // by this walker — only the executable-bit check fires.
-                // TODO: resolve the dentry for this inode via `i_dentry` to enable
-                //       dot-file detection.
-                let filename = String::new();
+                // Resolve the filename by walking the inode's i_dentry hlist.
+                // i_dentry is an hlist_head whose `first` pointer (if non-null) points
+                // at the hlist_node embedded inside the first dentry at offset d_alias.
+                // To get the dentry base: dentry_addr = first - d_alias_offset.
+                // Then read dentry.d_name_name (the char* pointer) and read the
+                // null-terminated string. Falls back to "" on any failure or null pointer.
+                let filename: String = (|| -> String {
+                    // Read i_dentry.first — the hlist_head first pointer.
+                    let first: u64 = reader
+                        .read_field(inode_addr, "inode", "i_dentry")
+                        .unwrap_or(0);
+                    if first == 0 {
+                        return String::new();
+                    }
+                    // d_alias offset tells us how far into dentry the hlist_node sits.
+                    let d_alias_offset = reader
+                        .symbols()
+                        .field_offset("dentry", "d_alias")
+                        .unwrap_or(0);
+                    let dentry_addr = first.saturating_sub(d_alias_offset);
+                    if dentry_addr == 0 {
+                        return String::new();
+                    }
+                    // Read d_name.name pointer (stored as "d_name_name" field on dentry).
+                    let name_ptr: u64 = reader
+                        .read_field(dentry_addr, "dentry", "d_name_name")
+                        .unwrap_or(0);
+                    if name_ptr == 0 {
+                        return String::new();
+                    }
+                    // Read up to 256 bytes and split on the first null byte.
+                    let bytes = reader.read_bytes(name_ptr, 256).unwrap_or_default();
+                    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+                    String::from_utf8_lossy(&bytes[..end]).into_owned()
+                })();
                 let is_suspicious = classify_tmpfs_file(&filename, i_mode);
 
                 results.push(TmpfsFileInfo {
