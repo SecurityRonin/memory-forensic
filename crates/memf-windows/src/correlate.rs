@@ -4,7 +4,7 @@ use memf_correlate::event::{Entity, Finding, ForensicEvent, Severity};
 use memf_correlate::mitre::MitreAttackId;
 use memf_correlate::traits::IntoForensicEvents;
 
-use crate::types::WinProcessInfo;
+use crate::types::{WinDriverInfo, WinHollowingInfo, WinMalfindInfo, WinProcessInfo};
 
 /// Suspicious image names that are often spoofed by malware (T1036 - Masquerading).
 const SPOOFABLE_NAMES: &[&str] = &[
@@ -55,6 +55,24 @@ impl IntoForensicEvents for WinProcessInfo {
             .confidence(confidence)
             .mitre_attack(mitre)
             .build()]
+    }
+}
+
+impl IntoForensicEvents for WinDriverInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+impl IntoForensicEvents for WinMalfindInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+impl IntoForensicEvents for WinHollowingInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
     }
 }
 
@@ -148,5 +166,191 @@ mod tests {
         let proc = make_process(1234, 4, "notepad.exe", 3);
         let events = proc.into_forensic_events();
         assert!(!events[0].is_suspicious());
+    }
+
+    // ── WinDriverInfo tests ────────────────────────────────────────────────
+
+    fn make_driver(name: &str, full_path: &str, base_addr: u64) -> WinDriverInfo {
+        WinDriverInfo {
+            name: name.to_string(),
+            full_path: full_path.to_string(),
+            base_addr,
+            size: 0x1000,
+            vaddr: 0xFFFF_8000_1234_0000,
+        }
+    }
+
+    #[test]
+    fn unknown_path_driver_produces_high_severity() {
+        let driver = make_driver("evil.sys", "\\Device\\HarddiskVolume3\\evil.sys", 0xFFFF_8001_0000);
+        let events = driver.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert_eq!(events[0].mitre_attack[0].as_str(), "T1014");
+        assert!((events[0].confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn empty_path_driver_produces_high_severity() {
+        let driver = make_driver("mystery.sys", "", 0xFFFF_8002_0000);
+        let events = driver.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert_eq!(events[0].mitre_attack[0].as_str(), "T1014");
+    }
+
+    #[test]
+    fn system_root_driver_is_info() {
+        let driver = make_driver(
+            "ntfs.sys",
+            "\\SystemRoot\\system32\\DRIVERS\\ntfs.sys",
+            0xFFFF_8003_0000,
+        );
+        let events = driver.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+        assert!((events[0].confidence - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn driver_entity_has_correct_name_and_base() {
+        let driver = make_driver("ntfs.sys", "\\SystemRoot\\system32\\DRIVERS\\ntfs.sys", 0xFFFF_8003_0000);
+        let events = driver.into_forensic_events();
+        match &events[0].entity {
+            Entity::Driver { name, base } => {
+                assert_eq!(name, "ntfs.sys");
+                assert_eq!(*base, 0xFFFF_8003_0000u64);
+            }
+            other => panic!("expected Driver entity, got {other:?}"),
+        }
+    }
+
+    // ── WinMalfindInfo tests ───────────────────────────────────────────────
+
+    fn make_malfind(pid: u64, name: &str, prot: &str, first_bytes: Vec<u8>) -> WinMalfindInfo {
+        WinMalfindInfo {
+            pid,
+            image_name: name.to_string(),
+            start_vaddr: 0x0040_0000,
+            end_vaddr: 0x0041_0000,
+            protection_str: prot.to_string(),
+            first_bytes,
+        }
+    }
+
+    #[test]
+    fn execute_readwrite_with_mz_is_critical() {
+        let mz_bytes = vec![0x4D, 0x5A, 0x90, 0x00];
+        let info = make_malfind(1234, "svchost.exe", "PAGE_EXECUTE_READWRITE", mz_bytes);
+        let events = info.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert_eq!(events[0].mitre_attack[0].as_str(), "T1055");
+        assert!((events[0].confidence - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn execute_only_without_mz_is_high() {
+        let info = make_malfind(1234, "svchost.exe", "PAGE_EXECUTE_READ", vec![0x00, 0x01, 0x02]);
+        let events = info.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert_eq!(events[0].mitre_attack[0].as_str(), "T1055");
+        assert!((events[0].confidence - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn non_execute_region_is_info() {
+        let info = make_malfind(1234, "notepad.exe", "PAGE_READWRITE", vec![0x00]);
+        let events = info.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+        assert!((events[0].confidence - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn critical_malfind_is_suspicious() {
+        let mz_bytes = vec![0x4D, 0x5A, 0x90, 0x00];
+        let info = make_malfind(1234, "svchost.exe", "PAGE_EXECUTE_READWRITE", mz_bytes);
+        let events = info.into_forensic_events();
+        assert!(events[0].is_suspicious());
+    }
+
+    #[test]
+    fn malfind_entity_has_pid_and_name() {
+        let info = make_malfind(9999, "lsass.exe", "PAGE_EXECUTE_READWRITE", vec![0x4D, 0x5A]);
+        let events = info.into_forensic_events();
+        match &events[0].entity {
+            Entity::Process { pid, name, .. } => {
+                assert_eq!(*pid, 9999u32);
+                assert_eq!(name, "lsass.exe");
+            }
+            other => panic!("expected Process entity, got {other:?}"),
+        }
+    }
+
+    // ── WinHollowingInfo tests ─────────────────────────────────────────────
+
+    fn make_hollowing(
+        pid: u64,
+        name: &str,
+        has_mz: bool,
+        has_pe: bool,
+        suspicious: bool,
+        reason: &str,
+    ) -> WinHollowingInfo {
+        WinHollowingInfo {
+            pid,
+            image_name: name.to_string(),
+            image_base: 0x0040_0000,
+            has_mz,
+            has_pe,
+            pe_size_of_image: 0x1000,
+            ldr_size_of_image: 0x1000,
+            suspicious,
+            reason: reason.to_string(),
+        }
+    }
+
+    #[test]
+    fn suspicious_hollowing_is_critical() {
+        let info = make_hollowing(1234, "svchost.exe", true, true, true, "pe size mismatch");
+        let events = info.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert_eq!(events[0].mitre_attack[0].as_str(), "T1055");
+        assert!((events[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn missing_mz_header_is_medium() {
+        let info = make_hollowing(5678, "explorer.exe", false, true, false, "");
+        let events = info.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert_eq!(events[0].mitre_attack[0].as_str(), "T1055");
+        assert!((events[0].confidence - 0.65).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn clean_process_is_info() {
+        let info = make_hollowing(1111, "notepad.exe", true, true, false, "");
+        let events = info.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+        assert!((events[0].confidence - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn suspicious_hollowing_is_suspicious_event() {
+        let info = make_hollowing(1234, "svchost.exe", true, true, true, "pe size mismatch");
+        let events = info.into_forensic_events();
+        assert!(events[0].is_suspicious());
     }
 }
