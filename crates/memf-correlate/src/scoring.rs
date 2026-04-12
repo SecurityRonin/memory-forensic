@@ -1,15 +1,59 @@
 //! Threat scoring engine that aggregates [`ForensicEvent`]s per entity into ranked scores.
 
+use std::collections::HashMap;
+
 use crate::event::{Entity, Finding, ForensicEvent, Severity};
 
-/// Severity weights used for scoring.
+/// Return the scoring weight for a severity level.
 fn severity_weight(severity: Severity) -> f64 {
-    todo!("implement severity_weight")
+    match severity {
+        Severity::Critical => 10.0,
+        Severity::High => 5.0,
+        Severity::Medium => 2.0,
+        Severity::Info | Severity::Low => 0.5,
+    }
 }
 
-/// Entity key used for grouping events.
+/// Return a stable string key for an entity, or `None` for entities we don't score.
 fn entity_key(entity: &Entity) -> Option<String> {
-    todo!("implement entity_key")
+    match entity {
+        Entity::Process { pid, .. } => Some(pid.to_string()),
+        Entity::Connection { src, dst, .. } => Some(format!("{src}->{dst}")),
+        Entity::Module { name, .. } => Some(format!("module:{name}")),
+        Entity::Driver { name, .. } => Some(format!("driver:{name}")),
+        Entity::RegistryKey { path } => Some(format!("reg:{path}")),
+        Entity::File { path } => Some(format!("file:{path}")),
+        Entity::Thread { .. } => None,
+    }
+}
+
+/// Check whether the set of findings for an entity contains a given finding variant.
+fn has_finding(findings: &[ForensicEvent], target: &Finding) -> bool {
+    findings.iter().any(|e| matches_finding(&e.finding, target))
+}
+
+fn matches_finding(a: &Finding, b: &Finding) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// Compute the combinatorial amplifier for a set of findings.
+fn amplifier(events: &[ForensicEvent]) -> f64 {
+    let has_hollowing = has_finding(events, &Finding::ProcessHollowing);
+    let has_beaconing = has_finding(events, &Finding::NetworkBeaconing);
+    let has_evasion = has_finding(events, &Finding::DefenseEvasion);
+
+    // Multiple amplifiers can apply; use the highest one.
+    let mut mult = 1.0_f64;
+    if has_hollowing && has_beaconing {
+        mult = mult.max(2.0);
+    }
+    if has_hollowing && has_evasion {
+        mult = mult.max(1.5);
+    }
+    if has_beaconing && has_evasion {
+        mult = mult.max(1.5);
+    }
+    mult
 }
 
 /// A threat score for a single entity.
@@ -24,28 +68,64 @@ pub struct EntityScore {
 
 /// Aggregates [`ForensicEvent`]s into per-entity threat scores.
 pub struct ScoringEngine {
-    events: Vec<ForensicEvent>,
+    scores: Vec<EntityScore>,
 }
 
 impl ScoringEngine {
     /// Create a new engine from a list of events.
     pub fn new(events: Vec<ForensicEvent>) -> Self {
-        todo!("implement ScoringEngine::new")
+        // Group events by entity key (skip entities with no key).
+        let mut groups: HashMap<String, Vec<ForensicEvent>> = HashMap::new();
+        for event in events {
+            if let Some(key) = entity_key(&event.entity) {
+                groups.entry(key).or_default().push(event);
+            }
+        }
+
+        // Compute score per group.
+        let mut scores: Vec<EntityScore> = groups
+            .into_iter()
+            .map(|(key, evts)| {
+                let base: f64 = evts
+                    .iter()
+                    .map(|e| severity_weight(e.severity) * e.confidence)
+                    .sum();
+                let amp = amplifier(&evts);
+                EntityScore {
+                    entity_key: key,
+                    score: base * amp,
+                    findings: evts,
+                }
+            })
+            .collect();
+
+        // Sort descending by score.
+        scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        Self { scores }
     }
 
-    /// Score all entities and return them sorted descending by score.
+    /// Score all entities, sorted descending by score.
     pub fn score_all(&self) -> Vec<EntityScore> {
-        todo!("implement score_all")
+        // Re-derive from the stored sorted list — clone findings.
+        self.scores
+            .iter()
+            .map(|s| EntityScore {
+                entity_key: s.entity_key.clone(),
+                score: s.score,
+                findings: s.findings.clone(),
+            })
+            .collect()
     }
 
     /// Return references to the top `n` highest-scoring entities.
     pub fn top_n(&self, n: usize) -> Vec<&EntityScore> {
-        todo!("implement top_n")
+        self.scores.iter().take(n).collect()
     }
 
     /// Return the score for a specific PID, or `None` if the PID has no events.
     pub fn score_for_pid(&self, pid: u32) -> Option<f64> {
-        todo!("implement score_for_pid")
+        let key = pid.to_string();
+        self.scores.iter().find(|s| s.entity_key == key).map(|s| s.score)
     }
 }
 
