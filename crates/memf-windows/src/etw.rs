@@ -147,29 +147,105 @@ pub fn walk_etw_sessions<P: PhysicalMemoryProvider>(
     Ok(sessions)
 }
 
+/// Maximum total buffers to visit across all sessions (cycle/corruption guard).
+const MAX_BUFFERS: usize = 1024;
+
 /// Scan ETW trace buffers for in-flight events.
 ///
-/// For each active session, walks the buffer list and extracts event
-/// headers (timestamp, provider GUID, event ID, level, opcode).
-/// Returns events sorted by timestamp.
+/// For each active session, walks the `BufferListHead` linked list of
+/// `_WMI_BUFFER_HEADER` entries embedded in the `_WMI_LOGGER_CONTEXT`.
+/// For each buffer, emits one `EtwBufferEvent` describing the buffer
+/// state and write offset. Returns an empty Vec if the required symbols
+/// or ISF types are absent (graceful degradation).
 pub fn scan_etw_buffers<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<EtwBufferEvent>> {
-    // Reuse walk_etw_sessions to find active loggers.
-    let sessions = walk_etw_sessions(reader)?;
-    if sessions.is_empty() {
-        return Ok(Vec::new());
+    // Try EtwpLoggerContext first (Win8+), then WmipLoggerContext (Win7/XP).
+    let array_addr = match reader.symbols().symbol_address("EtwpLoggerContext") {
+        Some(addr) => addr,
+        None => match reader.symbols().symbol_address("WmipLoggerContext") {
+            Some(addr) => addr,
+            None => return Ok(Vec::new()),
+        },
+    };
+
+    // Require BufferListHead offset — if absent, ISF lacks buffer walk support.
+    let list_head_offset = match reader
+        .symbols()
+        .field_offset("_WMI_LOGGER_CONTEXT", "BufferListHead")
+    {
+        Some(off) => off,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut events = Vec::new();
+    let mut total_buffers = 0usize;
+
+    for i in 0..MAX_LOGGERS {
+        if total_buffers >= MAX_BUFFERS {
+            break;
+        }
+
+        // Read the context pointer from the array.
+        let ptr_addr = array_addr + (i as u64) * 8;
+        let ctx_addr = match reader.read_bytes(ptr_addr, 8) {
+            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            _ => continue,
+        };
+        if ctx_addr == 0 {
+            continue;
+        }
+
+        // Check Running flag; skip inactive loggers.
+        let running: u32 = reader
+            .read_field(ctx_addr, "_WMI_LOGGER_CONTEXT", "Running")
+            .unwrap_or(0);
+        if running == 0 {
+            continue;
+        }
+
+        // Walk the BufferListHead linked list.
+        // The list head (_LIST_ENTRY) is embedded at ctx_addr + list_head_offset.
+        let head_vaddr = ctx_addr + list_head_offset;
+        let buffer_addrs = match reader.walk_list_with(
+            head_vaddr,
+            "_LIST_ENTRY",
+            "Flink",
+            "_WMI_BUFFER_HEADER",
+            "ListEntry",
+        ) {
+            Ok(addrs) => addrs,
+            Err(_) => continue, // Unreadable list — skip this logger.
+        };
+
+        for buf_addr in buffer_addrs {
+            if total_buffers >= MAX_BUFFERS {
+                break;
+            }
+
+            let state: u32 = reader
+                .read_field(buf_addr, "_WMI_BUFFER_HEADER", "State")
+                .unwrap_or(0);
+            let offset: u32 = reader
+                .read_field(buf_addr, "_WMI_BUFFER_HEADER", "Offset")
+                .unwrap_or(0);
+
+            events.push(EtwBufferEvent {
+                logger_id: i as u32,
+                timestamp: 0,
+                provider_guid: String::new(),
+                event_id: 0,
+                opcode: 0,
+                level: 0,
+                payload_size: offset,
+            });
+
+            let _ = state; // Available for future use (filter by state).
+            total_buffers += 1;
+        }
     }
 
-    // Buffer scanning requires _WMI_BUFFER_HEADER type info and buffer
-    // list pointers within each logger context. For now, return the empty
-    // set — the session enumeration is the primary value. Buffer event
-    // extraction requires walking the FreeList/FlushList linked lists
-    // within each _WMI_LOGGER_CONTEXT, which needs additional ISF fields
-    // (BufferListHead, FreeList) and _WMI_BUFFER_HEADER structure
-    // definitions that vary significantly across Windows versions.
-    let _sessions = sessions; // suppress unused warning
-    Ok(Vec::new())
+    Ok(events)
 }
 
 #[cfg(test)]
