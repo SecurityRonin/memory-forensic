@@ -79,18 +79,23 @@ fn read_xt_table<P: PhysicalMemoryProvider>(
     Ok(Vec::new())
 }
 
-#[allow(clippy::unnecessary_wraps)] // will do fallible parsing once ipt_entry is implemented
 fn parse_table_rules<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     table_addr: u64,
     table_name: &str,
 ) -> Result<Vec<NetfilterRuleInfo>> {
-    // Resolve the private table data pointer: xt_table.private → xt_table_info.
-    // xt_table_info.entries holds the actual ipt_entry data region.
-    // For now delegate to parse_ipt_entries if we can read the entries pointer.
-    // This is a stub that returns empty until ipt_entry parsing is implemented.
-    let _ = (reader, table_addr, table_name);
-    Ok(Vec::new())
+    // Read xt_table.private → pointer to xt_table_info.
+    let private_ptr = reader.read_pointer(table_addr, "xt_table", "private")?;
+    if private_ptr == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read xt_table_info.entries → virtual address of the flat ipt_entry region.
+    let entries_vaddr = reader.read_pointer(private_ptr, "xt_table_info", "entries")?;
+    // Read xt_table_info.size → byte length of the region.
+    let size: u64 = reader.read_field::<u64>(private_ptr, "xt_table_info", "size")?;
+
+    parse_ipt_entries(reader, entries_vaddr, size, table_name)
 }
 
 /// Parse a flat region of `ipt_entry` structures from raw memory.
