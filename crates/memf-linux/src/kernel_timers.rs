@@ -513,6 +513,134 @@ mod tests {
         assert!(timer.is_suspicious, "function outside kernel text must be suspicious");
     }
 
+    // -----------------------------------------------------------------------
+    // is_periodic: TIMER_DEFERRABLE flag (bit 0) tests
+    // -----------------------------------------------------------------------
+
+    /// Build a full single-timer walk setup and return the first timer result.
+    ///
+    /// `flags_value` is written into the timer_list.flags field.
+    /// The ISF includes a `flags` field on `timer_list` at `flags_offset`.
+    fn walk_one_timer_with_flags(flags_value: u32) -> KernelTimerInfo {
+        let bases_vaddr: u64    = 0xFFFF_8800_00E0_0000;
+        let bases_paddr: u64    = 0x00E0_0000;
+        let listhead_vaddr: u64 = 0xFFFF_8800_00E1_0000;
+        let listhead_paddr: u64 = 0x00E1_0000;
+        let timer_vaddr: u64    = 0xFFFF_8800_00E2_0000;
+        let timer_paddr: u64    = 0x00E2_0000;
+
+        let entry_offset:    u64 = 0x00;
+        let expires_offset:  u64 = 0x10;
+        let function_offset: u64 = 0x18;
+        let flags_offset:    u64 = 0x20; // u32 field after function pointer
+
+        let kernel_start: u64 = 0xFFFF_8000_0000_0000;
+        let kernel_end:   u64 = 0xFFFF_8000_00FF_FFFF;
+        let benign_fn:    u64 = kernel_start + 0x1000;
+
+        // bases page: vectors.0 at offset 0 = listhead_vaddr
+        let mut bases_page = [0u8; 4096];
+        bases_page[0..8].copy_from_slice(&listhead_vaddr.to_le_bytes());
+
+        // list head sentinel: next → timer entry node
+        let timer_entry_node = timer_vaddr + entry_offset;
+        let mut listhead_page = [0u8; 4096];
+        listhead_page[0..8].copy_from_slice(&timer_entry_node.to_le_bytes());
+
+        // timer_list page
+        let mut timer_page = [0u8; 4096];
+        // entry.next → listhead_vaddr (terminate walk)
+        timer_page[entry_offset as usize..entry_offset as usize + 8]
+            .copy_from_slice(&listhead_vaddr.to_le_bytes());
+        timer_page[expires_offset as usize..expires_offset as usize + 8]
+            .copy_from_slice(&1234u64.to_le_bytes());
+        timer_page[function_offset as usize..function_offset as usize + 8]
+            .copy_from_slice(&benign_fn.to_le_bytes());
+        timer_page[flags_offset as usize..flags_offset as usize + 4]
+            .copy_from_slice(&flags_value.to_le_bytes());
+
+        let mut isf_builder = IsfBuilder::new()
+            .add_struct("list_head", 0x10)
+            .add_field("list_head", "next", 0x00u64, "pointer")
+            .add_struct("timer_base", 512)
+            .add_struct("timer_list", 64)
+            .add_field("timer_list", "entry",    entry_offset,    "pointer")
+            .add_field("timer_list", "expires",  expires_offset,  "unsigned long")
+            .add_field("timer_list", "function", function_offset, "pointer")
+            .add_field("timer_list", "flags",    flags_offset,    "unsigned int")
+            .add_symbol("timer_bases", bases_vaddr)
+            .add_symbol("_stext",      kernel_start)
+            .add_symbol("_etext",      kernel_end);
+
+        for i in 0..TIMER_WHEEL_GROUPS {
+            let field_offset: u64 = if i == 0 { 0 } else { 8 + i as u64 * 8 };
+            isf_builder = isf_builder.add_field(
+                "timer_base",
+                &format!("vectors.{i}"),
+                field_offset,
+                "pointer",
+            );
+        }
+        let isf = isf_builder.build_json();
+
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(bases_vaddr,    bases_paddr,    flags::WRITABLE)
+            .write_phys(bases_paddr,    &bases_page)
+            .map_4k(listhead_vaddr, listhead_paddr, flags::WRITABLE)
+            .write_phys(listhead_paddr, &listhead_page)
+            .map_4k(timer_vaddr,    timer_paddr,    flags::WRITABLE)
+            .write_phys(timer_paddr,    &timer_page)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let mut result = walk_kernel_timers(&reader).unwrap();
+        assert!(!result.is_empty(), "expected at least one timer");
+        result.remove(0)
+    }
+
+    #[test]
+    fn walk_kernel_timers_is_periodic_true_when_deferrable_bit_set() {
+        // TIMER_DEFERRABLE = 0x1 — bit 0 set → is_periodic must be true
+        let timer = walk_one_timer_with_flags(0x1);
+        assert!(
+            timer.is_periodic,
+            "flags & 1 != 0 (TIMER_DEFERRABLE) must set is_periodic = true"
+        );
+    }
+
+    #[test]
+    fn walk_kernel_timers_is_periodic_false_when_flags_zero() {
+        // flags == 0 → no deferrable bit → is_periodic must be false
+        let timer = walk_one_timer_with_flags(0x0);
+        assert!(
+            !timer.is_periodic,
+            "flags == 0 must leave is_periodic = false"
+        );
+    }
+
+    #[test]
+    fn walk_kernel_timers_is_periodic_true_when_other_bits_plus_deferrable() {
+        // flags = 0x5 (bit 0 + bit 2) → bit 0 set → is_periodic true
+        let timer = walk_one_timer_with_flags(0x5);
+        assert!(
+            timer.is_periodic,
+            "flags = 0x5 has bit 0 set → is_periodic = true"
+        );
+    }
+
+    #[test]
+    fn walk_kernel_timers_is_periodic_false_when_only_non_deferrable_bits_set() {
+        // flags = 0x4 (TIMER_PINNED only, bit 0 clear) → is_periodic false
+        let timer = walk_one_timer_with_flags(0x4);
+        assert!(
+            !timer.is_periodic,
+            "flags = 0x4 (bit 0 clear) → is_periodic = false"
+        );
+    }
+
     #[test]
     fn classify_kernel_timer_just_below_kernel_start_is_suspicious() {
         let kernel_start = 0xFFFF_8000_0000_0000u64;
