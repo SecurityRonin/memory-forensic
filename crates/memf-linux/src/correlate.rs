@@ -8,7 +8,38 @@ use crate::types::VmaInfo;
 
 impl IntoForensicEvents for VmaInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) = if self.flags.exec && self.flags.write && !self.file_backed {
+            // RWX anonymous mapping — classic shellcode/injection pattern (T1055)
+            (
+                Severity::High,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.9f64,
+            )
+        } else if self.flags.exec && !self.file_backed {
+            // Executable anonymous mapping — JIT or shellcode, less certain (T1055)
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("vma_enumerated".into()), vec![], 0.3f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_vma")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
