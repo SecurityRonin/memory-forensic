@@ -3,6 +3,7 @@
 use memf_format::PhysicalMemoryProvider;
 
 use crate::pagefile::PagefileSource;
+use crate::proto_pte::PrototypePteSource;
 use crate::{Error, Result};
 
 /// Translation mode for virtual-to-physical address translation.
@@ -18,6 +19,7 @@ pub struct VirtualAddressSpace<P: PhysicalMemoryProvider> {
     page_table_root: u64,
     mode: TranslationMode,
     pagefiles: Vec<Box<dyn PagefileSource>>,
+    prototype_source: Option<Box<dyn PrototypePteSource>>,
 }
 
 // x86_64 page table constants
@@ -36,8 +38,8 @@ enum TranslationResult {
     PagefileEntry { pagefile_num: u8, page_offset: u64 },
     /// Page is a transition page (still in physical memory at this PFN-derived address).
     Transition(u64),
-    /// Page uses a prototype PTE (Phase 3F-B).
-    Prototype,
+    /// Page uses a prototype PTE; carries the raw PTE value for resolution.
+    Prototype(u64),
 }
 
 impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
@@ -48,12 +50,19 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             page_table_root,
             mode,
             pagefiles: Vec::new(),
+            prototype_source: None,
         }
     }
 
     /// Attach a pagefile source for resolving paged-out memory.
     pub fn with_pagefile(mut self, source: Box<dyn PagefileSource>) -> Self {
         self.pagefiles.push(source);
+        self
+    }
+
+    /// Attach a prototype PTE source for resolving shared section pages.
+    pub fn with_prototype_source(mut self, source: Box<dyn PrototypePteSource>) -> Self {
+        self.prototype_source = Some(source);
         self
     }
 
@@ -117,8 +126,28 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
                     offset += chunk;
                     current_vaddr = current_vaddr.wrapping_add(chunk as u64);
                 }
-                TranslationResult::Prototype => {
-                    return Err(Error::PrototypePte(current_vaddr));
+                TranslationResult::Prototype(raw_pte) => {
+                    if let Some(ref source) = self.prototype_source {
+                        if let Some(phys_base) = source.resolve(raw_pte) {
+                            let paddr = phys_base + (current_vaddr & 0xFFF);
+                            let n = self
+                                .physical
+                                .read_phys(paddr, &mut buf[offset..offset + chunk])?;
+                            if n == 0 {
+                                return Err(Error::PartialRead {
+                                    addr: vaddr,
+                                    requested: buf.len(),
+                                    got: offset,
+                                });
+                            }
+                            offset += n;
+                            current_vaddr = current_vaddr.wrapping_add(n as u64);
+                        } else {
+                            return Err(Error::PrototypePte(current_vaddr));
+                        }
+                    } else {
+                        return Err(Error::PrototypePte(current_vaddr));
+                    }
                 }
             }
         }
@@ -183,7 +212,7 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
                 pagefile_num,
                 page_offset,
             }),
-            TranslationResult::Prototype => Err(Error::PrototypePte(vaddr)),
+            TranslationResult::Prototype(_) => Err(Error::PrototypePte(vaddr)),
         }
     }
 
@@ -250,7 +279,7 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             return TranslationResult::Transition(pfn * 0x1000 + page_offset);
         }
         if pte & (1 << 10) != 0 {
-            return TranslationResult::Prototype;
+            return TranslationResult::Prototype(pte);
         }
         let pagefile_num = ((pte >> 1) & 0xF) as u8;
         let pf_page_offset = (pte >> 12) & 0xF_FFFF_FFFF;
