@@ -1,6 +1,22 @@
 //! Process tree builder and orphan detector from [`ForensicEvent`]s.
 
-use crate::event::ForensicEvent;
+use std::collections::{HashMap, HashSet};
+
+use crate::event::{Entity, ForensicEvent, Severity};
+
+/// Compute a simple threat score for a set of events (same weights as ScoringEngine).
+fn score_events(events: &[ForensicEvent]) -> f64 {
+    events.iter().map(|e| severity_weight(e.severity) * e.confidence).sum()
+}
+
+fn severity_weight(severity: Severity) -> f64 {
+    match severity {
+        Severity::Critical => 10.0,
+        Severity::High => 5.0,
+        Severity::Medium => 2.0,
+        Severity::Info | Severity::Low => 0.5,
+    }
+}
 
 /// A node in the process tree.
 pub struct ProcessNode {
@@ -26,27 +42,139 @@ pub struct ProcessTree {
 impl ProcessTree {
     /// Build a process tree from a collection of forensic events.
     pub fn from_events(events: Vec<ForensicEvent>) -> Self {
-        todo!("implement ProcessTree::from_events")
+        // Collect only Process-entity events, grouping by pid.
+        // We collect (pid, name, ppid, events) per pid.
+        let mut by_pid: HashMap<u32, (String, Option<u32>, Vec<ForensicEvent>)> = HashMap::new();
+
+        for event in events {
+            if let Entity::Process { pid, name, ppid } = &event.entity {
+                let entry = by_pid.entry(*pid).or_insert_with(|| (name.clone(), *ppid, vec![]));
+                // Keep the first seen name/ppid but accumulate events.
+                entry.2.push(event);
+            }
+            // Non-Process entities are ignored.
+        }
+
+        // Collect the set of all known pids.
+        let all_pids: HashSet<u32> = by_pid.keys().copied().collect();
+
+        // Determine which pids are roots:
+        // A pid is a root if it has no ppid, ppid = 0, or ppid not in all_pids.
+        // We'll build a child-map for pids whose parent IS present.
+        let mut parent_to_children: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut root_pids: Vec<u32> = Vec::new();
+
+        for (&pid, (_, ppid_opt, _)) in &by_pid {
+            match ppid_opt {
+                None | Some(0) => root_pids.push(pid),
+                Some(ppid) if !all_pids.contains(ppid) => root_pids.push(pid),
+                Some(ppid) => {
+                    parent_to_children.entry(*ppid).or_default().push(pid);
+                }
+            }
+        }
+
+        // Recursively build nodes.
+        fn build_node(
+            pid: u32,
+            by_pid: &mut HashMap<u32, (String, Option<u32>, Vec<ForensicEvent>)>,
+            parent_to_children: &HashMap<u32, Vec<u32>>,
+        ) -> ProcessNode {
+            let (name, ppid, events) = by_pid.remove(&pid).unwrap_or_default();
+            let threat_score = score_events(&events);
+            let child_pids = parent_to_children.get(&pid).cloned().unwrap_or_default();
+            let children = child_pids
+                .into_iter()
+                .map(|child_pid| build_node(child_pid, by_pid, parent_to_children))
+                .collect();
+            ProcessNode { pid, name, ppid, children, events, threat_score }
+        }
+
+        let roots = root_pids
+            .into_iter()
+            .map(|pid| build_node(pid, &mut by_pid, &parent_to_children))
+            .collect();
+
+        Self { roots }
     }
 
     /// Return the root nodes of the tree (processes with no parent or ppid = 0).
     pub fn roots(&self) -> &[ProcessNode] {
-        todo!("implement roots")
+        &self.roots
     }
 
-    /// Find a node by PID, searching the entire tree.
+    /// Find a node by PID, searching the entire tree recursively.
     pub fn find_pid(&self, pid: u32) -> Option<&ProcessNode> {
-        todo!("implement find_pid")
+        fn search(node: &ProcessNode, pid: u32) -> Option<&ProcessNode> {
+            if node.pid == pid {
+                return Some(node);
+            }
+            for child in &node.children {
+                if let Some(found) = search(child, pid) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        for root in &self.roots {
+            if let Some(found) = search(root, pid) {
+                return Some(found);
+            }
+        }
+        None
     }
 
-    /// Return nodes that have a ppid set but whose parent PID is not present in any event.
+    /// Return nodes that have a ppid set but whose parent PID is not present in the tree.
     pub fn orphaned_nodes(&self) -> Vec<&ProcessNode> {
-        todo!("implement orphaned_nodes")
+        // Orphans are roots that have a non-None, non-zero ppid
+        // (they became roots because their parent is missing).
+        fn collect_orphans<'a>(node: &'a ProcessNode, out: &mut Vec<&'a ProcessNode>) {
+            if matches!(node.ppid, Some(p) if p != 0) && node.children.is_empty() {
+                // Only mark as orphan if it's a "root" itself — we check at call site.
+            }
+            for child in &node.children {
+                collect_orphans(child, out);
+            }
+        }
+
+        let mut orphans = Vec::new();
+        for root in &self.roots {
+            if matches!(root.ppid, Some(p) if p != 0) {
+                orphans.push(root);
+            }
+            // Children with present parents are NOT orphans.
+            collect_orphans(root, &mut orphans);
+        }
+        orphans
     }
 
-    /// Walk from roots, following the child with the highest threat score at each step.
+    /// Walk from roots, following the child with the highest threat_score at each step.
     pub fn highest_threat_path(&self) -> Vec<&ProcessNode> {
-        todo!("implement highest_threat_path")
+        // Find the root with the highest threat_score.
+        let best_root = self.roots.iter().max_by(|a, b| {
+            a.threat_score.partial_cmp(&b.threat_score).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let Some(start) = best_root else {
+            return vec![];
+        };
+
+        let mut path = vec![start as &ProcessNode];
+        let mut current = start;
+        loop {
+            let best_child = current.children.iter().max_by(|a, b| {
+                a.threat_score.partial_cmp(&b.threat_score).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            match best_child {
+                Some(child) => {
+                    path.push(child);
+                    current = child;
+                }
+                None => break,
+            }
+        }
+        path
     }
 }
 
