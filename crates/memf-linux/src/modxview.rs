@@ -233,7 +233,6 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_modxview(&reader);
-        // With todo!(), this will panic — but after GREEN it should return Ok(vec![])
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
