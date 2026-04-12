@@ -283,6 +283,15 @@ impl PageTableBuilder {
         self
     }
 
+    /// Map a prototype PTE with a specific raw PTE value. Bit 10 must be set.
+    pub fn map_prototype_raw(mut self, vaddr: u64, raw_pte: u64) -> Self {
+        assert!(raw_pte & (1 << 10) != 0, "prototype bit (10) must be set");
+        assert!(raw_pte & 1 == 0, "PRESENT bit must be clear");
+        let pte_addr = self.ensure_pt_entry(vaddr);
+        self.mem.write_u64(pte_addr, raw_pte);
+        self
+    }
+
     /// Write data bytes at a physical address in the synthetic memory.
     pub fn write_phys(mut self, addr: u64, data: &[u8]) -> Self {
         self.mem.write_bytes(addr, data);
@@ -321,6 +330,27 @@ impl MockPagefileSource {
             pagefile_num,
             pages: pages.into_iter().collect(),
         }
+    }
+}
+
+/// Mock prototype PTE source for testing prototype PTE resolution.
+pub struct MockPrototypePteSource {
+    /// Maps raw PTE value -> resolved physical address.
+    entries: std::collections::HashMap<u64, u64>,
+}
+
+impl MockPrototypePteSource {
+    /// Create a mock with the given `(pte_value, phys_addr)` pairs.
+    pub fn new(entries: Vec<(u64, u64)>) -> Self {
+        Self {
+            entries: entries.into_iter().collect(),
+        }
+    }
+}
+
+impl crate::proto_pte::PrototypePteSource for MockPrototypePteSource {
+    fn resolve(&self, pte_value: u64) -> Option<u64> {
+        self.entries.get(&pte_value).copied()
     }
 }
 

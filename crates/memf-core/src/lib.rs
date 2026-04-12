@@ -9,6 +9,7 @@
 
 pub mod object_reader;
 pub mod pagefile;
+pub mod proto_pte;
 pub mod test_builders;
 pub mod vas;
 

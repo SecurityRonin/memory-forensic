@@ -500,7 +500,7 @@ mod tests {
         }
     }
 
-    use crate::test_builders::MockPagefileSource;
+    use crate::test_builders::{MockPagefileSource, MockPrototypePteSource};
 
     #[test]
     fn read_virt_demand_zero_returns_zeroes() {
@@ -663,6 +663,71 @@ mod tests {
         let mut buf2 = [0u8; 8];
         vas.read_virt(vaddr2 + 0xFFC, &mut buf2).unwrap();
         assert_eq!(buf2, [0u8; 8]);
+    }
+
+    #[test]
+    fn read_virt_prototype_pte_resolves_when_source_provided() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let resolved_paddr: u64 = 0x00A0_0000;
+        // Raw PTE: bit 10 set + some upper bits to identify this PTE
+        let raw_pte: u64 = (1 << 10) | (0xABCu64 << 12);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_prototype_raw(vaddr, raw_pte)
+            .write_phys(resolved_paddr, &[0xDE, 0xAD, 0xBE, 0xEF])
+            .build();
+
+        let mock = MockPrototypePteSource::new(vec![(raw_pte, resolved_paddr)]);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel)
+            .with_prototype_source(Box::new(mock));
+
+        let mut buf = [0u8; 4];
+        vas.read_virt(vaddr, &mut buf).unwrap();
+        assert_eq!(buf, [0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn read_virt_prototype_pte_errors_when_source_returns_none() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let raw_pte: u64 = (1 << 10) | (0xDEFu64 << 12);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_prototype_raw(vaddr, raw_pte)
+            .build();
+
+        // Source returns None for this PTE value
+        let mock = MockPrototypePteSource::new(vec![]);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel)
+            .with_prototype_source(Box::new(mock));
+
+        let mut buf = [0u8; 4];
+        let result = vas.read_virt(vaddr, &mut buf);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PrototypePte(addr) => assert_eq!(addr, vaddr),
+            other => panic!("expected PrototypePte, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn read_virt_prototype_pte_with_page_offset() {
+        let vaddr_base: u64 = 0xFFFF_8000_0010_0000;
+        let vaddr: u64 = vaddr_base + 0x100;
+        let resolved_paddr: u64 = 0x00B0_0000;
+        let raw_pte: u64 = (1 << 10) | (0x123u64 << 12);
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_prototype_raw(vaddr_base, raw_pte)
+            .write_phys(resolved_paddr + 0x100, &[0xCA, 0xFE])
+            .build();
+
+        let mock = MockPrototypePteSource::new(vec![(raw_pte, resolved_paddr)]);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel)
+            .with_prototype_source(Box::new(mock));
+
+        let mut buf = [0u8; 2];
+        vas.read_virt(vaddr, &mut buf).unwrap();
+        assert_eq!(buf, [0xCA, 0xFE]);
     }
 
     #[test]
