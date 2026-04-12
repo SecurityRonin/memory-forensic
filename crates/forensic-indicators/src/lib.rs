@@ -14,3 +14,4 @@ pub mod persistence;
 pub mod ports;
 pub mod processes;
 pub mod remote_access;
+pub mod third_party;
