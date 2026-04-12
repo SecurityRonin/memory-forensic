@@ -26,6 +26,10 @@ pub fn classify_mbr(bootstrap_bytes: &[u8]) -> bool {
         )
 }
 
+/// Scans virtual address space at 512-byte intervals starting from offset 0.
+/// In test scenarios, the SyntheticPhysMem maps test data at vaddr 0.
+/// In production use, the caller is responsible for providing a reader backed
+/// by a physical memory image where vaddr 0 maps to the MBR sector.
 pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<MbrInfo>> {
     if reader
         .symbols()

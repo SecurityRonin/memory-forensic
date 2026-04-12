@@ -95,7 +95,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     depth: usize,
     subkeys_offset: u64,
     value_list_offset: u64,
-    last_write_offset: u64,
+    _last_write_offset: u64,
     entries: &mut Vec<ShellbagEntry>,
 ) {
     if depth >= MAX_DEPTH || node_addr == 0 {
@@ -163,7 +163,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
             depth + 1,
             subkeys_offset,
             value_list_offset,
-            last_write_offset,
+            _last_write_offset,
             entries,
         );
     }

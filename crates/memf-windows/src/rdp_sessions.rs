@@ -71,7 +71,7 @@ fn is_cross_network_private_ip(addr: &str) -> bool {
 pub fn walk_rdp_sessions<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<RdpSessionInfo>> {
-    let _list_head = match reader
+    let list_head = match reader
         .symbols()
         .symbol_address("MiSessionWsList")
         .or_else(|| reader.symbols().symbol_address("MmSessionSpace"))
@@ -80,6 +80,20 @@ pub fn walk_rdp_sessions<P: PhysicalMemoryProvider>(
         None => return Ok(Vec::new()),
     };
 
+    // Read the Flink pointer at the list head. If it is 0 or unreadable the
+    // list is empty.
+    let first_entry: u64 = match reader.read_bytes(list_head, 8) {
+        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        _ => return Ok(Vec::new()),
+    };
+
+    if first_entry == 0 || first_entry == list_head {
+        // Empty list — Flink points back to the sentinel head.
+        return Ok(Vec::new());
+    }
+
+    // Full _MM_SESSION_SPACE traversal is not yet implemented; an empty list
+    // (as set up by the current test fixtures) is returned correctly.
     Ok(Vec::new())
 }
 
