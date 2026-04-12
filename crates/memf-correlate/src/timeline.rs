@@ -18,7 +18,13 @@ impl Timeline {
     /// Events with a `timestamp` are sorted ascending; events without one
     /// are appended after all timestamped events, preserving their relative order.
     pub fn from_events(mut events: Vec<ForensicEvent>) -> Self {
-        todo!()
+        events.sort_by(|a, b| match (a.timestamp, b.timestamp) {
+            (Some(ta), Some(tb)) => ta.cmp(&tb),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        Self { entries: events }
     }
 
     /// Return all events in chronological order.
@@ -28,22 +34,25 @@ impl Timeline {
 
     /// Return only events at or above `min_severity`.
     pub fn filter_by_severity(&self, min: Severity) -> Vec<&ForensicEvent> {
-        todo!()
+        self.entries.iter().filter(|e| e.severity >= min).collect()
     }
 
     /// Return only events whose entity is a Process with the given `pid`.
     pub fn filter_by_pid(&self, pid: u32) -> Vec<&ForensicEvent> {
-        todo!()
+        self.entries
+            .iter()
+            .filter(|e| matches!(&e.entity, crate::event::Entity::Process { pid: p, .. } if *p == pid))
+            .collect()
     }
 
     /// Return only events from a specific walker (matched by `source_walker`).
     pub fn filter_by_walker(&self, walker: &str) -> Vec<&ForensicEvent> {
-        todo!()
+        self.entries.iter().filter(|e| e.source_walker == walker).collect()
     }
 
     /// Return only events that have at least one MITRE ATT&CK ID.
     pub fn filter_mapped(&self) -> Vec<&ForensicEvent> {
-        todo!()
+        self.entries.iter().filter(|e| !e.mitre_attack.is_empty()).collect()
     }
 
     /// Total number of events in the timeline.
