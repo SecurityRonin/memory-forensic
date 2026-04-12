@@ -1,0 +1,16 @@
+[package]
+name = "memf-correlate"
+version = "0.1.0"
+description = "Forensic event correlation model for the memf forensics framework"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror.workspace = true
+chrono = { workspace = true }
+
+[lints]
+workspace = true

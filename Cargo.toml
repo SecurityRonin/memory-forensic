@@ -9,6 +9,7 @@ members = [
     "crates/memf-windows",
     "crates/forensic-indicators",
     "crates/forensic-hashdb",
+    "crates/memf-correlate",
 ]
 
 [workspace.package]
@@ -26,6 +27,8 @@ memf-symbols = { path = "crates/memf-symbols" }
 memf-core    = { path = "crates/memf-core" }
 memf-linux   = { path = "crates/memf-linux" }
 memf-windows = { path = "crates/memf-windows" }
+memf-correlate = { path = "crates/memf-correlate" }
+chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
 inventory = "0.3"
