@@ -9,6 +9,34 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::Result;
 
+// ── Registry cell layout constants ──────────────────────────────────────
+
+const HBIN_START: u64 = 0x1000;
+const ROOT_CELL_OFFSET: u64 = 0x24;
+const NK_SIG: u16 = 0x6B6E;
+
+/// Stable subkey count offset within a key node cell payload.
+const NK_STABLE_COUNT: usize = 0x14;
+/// Stable subkeys list cell index offset.
+const NK_STABLE_LIST: usize = 0x1C;
+/// Value count offset.
+const NK_VALUE_COUNT: usize = 0x24;
+/// Values list cell index offset.
+const NK_VALUES_LIST: usize = 0x28;
+/// Name length offset.
+const NK_NAME_LEN: usize = 0x48;
+/// Name data offset.
+const NK_NAME_DATA: usize = 0x4C;
+
+const VK_SIG: u16 = 0x6B76;
+const VK_DATA_LEN_OFF: usize = 0x04;
+const VK_DATA_OFF_OFF: usize = 0x08;
+
+/// Maximum CLSID subkeys to enumerate (safety cap).
+const MAX_CLSIDS: usize = 50_000;
+
+// ── Output type ──────────────────────────────────────────────────────────
+
 /// A COM class registration where HKCU overrides HKCR (potential hijack).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ComHijackInfo {
@@ -25,6 +53,8 @@ pub struct ComHijackInfo {
     /// `true` when the HKCU server path is in an unusual/writable location.
     pub is_suspicious: bool,
 }
+
+// ── Classification ───────────────────────────────────────────────────────
 
 /// Returns `true` when the HKCU COM server path looks like a hijack.
 ///
@@ -45,27 +75,362 @@ pub fn classify_com_hijack(hkcr_server: &str, hkcu_server: &str) -> bool {
         || (!hkcr_server.is_empty() && !hkcu_server.eq_ignore_ascii_case(hkcr_server))
 }
 
+// ── Walker ───────────────────────────────────────────────────────────────
+
 /// Walk the in-memory registry hives for COM hijacking candidates.
 ///
-/// Returns an empty `Vec` when `CmRegistryMachineSystem` or the user hive
-/// symbol is absent (graceful degradation).
+/// Enumerates all CLSIDs under `HKCU\Software\Classes\CLSID` (in the hive at
+/// `hku_hive_addr`), reads each `InprocServer32` default value, looks up the
+/// same CLSID in `HKCR\CLSID` (in the hive at `hkcr_hive_addr`), and compares
+/// the DLL paths.
+///
+/// Either address may be `0` to skip that hive (graceful degradation).
 pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
+    hku_hive_addr: u64,
+    hkcr_hive_addr: u64,
 ) -> Result<Vec<ComHijackInfo>> {
-    // Graceful degradation: require the machine system hive symbol.
-    if reader
-        .symbols()
-        .symbol_address("CmRegistryMachineSystem")
-        .is_none()
-    {
+    if hku_hive_addr == 0 {
         return Ok(Vec::new());
     }
 
-    // In a full implementation we would walk the user hive registry tree in
-    // memory and compare HKCU vs HKCR InprocServer32 values.
-    // For now return empty — the walker degrades gracefully when symbols exist
-    // but the hive walk is not yet implemented.
-    Ok(Vec::new())
+    // Navigate to `Software\Classes\CLSID` in the HKCU hive.
+    let clsid_cell = match find_key_cell(
+        reader,
+        hku_hive_addr,
+        &["Software", "Classes", "CLSID"],
+    ) {
+        Some(c) => c,
+        None => return Ok(Vec::new()),
+    };
+
+    // Enumerate CLSID subkeys.
+    let clsid_children = match list_subkeys(reader, hku_hive_addr, clsid_cell) {
+        Some(v) => v,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut results = Vec::new();
+
+    for (guid_name, guid_cell) in clsid_children.iter().take(MAX_CLSIDS) {
+        // Find InprocServer32 under this GUID key in HKCU.
+        let hkcu_inproc_cell =
+            match find_subkey_named(reader, hku_hive_addr, *guid_cell, "InprocServer32") {
+                Some(c) => c,
+                None => continue,
+            };
+
+        // Read the default value of InprocServer32 in HKCU.
+        let hkcu_server = match read_default_value_string(reader, hku_hive_addr, hkcu_inproc_cell)
+        {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+
+        let hkcu_path = format!(
+            r"HKCU\Software\Classes\CLSID\{guid_name}\InprocServer32"
+        );
+
+        // Look up the same CLSID in HKCR.
+        let (hkcr_server, hkcr_path) = if hkcr_hive_addr != 0 {
+            let hkcr_guid_cell =
+                find_key_cell(reader, hkcr_hive_addr, &["CLSID", guid_name.as_str()]);
+            match hkcr_guid_cell {
+                Some(gc) => {
+                    let inproc_cell =
+                        find_subkey_named(reader, hkcr_hive_addr, gc, "InprocServer32");
+                    match inproc_cell {
+                        Some(ic) => {
+                            let srv = read_default_value_string(reader, hkcr_hive_addr, ic)
+                                .unwrap_or_default();
+                            let path = format!(
+                                r"HKCR\CLSID\{guid_name}\InprocServer32"
+                            );
+                            (srv, path)
+                        }
+                        None => (String::new(), String::new()),
+                    }
+                }
+                None => (String::new(), String::new()),
+            }
+        } else {
+            (String::new(), String::new())
+        };
+
+        let is_suspicious = classify_com_hijack(&hkcr_server, &hkcu_server);
+        if is_suspicious {
+            results.push(ComHijackInfo {
+                clsid: guid_name.clone(),
+                hkcr_path,
+                hkcu_path,
+                hkcr_server,
+                hkcu_server,
+                is_suspicious,
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+// ── Internal helpers ─────────────────────────────────────────────────────
+
+/// Compute the virtual address of a cell from its cell index.
+fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
+    hive_addr
+        .wrapping_add(HBIN_START)
+        .wrapping_add(cell_index as u64)
+}
+
+/// Read raw cell payload (skipping the 4-byte size header).
+fn read_cell<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    vaddr: u64,
+) -> Option<Vec<u8>> {
+    reader.read_bytes(vaddr + 4, 4096).ok()
+}
+
+/// Read the ASCII name from a key node cell payload buffer.
+fn key_node_name(data: &[u8]) -> String {
+    if data.len() < NK_NAME_DATA {
+        return String::new();
+    }
+    let len = u16::from_le_bytes(
+        data[NK_NAME_LEN..NK_NAME_LEN + 2]
+            .try_into()
+            .unwrap_or([0; 2]),
+    ) as usize;
+    let available = data.len().saturating_sub(NK_NAME_DATA);
+    let end = NK_NAME_DATA + len.min(available);
+    String::from_utf8_lossy(&data[NK_NAME_DATA..end]).into_owned()
+}
+
+/// Navigate a key path (slice of components) from the hive root.
+/// Returns the cell index of the target key, or `None` if not found.
+fn find_key_cell<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    path: &[&str],
+) -> Option<u32> {
+    let root_bytes = reader.read_bytes(hive_addr + ROOT_CELL_OFFSET, 4).ok()?;
+    let mut current = u32::from_le_bytes(root_bytes[..4].try_into().ok()?);
+
+    for &component in path {
+        current = find_subkey_named(reader, hive_addr, current, component)?;
+    }
+    Some(current)
+}
+
+/// Find a direct child key by name under `parent_cell`.
+fn find_subkey_named<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    parent_cell: u32,
+    name: &str,
+) -> Option<u32> {
+    let data = read_cell(reader, cell_vaddr(hive_addr, parent_cell))?;
+    if data.len() < 4 {
+        return None;
+    }
+    let sig = u16::from_le_bytes(data[0..2].try_into().ok()?);
+    if sig != NK_SIG {
+        return None;
+    }
+
+    let count = u32::from_le_bytes(
+        data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    if count == 0 {
+        return None;
+    }
+
+    let list_cell = u32::from_le_bytes(
+        data[NK_STABLE_LIST..NK_STABLE_LIST + 4]
+            .try_into()
+            .ok()?,
+    );
+    let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
+    if list_data.len() < 4 {
+        return None;
+    }
+
+    let list_sig = u16::from_le_bytes(list_data[0..2].try_into().ok()?);
+    let list_count = u16::from_le_bytes(list_data[2..4].try_into().ok()?) as usize;
+
+    let (entry_size, base) = match list_sig {
+        0x666C | 0x686C => (8usize, 4usize),
+        0x696C => (4usize, 4usize),
+        _ => return None,
+    };
+
+    for i in 0..list_count {
+        let off = base + i * entry_size;
+        if off + 4 > list_data.len() {
+            break;
+        }
+        let child_cell =
+            u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
+        let child_data = read_cell(reader, cell_vaddr(hive_addr, child_cell))?;
+        let child_name = key_node_name(&child_data);
+        if child_name.eq_ignore_ascii_case(name) {
+            return Some(child_cell);
+        }
+    }
+    None
+}
+
+/// List all direct subkeys of `parent_cell` as `(name, cell_index)` pairs.
+fn list_subkeys<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    parent_cell: u32,
+) -> Option<Vec<(String, u32)>> {
+    let data = read_cell(reader, cell_vaddr(hive_addr, parent_cell))?;
+    if data.len() < 4 {
+        return None;
+    }
+    let sig = u16::from_le_bytes(data[0..2].try_into().ok()?);
+    if sig != NK_SIG {
+        return None;
+    }
+
+    let count = u32::from_le_bytes(
+        data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    if count == 0 {
+        return Some(Vec::new());
+    }
+
+    let list_cell = u32::from_le_bytes(
+        data[NK_STABLE_LIST..NK_STABLE_LIST + 4]
+            .try_into()
+            .ok()?,
+    );
+    let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
+    if list_data.len() < 4 {
+        return None;
+    }
+
+    let list_sig = u16::from_le_bytes(list_data[0..2].try_into().ok()?);
+    let list_count = u16::from_le_bytes(list_data[2..4].try_into().ok()?) as usize;
+
+    let (entry_size, base) = match list_sig {
+        0x666C | 0x686C => (8usize, 4usize),
+        0x696C => (4usize, 4usize),
+        _ => return Some(Vec::new()),
+    };
+
+    let mut children = Vec::with_capacity(list_count.min(MAX_CLSIDS));
+    for i in 0..list_count.min(MAX_CLSIDS) {
+        let off = base + i * entry_size;
+        if off + 4 > list_data.len() {
+            break;
+        }
+        let child_cell =
+            u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
+        let child_data = match read_cell(reader, cell_vaddr(hive_addr, child_cell)) {
+            Some(d) => d,
+            None => continue,
+        };
+        let child_name = key_node_name(&child_data);
+        if !child_name.is_empty() {
+            children.push((child_name, child_cell));
+        }
+    }
+    Some(children)
+}
+
+/// Read the default value (empty name) of a key as a UTF-16LE string.
+///
+/// Returns `None` if the key has no values, the default value is absent, or
+/// any read fails.
+fn read_default_value_string<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    key_cell: u32,
+) -> Option<String> {
+    let nk_data = read_cell(reader, cell_vaddr(hive_addr, key_cell))?;
+    if nk_data.len() < NK_VALUES_LIST + 4 {
+        return None;
+    }
+    let sig = u16::from_le_bytes(nk_data[0..2].try_into().ok()?);
+    if sig != NK_SIG {
+        return None;
+    }
+
+    let val_count = u32::from_le_bytes(
+        nk_data[NK_VALUE_COUNT..NK_VALUE_COUNT + 4]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    if val_count == 0 {
+        return None;
+    }
+
+    let vl_cell = u32::from_le_bytes(
+        nk_data[NK_VALUES_LIST..NK_VALUES_LIST + 4]
+            .try_into()
+            .ok()?,
+    );
+    let vl_data = read_cell(reader, cell_vaddr(hive_addr, vl_cell))?;
+
+    // Scan values for the default (empty-name) entry.
+    for i in 0..val_count.min(1000) {
+        let off = i * 4;
+        if off + 4 > vl_data.len() {
+            break;
+        }
+        let vk_cell_idx =
+            u32::from_le_bytes(vl_data[off..off + 4].try_into().ok()?);
+        let vk_data = read_cell(reader, cell_vaddr(hive_addr, vk_cell_idx))?;
+        if vk_data.len() < 0x14 {
+            continue;
+        }
+        let vk_sig = u16::from_le_bytes(vk_data[0..2].try_into().ok()?);
+        if vk_sig != VK_SIG {
+            continue;
+        }
+        let name_len =
+            u16::from_le_bytes(vk_data[0x02..0x04].try_into().ok()?) as usize;
+        // Default value has name_len == 0.
+        if name_len != 0 {
+            continue;
+        }
+
+        let data_length_raw =
+            u32::from_le_bytes(vk_data[VK_DATA_LEN_OFF..VK_DATA_LEN_OFF + 4].try_into().ok()?);
+        let data_offset =
+            u32::from_le_bytes(vk_data[VK_DATA_OFF_OFF..VK_DATA_OFF_OFF + 4].try_into().ok()?);
+
+        let raw_bytes: Vec<u8> = if data_length_raw & 0x8000_0000 != 0 {
+            // Inline data (up to 4 bytes) stored in the DataOffset field.
+            let inline_len = ((data_length_raw & 0x7FFF_FFFF) as usize).min(4);
+            data_offset.to_le_bytes()[..inline_len].to_vec()
+        } else if data_length_raw > 0 {
+            let data_vaddr = cell_vaddr(hive_addr, data_offset);
+            let data_cell = read_cell(reader, data_vaddr)?;
+            let len = (data_length_raw as usize).min(data_cell.len());
+            data_cell[..len].to_vec()
+        } else {
+            return None;
+        };
+
+        // Decode UTF-16LE.
+        if raw_bytes.len() < 2 {
+            return None;
+        }
+        let words: Vec<u16> = raw_bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&w| w != 0)
+            .collect();
+        return Some(String::from_utf16_lossy(&words).into());
+    }
+    None
 }
 
 #[cfg(test)]
