@@ -23,7 +23,38 @@ const SYSTEM_PIDS: &[u64] = &[0, 4];
 
 impl IntoForensicEvents for WinProcessInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let mut severity = Severity::Info;
+        let mut finding = Finding::Other("process_enumerated".into());
+        let mut mitre: Vec<MitreAttackId> = Vec::new();
+        let mut confidence = 0.5f64;
+
+        if self.image_name.trim().is_empty() {
+            severity = Severity::High;
+            finding = Finding::DefenseEvasion;
+            mitre.push(MitreAttackId::new("T1564").expect("valid id"));
+            confidence = 0.9;
+        } else if self.thread_count == 0 && !SYSTEM_PIDS.contains(&self.pid) {
+            severity = Severity::Medium;
+            finding = Finding::DefenseEvasion;
+            mitre.push(MitreAttackId::new("T1564").expect("valid id"));
+            confidence = 0.75;
+        } else if SPOOFABLE_NAMES.contains(&self.image_name.to_lowercase().as_str()) {
+            finding = Finding::Other("spoofable_name".into());
+            confidence = 0.4;
+        }
+
+        vec![ForensicEvent::builder()
+            .source_walker("win_process")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: Some(self.ppid as u32),
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
