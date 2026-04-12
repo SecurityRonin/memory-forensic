@@ -305,4 +305,135 @@ mod tests {
         let events = scan_etw_buffers(&reader).unwrap();
         assert!(events.is_empty());
     }
+
+    /// Helper: build ISF with ETW buffer structures.
+    fn etw_buffer_isf(array_vaddr: u64) -> IsfBuilder {
+        IsfBuilder::new()
+            // Logger context
+            .add_struct("_WMI_LOGGER_CONTEXT", 0x300)
+            .add_field("_WMI_LOGGER_CONTEXT", "LoggerName", 0x10, "_UNICODE_STRING")
+            .add_field("_WMI_LOGGER_CONTEXT", "Running", 0x28, "unsigned int")
+            .add_field("_WMI_LOGGER_CONTEXT", "BufferCount", 0x30, "unsigned int")
+            .add_field("_WMI_LOGGER_CONTEXT", "BufferSize", 0x34, "unsigned int")
+            .add_field("_WMI_LOGGER_CONTEXT", "EventsLost", 0x38, "unsigned int")
+            .add_field("_WMI_LOGGER_CONTEXT", "BuffersWritten", 0x3C, "unsigned int")
+            .add_field("_WMI_LOGGER_CONTEXT", "FlushTimer", 0x40, "unsigned int")
+            .add_field("_WMI_LOGGER_CONTEXT", "LogMode", 0x44, "unsigned int")
+            // BufferListHead is a _LIST_ENTRY embedded at offset 0x100
+            .add_field("_WMI_LOGGER_CONTEXT", "BufferListHead", 0x100, "_LIST_ENTRY")
+            // Buffer header struct
+            .add_struct("_WMI_BUFFER_HEADER", 0x80)
+            // ListEntry at offset 0 (Flink/Blink)
+            .add_field("_WMI_BUFFER_HEADER", "ListEntry", 0x00, "_LIST_ENTRY")
+            // State at offset 0x10
+            .add_field("_WMI_BUFFER_HEADER", "State", 0x10, "unsigned int")
+            // Offset at offset 0x14 (current write position)
+            .add_field("_WMI_BUFFER_HEADER", "Offset", 0x14, "unsigned int")
+            // ClientContext at offset 0x18
+            .add_field("_WMI_BUFFER_HEADER", "ClientContext", 0x18, "unsigned int")
+            // _LIST_ENTRY
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
+            // _UNICODE_STRING
+            .add_struct("_UNICODE_STRING", 16)
+            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
+            .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
+            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
+            .add_symbol("EtwpLoggerContext", array_vaddr)
+    }
+
+    /// Active logger with one buffer in BufferListHead → at least one EtwBufferEvent returned.
+    #[test]
+    fn scan_etw_buffers_returns_buffers_for_active_logger() {
+        // Virtual addresses
+        let array_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let ctx_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let buf_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        // Physical addresses (all < 0x00FF_FFFF)
+        let array_paddr: u64 = 0x0010_0000;
+        let ctx_paddr: u64 = 0x0020_0000;
+        let buf_paddr: u64 = 0x0030_0000;
+
+        // The list head is embedded in the logger context at offset 0x100.
+        let list_head_vaddr = ctx_vaddr + 0x100;
+        // The ListEntry field is at offset 0 within _WMI_BUFFER_HEADER, so the
+        // Flink in the list head points directly to buf_vaddr (ListEntry.Flink
+        // offset = 0 within the buffer header).
+        // Circular: head.Flink -> buf.ListEntry.Flink -> head
+        let buf_list_entry_vaddr = buf_vaddr; // ListEntry is at offset 0
+
+        let isf = etw_buffer_isf(array_vaddr).build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        // Array page: slot 0 = ctx_vaddr
+        let mut array_data = vec![0u8; 4096];
+        array_data[0..8].copy_from_slice(&ctx_vaddr.to_le_bytes());
+
+        // Context page
+        let mut ctx_data = vec![0u8; 4096];
+        // Running = 1
+        ctx_data[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes());
+        // BufferCount = 1
+        ctx_data[0x30..0x34].copy_from_slice(&1u32.to_le_bytes());
+        // BufferSize = 4096
+        ctx_data[0x34..0x38].copy_from_slice(&4096u32.to_le_bytes());
+        // BufferListHead.Flink (at ctx+0x100) → buf_list_entry_vaddr
+        ctx_data[0x100..0x108].copy_from_slice(&buf_list_entry_vaddr.to_le_bytes());
+        // BufferListHead.Blink (at ctx+0x108) → buf_list_entry_vaddr
+        ctx_data[0x108..0x110].copy_from_slice(&buf_list_entry_vaddr.to_le_bytes());
+
+        // Buffer header page
+        let mut buf_data = vec![0u8; 4096];
+        // ListEntry.Flink (offset 0) → list_head_vaddr (loops back to head)
+        buf_data[0x00..0x08].copy_from_slice(&list_head_vaddr.to_le_bytes());
+        // ListEntry.Blink (offset 8) → list_head_vaddr
+        buf_data[0x08..0x10].copy_from_slice(&list_head_vaddr.to_le_bytes());
+        // State = 1 (InUse)
+        buf_data[0x10..0x14].copy_from_slice(&1u32.to_le_bytes());
+        // Offset = 512
+        buf_data[0x14..0x18].copy_from_slice(&512u32.to_le_bytes());
+        // ClientContext = 0 (logger id 0)
+        buf_data[0x18..0x1C].copy_from_slice(&0u32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(array_vaddr, array_paddr, flags::WRITABLE)
+            .write_phys(array_paddr, &array_data)
+            .map_4k(ctx_vaddr, ctx_paddr, flags::WRITABLE)
+            .write_phys(ctx_paddr, &ctx_data)
+            .map_4k(buf_vaddr, buf_paddr, flags::WRITABLE)
+            .write_phys(buf_paddr, &buf_data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let events = scan_etw_buffers(&reader).unwrap();
+        assert!(!events.is_empty(), "expected at least one EtwBufferEvent");
+        assert_eq!(events[0].logger_id, 0);
+        assert_eq!(events[0].payload_size, 512); // Offset field used as payload_size
+    }
+
+    /// No EtwpLoggerContext or WmipLoggerContext symbol → empty Vec.
+    #[test]
+    fn scan_etw_buffers_empty_when_no_symbol() {
+        let isf = IsfBuilder::new()
+            .add_struct("_WMI_LOGGER_CONTEXT", 0x300)
+            .add_field("_WMI_LOGGER_CONTEXT", "LoggerName", 0x10, "pointer")
+            .add_struct("_WMI_BUFFER_HEADER", 0x80)
+            .add_field("_WMI_BUFFER_HEADER", "ListEntry", 0x00, "_LIST_ENTRY")
+            .add_field("_WMI_BUFFER_HEADER", "State", 0x10, "unsigned int")
+            .add_field("_WMI_BUFFER_HEADER", "Offset", 0x14, "unsigned int")
+            .add_field("_WMI_BUFFER_HEADER", "ClientContext", 0x18, "unsigned int")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let events = scan_etw_buffers(&reader).unwrap();
+        assert!(events.is_empty());
+    }
 }
