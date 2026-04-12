@@ -4,7 +4,7 @@ use memf_correlate::event::{Entity, Finding, ForensicEvent, Severity};
 use memf_correlate::mitre::MitreAttackId;
 use memf_correlate::traits::IntoForensicEvents;
 
-use crate::types::{WinDriverInfo, WinHollowingInfo, WinMalfindInfo, WinProcessInfo};
+use crate::types::{WinConnectionInfo, WinDriverInfo, WinHollowingInfo, WinMalfindInfo, WinProcessInfo, WinTokenInfo};
 
 /// Suspicious image names that are often spoofed by malware (T1036 - Masquerading).
 const SPOOFABLE_NAMES: &[&str] = &[
@@ -142,6 +142,103 @@ impl IntoForensicEvents for WinHollowingInfo {
 
         vec![ForensicEvent::builder()
             .source_walker("win_hollowing")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
+    }
+}
+
+impl IntoForensicEvents for WinConnectionInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        let is_loopback = self.remote_addr == "127.0.0.1"
+            || self.remote_addr == "::1"
+            || self.remote_addr.is_empty();
+
+        let (severity, finding, mitre, confidence) =
+            if matches!(self.remote_port, 4444 | 1337 | 31337) {
+                // Classic C2 ports (T1071)
+                (
+                    Severity::High,
+                    Finding::NetworkBeaconing,
+                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    0.8f64,
+                )
+            } else if self.pid == 0 {
+                // No owning process — hidden connection (T1095)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1095").expect("valid id")],
+                    0.85f64,
+                )
+            } else if self.remote_port == 0 && !is_loopback {
+                // Port 0 with non-loopback remote — suspicious (T1071)
+                (
+                    Severity::Medium,
+                    Finding::NetworkBeaconing,
+                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    0.6f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("connection_enumerated".into()), vec![], 0.4f64)
+            };
+
+        let src = format!("{}:{}", self.local_addr, self.local_port)
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+        let dst = format!("{}:{}", self.remote_addr, self.remote_port)
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_connection")
+            .entity(Entity::Connection {
+                src,
+                dst,
+                proto: memf_correlate::event::Protocol::Tcp,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
+    }
+}
+
+impl IntoForensicEvents for WinTokenInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        const SE_DEBUG_PRIVILEGE: u64 = 1 << 20;
+
+        let (severity, finding, mitre, confidence) =
+            if self.privileges_enabled & SE_DEBUG_PRIVILEGE != 0 {
+                // SeDebugPrivilege enabled — token manipulation (T1134)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1134").expect("valid id")],
+                    0.85f64,
+                )
+            } else if self.user_sid == "S-1-5-18" && self.pid != 4 {
+                // SYSTEM SID in non-System process — privilege escalation (T1078)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1078").expect("valid id")],
+                    0.9f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("token_enumerated".into()), vec![], 0.4f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_token")
             .entity(Entity::Process {
                 pid: self.pid as u32,
                 name: self.image_name.clone(),
@@ -431,5 +528,111 @@ mod tests {
         let info = make_hollowing(1234, "svchost.exe", true, true, true, "pe size mismatch");
         let events = info.into_forensic_events();
         assert!(events[0].is_suspicious());
+    }
+
+    // -----------------------------------------------------------------------
+    // WinConnectionInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_win_conn(remote_addr: &str, remote_port: u16, pid: u64) -> WinConnectionInfo {
+        WinConnectionInfo {
+            protocol: "TCPv4".to_string(),
+            local_addr: "192.168.1.5".to_string(),
+            local_port: 49200,
+            remote_addr: remote_addr.to_string(),
+            remote_port,
+            state: crate::types::WinTcpState::Established,
+            pid,
+            process_name: "chrome.exe".to_string(),
+            create_time: 0,
+        }
+    }
+
+    #[test]
+    fn win_c2_port_connection_is_high_beaconing() {
+        for port in [4444u16, 1337, 31337] {
+            let c = make_win_conn("10.0.0.1", port, 100);
+            let events = c.into_forensic_events();
+            assert_eq!(events.len(), 1, "port {port}");
+            assert_eq!(events[0].severity, Severity::High, "port {port}");
+            assert!(matches!(events[0].finding, Finding::NetworkBeaconing), "port {port}");
+            let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+            assert!(ids.contains(&"T1071"), "expected T1071 for port {port}");
+        }
+    }
+
+    #[test]
+    fn win_no_owning_pid_is_high_defense_evasion() {
+        let c = make_win_conn("8.8.8.8", 443, 0);
+        let events = c.into_forensic_events();
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1095"), "expected T1095");
+    }
+
+    #[test]
+    fn win_normal_connection_is_info() {
+        let c = make_win_conn("93.184.216.34", 443, 200);
+        let events = c.into_forensic_events();
+        assert_eq!(events[0].severity, Severity::Info);
+        assert!(matches!(events[0].finding, Finding::Other(_)));
+    }
+
+    #[test]
+    fn win_connection_source_walker_is_windows_connection() {
+        let c = make_win_conn("1.2.3.4", 80, 42);
+        let events = c.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_connection");
+    }
+
+    // -----------------------------------------------------------------------
+    // WinTokenInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_token(pid: u64, image_name: &str, privileges_enabled: u64, user_sid: &str) -> WinTokenInfo {
+        WinTokenInfo {
+            pid,
+            image_name: image_name.to_string(),
+            privileges_enabled,
+            privileges_present: privileges_enabled,
+            privilege_names: vec![],
+            session_id: 1,
+            user_sid: user_sid.to_string(),
+        }
+    }
+
+    #[test]
+    fn sedebug_privilege_enabled_is_high_token_manipulation() {
+        // SeDebugPrivilege = bit 20
+        let t = make_token(999, "evil.exe", 1 << 20, "S-1-5-1000");
+        let events = t.into_forensic_events();
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1134"), "expected T1134");
+    }
+
+    #[test]
+    fn system_sid_in_user_process_is_high_privilege_escalation() {
+        // pid != 4 (not System process itself), SID = S-1-5-18 (SYSTEM)
+        let t = make_token(1234, "notepad.exe", 0, "S-1-5-18");
+        let events = t.into_forensic_events();
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1078"), "expected T1078");
+    }
+
+    #[test]
+    fn normal_token_is_info() {
+        let t = make_token(500, "svchost.exe", 0, "S-1-5-20");
+        let events = t.into_forensic_events();
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn token_source_walker_is_windows_token() {
+        let t = make_token(42, "lsass.exe", 0, "S-1-5-18");
+        let events = t.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_token");
     }
 }

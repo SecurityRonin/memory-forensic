@@ -1654,6 +1654,7 @@ version = "0.1.0"
 dependencies = [
  "inventory",
  "memf-core",
+ "memf-correlate",
  "memf-format",
  "memf-symbols",
  "serde",
@@ -1690,6 +1691,7 @@ name = "memf-windows"
 version = "0.1.0"
 dependencies = [
  "memf-core",
+ "memf-correlate",
  "memf-format",
  "memf-symbols",
  "serde",

@@ -8,4 +8,5 @@
 
 pub mod event;
 pub mod mitre;
+pub mod timeline;
 pub mod traits;

@@ -4,7 +4,7 @@ use memf_correlate::event::{Entity, Finding, ForensicEvent, Severity};
 use memf_correlate::mitre::MitreAttackId;
 use memf_correlate::traits::IntoForensicEvents;
 
-use crate::types::{ConnectionInfo, ProcessInfo, ProcessState, VmaInfo};
+use crate::types::{ConnectionInfo, ModuleInfo, ModuleState, ProcessInfo, ProcessState, VmaInfo};
 
 impl IntoForensicEvents for VmaInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
@@ -137,6 +137,39 @@ impl IntoForensicEvents for ConnectionInfo {
                 dst,
                 proto: memf_correlate::event::Protocol::Tcp,
             })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
+    }
+}
+
+impl IntoForensicEvents for ModuleInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        let (severity, finding, mitre, confidence) = if self.name.is_empty() {
+            // Blank module name — hidden kernel module (T1014)
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1014").expect("valid id")],
+                0.9f64,
+            )
+        } else if matches!(self.state, ModuleState::Going) {
+            // Module unloading during scan — possible hide-by-unload evasion (T1014)
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1014").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("module_enumerated".into()), vec![], 0.3f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_module")
+            .entity(Entity::Module { name: self.name.clone(), base: self.base_addr, size: self.size })
             .finding(finding)
             .severity(severity)
             .confidence(confidence)
@@ -371,5 +404,54 @@ mod tests {
         let c = make_conn("8.8.8.8", 443, None);
         let events = c.into_forensic_events();
         assert!(events[0].is_suspicious());
+    }
+
+    // -----------------------------------------------------------------------
+    // ModuleInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_module(name: &str, state: ModuleState) -> ModuleInfo {
+        ModuleInfo {
+            name: name.to_string(),
+            base_addr: 0xffff_c000_0000_0000,
+            size: 0x4000,
+            state,
+        }
+    }
+
+    #[test]
+    fn live_named_module_is_info() {
+        let m = make_module("ext4", ModuleState::Live);
+        let events = m.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn going_state_module_is_medium_defense_evasion() {
+        // MODULE_STATE_GOING during scan — possible unload-to-hide evasion (T1014)
+        let m = make_module("rootkit", ModuleState::Going);
+        let events = m.into_forensic_events();
+        assert_eq!(events[0].severity, Severity::Medium);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1014"), "expected T1014");
+    }
+
+    #[test]
+    fn empty_name_module_is_high() {
+        // Blank module name — hidden kernel module (T1014)
+        let m = make_module("", ModuleState::Live);
+        let events = m.into_forensic_events();
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1014"), "expected T1014");
+    }
+
+    #[test]
+    fn module_source_walker_is_linux_module() {
+        let m = make_module("xfs", ModuleState::Live);
+        let events = m.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_module");
     }
 }
