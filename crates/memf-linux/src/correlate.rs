@@ -4,7 +4,7 @@ use memf_correlate::event::{Entity, Finding, ForensicEvent, Severity};
 use memf_correlate::mitre::MitreAttackId;
 use memf_correlate::traits::IntoForensicEvents;
 
-use crate::types::VmaInfo;
+use crate::types::{ConnectionInfo, ProcessInfo, ProcessState, VmaInfo};
 
 impl IntoForensicEvents for VmaInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
@@ -43,10 +43,22 @@ impl IntoForensicEvents for VmaInfo {
     }
 }
 
+impl IntoForensicEvents for ProcessInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+impl IntoForensicEvents for ConnectionInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::VmaFlags;
+    use crate::types::{ConnectionState, Protocol as LinuxProtocol, VmaFlags};
 
     fn make_vma(pid: u64, comm: &str, exec: bool, write: bool, file_backed: bool) -> VmaInfo {
         VmaInfo {
@@ -126,5 +138,148 @@ mod tests {
         let vma = make_vma(1234, "cat", false, false, true);
         let events = vma.into_forensic_events();
         assert!(!events[0].is_suspicious());
+    }
+
+    // -----------------------------------------------------------------------
+    // ProcessInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_process(pid: u64, ppid: u64, comm: &str, state: ProcessState, cr3: Option<u64>) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid,
+            comm: comm.to_string(),
+            state,
+            vaddr: 0xffff_8880_0000_0000,
+            cr3,
+            start_time: 12_345_678,
+        }
+    }
+
+    #[test]
+    fn zombie_process_is_medium_defense_evasion() {
+        let p = make_process(1234, 1, "defunct", ProcessState::Zombie, Some(0x1000));
+        let events = p.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
+        assert!((events[0].confidence - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn empty_comm_is_high_severity() {
+        let p = make_process(999, 1, "", ProcessState::Running, Some(0x2000));
+        let events = p.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
+        assert!((events[0].confidence - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_process_is_info() {
+        let p = make_process(42, 1, "bash", ProcessState::Running, Some(0x3000));
+        let events = p.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn process_entity_has_correct_pid_ppid_comm() {
+        let p = make_process(77, 5, "sshd", ProcessState::Sleeping, Some(0x4000));
+        let events = p.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_process");
+        match &events[0].entity {
+            Entity::Process { pid, name, ppid } => {
+                assert_eq!(*pid, 77u32);
+                assert_eq!(name, "sshd");
+                assert_eq!(*ppid, Some(5u32));
+            }
+            other => panic!("expected Process entity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn info_process_is_not_suspicious() {
+        let p = make_process(100, 1, "nginx", ProcessState::Sleeping, Some(0x5000));
+        let events = p.into_forensic_events();
+        assert!(!events[0].is_suspicious());
+    }
+
+    // -----------------------------------------------------------------------
+    // ConnectionInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_conn(remote_addr: &str, remote_port: u16, pid: Option<u64>) -> ConnectionInfo {
+        ConnectionInfo {
+            protocol: LinuxProtocol::Tcp,
+            local_addr: "192.168.1.10".to_string(),
+            local_port: 54321,
+            remote_addr: remote_addr.to_string(),
+            remote_port,
+            state: ConnectionState::Established,
+            pid,
+        }
+    }
+
+    #[test]
+    fn c2_port_connection_is_high_beaconing() {
+        for port in [4444u16, 1337, 31337] {
+            let c = make_conn("10.0.0.1", port, Some(100));
+            let events = c.into_forensic_events();
+            assert_eq!(events.len(), 1, "port {port}");
+            assert_eq!(events[0].severity, Severity::High, "port {port}");
+            assert!(matches!(events[0].finding, Finding::NetworkBeaconing), "port {port}");
+            let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+            assert!(ids.contains(&"T1071"), "expected T1071 for port {port}, got {ids:?}");
+            assert!((events[0].confidence - 0.8).abs() < 1e-9, "port {port}");
+        }
+    }
+
+    #[test]
+    fn no_owning_pid_is_high_defense_evasion() {
+        let c = make_conn("8.8.8.8", 443, None);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1095"), "expected T1095, got {ids:?}");
+        assert!((events[0].confidence - 0.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_connection_is_info() {
+        let c = make_conn("93.184.216.34", 443, Some(200));
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+        assert!(matches!(events[0].finding, Finding::Other(_)));
+    }
+
+    #[test]
+    fn connection_entity_has_correct_src_dst() {
+        let c = make_conn("10.0.0.1", 4444, Some(42));
+        let events = c.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_connection");
+        match &events[0].entity {
+            Entity::Connection { src, dst, .. } => {
+                assert_eq!(src.port(), 54321);
+                assert_eq!(dst.port(), 4444);
+                assert_eq!(dst.ip().to_string(), "10.0.0.1");
+            }
+            other => panic!("expected Connection entity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hidden_connection_is_suspicious() {
+        let c = make_conn("8.8.8.8", 443, None);
+        let events = c.into_forensic_events();
+        assert!(events[0].is_suspicious());
     }
 }
