@@ -32,14 +32,165 @@ impl std::error::Error for LzoError {}
 /// Decompress LZO1X-1 compressed data (Linux kernel variant).
 ///
 /// Returns the decompressed bytes, or an error if the input is malformed.
+/// Output is limited to 4096 bytes (one kernel page).
 pub fn decompress(input: &[u8]) -> Result<Vec<u8>, LzoError> {
-    // Maximum output size for a 4KB kernel page
     decompress_with_limit(input, 4096)
 }
 
+/// Read the next byte from input, advancing the position.
+fn next_byte(input: &[u8], ip: &mut usize) -> Result<u8, LzoError> {
+    if *ip >= input.len() {
+        return Err(LzoError::InputOverrun);
+    }
+    let b = input[*ip];
+    *ip += 1;
+    Ok(b)
+}
+
+/// Copy `count` literal bytes from input to output.
+fn copy_literals(
+    input: &[u8],
+    ip: &mut usize,
+    output: &mut Vec<u8>,
+    count: usize,
+    max_output: usize,
+) -> Result<(), LzoError> {
+    if *ip + count > input.len() {
+        return Err(LzoError::InputOverrun);
+    }
+    if output.len() + count > max_output {
+        return Err(LzoError::OutputOverrun);
+    }
+    output.extend_from_slice(&input[*ip..*ip + count]);
+    *ip += count;
+    Ok(())
+}
+
+/// Copy `count` bytes from a previous position in the output (match copy).
+fn copy_match(
+    output: &mut Vec<u8>,
+    dist: usize,
+    count: usize,
+    max_output: usize,
+) -> Result<(), LzoError> {
+    if dist > output.len() || dist == 0 {
+        return Err(LzoError::LookbehindOverrun);
+    }
+    if output.len() + count > max_output {
+        return Err(LzoError::OutputOverrun);
+    }
+    let start = output.len() - dist;
+    for i in 0..count {
+        let b = output[start + i];
+        output.push(b);
+    }
+    Ok(())
+}
+
+/// Read an extended length: skip zero bytes and accumulate.
+fn read_extended_len(input: &[u8], ip: &mut usize, base: usize) -> Result<usize, LzoError> {
+    let mut len = 0usize;
+    loop {
+        let b = next_byte(input, ip)?;
+        if b != 0 {
+            return Ok(len + base + b as usize);
+        }
+        len += 255;
+    }
+}
+
 /// Decompress LZO1X-1 compressed data with a custom output size limit.
-pub fn decompress_with_limit(_input: &[u8], _max_output: usize) -> Result<Vec<u8>, LzoError> {
-    todo!("LZO1X decompression not yet implemented")
+///
+/// Follows the Linux kernel's `lzo1x_decompress_safe` algorithm with four
+/// match types (M1-M4) and literal runs.
+pub fn decompress_with_limit(input: &[u8], max_output: usize) -> Result<Vec<u8>, LzoError> {
+    if input.is_empty() {
+        return Err(LzoError::InputOverrun);
+    }
+
+    let mut output = Vec::with_capacity(max_output.min(4096));
+    let mut ip = 0usize;
+
+    let mut t = next_byte(input, &mut ip)? as usize;
+
+    // Handle initial literal run
+    if t > 17 {
+        // First byte >= 18: literal run of (t - 17) bytes
+        let lit_len = t - 17;
+        copy_literals(input, &mut ip, &mut output, lit_len, max_output)?;
+        t = next_byte(input, &mut ip)? as usize;
+    } else if t < 16 {
+        // First byte in [0..16): literal run with length encoding
+        let lit_len = if t == 0 {
+            read_extended_len(input, &mut ip, 15)? + 3
+        } else {
+            t + 3
+        };
+        copy_literals(input, &mut ip, &mut output, lit_len, max_output)?;
+        t = next_byte(input, &mut ip)? as usize;
+    }
+    // If first byte in [16..18), fall through to main loop
+
+    loop {
+        let trailing_lits;
+
+        if t >= 64 {
+            // M2: short match (2-byte encoding)
+            let match_len = ((t >> 5) & 0x07) + 2;
+            let b = next_byte(input, &mut ip)? as usize;
+            let dist = ((t & 0x1F) << 8) + b + 1;
+            copy_match(&mut output, dist, match_len, max_output)?;
+            trailing_lits = t & 0x03;
+        } else if t >= 32 {
+            // M3: medium match (3-byte encoding)
+            let len_bits = (t & 0x1F) as usize;
+            let match_len = if len_bits == 0 {
+                read_extended_len(input, &mut ip, 31)? + 2
+            } else {
+                len_bits + 2
+            };
+            let low = next_byte(input, &mut ip)? as usize;
+            let high = next_byte(input, &mut ip)? as usize;
+            let dist = (low >> 2) + (high << 6) + 1;
+            copy_match(&mut output, dist, match_len, max_output)?;
+            trailing_lits = low & 0x03;
+        } else if t >= 16 {
+            // M4: long-distance match or EOS
+            let len_bits = (t & 0x07) as usize;
+            let match_len = if len_bits == 0 {
+                read_extended_len(input, &mut ip, 7)? + 2
+            } else {
+                len_bits + 2
+            };
+
+            let low = next_byte(input, &mut ip)? as usize;
+            let high = next_byte(input, &mut ip)? as usize;
+            let m_off_raw = (low >> 2) + (high << 6) + ((t & 0x08) << 11);
+
+            if m_off_raw == 0 {
+                // End of stream
+                break;
+            }
+            let dist = m_off_raw + 16384;
+            copy_match(&mut output, dist, match_len, max_output)?;
+            trailing_lits = low & 0x03;
+        } else {
+            // M1: shortest match (t < 16, only after prior output)
+            let b = next_byte(input, &mut ip)? as usize;
+            let dist = ((t >> 2) & 0x03) + b * 4 + 1;
+            copy_match(&mut output, dist, 2, max_output)?;
+            trailing_lits = t & 0x03;
+        }
+
+        // Copy trailing literals after the match
+        if trailing_lits > 0 {
+            copy_literals(input, &mut ip, &mut output, trailing_lits, max_output)?;
+        }
+
+        t = next_byte(input, &mut ip)? as usize;
+    }
+
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -56,15 +207,12 @@ mod tests {
 
     #[test]
     fn decompress_short_literal_then_eos() {
-        // First command byte < 16: literal run.
-        // When first byte is 0, read next bytes for length.
-        // But simpler: first byte 0x11 + N means N literal bytes (when N >= 1).
-        // Actually for initial literal: if first byte >= 18, literal count = byte - 17.
-        // So 0x15 (21) => 21 - 17 = 4 literal bytes
+        // first byte >= 18: literal count = byte - 17
+        // 0x15 (21) => 21 - 17 = 4 literal bytes
         let input = [
-            0x15, // first byte = 21 >= 18, so literal run of 4 bytes
-            0xDE, 0xAD, 0xBE, 0xEF, // 4 literal bytes
-            0x11, 0x00, 0x00, // EOS
+            0x15,
+            0xDE, 0xAD, 0xBE, 0xEF,
+            0x11, 0x00, 0x00,
         ];
         let result = decompress(&input).unwrap();
         assert_eq!(result, [0xDE, 0xAD, 0xBE, 0xEF]);
@@ -73,58 +221,24 @@ mod tests {
     #[test]
     fn decompress_longer_literal_then_eos() {
         // first byte = 24 => 24 - 17 = 7 literal bytes
-        let mut input = vec![24u8]; // 7 literals
+        let mut input = vec![24u8];
         input.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
-        input.extend_from_slice(&[0x11, 0x00, 0x00]); // EOS
+        input.extend_from_slice(&[0x11, 0x00, 0x00]);
         let result = decompress(&input).unwrap();
         assert_eq!(result, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
     }
 
     #[test]
     fn decompress_match_copy() {
-        // Emit 4 literal bytes "ABCD", then a match that copies from offset 4 (the start), length 4.
-        // This should produce "ABCDABCD".
-        //
-        // Step 1: Initial literal. first byte = 21 (0x15) => 4 literals.
-        // Step 2: After literals, we need a match command.
-        //   A match with t >= 64 (two-byte match):
-        //   byte = 0b_MMM_LL_DDD where:
-        //     MMM = match_len - 2 (stored in bits 5-7), so for len=4: MMM=2 => bits 5-7 = 010
-        //     LL = literal count after match (0 for us)
-        //     DDD = distance high bits (bits 0-2)
-        //   distance = (DDD << 8) | next_byte, where distance is 1-based offset from current output pos
-        //   For distance=4: DDD=0, next_byte=3 (distance = 0*256 + 3 + 1 = 4)
-        //   Wait - let me reconsider the kernel LZO format...
-        //
-        //   Actually: for t >= 64:
-        //     match_len = (t >> 5) + 1  ... varies by implementation
-        //   Let me use a simpler approach: compress known data with a reference compressor.
-        //
-        // Instead, let me hand-craft using the >=32 (M2) match format:
-        //   byte1 in [32..64): M2 match
-        //   len = (byte1 & 0x1F) + 2
-        //   if (byte1 & 0x1F) == 0: read extra length bytes
-        //   distance = ((next_byte >> 2) | (next_next_byte << 6)) + 1  ... no wait
-        //
-        // The simplest approach: produce known input/output pairs by referencing
-        // the algorithm spec directly.
-        //
-        // Literal "AAAA" (4 bytes) then match copying those 4 bytes:
-        // Initial: 0x15 (4 literals), 'A', 'A', 'A', 'A'
-        // Match (>=32 format): byte = 0x20 | (len-2) = 0x20 | 2 = 0x22
-        //   next two bytes encode distance: low byte = ((dist-1) << 2) | after_lit_count
-        //   high byte = ((dist-1) >> 6)
-        //   dist = 4: low = (3 << 2) | 0 = 12, high = 0
-        // Then EOS: 0x11, 0x00, 0x00
+        // 4 literal bytes "AAAA", then M3 match copying 4 from distance 4 => "AAAAAAAA"
+        // M3 (t>=32): byte = 0x20 | (len-2) = 0x22, next 2 bytes encode distance
+        // dist = (low >> 2) + (high << 6) + 1; for dist=4: low=0x0C, high=0
         let input = [
-            0x15,                     // 4 literal bytes
-            b'A', b'A', b'A', b'A',  // literals
-            0x22,                     // match: len = (0x22 & 0x1F) + 2 = 4, type M2 (>=32)
-            0x0C, 0x00,              // distance encoding: low=12=(3<<2)|0, high=0 => dist=3+1=4... wait
-            // Actually: distance = (low >> 2) + (high << 6) + 1
-            // We want dist=4: (low>>2) + (high<<6) + 1 = 4 => (low>>2) + 0 = 3 => low>>2 = 3 => low = 12
-            // But low also has bottom 2 bits = literal count after match. So low = 3<<2 | 0 = 12
-            0x11, 0x00, 0x00,        // EOS
+            0x15,
+            b'A', b'A', b'A', b'A',
+            0x22,
+            0x0C, 0x00,
+            0x11, 0x00, 0x00,
         ];
         let result = decompress(&input).unwrap();
         assert_eq!(result, b"AAAAAAAA");
@@ -132,7 +246,7 @@ mod tests {
 
     #[test]
     fn decompress_input_overrun_errors() {
-        // Truncated: says 4 literals but only 2 available
+        // Says 4 literals but only 2 available
         let input = [0x15, 0xAA, 0xBB];
         let result = decompress(&input);
         assert_eq!(result, Err(LzoError::InputOverrun));
@@ -140,15 +254,13 @@ mod tests {
 
     #[test]
     fn decompress_lookbehind_overrun_errors() {
-        // Emit 4 literal bytes, then a match with distance > 4 (the output so far)
-        // 4 literals: 0x15, then 4 bytes
-        // Match >= 32: 0x22 (len=4), distance encoding for dist=10:
-        //   (low>>2) + (high<<6) + 1 = 10 => low>>2 = 9 => low = 36, high = 0
+        // 4 literals, then M3 match with distance=10 > 4 output bytes
+        // dist=10: (low>>2) + 1 = 10 => low = 36 (0x24)
         let input = [
             0x15,
             b'X', b'X', b'X', b'X',
-            0x22,       // match len=4
-            0x24, 0x00, // low=36 => dist = (36>>2) + 0 + 1 = 10 > 4 output bytes
+            0x22,
+            0x24, 0x00,
             0x11, 0x00, 0x00,
         ];
         let result = decompress(&input);
@@ -157,15 +269,11 @@ mod tests {
 
     #[test]
     fn decompress_output_overrun_errors() {
-        // Create input that would produce more than 4096 bytes
-        // 18 literal bytes each pass... actually easiest: just set a small limit
-        // and decompress something that exceeds it
         let input = [
-            0x15,                     // 4 literal bytes
+            0x15,
             0x01, 0x02, 0x03, 0x04,
-            0x11, 0x00, 0x00,        // EOS
+            0x11, 0x00, 0x00,
         ];
-        // Use decompress_with_limit with a small limit
         let result = decompress_with_limit(&input, 2);
         assert_eq!(result, Err(LzoError::OutputOverrun));
     }
