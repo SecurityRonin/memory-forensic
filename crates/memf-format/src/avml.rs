@@ -345,4 +345,79 @@ mod tests {
         let n = provider.read_phys(0x1000, &mut buf).unwrap();
         assert_eq!(n, 0);
     }
+
+    // -------------------------------------------------------------------------
+    // Gap coverage (TDD audit 2026-03-31)
+    // -------------------------------------------------------------------------
+
+    /// Corrupt AVML header: correct AVML magic prefix but wrong version number.
+    /// `parse_blocks` should return `Error::Corrupt`, not panic.
+    #[test]
+    fn corrupt_header_wrong_version_returns_error() {
+        let mut dump = AvmlBuilder::new().add_range(0x1000, &[0xAA; 64]).build();
+        // Overwrite bytes [4..8] (version field) with an unsupported version.
+        dump[4..8].copy_from_slice(&99u32.to_le_bytes());
+        let result = AvmlProvider::from_bytes(&dump);
+        assert!(result.is_err(), "wrong version must return an error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::Error::Corrupt(_)),
+            "error must be Corrupt, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("99"),
+            "error message should mention the bad version number"
+        );
+    }
+
+    /// Corrupt AVML header: magic bytes are completely wrong (not AVML at all).
+    /// `parse_blocks` should return `Error::Corrupt`, not panic.
+    #[test]
+    fn corrupt_header_wrong_magic_returns_error() {
+        let mut dump = AvmlBuilder::new().add_range(0x1000, &[0xAA; 64]).build();
+        // Overwrite bytes [0..4] (magic) with garbage.
+        dump[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        let result = AvmlProvider::from_bytes(&dump);
+        assert!(result.is_err(), "wrong magic must return an error");
+        assert!(matches!(result.unwrap_err(), crate::Error::Corrupt(_)));
+    }
+
+    /// Truncated header: a buffer of 20 bytes (less than the required 32-byte
+    /// header) must be rejected with `Error::Corrupt`, not a panic or index OOB.
+    #[test]
+    fn truncated_header_returns_error() {
+        // A real AVML dump starts with a 32-byte block header.
+        // Provide only 20 bytes so the header-size check fires.
+        let partial: Vec<u8> = vec![
+            0x41, 0x56, 0x4D, 0x4C, // magic bytes (little-endian 0x4C4D5641 = "AVML")
+            0x02, 0x00, 0x00, 0x00, // version = 2
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // start addr
+            0x40, 0x10, 0x00, 0x00, // truncated — end addr incomplete
+        ];
+        assert!(
+            partial.len() < 32,
+            "test fixture must be shorter than a full header"
+        );
+        let result = AvmlProvider::from_bytes(&partial);
+        assert!(result.is_err(), "truncated input must return an error");
+        assert!(matches!(result.unwrap_err(), crate::Error::Corrupt(_)));
+    }
+
+    /// Snappy-compressed block round-trip: the `AvmlBuilder` produces a
+    /// Snappy-compressed payload; verify that `read_phys` correctly returns
+    /// the original decompressed bytes.
+    #[test]
+    fn snappy_compressed_block_roundtrip() {
+        // Use a pattern that is not all-zeros so compression is non-trivial.
+        let payload: Vec<u8> = (0u8..=255).cycle().take(512).collect();
+        let dump = AvmlBuilder::new().add_range(0x4000, &payload).build();
+
+        let provider = AvmlProvider::from_bytes(&dump).expect("parse snappy dump");
+        assert_eq!(provider.total_size(), 512);
+
+        let mut buf = vec![0u8; 512];
+        let n = provider.read_phys(0x4000, &mut buf).expect("read_phys");
+        assert_eq!(n, 512);
+        assert_eq!(buf, payload, "decompressed data must match original");
+    }
 }

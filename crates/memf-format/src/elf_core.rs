@@ -248,4 +248,80 @@ mod tests {
         let n = provider.read_phys(0x1000, &mut buf).unwrap();
         assert_eq!(n, 0);
     }
+
+    // -------------------------------------------------------------------------
+    // Gap coverage (TDD audit 2026-03-31)
+    // -------------------------------------------------------------------------
+
+    /// Completely empty data must return `Error::Corrupt`, not panic.
+    #[test]
+    fn empty_data_returns_corrupt_error() {
+        let result = ElfCoreProvider::from_bytes(vec![]);
+        assert!(result.is_err(), "empty input must be rejected");
+        let err = result.err().unwrap();
+        assert!(
+            matches!(err, crate::Error::Corrupt(_)),
+            "error must be Corrupt variant, got: {err}"
+        );
+    }
+
+    /// Truncated ELF data (too short to contain a valid ELF header) must
+    /// return `Error::Corrupt`, not panic or index out of bounds.
+    #[test]
+    fn truncated_elf_data_returns_corrupt_error() {
+        // Only 8 bytes — not enough for a valid 64-byte ELF header.
+        let truncated = vec![0x7F, b'E', b'L', b'F', 2, 1, 1, 0];
+        let result = ElfCoreProvider::from_bytes(truncated);
+        assert!(result.is_err(), "truncated ELF must be rejected");
+        let err = result.err().unwrap();
+        assert!(
+            matches!(err, crate::Error::Corrupt(_)),
+            "error must be Corrupt, got: {err}"
+        );
+    }
+
+    /// An ELF file that is structurally valid (parseable) but not an ET_CORE
+    /// type must be rejected with `Error::Corrupt`.
+    #[test]
+    fn non_core_elf_type_returns_corrupt_error() {
+        // Build a minimal ELF header with ET_EXEC (2) instead of ET_CORE (4).
+        let mut header = vec![0u8; 64];
+        header[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+        header[4] = 2; // ELFCLASS64
+        header[5] = 1; // ELFDATA2LSB
+        header[6] = 1; // EV_CURRENT
+        header[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        header[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
+        // e_phoff = 64 (right after ELF header), e_phnum = 0
+        header[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        header[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        header[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        header[56..58].copy_from_slice(&0u16.to_le_bytes()); // e_phnum = 0
+
+        let result = ElfCoreProvider::from_bytes(header);
+        assert!(result.is_err(), "non-core ELF must be rejected");
+        let err = result.err().unwrap();
+        assert!(
+            matches!(err, crate::Error::Corrupt(_)),
+            "error must be Corrupt, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("not an ELF core dump"),
+            "error message should explain the rejection reason, got: {err}"
+        );
+    }
+
+    /// Garbage bytes that are not ELF at all must return `Error::Corrupt`.
+    #[test]
+    fn garbage_data_returns_corrupt_error() {
+        let mut garbage = vec![0x00u8; 128];
+        garbage[0..4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let result = ElfCoreProvider::from_bytes(garbage);
+        assert!(result.is_err(), "garbage input must be rejected");
+        let err = result.err().unwrap();
+        assert!(
+            matches!(err, crate::Error::Corrupt(_)),
+            "error must be Corrupt, got: {err}"
+        );
+    }
 }
