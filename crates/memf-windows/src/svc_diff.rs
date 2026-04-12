@@ -51,16 +51,8 @@ pub struct SvcDiffEntry {
 ///   indicates the service was disabled or tampered with despite being
 ///   configured to start automatically.
 pub fn classify_svc_diff(in_scm: bool, in_registry: bool, start_type: u32) -> bool {
-    if in_scm && !in_registry {
-        // Memory-only service: registry key was deleted (anti-forensic)
-        return true;
+        todo!()
     }
-    if !in_scm && in_registry && (start_type == 1 || start_type == 2) {
-        // Auto/System service not loaded in SCM (disabled persistence)
-        return true;
-    }
-    false
-}
 
 /// Walk SCM service records and SYSTEM registry hive services, then diff.
 ///
@@ -78,98 +70,8 @@ pub fn walk_svc_diff<P: PhysicalMemoryProvider>(
     scm_list_head: u64,
     system_hive_addr: u64,
 ) -> Result<Vec<SvcDiffEntry>> {
-    use std::collections::HashMap;
-
-    // ── 1. Collect services from SCM memory ──────────────────────────
-    let scm_services: Vec<crate::ServiceInfo> = if scm_list_head != 0 {
-        service::walk_services(reader, scm_list_head).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-
-    // Build a map: lowercase service name -> ServiceInfo.
-    let scm_map: HashMap<String, crate::ServiceInfo> = scm_services
-        .into_iter()
-        .map(|s| (s.name.to_ascii_lowercase(), s))
-        .collect();
-
-    // ── 2. Collect services from SYSTEM registry hive ────────────────
-    // Services live under SYSTEM\CurrentControlSet\Services.
-    const SERVICES_KEY: &str = "CurrentControlSet\\Services";
-
-    // Walk the Services key one level deep to get service subkey names.
-    let service_subkeys: Vec<String> = if system_hive_addr != 0 {
-        // Find the Services key cell, then enumerate its direct subkeys.
-        enum_direct_subkeys(reader, system_hive_addr, SERVICES_KEY)
-    } else {
-        Vec::new()
-    };
-
-    // Build a map: lowercase service name -> start_type from registry.
-    let mut reg_map: HashMap<String, u32> = HashMap::new();
-    for svc_name in &service_subkeys {
-        let svc_path = format!("{SERVICES_KEY}\\{svc_name}");
-        let cell = match find_key_cell(reader, system_hive_addr, &svc_path) {
-            Some(c) => c,
-            None => continue,
-        };
-        let start_type = registry_keys::read_registry_values(reader, system_hive_addr, cell)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|v| v.name.eq_ignore_ascii_case("Start"))
-            .and_then(|v| v.data_preview.parse::<u32>().ok())
-            .unwrap_or(3); // Default to Demand start.
-        reg_map.insert(svc_name.to_ascii_lowercase(), start_type);
+        todo!()
     }
-
-    // ── 3. Build unified diff entries ────────────────────────────────
-    let mut result: Vec<SvcDiffEntry> = Vec::new();
-
-    // All SCM services.
-    for (lower_name, svc) in &scm_map {
-        let in_registry = reg_map.contains_key(lower_name);
-        let svc_start_raw: u32 = match &svc.start_type {
-            crate::ServiceStartType::BootStart => 0,
-            crate::ServiceStartType::SystemStart => 1,
-            crate::ServiceStartType::AutoStart => 2,
-            crate::ServiceStartType::DemandStart => 3,
-            crate::ServiceStartType::Disabled => 4,
-            crate::ServiceStartType::Unknown(v) => *v,
-        };
-        let start_type = reg_map.get(lower_name).copied().unwrap_or(svc_start_raw);
-        let is_suspicious = classify_svc_diff(true, in_registry, start_type);
-        result.push(SvcDiffEntry {
-            service_name: svc.name.clone(),
-            display_name: svc.display_name.clone(),
-            binary_path: svc.image_path.clone(),
-            in_scm: true,
-            in_registry,
-            start_type,
-            is_suspicious,
-        });
-    }
-
-    // Registry-only services (not seen in SCM).
-    for svc_name in &service_subkeys {
-        let lower = svc_name.to_ascii_lowercase();
-        if scm_map.contains_key(&lower) {
-            continue; // Already included above.
-        }
-        let start_type = reg_map.get(&lower).copied().unwrap_or(3);
-        let is_suspicious = classify_svc_diff(false, true, start_type);
-        result.push(SvcDiffEntry {
-            service_name: svc_name.clone(),
-            display_name: String::new(),
-            binary_path: String::new(),
-            in_scm: false,
-            in_registry: true,
-            start_type,
-            is_suspicious,
-        });
-    }
-
-    Ok(result)
-}
 
 // ── Internal hive navigation helpers ─────────────────────────────────
 
@@ -182,80 +84,24 @@ const NK_NAME_LEN: usize = 0x48;
 const NK_NAME_DATA: usize = 0x4C;
 
 fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
-    hive_addr
-        .wrapping_add(HBIN_START)
-        .wrapping_add(cell_index as u64)
-}
+        todo!()
+    }
 
 fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<Vec<u8>> {
-    reader.read_bytes(vaddr + 4, 4096).ok()
-}
+        todo!()
+    }
 
 fn key_node_name(data: &[u8]) -> String {
-    if data.len() < NK_NAME_DATA {
-        return String::new();
+        todo!()
     }
-    let len = u16::from_le_bytes(
-        data[NK_NAME_LEN..NK_NAME_LEN + 2]
-            .try_into()
-            .unwrap_or([0; 2]),
-    ) as usize;
-    let end = NK_NAME_DATA + len.min(data.len().saturating_sub(NK_NAME_DATA));
-    String::from_utf8_lossy(&data[NK_NAME_DATA..end]).into_owned()
-}
 
 fn find_key_cell<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
     path: &str,
 ) -> Option<u32> {
-    let root_bytes = reader.read_bytes(hive_addr + ROOT_CELL_OFFSET, 4).ok()?;
-    let mut current = u32::from_le_bytes(root_bytes[..4].try_into().ok()?);
-
-    for component in path.split('\\').filter(|s| !s.is_empty()) {
-        let data = read_cell(reader, cell_vaddr(hive_addr, current))?;
-        if data.len() < 4 {
-            return None;
-        }
-        let sig = u16::from_le_bytes(data[0..2].try_into().ok()?);
-        if sig != NK_SIG {
-            return None;
-        }
-        let count = u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?)
-            as usize;
-        if count == 0 {
-            return None;
-        }
-        let list_cell =
-            u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
-        let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
-        if list_data.len() < 4 {
-            return None;
-        }
-        let list_sig = u16::from_le_bytes(list_data[0..2].try_into().ok()?);
-        let list_count = u16::from_le_bytes(list_data[2..4].try_into().ok()?) as usize;
-        let entry_size = match list_sig {
-            0x666C | 0x686C => 8,
-            0x696C => 4,
-            _ => return None,
-        };
-        let mut found = None;
-        for i in 0..list_count {
-            let off = 4 + i * entry_size;
-            if off + 4 > list_data.len() {
-                break;
-            }
-            let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
-            let child_data = read_cell(reader, cell_vaddr(hive_addr, child_cell))?;
-            if key_node_name(&child_data).eq_ignore_ascii_case(component) {
-                found = Some(child_cell);
-                break;
-            }
-        }
-        current = found?;
+        todo!()
     }
-    Some(current)
-}
 
 /// Return the names of all direct subkeys of the key at `path`.
 fn enum_direct_subkeys<P: PhysicalMemoryProvider>(
@@ -263,80 +109,8 @@ fn enum_direct_subkeys<P: PhysicalMemoryProvider>(
     hive_addr: u64,
     path: &str,
 ) -> Vec<String> {
-    let cell = match find_key_cell(reader, hive_addr, path) {
-        Some(c) => c,
-        None => return Vec::new(),
-    };
-    let data = match read_cell(reader, cell_vaddr(hive_addr, cell)) {
-        Some(d) => d,
-        None => return Vec::new(),
-    };
-    if data.len() < 4 {
-        return Vec::new();
+        todo!()
     }
-    let sig = match data[0..2].try_into().ok().map(u16::from_le_bytes) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    if sig != NK_SIG {
-        return Vec::new();
-    }
-    let count = u32::from_le_bytes(
-        match data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into() {
-            Ok(b) => b,
-            Err(_) => return Vec::new(),
-        },
-    ) as usize;
-    if count == 0 {
-        return Vec::new();
-    }
-    let list_cell = u32::from_le_bytes(match data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into() {
-        Ok(b) => b,
-        Err(_) => return Vec::new(),
-    });
-    let list_data = match read_cell(reader, cell_vaddr(hive_addr, list_cell)) {
-        Some(d) => d,
-        None => return Vec::new(),
-    };
-    if list_data.len() < 4 {
-        return Vec::new();
-    }
-    let list_sig = u16::from_le_bytes(match list_data[0..2].try_into() {
-        Ok(b) => b,
-        Err(_) => return Vec::new(),
-    });
-    let list_count = u16::from_le_bytes(match list_data[2..4].try_into() {
-        Ok(b) => b,
-        Err(_) => return Vec::new(),
-    }) as usize;
-    let entry_size = match list_sig {
-        0x666C | 0x686C => 8,
-        0x696C => 4,
-        _ => return Vec::new(),
-    };
-    let mut names = Vec::new();
-    for i in 0..list_count {
-        let off = 4 + i * entry_size;
-        if off + 4 > list_data.len() {
-            break;
-        }
-        let child_cell = match list_data[off..off + 4]
-            .try_into()
-            .ok()
-            .map(u32::from_le_bytes)
-        {
-            Some(c) => c,
-            None => continue,
-        };
-        if let Some(child_data) = read_cell(reader, cell_vaddr(hive_addr, child_cell)) {
-            let name = key_node_name(&child_data);
-            if !name.is_empty() {
-                names.push(name);
-            }
-        }
-    }
-    names
-}
 
 #[cfg(test)]
 mod tests {
@@ -348,119 +122,67 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     // ── classify_svc_diff unit tests ────────────────────────────────
 
     #[test]
     fn classify_memory_only_service_is_suspicious() {
-        // Service in SCM but not in registry = anti-forensic cleanup
-        assert!(classify_svc_diff(true, false, 2));
-        assert!(classify_svc_diff(true, false, 0));
-        assert!(classify_svc_diff(true, false, 3));
-        assert!(classify_svc_diff(true, false, 4));
+        todo!()
     }
 
     #[test]
     fn classify_registry_only_auto_start_is_suspicious() {
-        // Auto-start (2) in registry but not in SCM
-        assert!(classify_svc_diff(false, true, 2));
+        todo!()
     }
 
     #[test]
     fn classify_registry_only_system_start_is_suspicious() {
-        // System-start (1) in registry but not in SCM
-        assert!(classify_svc_diff(false, true, 1));
+        todo!()
     }
 
     #[test]
     fn classify_registry_only_demand_start_not_suspicious() {
-        // Demand-start (3) in registry but not in SCM is normal
-        assert!(!classify_svc_diff(false, true, 3));
+        todo!()
     }
 
     #[test]
     fn classify_registry_only_disabled_not_suspicious() {
-        // Disabled (4) in registry but not in SCM is expected
-        assert!(!classify_svc_diff(false, true, 4));
+        todo!()
     }
 
     #[test]
     fn classify_both_present_not_suspicious() {
-        // Service in both SCM and registry is normal
-        assert!(!classify_svc_diff(true, true, 0));
-        assert!(!classify_svc_diff(true, true, 1));
-        assert!(!classify_svc_diff(true, true, 2));
-        assert!(!classify_svc_diff(true, true, 3));
-        assert!(!classify_svc_diff(true, true, 4));
+        todo!()
     }
 
     #[test]
     fn classify_neither_present_not_suspicious() {
-        // Not in SCM and not in registry (shouldn't happen, but handle gracefully)
-        assert!(!classify_svc_diff(false, false, 0));
-        assert!(!classify_svc_diff(false, false, 2));
+        todo!()
     }
 
     #[test]
     fn classify_registry_only_boot_start_not_suspicious() {
-        // Boot-start (0) services are loaded by the boot loader, not SCM,
-        // so absence from SCM is normal.
-        assert!(!classify_svc_diff(false, true, 0));
+        todo!()
     }
 
     /// Unknown start type (e.g. 99) is not suspicious for registry-only.
     #[test]
     fn classify_registry_only_unknown_start_type_benign() {
-        assert!(!classify_svc_diff(false, true, 99));
+        todo!()
     }
 
     // ── SvcDiffEntry struct tests ───────────────────────────────────
 
     #[test]
     fn svc_diff_entry_construction() {
-        let entry = SvcDiffEntry {
-            service_name: "EvilSvc".into(),
-            display_name: "Evil Service".into(),
-            binary_path: "C:\\Windows\\Temp\\evil.exe".into(),
-            in_scm: true,
-            in_registry: false,
-            start_type: 2,
-            is_suspicious: true,
-        };
-        assert_eq!(entry.service_name, "EvilSvc");
-        assert_eq!(entry.display_name, "Evil Service");
-        assert_eq!(entry.binary_path, "C:\\Windows\\Temp\\evil.exe");
-        assert!(entry.in_scm);
-        assert!(!entry.in_registry);
-        assert_eq!(entry.start_type, 2);
-        assert!(entry.is_suspicious);
+        todo!()
     }
 
     #[test]
     fn svc_diff_entry_serialization() {
-        let entry = SvcDiffEntry {
-            service_name: "TestSvc".into(),
-            display_name: "Test Service".into(),
-            binary_path: "C:\\test.exe".into(),
-            in_scm: true,
-            in_registry: true,
-            start_type: 3,
-            is_suspicious: false,
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("\"service_name\":\"TestSvc\""));
-        assert!(json.contains("\"in_scm\":true"));
-        assert!(json.contains("\"in_registry\":true"));
-        assert!(json.contains("\"is_suspicious\":false"));
-        assert!(json.contains("\"start_type\":3"));
+        todo!()
     }
 
     // ── walk_svc_diff with zero addresses ────────────────────────────
@@ -468,89 +190,49 @@ mod tests {
     /// Both addresses zero → empty result, no error.
     #[test]
     fn walk_svc_diff_both_zero_empty() {
-        let reader = make_reader();
-        let result = walk_svc_diff(&reader, 0, 0).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// scm_list_head zero, non-zero but unmapped system_hive → empty.
     #[test]
     fn walk_svc_diff_zero_scm_unmapped_hive_empty() {
-        let reader = make_reader();
-        let result = walk_svc_diff(&reader, 0, 0xDEAD_BEEF_0000).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// Non-zero scm_list_head pointing to unmapped memory, zero hive →
     /// SCM walk fails gracefully (unwrap_or_default) → empty diff result.
     #[test]
     fn walk_svc_diff_unmapped_scm_zero_hive_empty() {
-        use memf_core::test_builders::PageTableBuilder;
-        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
-        use memf_symbols::isf::IsfResolver;
-        use memf_symbols::test_builders::IsfBuilder;
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // Non-zero scm_list_head pointing to unmapped memory.
-        let result = walk_svc_diff(&reader, 0xFFFF_8000_DEAD_0000, 0).unwrap_or_default();
-        assert!(result.is_empty());
+        todo!()
     }
 
     // ── cell_vaddr / internal helpers ─────────────────────────────────
 
     #[test]
     fn cell_vaddr_calculation() {
-        let hive: u64 = 0x1000_0000;
-        let cell: u32 = 0x200;
-        let expected = hive + HBIN_START + cell as u64;
-        assert_eq!(cell_vaddr(hive, cell), expected);
+        todo!()
     }
 
     #[test]
     fn hive_constants_correct() {
-        assert_eq!(HBIN_START, 0x1000);
-        assert_eq!(ROOT_CELL_OFFSET, 0x24);
-        assert_eq!(NK_SIG, 0x6B6E);
+        todo!()
     }
 
     // ── key_node_name helper ──────────────────────────────────────────
 
     #[test]
     fn key_node_name_too_short() {
-        let data = vec![0u8; NK_NAME_DATA - 1];
-        assert_eq!(key_node_name(&data), "");
+        todo!()
     }
 
     #[test]
     fn key_node_name_valid() {
-        // NK_NAME_LEN = 0x48, NK_NAME_DATA = 0x4C
-        let mut data = vec![0u8; 0x60];
-        let name = b"Services";
-        data[NK_NAME_LEN] = name.len() as u8;
-        data[NK_NAME_LEN + 1] = 0;
-        data[NK_NAME_DATA..NK_NAME_DATA + name.len()].copy_from_slice(name);
-        assert_eq!(key_node_name(&data), "Services");
+        todo!()
     }
 
     #[test]
     fn key_node_name_clamped_to_available() {
-        // length field says 10 bytes but only 5 bytes are available after NK_NAME_DATA
-        let mut data = vec![0u8; NK_NAME_DATA + 5];
-        data[NK_NAME_LEN] = 10;
-        data[NK_NAME_LEN + 1] = 0;
-        for i in 0..5 {
-            data[NK_NAME_DATA + i] = b'X';
-        }
-        // Should not panic; returns whatever fits
-        let name = key_node_name(&data);
-        assert!(name.len() <= 5);
+        todo!()
     }
 
     // ── find_key_cell / enum_direct_subkeys with bad data ────────────────
@@ -559,122 +241,33 @@ mod tests {
     /// This exercises the root bytes read path and the NK_SIG check branches.
     #[test]
     fn find_key_cell_bad_root_cell_data() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        // hive_addr chosen so cell_vaddr arithmetic lands within our mapped page.
-        // ROOT_CELL_OFFSET (0x24) is read from hive_addr + 0x24.
-        // We need: hive_addr + 0x24 to be readable (4 bytes), and
-        // cell_vaddr(hive_addr, root_cell_index) + 4 to be readable (4096 bytes).
-        //
-        // cell_vaddr = hive_addr + HBIN_START(0x1000) + cell_index
-        //
-        // Strategy: put hive_addr at 0x0050_0000, so
-        //   hive_addr + 0x24 = 0x0050_0024 (root cell offset read)
-        //   root_cell_index from bytes [0,0,0,0] = 0
-        //   cell_vaddr = 0x0050_0000 + 0x1000 + 0 = 0x0051_0000
-        //
-        // Map one page covering 0x0050_0000..0x0051_0FFF.
-        // Write: root_cell_index = 0 at offset 0x24.
-        // At cell_vaddr(0x0050_0000, 0) = 0x0051_0000: write bad NK sig (not 0x6B6E).
-
-        let hive_vaddr: u64 = 0xFFFF_8000_0050_0000;
-        let hive_paddr: u64 = 0x0050_0000;
-        let cell_vaddr_val = hive_vaddr + HBIN_START; // cell index 0 -> +0x1000
-        let cell_paddr: u64 = 0x0051_0000;
-
-        // root cell index = 0 (4 LE bytes at hive_paddr + 0x24)
-        let mut hive_page = [0u8; 4096];
-        // leave [0x24..0x28] as 0 → root_cell_index = 0
-
-        // At the cell page: write bad signature (0xDEAD instead of NK_SIG)
-        let mut cell_page = [0u8; 4096];
-        cell_page[0] = 0xAD;
-        cell_page[1] = 0xDE; // 0xDEAD — not 0x6B6E
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_vaddr_val, cell_paddr, flags::WRITABLE)
-            .write_phys(cell_paddr, &cell_page)
-            .build();
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // find_key_cell should return None because sig != NK_SIG
-        let result = find_key_cell(&reader, hive_vaddr, "CurrentControlSet\\Services");
-        assert!(result.is_none(), "bad NK sig should return None");
+        todo!()
     }
 
     /// enum_direct_subkeys with a mapped hive_addr that has no valid NK_SIG
     /// returns an empty Vec (exercises all the early-return guards).
     #[test]
     fn enum_direct_subkeys_bad_sig_returns_empty() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        let hive_vaddr: u64 = 0xFFFF_8000_0060_0000;
-        let hive_paddr: u64 = 0x0060_0000;
-        let cell_vaddr_val = hive_vaddr + HBIN_START;
-        let cell_paddr: u64 = 0x0061_0000;
-
-        let hive_page = [0u8; 4096]; // root_cell_index = 0
-        let mut cell_page = [0u8; 4096];
-        // Write valid NK_SIG so find_key_cell recurse doesn't hit sig check,
-        // but set stable count = 0 so it returns None immediately.
-        let sig_bytes = NK_SIG.to_le_bytes();
-        cell_page[0] = sig_bytes[0];
-        cell_page[1] = sig_bytes[1];
-        // NK_STABLE_COUNT (0x14) = 0 (already 0 from zeroed array)
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_vaddr_val, cell_paddr, flags::WRITABLE)
-            .write_phys(cell_paddr, &cell_page)
-            .build();
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // find_key_cell("CurrentControlSet\\Services") iterates path components,
-        // reads the root cell (NK_SIG ok, count==0) → returns None → enum returns [].
-        let names = enum_direct_subkeys(&reader, hive_vaddr, "CurrentControlSet\\Services");
-        assert!(names.is_empty(), "zero stable count should return empty");
+        todo!()
     }
 
     /// walk_svc_diff with non-zero hive_addr but no readable root cell bytes
     /// (all reads fail) returns Ok(empty) gracefully.
     #[test]
     fn walk_svc_diff_nonzero_hive_unreadable_returns_empty() {
-        let reader = make_reader(); // no pages mapped
-        // hive_addr non-zero but all reads fail → enum_direct_subkeys returns []
-        // → scm_services empty → result empty
-        let result = walk_svc_diff(&reader, 0, 0xFFFF_8000_BEEF_0000).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// cell_vaddr wrapping arithmetic does not panic.
     #[test]
     fn cell_vaddr_wrapping() {
-        // u64::MAX + 1 wraps to 0 (saturating_add not used, wrapping_add is used).
-        let v = cell_vaddr(u64::MAX, 0);
-        // Should not panic regardless of result.
-        let _ = v;
+        todo!()
     }
 
     /// key_node_name with exactly NK_NAME_DATA bytes and zero length returns empty string.
     #[test]
     fn key_node_name_zero_length() {
-        let mut data = vec![0u8; NK_NAME_DATA + 8];
-        // name length field = 0
-        data[NK_NAME_LEN] = 0;
-        data[NK_NAME_LEN + 1] = 0;
-        let name = key_node_name(&data);
-        assert_eq!(name, "");
+        todo!()
     }
 
     // ── Additional coverage: classify + helpers ──────────────────────
@@ -682,118 +275,85 @@ mod tests {
     /// classify_svc_diff: both absent (not in SCM, not in registry) is benign.
     #[test]
     fn classify_both_absent_benign() {
-        // Neither condition fires.
-        assert!(!classify_svc_diff(false, false, 2));
-        assert!(!classify_svc_diff(false, false, 0));
+        todo!()
     }
 
     /// classify_svc_diff: in SCM AND in registry is benign (normal service).
     #[test]
     fn classify_both_present_benign() {
-        assert!(!classify_svc_diff(true, true, 2));
-        assert!(!classify_svc_diff(true, true, 1));
-        assert!(!classify_svc_diff(true, true, 3));
+        todo!()
     }
 
     /// classify_svc_diff: registry-only with demand start (3) is benign.
     #[test]
     fn classify_registry_only_demand_start_benign() {
-        assert!(!classify_svc_diff(false, true, 3));
+        todo!()
     }
 
     /// classify_svc_diff: registry-only with disabled (4) is benign.
     #[test]
     fn classify_registry_only_disabled_benign() {
-        assert!(!classify_svc_diff(false, true, 4));
+        todo!()
     }
 
     /// classify_svc_diff: registry-only boot start (0) is benign (not 1 or 2).
     #[test]
     fn classify_registry_only_boot_start_benign() {
-        assert!(!classify_svc_diff(false, true, 0));
+        todo!()
     }
 
     /// SvcDiffEntry construction and serialization.
     #[test]
     fn svc_diff_entry_serializes() {
-        let entry = SvcDiffEntry {
-            service_name: "EvilSvc".to_string(),
-            display_name: "Evil Service".to_string(),
-            binary_path: "C:\\evil.exe".to_string(),
-            in_scm: true,
-            in_registry: false,
-            start_type: 2,
-            is_suspicious: true,
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("EvilSvc"));
-        assert!(json.contains("is_suspicious"));
-        assert!(json.contains("in_scm"));
+        todo!()
     }
 
     /// key_node_name with data shorter than NK_NAME_DATA returns empty (wave5 variant).
     #[test]
     fn key_node_name_too_short_w5() {
-        let data = vec![0u8; NK_NAME_DATA - 1];
-        assert_eq!(key_node_name(&data), "");
+        todo!()
     }
 
     /// key_node_name with a non-zero name length extracts the name correctly.
     #[test]
     fn key_node_name_extracts_name() {
-        let name = b"Services";
-        let mut data = vec![0u8; NK_NAME_DATA + name.len() + 4];
-        data[NK_NAME_LEN] = name.len() as u8;
-        data[NK_NAME_LEN + 1] = 0;
-        data[NK_NAME_DATA..NK_NAME_DATA + name.len()].copy_from_slice(name);
-        assert_eq!(key_node_name(&data), "Services");
+        todo!()
     }
 
     /// cell_vaddr wraps correctly without panicking.
     #[test]
     fn cell_vaddr_arithmetic() {
-        let hive: u64 = 0x0010_0000;
-        let idx: u32 = 0x300;
-        let result = cell_vaddr(hive, idx);
-        assert_eq!(result, hive + HBIN_START + idx as u64);
+        todo!()
     }
 
     /// read_cell on unmapped address returns None.
     #[test]
     fn read_cell_unmapped_returns_none() {
-        let reader = make_reader();
-        assert!(read_cell(&reader, 0xDEAD_BEEF_0000).is_none());
+        todo!()
     }
 
     /// find_key_cell on unmapped hive returns None.
     #[test]
     fn find_key_cell_unmapped_returns_none() {
-        let reader = make_reader();
-        assert!(find_key_cell(&reader, 0xDEAD_BEEF_0000, "CurrentControlSet").is_none());
+        todo!()
     }
 
     /// enum_direct_subkeys on unmapped hive returns empty Vec.
     #[test]
     fn enum_direct_subkeys_unmapped_returns_empty() {
-        let reader = make_reader();
-        let names = enum_direct_subkeys(&reader, 0xDEAD_BEEF_0000, "CurrentControlSet\\Services");
-        assert!(names.is_empty());
+        todo!()
     }
 
     /// walk_svc_diff with both addresses zero → empty Vec (wave5 variant).
     #[test]
     fn walk_svc_diff_both_zero_empty_w5() {
-        let reader = make_reader();
-        let result = walk_svc_diff(&reader, 0, 0).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// walk_svc_diff with zero SCM head and unmapped hive → empty Vec (wave5 variant).
     #[test]
     fn walk_svc_diff_zero_scm_unmapped_hive_empty_w5() {
-        let reader = make_reader();
-        let result = walk_svc_diff(&reader, 0, 0xFFFF_8000_DEAD_0000).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     // ── find_key_cell with multiple path components ────────────────────
@@ -805,364 +365,59 @@ mod tests {
     /// not found → returns None.
     #[test]
     fn find_key_cell_currentcontrolset_found_services_not_found() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        // Layout (virtual = physical):
-        //   hive_vaddr = 0xFFFF_8000_0070_0000
-        //   cell_page  = hive_vaddr + HBIN_START (0x1000)
-        //              = 0xFFFF_8000_0071_0000  → paddr 0x0071_0000
-        //
-        // cell_page layout (offsets from page start):
-        //   root cell at 0:
-        //     [0..4]   = -0x400 (allocated)
-        //     [4..6]   = NK_SIG
-        //     [4+0x14..4+0x18] = stable_count = 1
-        //     [4+0x1C..4+0x20] = list_cell = 0x80
-        //   list cell at 0x80:
-        //     [0..4]   = -0x80
-        //     [4..6]   = 0x686C ("lh") sig
-        //     [6..8]   = count = 1
-        //     [8..12]  = child_cell = 0x100  (8-byte entry, hash bytes at 12..16 = 0)
-        //   child cell at 0x100 (name = "CurrentControlSet"):
-        //     [0..4]   = -0x100
-        //     [4..6]   = NK_SIG
-        //     name "CurrentControlSet"
-        //     [4+0x14..4+0x18] = stable_count = 0 → Services not found
-
-        let hive_vaddr: u64 = 0xFFFF_8000_0070_0000;
-        let hive_paddr: u64 = 0x0070_0000;
-        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
-        let cell_page_paddr: u64 = 0x0071_0000;
-
-        let mut hive_page = [0u8; 4096];
-        // ROOT_CELL_OFFSET (0x24): root_cell_index = 0
-        // (already zero)
-
-        let mut cell_page = vec![0u8; 0x1000];
-
-        // Root cell:
-        cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
-        let n = 4usize;
-        cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        // stable_count = 1
-        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
-        // list_cell = 0x80
-        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
-
-        // List cell at 0x80 (lh, 8-byte entries):
-        let lc = 0x80usize;
-        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
-        cell_page[lc + 4..lc + 6].copy_from_slice(&0x686Cu16.to_le_bytes()); // "lh"
-        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
-        cell_page[lc + 8..lc + 12].copy_from_slice(&0x100u32.to_le_bytes()); // child_cell = 0x100
-
-        // Child cell at 0x100 ("CurrentControlSet"):
-        let cc = 0x100usize;
-        cell_page[cc..cc + 4].copy_from_slice(&(-0x100i32).to_le_bytes());
-        let cn = cc + 4;
-        cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        let ccs_name = b"CurrentControlSet";
-        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(ccs_name.len() as u16).to_le_bytes());
-        cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + ccs_name.len()].copy_from_slice(ccs_name);
-        // stable_count = 0 (already zero-initialized) → Services not found
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
-            .write_phys(cell_page_paddr, &cell_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = find_key_cell(&reader, hive_vaddr, "CurrentControlSet\\Services");
-        // "CurrentControlSet" found, "Services" subkey not found → None
-        assert!(result.is_none(), "Services not found → None");
+        todo!()
     }
 
     /// enum_direct_subkeys: root NK found with a valid lh-list containing
     /// one child NK. The child has a valid name → names Vec has one entry.
     #[test]
     fn enum_direct_subkeys_lh_list_returns_names() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        // Layout (virtual = physical):
-        //   hive_vaddr = 0xFFFF_8000_0080_0000
-        //   cell_page  = hive_vaddr + HBIN_START
-        //
-        // Root NK with stable_count=1, list = lh list with 1 entry,
-        // child NK name = "Dnscache".
-        // We call enum_direct_subkeys(reader, hive_vaddr, "")
-        // with empty path → find_key_cell("") returns Some(root_cell=0).
-        // Then enum_direct_subkeys enumerates the list → ["Dnscache"].
-
-        let hive_vaddr: u64 = 0xFFFF_8000_0080_0000;
-        let hive_paddr: u64 = 0x0080_0000;
-        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
-        let cell_page_paddr: u64 = 0x0081_0000;
-
-        let mut hive_page = [0u8; 4096];
-        // root_cell_index = 0 at ROOT_CELL_OFFSET (0x24)
-        // (already zero)
-
-        let mut cell_page = vec![0u8; 0x1000];
-
-        // Root cell:
-        cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
-        let n = 4usize;
-        cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
-        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
-
-        // lh list at 0x80:
-        let lc = 0x80usize;
-        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
-        cell_page[lc + 4..lc + 6].copy_from_slice(&0x686Cu16.to_le_bytes()); // "lh"
-        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
-        cell_page[lc + 8..lc + 12].copy_from_slice(&0x100u32.to_le_bytes());
-
-        // Child NK at 0x100 named "Dnscache":
-        let cc = 0x100usize;
-        cell_page[cc..cc + 4].copy_from_slice(&(-0x100i32).to_le_bytes());
-        let cn = cc + 4;
-        cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        let svc_name = b"Dnscache";
-        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
-        cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
-            .write_phys(cell_page_paddr, &cell_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // Empty path: find_key_cell("") → iterates zero path components → returns Some(0)
-        // enum_direct_subkeys then enumerates lh list → ["Dnscache"]
-        let names = enum_direct_subkeys(&reader, hive_vaddr, "");
-        assert_eq!(names.len(), 1, "should find one service name");
-        assert_eq!(names[0], "Dnscache");
+        todo!()
     }
 
     /// find_key_cell: path with empty components (double backslash) is
     /// filtered by the split logic.
     #[test]
     fn find_key_cell_empty_path_components_filtered() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        // Hive with root NK: "\\Services" split on '\\' yields ["", "Services"],
-        // filter(|s| !s.is_empty()) → ["Services"].
-        // Root NK has stable_count = 0 → "Services" not found → None.
-        let hive_vaddr: u64 = 0xFFFF_8000_0090_0000;
-        let hive_paddr: u64 = 0x0090_0000;
-        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
-        let cell_page_paddr: u64 = 0x0091_0000;
-
-        let mut hive_page = [0u8; 4096];
-        // root_cell_index = 0
-
-        let mut cell_page = vec![0u8; 0x1000];
-        cell_page[0..4].copy_from_slice(&(-0x80i32).to_le_bytes());
-        cell_page[4..6].copy_from_slice(&NK_SIG.to_le_bytes());
-        // stable_count = 0 → Services not found
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
-            .write_phys(cell_page_paddr, &cell_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // "\\Services" → ["Services"] → stable_count=0 → None
-        let result = find_key_cell(&reader, hive_vaddr, "\\Services");
-        assert!(result.is_none());
+        todo!()
     }
 
     /// key_node_name with zero length field returns empty string.
     #[test]
     fn key_node_name_zero_len_field_returns_empty() {
-        let mut data = vec![0u8; NK_NAME_DATA + 8];
-        data[NK_NAME_LEN] = 0;
-        data[NK_NAME_LEN + 1] = 0;
-        assert_eq!(key_node_name(&data), "");
+        todo!()
     }
 
     /// walk_svc_diff: non-zero system hive with root NK having stable_count=0
     /// produces empty registry subkeys → no registry-only entries → empty result.
     #[test]
     fn walk_svc_diff_hive_with_zero_services_subkeys_empty() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        let hive_vaddr: u64 = 0xFFFF_8000_00A0_0000;
-        let hive_paddr: u64 = 0x00A0_0000;
-        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
-        let cell_page_paddr: u64 = 0x00A1_0000;
-
-        let mut hive_page = [0u8; 4096];
-
-        let mut cell_page = vec![0u8; 0x1000];
-        // Root NK: valid sig but stable_count = 0 → "CurrentControlSet" not found
-        cell_page[0..4].copy_from_slice(&(-0x80i32).to_le_bytes());
-        cell_page[4..6].copy_from_slice(&NK_SIG.to_le_bytes());
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
-            .write_phys(cell_page_paddr, &cell_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // SCM head = 0 → empty SCM, hive has no CurrentControlSet → no registry entries
-        let result = walk_svc_diff(&reader, 0, hive_vaddr).unwrap();
-        assert!(result.is_empty());
+        todo!()
     }
 
     /// enum_direct_subkeys with li-list returns names.
     #[test]
     fn enum_direct_subkeys_li_list_returns_names() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        let hive_vaddr: u64 = 0xFFFF_8000_00B0_0000;
-        let hive_paddr: u64 = 0x00B0_0000;
-        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
-        let cell_page_paddr: u64 = 0x00B1_0000;
-
-        let hive_page = [0u8; 4096]; // root_cell_index = 0
-
-        let mut cell_page = vec![0u8; 0x1000];
-
-        // Root NK: lf list but with li sig
-        cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
-        let n = 4usize;
-        cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
-        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
-
-        // li list at 0x80:
-        let lc = 0x80usize;
-        cell_page[lc..lc + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
-        cell_page[lc + 4..lc + 6].copy_from_slice(&0x696Cu16.to_le_bytes()); // "li"
-        cell_page[lc + 6..lc + 8].copy_from_slice(&1u16.to_le_bytes());
-        cell_page[lc + 8..lc + 12].copy_from_slice(&0x100u32.to_le_bytes());
-
-        // Child NK at 0x100 named "Spooler":
-        let cc = 0x100usize;
-        cell_page[cc..cc + 4].copy_from_slice(&(-0x100i32).to_le_bytes());
-        let cn = cc + 4;
-        cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        let svc_name = b"Spooler";
-        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
-        cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
-            .write_phys(cell_page_paddr, &cell_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let names = enum_direct_subkeys(&reader, hive_vaddr, "");
-        assert_eq!(names.len(), 1);
-        assert_eq!(names[0], "Spooler");
+        todo!()
     }
 
     /// find_key_cell: empty path string returns Some(root_cell) immediately
     /// (no path components to iterate).
     #[test]
     fn find_key_cell_empty_path_returns_root() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        let hive_vaddr: u64 = 0xFFFF_8000_00C0_0000;
-        let hive_paddr: u64 = 0x00C0_0000;
-        let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
-        let cell_page_paddr: u64 = 0x00C1_0000;
-
-        let mut hive_page = [0u8; 4096];
-        // root_cell_index = 0x100
-        let root_idx: u32 = 0x100;
-        hive_page[ROOT_CELL_OFFSET as usize..ROOT_CELL_OFFSET as usize + 4]
-            .copy_from_slice(&root_idx.to_le_bytes());
-
-        let cell_page = [0u8; 4096];
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_page_vaddr, cell_page_paddr, flags::WRITABLE)
-            .write_phys(cell_page_paddr, &cell_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // Empty path: no components to iterate → returns Some(root_cell_index=0x100)
-        let result = find_key_cell(&reader, hive_vaddr, "");
-        assert_eq!(result, Some(0x100), "empty path returns root cell index");
+        todo!()
     }
 
     // ── walk_svc_diff with a real SCM service list ─────────────────────
 
     /// ISF builder that includes _SERVICE_RECORD, _LIST_ENTRY, _UNICODE_STRING.
     fn make_svc_diff_reader(ptb: PageTableBuilder) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
-        // _SERVICE_RECORD field offsets (matching service.rs tests).
-        const SR_SERVICE_LIST: u64 = 0x00;
-        const SR_SERVICE_NAME: u64 = 0x10;
-        const SR_DISPLAY_NAME: u64 = 0x18;
-        const SR_CURRENT_STATE: u64 = 0x20;
-        const SR_SERVICE_TYPE: u64 = 0x24;
-        const SR_START_TYPE: u64 = 0x28;
-        const SR_IMAGE_PATH: u64 = 0x30;
-        const SR_OBJECT_NAME: u64 = 0x38;
-        const SR_PROCESS_ID: u64 = 0x40;
-
-        let isf = IsfBuilder::new()
-            .add_struct("_SERVICE_RECORD", 0x80)
-            .add_field("_SERVICE_RECORD", "ServiceList",   SR_SERVICE_LIST,   "_LIST_ENTRY")
-            .add_field("_SERVICE_RECORD", "ServiceName",   SR_SERVICE_NAME,   "pointer")
-            .add_field("_SERVICE_RECORD", "DisplayName",   SR_DISPLAY_NAME,   "pointer")
-            .add_field("_SERVICE_RECORD", "CurrentState",  SR_CURRENT_STATE,  "unsigned int")
-            .add_field("_SERVICE_RECORD", "ServiceType",   SR_SERVICE_TYPE,   "unsigned int")
-            .add_field("_SERVICE_RECORD", "StartType",     SR_START_TYPE,     "unsigned int")
-            .add_field("_SERVICE_RECORD", "ImagePath",     SR_IMAGE_PATH,     "pointer")
-            .add_field("_SERVICE_RECORD", "ObjectName",    SR_OBJECT_NAME,    "pointer")
-            .add_field("_SERVICE_RECORD", "ProcessId",     SR_PROCESS_ID,     "unsigned int")
-            .add_struct("_LIST_ENTRY", 16)
-            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
-            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
-            .add_struct("_UNICODE_STRING", 16)
-            .add_field("_UNICODE_STRING", "Length",        0, "unsigned short")
-            .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
-            .add_field("_UNICODE_STRING", "Buffer",        8, "pointer")
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        todo!()
     }
 
     /// Encode a string as UTF-16LE bytes.
     fn utf16le_bytes(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+        todo!()
     }
 
     /// walk_svc_diff: one SCM service ("EvilSvc", AutoStart) not in registry
@@ -1171,81 +426,7 @@ mod tests {
     /// Covers walk_svc_diff lines 84-93 (SCM map built) and 129-149 (SCM loop).
     #[test]
     fn walk_svc_diff_scm_service_not_in_registry_is_suspicious() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        // Virtual addresses (paddr must be < 0x00FF_FFFF for SyntheticPhysMem).
-        let head_vaddr: u64 = 0xFFFF_8000_00D0_0000;
-        let head_paddr: u64 = 0x00D0_0000;
-        let sr_vaddr:   u64 = 0xFFFF_8000_00D1_0000;
-        let sr_paddr:   u64 = 0x00D1_0000;
-        let str_vaddr:  u64 = 0xFFFF_8000_00D2_0000;
-        let str_paddr:  u64 = 0x00D2_0000;
-
-        // Encode "EvilSvc" as UTF-16LE for the ServiceName string buffer.
-        let name_utf16 = utf16le_bytes("EvilSvc");
-        let name_len = name_utf16.len() as u16;
-
-        // str_page layout:
-        //   [0x000..0x010]: _UNICODE_STRING for ServiceName
-        //     [0..2]  = length (bytes)
-        //     [2..4]  = max length
-        //     [8..16] = Buffer pointer → str_vaddr + 0x100
-        //   [0x100..]: UTF-16LE "EvilSvc"
-        let mut str_page = vec![0u8; 0x200];
-        str_page[0x00..0x02].copy_from_slice(&name_len.to_le_bytes());
-        str_page[0x02..0x04].copy_from_slice(&(name_len + 2).to_le_bytes());
-        let buf_vaddr = str_vaddr + 0x100;
-        str_page[0x08..0x10].copy_from_slice(&buf_vaddr.to_le_bytes());
-        str_page[0x100..0x100 + name_utf16.len()].copy_from_slice(&name_utf16);
-
-        // head_page: LIST_ENTRY that acts as sentinel/head.
-        //   head.Flink = sr_vaddr  (points to SERVICE_RECORD.ServiceList)
-        //   head.Blink = sr_vaddr
-        let mut head_page = vec![0u8; 0x100];
-        head_page[0x00..0x08].copy_from_slice(&sr_vaddr.to_le_bytes()); // Flink
-        head_page[0x08..0x10].copy_from_slice(&sr_vaddr.to_le_bytes()); // Blink
-
-        // sr_page: _SERVICE_RECORD at offset 0.
-        //   [0x00..0x08] ServiceList.Flink = head_vaddr (sentinel → stop)
-        //   [0x08..0x10] ServiceList.Blink = head_vaddr
-        //   [0x10..0x18] ServiceName pointer = str_vaddr
-        //   [0x18..0x20] DisplayName pointer = 0 (empty)
-        //   [0x20..0x24] CurrentState = 4 (Running)
-        //   [0x24..0x28] ServiceType  = 0x10 (WIN32_OWN_PROCESS)
-        //   [0x28..0x2C] StartType    = 2 (AutoStart)
-        //   [0x30..0x38] ImagePath ptr = 0 (empty)
-        //   [0x38..0x40] ObjectName ptr = 0 (empty)
-        //   [0x40..0x44] ProcessId    = 1234
-        let mut sr_page = vec![0u8; 0x100];
-        sr_page[0x00..0x08].copy_from_slice(&head_vaddr.to_le_bytes()); // Flink → sentinel
-        sr_page[0x08..0x10].copy_from_slice(&head_vaddr.to_le_bytes()); // Blink
-        sr_page[0x10..0x18].copy_from_slice(&str_vaddr.to_le_bytes());  // ServiceName
-        sr_page[0x20..0x24].copy_from_slice(&4u32.to_le_bytes());        // CurrentState Running
-        sr_page[0x24..0x28].copy_from_slice(&0x10u32.to_le_bytes());     // ServiceType
-        sr_page[0x28..0x2C].copy_from_slice(&2u32.to_le_bytes());        // StartType AutoStart
-        sr_page[0x40..0x44].copy_from_slice(&1234u32.to_le_bytes());     // ProcessId
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
-            .write_phys(head_paddr, &head_page)
-            .map_4k(sr_vaddr, sr_paddr, flags::WRITABLE)
-            .write_phys(sr_paddr, &sr_page)
-            .map_4k(str_vaddr, str_paddr, flags::WRITABLE)
-            .write_phys(str_paddr, &str_page);
-
-        let reader = make_svc_diff_reader(ptb);
-
-        // system_hive_addr = 0 → no registry entries.
-        // SCM has "EvilSvc" (AutoStart=2) not in registry → suspicious.
-        let result = walk_svc_diff(&reader, head_vaddr, 0).unwrap();
-        assert!(!result.is_empty(), "should find SCM-only service");
-        let entry = result.iter().find(|e| e.service_name == "EvilSvc");
-        assert!(entry.is_some(), "should find EvilSvc");
-        let entry = entry.unwrap();
-        assert!(entry.in_scm,    "EvilSvc should be in SCM");
-        assert!(!entry.in_registry, "EvilSvc should not be in registry");
-        assert!(entry.is_suspicious, "SCM-only AutoStart service is suspicious");
-        assert_eq!(entry.start_type, 2, "start_type from SCM = AutoStart=2");
+        todo!()
     }
 
     /// walk_svc_diff: registry-only AutoStart service not in SCM → suspicious.
@@ -1255,195 +436,6 @@ mod tests {
     /// and lines 153-168 (registry-only entries loop).
     #[test]
     fn walk_svc_diff_registry_only_auto_start_service_is_suspicious() {
-        use memf_core::test_builders::{flags, PageTableBuilder};
-
-        // Hive layout: SYSTEM hive with CurrentControlSet\Services\BackdoorSvc
-        // The svc_diff module uses its own simpler NK reader (not registry_keys).
-        // Layout:
-        //   hive_vaddr (root): root_cell_index = 0 at offset 0x24
-        //   cell_page (hive_vaddr + 0x1000):
-        //     root NK at 0x04 (cell header 4 bytes + data)
-        //       name_len = 4, name = "ROOT" [actually unnamed, not navigated]
-        //       stable_count = 1, list_cell = 0x80
-        //     lf list at 0x84:
-        //       sig=0x666C, count=1, entry[0].cell=0x100
-        //     CurrentControlSet NK at 0x104:
-        //       name = "CurrentControlSet", stable_count = 1, list_cell = 0x180
-        //     lf list at 0x184:
-        //       sig=0x666C, count=1, entry[0].cell=0x200
-        //     Services NK at 0x204:
-        //       name = "Services", stable_count = 1, list_cell = 0x280
-        //     lf list at 0x284:
-        //       sig=0x666C, count=1, entry[0].cell=0x300
-        //     BackdoorSvc NK at 0x304:
-        //       name = "BackdoorSvc" (11 bytes), stable_count=0, value_count=0
-        //
-        // Note: svc_diff's find_key_cell reads with its own NK layout constants:
-        //   NK_STABLE_COUNT = 0x14, NK_STABLE_LIST = 0x1C, NK_NAME_LEN = 0x48, NK_NAME_DATA = 0x4C
-        // and read_cell reads vaddr+4 (skips cell header).
-        //
-        // registry_keys::read_registry_values uses NK_VALUE_COUNT at 0x24 and NK_VALUES_LIST at 0x28
-        // (relative to cell data = after 4-byte header).
-
-        let hive_vaddr: u64 = 0xFFFF_8000_00E0_0000;
-        let hive_paddr: u64 = 0x00E0_0000;
-        let cell_vaddr_base: u64 = hive_vaddr + 0x1000; // HBIN_START
-        let cell_paddr_base: u64 = 0x00E1_0000;
-
-        // Helper to write u32 LE into a buffer.
-        let mut cp = vec![0u8; 0x1000];
-
-        // svc_diff NK field offsets (relative to cell data = bytes after 4-byte cell header):
-        // NK_STABLE_COUNT = 0x14, NK_STABLE_LIST = 0x1C, NK_NAME_LEN = 0x48, NK_NAME_DATA = 0x4C
-        //
-        // Cell at offset X in cp: cp[X..X+4] = cell size header, cp[X+4..] = cell data.
-        // read_cell(vaddr) → reads from vaddr+4.
-        // cell_vaddr(hive, idx) = hive + 0x1000 + idx
-        // So cell at cp[0] corresponds to idx=0, and cp[4..] is cell data.
-
-        fn w32(buf: &mut Vec<u8>, off: usize, val: u32) {
-            buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
-        }
-        fn w16(buf: &mut Vec<u8>, off: usize, val: u16) {
-            buf[off..off + 2].copy_from_slice(&val.to_le_bytes());
-        }
-
-        // Root cell at idx=0 → cp[0..] header, cp[4..] data.
-        // data[0x00..0x02] = NK_SIG
-        // data[0x14..0x18] = stable_count = 1 (svc_diff NK_STABLE_COUNT = 0x14)
-        // data[0x1C..0x20] = list_cell = 0x80 (svc_diff NK_STABLE_LIST = 0x1C)
-        w32(&mut cp, 0, 0xFFFF_FF80u32); // cell header (negative = allocated)
-        w16(&mut cp, 4, NK_SIG);
-        w32(&mut cp, 4 + NK_STABLE_COUNT, 1u32);   // stable_count = 1
-        w32(&mut cp, 4 + NK_STABLE_LIST, 0x80u32); // list_cell = 0x80
-
-        // lf list at idx=0x80 → cp[0x80..] header, cp[0x84..] data.
-        // data[0..2] = 0x666C ("lf"), data[2..4] = count=1, data[4..8] = entry cell=0x100, [8..12]=hash
-        w32(&mut cp, 0x80, 0xFFFF_FF80u32);
-        w16(&mut cp, 0x84, 0x666Cu16); // lf sig
-        w16(&mut cp, 0x86, 1u16);       // count = 1
-        w32(&mut cp, 0x88, 0x100u32);   // child cell = 0x100
-        // [0x8C..0x90] = hash (0, ignored)
-
-        // CurrentControlSet NK at idx=0x100.
-        let ccs_name = b"CurrentControlSet";
-        w32(&mut cp, 0x100, 0xFFFF_FF00u32);
-        w16(&mut cp, 0x104, NK_SIG);
-        w32(&mut cp, 0x104 + NK_STABLE_COUNT, 1u32);    // stable_count = 1
-        w32(&mut cp, 0x104 + NK_STABLE_LIST, 0x180u32); // list_cell = 0x180
-        w16(&mut cp, 0x104 + NK_NAME_LEN, ccs_name.len() as u16);
-        cp[0x104 + NK_NAME_DATA..0x104 + NK_NAME_DATA + ccs_name.len()].copy_from_slice(ccs_name);
-
-        // lf list at idx=0x180.
-        w32(&mut cp, 0x180, 0xFFFF_FF80u32);
-        w16(&mut cp, 0x184, 0x666Cu16);
-        w16(&mut cp, 0x186, 1u16);
-        w32(&mut cp, 0x188, 0x200u32); // child cell = 0x200
-
-        // Services NK at idx=0x200.
-        let svc_name = b"Services";
-        w32(&mut cp, 0x200, 0xFFFF_FF00u32);
-        w16(&mut cp, 0x204, NK_SIG);
-        w32(&mut cp, 0x204 + NK_STABLE_COUNT, 1u32);    // stable_count = 1
-        w32(&mut cp, 0x204 + NK_STABLE_LIST, 0x280u32); // list_cell = 0x280
-        w16(&mut cp, 0x204 + NK_NAME_LEN, svc_name.len() as u16);
-        cp[0x204 + NK_NAME_DATA..0x204 + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
-
-        // lf list at idx=0x280.
-        w32(&mut cp, 0x280, 0xFFFF_FF80u32);
-        w16(&mut cp, 0x284, 0x666Cu16);
-        w16(&mut cp, 0x286, 1u16);
-        w32(&mut cp, 0x288, 0x300u32); // child cell = 0x300
-
-        // BackdoorSvc NK at idx=0x300 (value_count=0, so read_registry_values returns []).
-        // Start value comes from registry_keys::read_registry_values → [] → default 3 (DemandStart).
-        // Wait: we want AutoStart=2 to be suspicious. But read_registry_values returns [] →
-        // default start_type = 3 (line 121: .unwrap_or(3)). So start_type=3 → not suspicious.
-        //
-        // To get start_type=2 (auto), we need a "Start" value. Let's add one:
-        //   registry_keys layout: NK at 0x300:
-        //     value_count at NK_VALUE_COUNT_OFFSET (0x24) = 1
-        //     values_list at NK_VALUES_LIST_OFFSET (0x28) = 0x380
-        //   vk cell at 0x380:
-        //     sig = 0x6B76 ("vk")
-        //     name_len = 5 ("Start")
-        //     data_len = 4 (inline bit NOT set → external; but easier with inline)
-        //     data_offset = inline: set MSB of data_len (0x8000_0004) + data in data_offset field
-        //     Actually: inline data = MSB of DataLength set → data is in DataOffset field itself
-        //     So: data_len = 0x8000_0004 (inline, 4 bytes), data_offset = 2 (AutoStart)
-        //     type = 4 (REG_DWORD)
-        //     name = "Start" (5 bytes)
-        //
-        // registry_keys VK offsets (relative to cell data after 4-byte header):
-        //   VK_SIGNATURE   = sig at [0..2] = 0x6B76
-        //   VK_NAME_LENGTH = [0x02..0x04] = name_len
-        //   VK_DATA_LENGTH = [0x04..0x08] = data_len (MSB set = inline)
-        //   VK_DATA_OFFSET = [0x08..0x0C] = data (inline value when MSB set)
-        //   VK_TYPE        = [0x0C..0x10] = type
-        //   VK_NAME        = [0x14..]    = name bytes
-
-        // BackdoorSvc NK:
-        let bd_name = b"BackdoorSvc";
-        w32(&mut cp, 0x300, 0xFFFF_FF00u32);
-        w16(&mut cp, 0x304, NK_SIG);
-        w32(&mut cp, 0x304 + NK_STABLE_COUNT, 0u32);    // no subkeys
-        // NK_VALUE_COUNT_OFFSET = 0x24 (registry_keys.rs)
-        w32(&mut cp, 0x304 + 0x24, 1u32);               // value_count = 1
-        // NK_VALUES_LIST_OFFSET = 0x28
-        w32(&mut cp, 0x304 + 0x28, 0x380u32);           // values_list cell = 0x380
-        w16(&mut cp, 0x304 + NK_NAME_LEN, bd_name.len() as u16);
-        cp[0x304 + NK_NAME_DATA..0x304 + NK_NAME_DATA + bd_name.len()].copy_from_slice(bd_name);
-
-        // Values list cell at idx=0x380: one entry (cell index of vk cell = 0x400)
-        w32(&mut cp, 0x380, 0xFFFF_FF80u32);
-        w32(&mut cp, 0x384, 0x400u32); // vk cell index
-
-        // VK cell at idx=0x400: "Start" value stored as REG_SZ "2" (inline, 2 UTF-16LE bytes).
-        //
-        // Why REG_SZ instead of REG_DWORD?
-        // svc_diff.rs line 120 parses `data_preview` as u32. For REG_DWORD,
-        // format_data_preview returns "0x00000002 (2)" which doesn't parse.
-        // REG_SZ with content "2" gives data_preview = "2" which parses fine.
-        //
-        // Inline storage: MSB of data_length = 1 → data is in data_offset field.
-        // UTF-16LE '2' = [0x32, 0x00] stored in low 2 bytes of data_offset:
-        //   data_offset = 0x0000_0032 → to_le_bytes() = [0x32, 0x00, 0x00, 0x00]
-        //   inline_bytes[..2] = [0x32, 0x00] → decoded as UTF-16LE = "2"
-        let start_name = b"Start";
-        w32(&mut cp, 0x400, 0xFFFF_FF80u32);
-        // vk data starts at cp[0x404]:
-        w16(&mut cp, 0x404, 0x6B76u16);          // VK sig
-        w16(&mut cp, 0x406, start_name.len() as u16); // name_len = 5
-        // data_len with MSB set = inline, 2 bytes (REG_SZ "2" in UTF-16LE)
-        w32(&mut cp, 0x408, 0x8000_0002u32);     // inline, 2 bytes
-        // data_offset: first 2 bytes are [0x32, 0x00] = UTF-16LE '2'
-        w32(&mut cp, 0x40C, 0x0000_0032u32);     // inline data = '2' in UTF-16LE
-        w32(&mut cp, 0x410, 1u32);               // type = REG_SZ
-        // name at VK_NAME_OFFSET (0x14):
-        cp[0x404 + 0x14..0x404 + 0x14 + start_name.len()].copy_from_slice(start_name);
-
-        // Hive page: root_cell_index = 0 at offset ROOT_CELL_OFFSET (0x24).
-        let mut hive_page = vec![0u8; 0x1000];
-        // root_cell_index = 0 (already zero)
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(cell_vaddr_base, cell_paddr_base, flags::WRITABLE)
-            .write_phys(cell_paddr_base, &cp);
-
-        // SCM head = 0 → no SCM services.
-        // Registry has "BackdoorSvc" with Start=2 (AutoStart), not in SCM → suspicious.
-        let reader = make_svc_diff_reader(ptb);
-        let result = walk_svc_diff(&reader, 0, hive_vaddr).unwrap();
-
-        assert!(!result.is_empty(), "should find registry-only service");
-        let entry = result.iter().find(|e| e.service_name == "BackdoorSvc");
-        assert!(entry.is_some(), "should find BackdoorSvc");
-        let entry = entry.unwrap();
-        assert!(!entry.in_scm,    "BackdoorSvc should not be in SCM");
-        assert!(entry.in_registry, "BackdoorSvc should be in registry");
-        assert_eq!(entry.start_type, 2, "start_type should be 2 (AutoStart)");
-        assert!(entry.is_suspicious, "registry-only AutoStart service is suspicious");
+        todo!()
     }
 }
