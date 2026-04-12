@@ -7,6 +7,7 @@
 
 pub mod antiforensics;
 pub mod commands;
+pub mod encryption;
 pub mod lolbins;
 pub mod paths;
 pub mod persistence;
