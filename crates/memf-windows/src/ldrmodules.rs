@@ -265,7 +265,6 @@ mod tests {
     #[test]
     fn walk_no_peb_returns_empty() {
         // When PEB is null (0), walk_ldrmodules should return Ok(empty vec).
-        // This test will initially fail because the function body is todo!().
         use memf_core::test_builders::{flags, PageTableBuilder};
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
