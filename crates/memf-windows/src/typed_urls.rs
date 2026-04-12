@@ -26,11 +26,16 @@ const TYPED_URLS_TIME_PATH: &[&str] = &[
     "Software", "Microsoft", "Internet Explorer", "TypedURLsTime",
 ];
 
+/// A URL typed directly into the IE/Edge address bar.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TypedUrlEntry {
+    /// Windows username whose hive contained this entry.
     pub username: String,
+    /// The typed URL string.
     pub url: String,
+    /// Last-visited timestamp stored in the registry (FILETIME).
     pub timestamp: u64,
+    /// `true` when the URL matches a known suspicious domain or pattern.
     pub is_suspicious: bool,
 }
 
@@ -39,6 +44,7 @@ const SUSPICIOUS_DOMAINS: &[&str] = &[
     "file.io", "mega.nz", "anonfiles.com",
 ];
 
+/// Return `true` when the URL matches a known suspicious domain or pattern.
 pub fn classify_typed_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     for domain in SUSPICIOUS_DOMAINS {
@@ -229,6 +235,7 @@ fn find_subkey<P: PhysicalMemoryProvider>(
     Ok(None)
 }
 
+/// Walk typed URL entries from a registry hive in memory.
 pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,

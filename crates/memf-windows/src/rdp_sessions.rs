@@ -6,20 +6,32 @@ use memf_format::PhysicalMemoryProvider;
 #[allow(dead_code)]
 const MAX_SESSIONS: usize = 256;
 
+/// Information about a single RDP session extracted from kernel memory.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RdpSessionInfo {
+    /// Numeric session identifier.
     pub session_id: u32,
+    /// Logged-on username.
     pub username: String,
+    /// Domain of the logged-on user.
     pub domain: String,
+    /// Hostname of the connecting RDP client.
     pub client_name: String,
+    /// IP address of the connecting RDP client.
     pub client_address: String,
+    /// Session connect timestamp (FILETIME).
     pub connect_time: u64,
+    /// Session disconnect timestamp (FILETIME), 0 if still connected.
     pub disconnect_time: u64,
+    /// User logon timestamp (FILETIME).
     pub logon_time: u64,
+    /// Human-readable session state (e.g. `"Active"`, `"Disconnected"`).
     pub state: String,
+    /// `true` when heuristics suggest this session is anomalous.
     pub is_suspicious: bool,
 }
 
+/// Convert a numeric RDP session state to a human-readable name.
 pub fn session_state_name(state: u32) -> String {
     match state {
         0 => "Active".into(),
@@ -36,6 +48,7 @@ pub fn session_state_name(state: u32) -> String {
     }
 }
 
+/// Return `true` when an RDP session is considered suspicious.
 pub fn classify_rdp_session(username: &str, client_address: &str, state: u32) -> bool {
     if state == 3 {
         return true;
@@ -68,6 +81,7 @@ fn is_cross_network_private_ip(addr: &str) -> bool {
     false
 }
 
+/// Walk RDP session objects from kernel memory.
 pub fn walk_rdp_sessions<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<RdpSessionInfo>> {

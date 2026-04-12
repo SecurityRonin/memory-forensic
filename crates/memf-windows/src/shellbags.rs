@@ -6,15 +6,22 @@ use memf_format::PhysicalMemoryProvider;
 const MAX_SUBKEYS_PER_LEVEL: usize = 256;
 const MAX_DEPTH: usize = 32;
 
+/// A shellbag entry recording folder access evidence.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ShellbagEntry {
+    /// Reconstructed folder path from BagMRU registry keys.
     pub path: String,
+    /// Registry key last-write time for this bag slot (FILETIME).
     pub slot_modified_time: u64,
+    /// Last-access timestamp embedded in the ShellItem (FILETIME).
     pub access_time: u64,
+    /// Creation timestamp embedded in the ShellItem (FILETIME).
     pub creation_time: u64,
+    /// `true` when the path matches known suspicious patterns.
     pub is_suspicious: bool,
 }
 
+/// Return `true` when a shellbag path matches known suspicious patterns.
 pub fn classify_shellbag(path: &str) -> bool {
     if path.is_empty() {
         return false;
@@ -44,6 +51,7 @@ pub fn classify_shellbag(path: &str) -> bool {
     false
 }
 
+/// Walk shellbag entries from a registry hive in memory.
 pub fn walk_shellbags<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,

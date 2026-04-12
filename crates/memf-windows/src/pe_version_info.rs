@@ -5,19 +5,30 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::Result;
 
+/// PE `VS_VERSIONINFO` resource extracted from a loaded kernel module.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PeVersionInfo {
+    /// Virtual address of the module base (`DllBase`).
     pub module_base: u64,
+    /// Module filename (e.g. `"ntoskrnl.exe"`).
     pub module_name: String,
+    /// `ProductName` string from the version resource.
     pub product_name: String,
+    /// `FileDescription` string from the version resource.
     pub file_description: String,
+    /// `CompanyName` string from the version resource.
     pub company_name: String,
+    /// `FileVersion` string from the version resource.
     pub file_version: String,
+    /// `ProductVersion` string from the version resource.
     pub product_version: String,
+    /// `OriginalFilename` string from the version resource.
     pub original_filename: String,
+    /// `true` when the loaded module name does not match `OriginalFilename`.
     pub is_suspicious: bool,
 }
 
+/// Return `true` when the loaded module filename differs from its embedded `OriginalFilename`.
 pub fn classify_version_mismatch(module_name: &str, original_filename: &str) -> bool {
     if original_filename.is_empty() {
         return false;
@@ -28,6 +39,7 @@ pub fn classify_version_mismatch(module_name: &str, original_filename: &str) -> 
     m_base != o.as_str()
 }
 
+/// Extract `VS_VERSIONINFO` resources from all loaded kernel modules.
 pub fn walk_pe_version_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<PeVersionInfo>> {

@@ -7,16 +7,25 @@ use serde::Serialize;
 /// Windows system information extracted from kernel memory.
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemInfo {
+    /// Windows major version number (e.g. `10`).
     pub major_version: u32,
+    /// Windows minor version number (e.g. `0`).
     pub minor_version: u32,
+    /// OS build number (e.g. `19041`).
     pub build_number: u32,
+    /// Build lab string from `NtBuildLab` kernel variable.
     pub build_lab: String,
+    /// Service pack string (empty on modern Windows).
     pub service_pack: String,
+    /// Number of logical processors.
     pub num_processors: u32,
+    /// System time at capture (FILETIME / 100-ns intervals since 1601).
     pub system_time: u64,
+    /// Human-readable product type (`"Workstation"`, `"Server"`, etc.).
     pub product_type: String,
 }
 
+/// Convert a `NtProductType` numeric value to a human-readable name.
 pub fn product_type_name(product_type: u32) -> String {
     match product_type {
         1 => "Workstation".into(),
@@ -26,6 +35,7 @@ pub fn product_type_name(product_type: u32) -> String {
     }
 }
 
+/// Extract Windows system information from kernel memory.
 pub fn walk_sysinfo<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Option<SystemInfo>> {

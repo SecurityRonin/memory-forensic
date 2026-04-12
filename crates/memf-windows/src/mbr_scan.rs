@@ -5,16 +5,24 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::Result;
 
+/// Information about a scanned MBR/VBR sector.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MbrInfo {
+    /// Byte offset of the sector in memory.
     pub physical_offset: u64,
+    /// 32-bit disk signature at offset 0x1B8.
     pub signature: u32,
+    /// Boot indicator byte (0x80 = active/bootable).
     pub boot_indicator: u8,
+    /// `true` when the sector ends with the `0x55 0xAA` boot magic.
     pub has_valid_magic: bool,
+    /// `true` when the bootstrap code pattern looks anomalous.
     pub is_suspicious: bool,
+    /// SHA-256 hex digest of the first 446 bootstrap bytes.
     pub bootstrap_hash: String,
 }
 
+/// Return `true` when the MBR bootstrap code pattern appears anomalous.
 pub fn classify_mbr(bootstrap_bytes: &[u8]) -> bool {
     if bootstrap_bytes.len() < 4 {
         return false;
