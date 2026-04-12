@@ -60,19 +60,98 @@ impl IntoForensicEvents for WinProcessInfo {
 
 impl IntoForensicEvents for WinDriverInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let suspicious_path = self.full_path.is_empty()
+            || (!self.full_path.starts_with("\\SystemRoot\\")
+                && !self.full_path.starts_with("\\Windows\\"));
+
+        let (severity, finding, confidence) = if suspicious_path {
+            (Severity::High, Finding::DefenseEvasion, 0.85f64)
+        } else {
+            (Severity::Info, Finding::Other("driver_loaded".into()), 0.5f64)
+        };
+
+        let mitre = if suspicious_path {
+            vec![MitreAttackId::new("T1014").expect("valid id")]
+        } else {
+            vec![]
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("win_driver")
+            .entity(Entity::Driver {
+                name: self.name.clone(),
+                base: self.base_addr,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for WinMalfindInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let has_execute = self.protection_str.contains("EXECUTE");
+        let has_mz = self.first_bytes.starts_with(&[0x4D, 0x5A]);
+
+        let (severity, finding, confidence) = if has_execute && has_mz {
+            (Severity::Critical, Finding::ProcessHollowing, 0.95f64)
+        } else if has_execute {
+            (Severity::High, Finding::ProcessHollowing, 0.8f64)
+        } else {
+            (Severity::Info, Finding::Other("vad_region".into()), 0.4f64)
+        };
+
+        let mitre = if has_execute {
+            vec![MitreAttackId::new("T1055").expect("valid id")]
+        } else {
+            vec![]
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("win_malfind")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for WinHollowingInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, confidence) = if self.suspicious {
+            (Severity::Critical, Finding::ProcessHollowing, 0.9f64)
+        } else if !self.has_mz || !self.has_pe {
+            (Severity::Medium, Finding::DefenseEvasion, 0.65f64)
+        } else {
+            (Severity::Info, Finding::Other("process_checked".into()), 0.5f64)
+        };
+
+        let mitre = if self.suspicious || !self.has_mz || !self.has_pe {
+            vec![MitreAttackId::new("T1055").expect("valid id")]
+        } else {
+            vec![]
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("win_hollowing")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
