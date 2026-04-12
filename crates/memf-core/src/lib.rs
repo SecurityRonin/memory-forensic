@@ -7,6 +7,7 @@
 //!   AArch64, and x86 PAE/non-PAE modes
 //! - [`ObjectReader`] — high-level kernel struct traversal using symbol information
 
+pub mod lzo;
 pub mod object_reader;
 pub mod pagefile;
 pub mod proto_pte;
