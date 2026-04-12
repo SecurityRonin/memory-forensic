@@ -206,22 +206,45 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
                 })
                 .unwrap_or(0);
 
-            // owner_pid is intentionally left as 0 here. Resolving the true owning
-            // PID from a unix_sock requires following the sk_peer_pid pointer chain
-            // (unix_sock -> sock.sk_peer_pid -> struct pid -> upid -> pid_ns + nr),
-            // which demands multiple ISF field lookups not currently worth the
-            // complexity cost. As a consequence, abstract sockets with a real high-PID
-            // owner are not flagged by the pid >= 1000 branch of classify_unix_socket;
-            // only the /tmp and /dev/shm path-based detection remains active.
-            // TODO: resolve owner_pid via sk_peer_pid when ISF coverage improves.
-            let is_suspicious = classify_unix_socket(&path, 0);
+            // Resolve owner_pid via sk.__sk_common.skc_peer_pid → struct pid → numbers[0].nr.
+            // If the ISF lacks either field or the pointer is null, owner_pid stays 0.
+            let owner_pid: u32 = {
+                let skc_peer_pid_off = reader
+                    .symbols()
+                    .field_offset("sock_common", "skc_peer_pid")
+                    .unwrap_or(0);
+                let pid_nr_off = reader
+                    .symbols()
+                    .field_offset("pid", "nr")
+                    .unwrap_or(0);
+                if skc_peer_pid_off == 0 || pid_nr_off == 0 {
+                    0
+                } else {
+                    let pid_ptr = reader
+                        .read_bytes(sock_addr + skc_peer_pid_off, 8)
+                        .ok()
+                        .and_then(|b| Some(u64::from_le_bytes(b[..8].try_into().ok()?)))
+                        .unwrap_or(0);
+                    if pid_ptr == 0 {
+                        0
+                    } else {
+                        reader
+                            .read_bytes(pid_ptr + pid_nr_off, 4)
+                            .ok()
+                            .and_then(|b| Some(u32::from_le_bytes(b[..4].try_into().ok()?)))
+                            .unwrap_or(0)
+                    }
+                }
+            };
+
+            let is_suspicious = classify_unix_socket(&path, owner_pid);
 
             results.push(UnixSocketInfo {
                 inode,
                 path,
                 socket_type: socket_type_name(sk_type).to_string(),
                 state: state_str,
-                owner_pid: 0, // unresolved — see comment above
+                owner_pid,
                 peer_pid: 0,
                 is_suspicious,
             });
