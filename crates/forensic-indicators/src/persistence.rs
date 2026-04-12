@@ -123,14 +123,27 @@ pub const ALL_WINDOWS_PERSISTENCE_PATHS: &[&str] = &[
 
 /// Returns true if the given registry path is a known Windows persistence location
 /// (case-insensitive prefix/contains match against ALL_WINDOWS_PERSISTENCE_PATHS).
-pub fn is_persistence_path(_path: &str) -> bool {
-    todo!("implement is_persistence_path")
+pub fn is_persistence_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ALL_WINDOWS_PERSISTENCE_PATHS
+        .iter()
+        .any(|entry| lower.contains(&entry.to_ascii_lowercase()))
 }
 
 /// Returns true if the IFEO debugger value looks like an attacker-controlled binary.
 /// Suspicious if: contains \temp\ or \appdata\; not empty and not a known debugger.
-pub fn is_suspicious_ifeo_debugger(_value: &str) -> bool {
-    todo!("implement is_suspicious_ifeo_debugger")
+pub fn is_suspicious_ifeo_debugger(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    // Known benign debuggers
+    let benign = ["ntsd", "windbg", "vsjitdebugger.exe"];
+    if benign.iter().any(|b| lower.contains(b)) {
+        return false;
+    }
+    // Suspicious locations
+    lower.contains(r"\temp\") || lower.contains(r"\appdata\")
 }
 
 /// Returns `true` if `path` references a known persistence location on any platform
