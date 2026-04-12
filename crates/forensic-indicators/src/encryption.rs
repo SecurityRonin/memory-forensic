@@ -78,8 +78,11 @@ pub const ALL_ENCRYPTION_PATHS: &[&str] = &[
 
 /// Returns true if the given registry path matches a known encryption tool indicator
 /// (case-insensitive contains match).
-pub fn is_encryption_tool_path(_path: &str) -> bool {
-    todo!("implement is_encryption_tool_path")
+pub fn is_encryption_tool_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ALL_ENCRYPTION_PATHS
+        .iter()
+        .any(|entry| lower.contains(&entry.to_ascii_lowercase()))
 }
 
 #[cfg(test)]
