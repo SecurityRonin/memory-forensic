@@ -58,17 +58,12 @@ fn read_process_info<P: PhysicalMemoryProvider>(
     // TODO(thread_count): read _EPROCESS.ActiveThreads (u32) once the ISF
     // preset exposes it.  The field lives at a version-dependent offset (e.g.
     // 0x4B4 on Win10 20H2) and is not yet present in windows_kernel_preset.
-    let thread_count: u32 = reader
-        .read_field::<u32>(eproc_addr, "_EPROCESS", "ActiveThreads")
-        .unwrap_or(0);
+    let thread_count: u32 = 0;
 
     // TODO(is_wow64): read _EPROCESS.Wow64Process (pointer) and check != 0
     // once the ISF preset exposes it.  The field lives at a version-dependent
     // offset (e.g. 0x548 on Win10) and is not yet present in the preset.
-    let is_wow64: bool = reader
-        .read_field::<u64>(eproc_addr, "_EPROCESS", "Wow64Process")
-        .map(|v| v != 0)
-        .unwrap_or(false);
+    let is_wow64: bool = false;
 
     Ok(WinProcessInfo {
         pid,
@@ -651,6 +646,149 @@ mod tests {
         assert_eq!(results[0].eprocess_name, "malware.exe");
         assert!(results[0].peb_image_path.contains("svchost.exe"));
         assert!(results[0].suspicious);
+    }
+
+    // -------------------------------------------------------------------
+    // thread_count and is_wow64 tests
+    // -------------------------------------------------------------------
+
+    /// Build an ObjectReader using a custom ISF that extends the preset with
+    /// `ActiveThreads` and `Wow64Process` fields on `_EPROCESS`.
+    fn make_win_reader_with_thread_wow64(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_field("_EPROCESS", "ActiveThreads", 0x4B4, "unsigned int")
+            .add_field("_EPROCESS", "Wow64Process", 0x548, "pointer");
+        let json = isf.build_json();
+        let resolver = IsfResolver::from_value(&json).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    const EPROCESS_ACTIVE_THREADS: u64 = 0x4B4;
+    const EPROCESS_WOW64_PROCESS: u64 = 0x548;
+
+    #[test]
+    fn thread_count_is_read_from_active_threads() {
+        // A process with 7 threads: ActiveThreads = 7, Wow64Process = 0
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS);
+
+        let ptb = write_eprocess(
+            ptb,
+            eproc_paddr,
+            eproc_vaddr,
+            4,
+            0,
+            "System",
+            132800000000000000,
+            0,
+            0x1ab000,
+            0,
+            head_vaddr,
+            head_vaddr,
+        );
+        // Write ActiveThreads = 7 (u32 at offset 0x4B4)
+        let ptb = ptb.write_phys(eproc_paddr + EPROCESS_ACTIVE_THREADS, &7u32.to_le_bytes());
+        // Wow64Process = 0 (not a WoW64 process)
+        let ptb = ptb.write_phys_u64(eproc_paddr + EPROCESS_WOW64_PROCESS, 0);
+
+        let reader = make_win_reader_with_thread_wow64(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].thread_count, 7, "thread_count should be 7");
+        assert!(!procs[0].is_wow64, "is_wow64 should be false when Wow64Process == 0");
+    }
+
+    #[test]
+    fn is_wow64_true_when_wow64process_nonzero() {
+        // A WoW64 process: Wow64Process pointer is non-zero
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS);
+
+        let ptb = write_eprocess(
+            ptb,
+            eproc_paddr,
+            eproc_vaddr,
+            1024,
+            4,
+            "wow64app.exe",
+            132800000100000000,
+            0,
+            0x2cd000,
+            0x0000_0040_0000_0000,
+            head_vaddr,
+            head_vaddr,
+        );
+        // ActiveThreads = 3
+        let ptb = ptb.write_phys(eproc_paddr + EPROCESS_ACTIVE_THREADS, &3u32.to_le_bytes());
+        // Wow64Process = non-zero pointer (WoW64 thunk page VA, typical value)
+        let ptb = ptb.write_phys_u64(eproc_paddr + EPROCESS_WOW64_PROCESS, 0x0000_0000_7FFD_E000);
+
+        let reader = make_win_reader_with_thread_wow64(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].thread_count, 3, "thread_count should be 3");
+        assert!(procs[0].is_wow64, "is_wow64 should be true when Wow64Process != 0");
+    }
+
+    #[test]
+    fn is_wow64_false_when_wow64process_zero() {
+        // A native 64-bit process: Wow64Process = 0
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS);
+
+        let ptb = write_eprocess(
+            ptb,
+            eproc_paddr,
+            eproc_vaddr,
+            2048,
+            4,
+            "native64.exe",
+            132800000200000000,
+            0,
+            0x3ef000,
+            0x0000_0050_0000_0000,
+            head_vaddr,
+            head_vaddr,
+        );
+        // ActiveThreads = 1
+        let ptb = ptb.write_phys(eproc_paddr + EPROCESS_ACTIVE_THREADS, &1u32.to_le_bytes());
+        // Wow64Process = 0 (native 64-bit)
+        let ptb = ptb.write_phys_u64(eproc_paddr + EPROCESS_WOW64_PROCESS, 0);
+
+        let reader = make_win_reader_with_thread_wow64(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].thread_count, 1, "thread_count should be 1");
+        assert!(!procs[0].is_wow64, "is_wow64 should be false when Wow64Process == 0");
     }
 
     #[test]
