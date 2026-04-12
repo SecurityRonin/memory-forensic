@@ -379,4 +379,47 @@ mod tests {
             "ASCII strings should not be extracted in UTF-16-only mode"
         );
     }
+
+    /// Both ASCII and UTF-16LE strings coexist in the same dump — both must be found.
+    #[test]
+    fn mixed_ascii_and_utf16le_in_same_dump() {
+        let mut data = vec![0u8; 128];
+        // ASCII string at offset 0x00
+        data[0x00..0x05].copy_from_slice(b"ASCII");
+        // UTF-16LE string "HI" at offset 0x40 (each char is 2 bytes, null-separated)
+        let utf16: Vec<u8> = "HI!".encode_utf16().flat_map(|w| w.to_le_bytes()).collect();
+        data[0x40..0x40 + utf16.len()].copy_from_slice(&utf16);
+
+        let provider = RawProvider::from_bytes(&data);
+        let cfg = ExtractConfig { min_length: 3, ascii: true, utf16le: true };
+        let strings = extract_strings(&provider, &cfg);
+
+        let ascii_found = strings.iter().any(|s| s.value == "ASCII" && s.encoding == StringEncoding::Ascii);
+        let utf16_found = strings.iter().any(|s| s.value == "HI!" && s.encoding == StringEncoding::Utf16Le);
+        assert!(ascii_found, "ASCII string must be found in mixed dump");
+        assert!(utf16_found, "UTF-16LE string must be found in mixed dump");
+    }
+
+    /// UTF-16LE surrogate code units (0xD800–0xDFFF) must be silently skipped,
+    /// not panic or produce garbled output.
+    #[test]
+    fn utf16le_surrogate_pairs_are_skipped() {
+        let mut data = vec![0u8; 64];
+        // Embed a lone surrogate (0xD800) followed by a valid string "OK"
+        // Surrogate at offset 0: [0x00, 0xD8]
+        data[0x00..0x02].copy_from_slice(&[0x00, 0xD8]);
+        // "OK\0" as UTF-16LE at offset 0x10
+        let ok_utf16: Vec<u8> = "OKAY".encode_utf16().flat_map(|w| w.to_le_bytes()).collect();
+        data[0x10..0x10 + ok_utf16.len()].copy_from_slice(&ok_utf16);
+
+        let provider = RawProvider::from_bytes(&data);
+        let cfg = ExtractConfig { min_length: 4, ascii: false, utf16le: true };
+        let strings = extract_strings(&provider, &cfg);
+
+        // Must not panic; all extracted strings must be valid Rust strings (guaranteed
+        // by the type system — surrogates cannot be represented in `char`/`String`).
+        // Verify the valid string after the surrogate is still recovered.
+        let ok_found = strings.iter().any(|s| s.value == "OKAY");
+        assert!(ok_found, "valid UTF-16LE string after surrogate must still be found");
+    }
 }
