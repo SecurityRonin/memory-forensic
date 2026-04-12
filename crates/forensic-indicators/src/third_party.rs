@@ -84,14 +84,37 @@ pub const ALL_THIRD_PARTY_PATHS: &[&str] = &[
 
 /// Returns true if the given registry path matches a known third-party application
 /// forensic artifact path (case-insensitive contains match).
-pub fn is_third_party_artifact_path(_path: &str) -> bool {
-    todo!("implement is_third_party_artifact_path")
+pub fn is_third_party_artifact_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ALL_THIRD_PARTY_PATHS
+        .iter()
+        .any(|entry| lower.contains(&entry.to_ascii_lowercase()))
 }
 
 /// Returns the application name if the path matches a known third-party app artifact,
 /// or None if not recognized.
-pub fn identify_application(_path: &str) -> Option<&'static str> {
-    todo!("implement identify_application")
+pub fn identify_application(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    let matches = |entries: &[&str]| {
+        entries
+            .iter()
+            .any(|e| lower.contains(&e.to_ascii_lowercase()))
+    };
+    if matches(PUTTY_PATHS) {
+        Some("PuTTY")
+    } else if matches(KITTY_PATHS) {
+        Some("KiTTY")
+    } else if matches(WINSCP_PATHS) {
+        Some("WinSCP")
+    } else if matches(ONEDRIVE_PATHS) {
+        Some("OneDrive")
+    } else if matches(DROPBOX_PATHS) {
+        Some("Dropbox")
+    } else if matches(CHROME_PATHS) {
+        Some("Chrome")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
