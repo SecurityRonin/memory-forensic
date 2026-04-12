@@ -45,13 +45,103 @@ impl IntoForensicEvents for VmaInfo {
 
 impl IntoForensicEvents for ProcessInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) = if self.comm.is_empty() {
+            // Blank comm — hidden / name-erased process (T1564)
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1564").expect("valid id")],
+                0.9f64,
+            )
+        } else if self.state == ProcessState::Zombie {
+            // Zombie process — possible evasion indicator (T1564)
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1564").expect("valid id")],
+                0.7f64,
+            )
+        } else if self.cr3.is_none() && self.ppid != 0 {
+            // Kernel thread with non-zero ppid — suspicious kthread
+            (
+                Severity::Medium,
+                Finding::Other("suspicious_kthread".into()),
+                vec![],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("process_enumerated".into()), vec![], 0.4f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_process")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: Some(self.ppid as u32),
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for ConnectionInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let is_loopback = self.remote_addr == "127.0.0.1"
+            || self.remote_addr == "::1"
+            || self.remote_addr.is_empty();
+
+        let (severity, finding, mitre, confidence) =
+            if matches!(self.remote_port, 4444 | 1337 | 31337) {
+                // Classic C2 ports (T1071)
+                (
+                    Severity::High,
+                    Finding::NetworkBeaconing,
+                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    0.8f64,
+                )
+            } else if self.pid.is_none() {
+                // No owning process — hidden connection (T1095)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1095").expect("valid id")],
+                    0.85f64,
+                )
+            } else if self.remote_port == 0 && !is_loopback {
+                // Port 0 with non-loopback remote — suspicious beaconing (T1071)
+                (
+                    Severity::Medium,
+                    Finding::NetworkBeaconing,
+                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    0.6f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("connection_enumerated".into()), vec![], 0.4f64)
+            };
+
+        let src = format!("{}:{}", self.local_addr, self.local_port)
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+        let dst = format!("{}:{}", self.remote_addr, self.remote_port)
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_connection")
+            .entity(Entity::Connection {
+                src,
+                dst,
+                proto: memf_correlate::event::Protocol::Tcp,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
