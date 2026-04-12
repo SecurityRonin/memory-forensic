@@ -47,6 +47,70 @@ pub struct IpcSemInfo {
 /// Maximum number of IPC IDs to walk (cycle/runaway protection).
 const MAX_IPC_IDS: usize = 32_768;
 
+/// Maximum XArray traversal depth (prevents runaway on corrupt images).
+const MAX_XA_DEPTH: usize = 8;
+
+/// Number of slots per `xa_node`.
+const XA_NODE_SLOTS: usize = 64;
+
+/// Recursively walk an XArray starting from `xa_head`.
+///
+/// XArray encoding:
+/// - `xa_head == 0` → empty tree
+/// - `xa_head & 2 == 0` → direct entry (the pointer itself, after stripping
+///   the low 2 tag bits)
+/// - `xa_head & 2 == 2` → node pointer; strip low bits to get `xa_node*`,
+///   then iterate all 64 slots recursively
+///
+/// Returns the list of non-null entry virtual addresses (tags stripped).
+fn walk_xarray<P: memf_format::PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    xa_head: u64,
+    depth: usize,
+    entries: &mut Vec<u64>,
+) {
+    if xa_head == 0 || depth > MAX_XA_DEPTH || entries.len() >= MAX_IPC_IDS {
+        return;
+    }
+
+    if xa_head & 2 == 0 {
+        // Direct entry — strip tag bits and push if non-null
+        let ptr = xa_head & !3u64;
+        if ptr != 0 {
+            entries.push(ptr);
+        }
+        return;
+    }
+
+    // Node pointer — strip the low 2 bits to get the xa_node address
+    let node_addr = xa_head & !3u64;
+
+    // The `slots` field offset within xa_node tells us where the slot array
+    // starts. If the ISF doesn't have xa_node defined we fall back to offset 0.
+    let slots_offset = reader
+        .symbols()
+        .field_offset("xa_node", "slots")
+        .unwrap_or(0);
+
+    // Read all 64 slots (8 bytes each)
+    let slots_vaddr = node_addr + slots_offset;
+    let raw = match reader.read_bytes(slots_vaddr, XA_NODE_SLOTS * 8) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    for i in 0..XA_NODE_SLOTS {
+        if entries.len() >= MAX_IPC_IDS {
+            break;
+        }
+        let slot = u64::from_le_bytes(raw[i * 8..(i + 1) * 8].try_into().unwrap());
+        if slot == 0 {
+            continue;
+        }
+        walk_xarray(reader, slot, depth + 1, entries);
+    }
+}
+
 /// Walk System V shared memory segments via the kernel `shm_ids` structure.
 ///
 /// Returns `Ok(Vec::new())` if the `shm_ids` symbol is not found (profile
@@ -91,40 +155,58 @@ pub fn walk_shm_segments<P: PhysicalMemoryProvider>(
         return Ok(segments);
     }
 
-    // For a simplified walk, treat the xa_head as a direct pointer to a
-    // shmid_kernel (single-entry case) or iterate an array. In a real
-    // kernel the IDR/XArray is a radix tree, but for forensic enumeration
-    // we read the in_use count and walk sequential entries.
-    // IPC objects are stored in an XArray/IDR radix tree, not contiguous memory.
-    // A full radix tree traversal would require walking the XArray node tree.
-    // For now, only the first IPC object is recovered.
-    // TODO: implement XArray traversal for full IPC enumeration
-    let addr = first_entry;
+    // Walk the full XArray/IDR radix tree rooted at xa_head.
+    let mut addrs = Vec::new();
+    walk_xarray(reader, first_entry, 0, &mut addrs);
 
     let shm_perm_offset = reader
         .symbols()
         .field_offset("shmid_kernel", "shm_perm")
         .unwrap_or(0);
-    let perm_base = addr + shm_perm_offset;
 
-    let key: u32 = reader.read_field(perm_base, "kern_ipc_perm", "key")?;
-    let id: u32 = reader.read_field(perm_base, "kern_ipc_perm", "id")?;
-    let mode: u32 = reader.read_field(perm_base, "kern_ipc_perm", "mode")?;
+    for addr in addrs {
+        let perm_base = addr + shm_perm_offset;
 
-    let size: u64 = reader.read_field(addr, "shmid_kernel", "shm_segsz")?;
-    let cprid: u32 = reader.read_field(addr, "shmid_kernel", "shm_cprid")?;
-    let lprid: u32 = reader.read_field(addr, "shmid_kernel", "shm_lprid")?;
-    let nattch: u32 = reader.read_field(addr, "shmid_kernel", "shm_nattch")?;
+        let key: u32 = match reader.read_field(perm_base, "kern_ipc_perm", "key") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let id: u32 = match reader.read_field(perm_base, "kern_ipc_perm", "id") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let mode: u32 = match reader.read_field(perm_base, "kern_ipc_perm", "mode") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
 
-    segments.push(IpcShmInfo {
-        key,
-        shmid: id,
-        size,
-        owner_pid: lprid,
-        creator_pid: cprid,
-        permissions: mode,
-        num_attaches: nattch,
-    });
+        let size: u64 = match reader.read_field(addr, "shmid_kernel", "shm_segsz") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let cprid: u32 = match reader.read_field(addr, "shmid_kernel", "shm_cprid") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let lprid: u32 = match reader.read_field(addr, "shmid_kernel", "shm_lprid") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let nattch: u32 = match reader.read_field(addr, "shmid_kernel", "shm_nattch") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        segments.push(IpcShmInfo {
+            key,
+            shmid: id,
+            size,
+            owner_pid: lprid,
+            creator_pid: cprid,
+            permissions: mode,
+            num_attaches: nattch,
+        });
+    }
 
     Ok(segments)
 }
@@ -173,38 +255,49 @@ pub fn walk_semaphores<P: PhysicalMemoryProvider>(
         return Ok(semaphores);
     }
 
-    // IPC objects are stored in an XArray/IDR radix tree, not contiguous memory.
-    // A full radix tree traversal would require walking the XArray node tree.
-    // For now, only the first IPC object is recovered.
-    // TODO: implement XArray traversal for full IPC enumeration
-    let addr = first_entry;
+    // Walk the full XArray/IDR radix tree rooted at xa_head.
+    let mut addrs = Vec::new();
+    walk_xarray(reader, first_entry, 0, &mut addrs);
 
     let sem_perm_offset = reader
         .symbols()
         .field_offset("sem_array", "sem_perm")
         .unwrap_or(0);
-    let perm_base = addr + sem_perm_offset;
 
-    let key: u32 = reader.read_field(perm_base, "kern_ipc_perm", "key")?;
-    let id: u32 = reader.read_field(perm_base, "kern_ipc_perm", "id")?;
-    let mode: u32 = reader.read_field(perm_base, "kern_ipc_perm", "mode")?;
+    for addr in addrs {
+        let perm_base = addr + sem_perm_offset;
 
-    let nsems: u32 = reader.read_field(addr, "sem_array", "sem_nsems")?;
-    // sem_array doesn't have a direct PID field; use the permission's
-    // creator UID as a proxy. For real forensic use, the sem_otime
-    // / sem_ctime fields would be more relevant. We read shm_lprid-style
-    // owner info if available, falling back to 0.
-    let owner_pid: u32 = reader
-        .read_field(addr, "sem_array", "sem_otime_high")
-        .unwrap_or(0);
+        let key: u32 = match reader.read_field(perm_base, "kern_ipc_perm", "key") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let id: u32 = match reader.read_field(perm_base, "kern_ipc_perm", "id") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let mode: u32 = match reader.read_field(perm_base, "kern_ipc_perm", "mode") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
 
-    semaphores.push(IpcSemInfo {
-        key,
-        semid: id,
-        num_sems: nsems,
-        owner_pid,
-        permissions: mode,
-    });
+        let nsems: u32 = match reader.read_field(addr, "sem_array", "sem_nsems") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // sem_array doesn't have a direct PID field; use sem_otime_high as a
+        // proxy, falling back to 0 when the field is absent from the profile.
+        let owner_pid: u32 = reader
+            .read_field(addr, "sem_array", "sem_otime_high")
+            .unwrap_or(0);
+
+        semaphores.push(IpcSemInfo {
+            key,
+            semid: id,
+            num_sems: nsems,
+            owner_pid,
+            permissions: mode,
+        });
+    }
 
     Ok(semaphores)
 }
