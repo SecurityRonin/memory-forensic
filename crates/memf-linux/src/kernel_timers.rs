@@ -22,11 +22,10 @@ pub struct KernelTimerInfo {
     pub expires: u64,
     /// Callback function address.
     pub function: u64,
-    /// Whether timer re-arms itself (periodic).
+    /// Whether the timer is deferrable / periodic.
     ///
-    /// Currently always `false`. Accurate detection requires reading
-    /// `timer_list.flags` and testing against `TIMER_DEFERRABLE`/re-arm bits,
-    /// which is not yet supported in the ISF profile walker.
+    /// `true` when `timer_list.flags & TIMER_DEFERRABLE (0x1)` is non-zero.
+    /// Falls back to `false` if the `flags` field is absent from the ISF profile.
     pub is_periodic: bool,
     /// Heuristic flag: callback outside kernel text.
     pub is_suspicious: bool,
@@ -117,18 +116,21 @@ pub fn walk_kernel_timers<P: PhysicalMemoryProvider>(
                 .read_pointer(timer_addr, "timer_list", "function")
                 .unwrap_or(0);
 
+            let flags = reader
+                .read_field::<u32>(timer_addr, "timer_list", "flags")
+                .unwrap_or(0);
+
+            // TIMER_DEFERRABLE = 0x1 (Linux kernel constant): bit 0 indicates
+            // the timer is deferrable / periodic.
+            let is_periodic = flags & 1 != 0;
+
             let is_suspicious = classify_kernel_timer(function, kernel_start, kernel_end);
 
             results.push(KernelTimerInfo {
                 address: timer_addr,
                 expires,
                 function,
-                // TODO: set is_periodic from timer_list.flags (TIMER_DEFERRABLE / re-arm
-                // detection) once timer flags support is added to the ISF profile.
-                // Always false until then — the kernel's timer_list.flags field would
-                // need to be read and tested against the TIMER_PINNED/TIMER_DEFERRABLE
-                // bitmask to identify timers that re-arm themselves (periodic).
-                is_periodic: false,
+                is_periodic,
                 is_suspicious,
             });
         }
