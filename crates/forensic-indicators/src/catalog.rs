@@ -2473,3 +2473,266 @@ mod tests_new_descriptors {
         }
     }
 }
+
+// ── Tests for Batch C (Windows persistence / execution / credential) ──────────
+
+#[cfg(test)]
+mod tests_batch_c {
+    use super::*;
+
+    // ── Windows persistence ───────────────────────────────────────────────
+
+    #[test] fn winlogon_shell_md() {
+        assert_eq!(WINLOGON_SHELL.id, "winlogon_shell");
+        assert_eq!(WINLOGON_SHELL.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(WINLOGON_SHELL.scope, DataScope::System);
+        assert!(WINLOGON_SHELL.mitre_techniques.contains(&"T1547.004"));
+        assert!(WINLOGON_SHELL.key_path.contains("Winlogon"));
+    }
+    #[test] fn services_imagepath_md() {
+        assert_eq!(SERVICES_IMAGEPATH.id, "services_imagepath");
+        assert_eq!(SERVICES_IMAGEPATH.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(SERVICES_IMAGEPATH.scope, DataScope::System);
+        assert!(SERVICES_IMAGEPATH.mitre_techniques.contains(&"T1543.003"));
+    }
+    #[test] fn active_setup_hklm_md() {
+        assert_eq!(ACTIVE_SETUP_HKLM.id, "active_setup_hklm");
+        assert_eq!(ACTIVE_SETUP_HKLM.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(ACTIVE_SETUP_HKLM.scope, DataScope::System);
+        assert!(ACTIVE_SETUP_HKLM.mitre_techniques.contains(&"T1547.014"));
+    }
+    #[test] fn active_setup_hkcu_md() {
+        assert_eq!(ACTIVE_SETUP_HKCU.id, "active_setup_hkcu");
+        assert_eq!(ACTIVE_SETUP_HKCU.hive, Some(HiveTarget::NtUser));
+        assert_eq!(ACTIVE_SETUP_HKCU.scope, DataScope::User);
+    }
+    #[test] fn com_hijack_clsid_hkcu_md() {
+        assert_eq!(COM_HIJACK_CLSID_HKCU.id, "com_hijack_clsid_hkcu");
+        assert_eq!(COM_HIJACK_CLSID_HKCU.hive, Some(HiveTarget::UsrClass));
+        assert_eq!(COM_HIJACK_CLSID_HKCU.scope, DataScope::User);
+        assert!(COM_HIJACK_CLSID_HKCU.mitre_techniques.contains(&"T1546.015"));
+    }
+    #[test] fn appcert_dlls_md() {
+        assert_eq!(APPCERT_DLLS.id, "appcert_dlls");
+        assert_eq!(APPCERT_DLLS.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(APPCERT_DLLS.scope, DataScope::System);
+        assert!(APPCERT_DLLS.mitre_techniques.contains(&"T1546.009"));
+    }
+    #[test] fn boot_execute_md() {
+        assert_eq!(BOOT_EXECUTE.id, "boot_execute");
+        assert_eq!(BOOT_EXECUTE.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(BOOT_EXECUTE.scope, DataScope::System);
+        assert!(BOOT_EXECUTE.mitre_techniques.contains(&"T1547.001"));
+        assert!(BOOT_EXECUTE.key_path.contains("Session Manager"));
+    }
+    #[test] fn lsa_security_pkgs_md() {
+        assert_eq!(LSA_SECURITY_PKGS.id, "lsa_security_pkgs");
+        assert_eq!(LSA_SECURITY_PKGS.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(LSA_SECURITY_PKGS.scope, DataScope::System);
+        assert!(LSA_SECURITY_PKGS.mitre_techniques.contains(&"T1547.005"));
+    }
+    #[test] fn lsa_auth_pkgs_md() {
+        assert_eq!(LSA_AUTH_PKGS.id, "lsa_auth_pkgs");
+        assert_eq!(LSA_AUTH_PKGS.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(LSA_AUTH_PKGS.scope, DataScope::System);
+        assert!(LSA_AUTH_PKGS.mitre_techniques.contains(&"T1547.002"));
+    }
+    #[test] fn print_monitors_md() {
+        assert_eq!(PRINT_MONITORS.id, "print_monitors");
+        assert_eq!(PRINT_MONITORS.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(PRINT_MONITORS.scope, DataScope::System);
+        assert!(PRINT_MONITORS.mitre_techniques.contains(&"T1547.010"));
+    }
+    #[test] fn time_providers_md() {
+        assert_eq!(TIME_PROVIDERS.id, "time_providers");
+        assert_eq!(TIME_PROVIDERS.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(TIME_PROVIDERS.scope, DataScope::System);
+        assert!(TIME_PROVIDERS.mitre_techniques.contains(&"T1547.003"));
+    }
+    #[test] fn netsh_helper_dlls_md() {
+        assert_eq!(NETSH_HELPER_DLLS.id, "netsh_helper_dlls");
+        assert_eq!(NETSH_HELPER_DLLS.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(NETSH_HELPER_DLLS.scope, DataScope::System);
+        assert!(NETSH_HELPER_DLLS.mitre_techniques.contains(&"T1546.007"));
+    }
+    #[test] fn browser_helper_objects_md() {
+        assert_eq!(BROWSER_HELPER_OBJECTS.id, "browser_helper_objects");
+        assert_eq!(BROWSER_HELPER_OBJECTS.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(BROWSER_HELPER_OBJECTS.scope, DataScope::System);
+        assert!(BROWSER_HELPER_OBJECTS.mitre_techniques.contains(&"T1176"));
+    }
+    #[test] fn startup_folder_user_md() {
+        assert_eq!(STARTUP_FOLDER_USER.id, "startup_folder_user");
+        assert_eq!(STARTUP_FOLDER_USER.artifact_type, ArtifactType::Directory);
+        assert_eq!(STARTUP_FOLDER_USER.scope, DataScope::User);
+        assert!(STARTUP_FOLDER_USER.mitre_techniques.contains(&"T1547.001"));
+    }
+    #[test] fn startup_folder_system_md() {
+        assert_eq!(STARTUP_FOLDER_SYSTEM.id, "startup_folder_system");
+        assert_eq!(STARTUP_FOLDER_SYSTEM.artifact_type, ArtifactType::Directory);
+        assert_eq!(STARTUP_FOLDER_SYSTEM.scope, DataScope::System);
+        assert!(STARTUP_FOLDER_SYSTEM.mitre_techniques.contains(&"T1547.001"));
+    }
+    #[test] fn scheduled_tasks_dir_md() {
+        assert_eq!(SCHEDULED_TASKS_DIR.id, "scheduled_tasks_dir");
+        assert_eq!(SCHEDULED_TASKS_DIR.artifact_type, ArtifactType::Directory);
+        assert_eq!(SCHEDULED_TASKS_DIR.scope, DataScope::System);
+        assert!(SCHEDULED_TASKS_DIR.mitre_techniques.contains(&"T1053.005"));
+    }
+    #[test] fn wdigest_caching_md() {
+        assert_eq!(WDIGEST_CACHING.id, "wdigest_caching");
+        assert_eq!(WDIGEST_CACHING.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(WDIGEST_CACHING.scope, DataScope::System);
+        assert!(WDIGEST_CACHING.mitre_techniques.contains(&"T1003.001"));
+    }
+
+    // ── Windows execution evidence ────────────────────────────────────────
+
+    #[test] fn wordwheel_query_md() {
+        assert_eq!(WORDWHEEL_QUERY.id, "wordwheel_query");
+        assert_eq!(WORDWHEEL_QUERY.hive, Some(HiveTarget::NtUser));
+        assert_eq!(WORDWHEEL_QUERY.scope, DataScope::User);
+        assert!(WORDWHEEL_QUERY.key_path.contains("WordWheelQuery"));
+    }
+    #[test] fn opensave_mru_md() {
+        assert_eq!(OPENSAVE_MRU.id, "opensave_mru");
+        assert_eq!(OPENSAVE_MRU.hive, Some(HiveTarget::NtUser));
+        assert_eq!(OPENSAVE_MRU.scope, DataScope::User);
+        assert!(OPENSAVE_MRU.key_path.contains("OpenSaveMRU"));
+    }
+    #[test] fn lastvisited_mru_md() {
+        assert_eq!(LASTVISITED_MRU.id, "lastvisited_mru");
+        assert_eq!(LASTVISITED_MRU.hive, Some(HiveTarget::NtUser));
+        assert_eq!(LASTVISITED_MRU.scope, DataScope::User);
+        assert!(LASTVISITED_MRU.key_path.contains("LastVisitedMRU"));
+    }
+    #[test] fn prefetch_dir_md() {
+        assert_eq!(PREFETCH_DIR.id, "prefetch_dir");
+        assert_eq!(PREFETCH_DIR.artifact_type, ArtifactType::Directory);
+        assert_eq!(PREFETCH_DIR.scope, DataScope::System);
+        assert!(PREFETCH_DIR.mitre_techniques.contains(&"T1204.002"));
+    }
+    #[test] fn srum_db_md() {
+        assert_eq!(SRUM_DB.id, "srum_db");
+        assert_eq!(SRUM_DB.artifact_type, ArtifactType::File);
+        assert_eq!(SRUM_DB.scope, DataScope::System);
+        assert!(SRUM_DB.os_scope == OsScope::Win8Plus);
+    }
+    #[test] fn windows_timeline_md() {
+        assert_eq!(WINDOWS_TIMELINE.id, "windows_timeline");
+        assert_eq!(WINDOWS_TIMELINE.artifact_type, ArtifactType::File);
+        assert_eq!(WINDOWS_TIMELINE.scope, DataScope::User);
+        assert_eq!(WINDOWS_TIMELINE.os_scope, OsScope::Win10Plus);
+    }
+    #[test] fn powershell_history_md() {
+        assert_eq!(POWERSHELL_HISTORY.id, "powershell_history");
+        assert_eq!(POWERSHELL_HISTORY.artifact_type, ArtifactType::File);
+        assert_eq!(POWERSHELL_HISTORY.scope, DataScope::User);
+        assert!(POWERSHELL_HISTORY.mitre_techniques.contains(&"T1059.001"));
+    }
+    #[test] fn recycle_bin_md() {
+        assert_eq!(RECYCLE_BIN.id, "recycle_bin");
+        assert_eq!(RECYCLE_BIN.artifact_type, ArtifactType::Directory);
+        assert_eq!(RECYCLE_BIN.scope, DataScope::User);
+        assert!(RECYCLE_BIN.mitre_techniques.contains(&"T1070.004"));
+    }
+    #[test] fn thumbcache_md() {
+        assert_eq!(THUMBCACHE.id, "thumbcache");
+        assert_eq!(THUMBCACHE.artifact_type, ArtifactType::Directory);
+        assert_eq!(THUMBCACHE.scope, DataScope::User);
+    }
+    #[test] fn search_db_user_md() {
+        assert_eq!(SEARCH_DB_USER.id, "search_db_user");
+        assert_eq!(SEARCH_DB_USER.artifact_type, ArtifactType::File);
+        assert_eq!(SEARCH_DB_USER.scope, DataScope::System);
+    }
+
+    // ── Windows credentials ───────────────────────────────────────────────
+
+    #[test] fn dpapi_masterkey_user_md() {
+        assert_eq!(DPAPI_MASTERKEY_USER.id, "dpapi_masterkey_user");
+        assert_eq!(DPAPI_MASTERKEY_USER.artifact_type, ArtifactType::Directory);
+        assert_eq!(DPAPI_MASTERKEY_USER.scope, DataScope::User);
+        assert!(DPAPI_MASTERKEY_USER.mitre_techniques.contains(&"T1555.004"));
+    }
+    #[test] fn dpapi_cred_user_md() {
+        assert_eq!(DPAPI_CRED_USER.id, "dpapi_cred_user");
+        assert_eq!(DPAPI_CRED_USER.artifact_type, ArtifactType::Directory);
+        assert_eq!(DPAPI_CRED_USER.scope, DataScope::User);
+    }
+    #[test] fn dpapi_cred_roaming_md() {
+        assert_eq!(DPAPI_CRED_ROAMING.id, "dpapi_cred_roaming");
+        assert_eq!(DPAPI_CRED_ROAMING.artifact_type, ArtifactType::Directory);
+        assert_eq!(DPAPI_CRED_ROAMING.scope, DataScope::User);
+    }
+    #[test] fn windows_vault_user_md() {
+        assert_eq!(WINDOWS_VAULT_USER.id, "windows_vault_user");
+        assert_eq!(WINDOWS_VAULT_USER.artifact_type, ArtifactType::Directory);
+        assert_eq!(WINDOWS_VAULT_USER.scope, DataScope::User);
+        assert!(WINDOWS_VAULT_USER.mitre_techniques.contains(&"T1555.004"));
+    }
+    #[test] fn windows_vault_system_md() {
+        assert_eq!(WINDOWS_VAULT_SYSTEM.id, "windows_vault_system");
+        assert_eq!(WINDOWS_VAULT_SYSTEM.artifact_type, ArtifactType::Directory);
+        assert_eq!(WINDOWS_VAULT_SYSTEM.scope, DataScope::System);
+    }
+    #[test] fn rdp_client_servers_md() {
+        assert_eq!(RDP_CLIENT_SERVERS.id, "rdp_client_servers");
+        assert_eq!(RDP_CLIENT_SERVERS.hive, Some(HiveTarget::NtUser));
+        assert_eq!(RDP_CLIENT_SERVERS.scope, DataScope::User);
+        assert!(RDP_CLIENT_SERVERS.mitre_techniques.contains(&"T1021.001"));
+    }
+    #[test] fn rdp_client_default_md() {
+        assert_eq!(RDP_CLIENT_DEFAULT.id, "rdp_client_default");
+        assert_eq!(RDP_CLIENT_DEFAULT.hive, Some(HiveTarget::NtUser));
+        assert_eq!(RDP_CLIENT_DEFAULT.scope, DataScope::User);
+        assert!(RDP_CLIENT_DEFAULT.mitre_techniques.contains(&"T1021.001"));
+    }
+    #[test] fn ntds_dit_md() {
+        assert_eq!(NTDS_DIT.id, "ntds_dit");
+        assert_eq!(NTDS_DIT.artifact_type, ArtifactType::File);
+        assert_eq!(NTDS_DIT.scope, DataScope::System);
+        assert!(NTDS_DIT.mitre_techniques.contains(&"T1003.003"));
+    }
+    #[test] fn chrome_login_data_md() {
+        assert_eq!(CHROME_LOGIN_DATA.id, "chrome_login_data");
+        assert_eq!(CHROME_LOGIN_DATA.artifact_type, ArtifactType::File);
+        assert_eq!(CHROME_LOGIN_DATA.scope, DataScope::User);
+        assert!(CHROME_LOGIN_DATA.mitre_techniques.contains(&"T1555.003"));
+    }
+    #[test] fn firefox_logins_md() {
+        assert_eq!(FIREFOX_LOGINS.id, "firefox_logins");
+        assert_eq!(FIREFOX_LOGINS.artifact_type, ArtifactType::File);
+        assert_eq!(FIREFOX_LOGINS.scope, DataScope::User);
+        assert!(FIREFOX_LOGINS.mitre_techniques.contains(&"T1555.003"));
+    }
+    #[test] fn wifi_profiles_md() {
+        assert_eq!(WIFI_PROFILES.id, "wifi_profiles");
+        assert_eq!(WIFI_PROFILES.artifact_type, ArtifactType::Directory);
+        assert_eq!(WIFI_PROFILES.scope, DataScope::System);
+        assert!(WIFI_PROFILES.mitre_techniques.contains(&"T1552.001"));
+    }
+
+    // ── CATALOG completeness (batch C) ────────────────────────────────────
+
+    #[test]
+    fn catalog_contains_batch_c() {
+        let ids: Vec<&str> = CATALOG.list().iter().map(|d| d.id).collect();
+        for expected in &[
+            "winlogon_shell", "services_imagepath", "active_setup_hklm",
+            "active_setup_hkcu", "com_hijack_clsid_hkcu", "appcert_dlls",
+            "boot_execute", "lsa_security_pkgs", "lsa_auth_pkgs",
+            "print_monitors", "time_providers", "netsh_helper_dlls",
+            "browser_helper_objects", "startup_folder_user", "startup_folder_system",
+            "scheduled_tasks_dir", "wdigest_caching", "wordwheel_query",
+            "opensave_mru", "lastvisited_mru", "prefetch_dir", "srum_db",
+            "windows_timeline", "powershell_history", "recycle_bin", "thumbcache",
+            "search_db_user", "dpapi_masterkey_user", "dpapi_cred_user",
+            "dpapi_cred_roaming", "windows_vault_user", "windows_vault_system",
+            "rdp_client_servers", "rdp_client_default", "ntds_dit",
+            "chrome_login_data", "firefox_logins", "wifi_profiles",
+        ] {
+            assert!(ids.contains(expected), "CATALOG missing: {expected}");
+        }
+    }
+}
