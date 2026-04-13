@@ -4,7 +4,11 @@ use memf_correlate::event::{Entity, Finding, ForensicEvent, Severity};
 use memf_correlate::mitre::MitreAttackId;
 use memf_correlate::traits::IntoForensicEvents;
 
-use crate::types::{WinConnectionInfo, WinDriverInfo, WinHollowingInfo, WinMalfindInfo, WinProcessInfo, WinTokenInfo};
+use crate::types::{
+    ApcInfo, ApcType, ClrAssemblyInfo, DkomDiscrepancy, DkomType, FiberInfo, HeapSprayInfo,
+    SectionObjectInfo, TlsCallbackInfo, WinConnectionInfo, WinDriverInfo, WinHollowingInfo,
+    WinMalfindInfo, WinProcessInfo, WinTokenInfo, Wow64AnomalyInfo,
+};
 
 /// Suspicious image names that are often spoofed by malware (T1036 - Masquerading).
 const SPOOFABLE_NAMES: &[&str] = &[
@@ -249,6 +253,70 @@ impl IntoForensicEvents for WinTokenInfo {
             .confidence(confidence)
             .mitre_attack(mitre)
             .build()]
+    }
+}
+
+// ── Walker 1: ApcInfo ────────────────────────────────────────────────────────
+
+impl IntoForensicEvents for ApcInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+// ── Walker 2: FiberInfo ──────────────────────────────────────────────────────
+
+impl IntoForensicEvents for FiberInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+// ── Walker 3: DkomDiscrepancy ────────────────────────────────────────────────
+
+impl IntoForensicEvents for DkomDiscrepancy {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+// ── Walker 4: TlsCallbackInfo ────────────────────────────────────────────────
+
+impl IntoForensicEvents for TlsCallbackInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+// ── Walker 5: ClrAssemblyInfo ────────────────────────────────────────────────
+
+impl IntoForensicEvents for ClrAssemblyInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+// ── Walker 6: Wow64AnomalyInfo ───────────────────────────────────────────────
+
+impl IntoForensicEvents for Wow64AnomalyInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+// ── Walker 7: SectionObjectInfo ──────────────────────────────────────────────
+
+impl IntoForensicEvents for SectionObjectInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
+    }
+}
+
+// ── Walker 8: HeapSprayInfo ──────────────────────────────────────────────────
+
+impl IntoForensicEvents for HeapSprayInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!()
     }
 }
 
@@ -634,5 +702,476 @@ mod tests {
         let t = make_token(42, "lsass.exe", 0, "S-1-5-18");
         let events = t.into_forensic_events();
         assert_eq!(events[0].source_walker, "windows_token");
+    }
+
+    // -----------------------------------------------------------------------
+    // ApcInfo tests (Walker 1)
+    // -----------------------------------------------------------------------
+
+    fn make_apc(pid: u64, tid: u64, apc_type: ApcType, is_unbacked: bool) -> ApcInfo {
+        ApcInfo {
+            pid,
+            tid,
+            image_name: "svchost.exe".to_string(),
+            apc_type,
+            normal_routine: 0x1234_5678,
+            kernel_routine: 0xFFFF_8000_1234_0000,
+            is_unbacked,
+        }
+    }
+
+    #[test]
+    fn unbacked_apc_is_high_process_injection() {
+        let apc = make_apc(1000, 200, ApcType::UserMode, true);
+        let events = apc.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert!((events[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn kernel_mode_backed_apc_is_medium() {
+        let apc = make_apc(1000, 200, ApcType::KernelMode, false);
+        let events = apc.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn user_mode_backed_apc_is_info() {
+        let apc = make_apc(1000, 200, ApcType::UserMode, false);
+        let events = apc.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn unbacked_apc_has_t1055_mitre_id() {
+        let apc = make_apc(1000, 200, ApcType::UserMode, true);
+        let events = apc.into_forensic_events();
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
+    }
+
+    #[test]
+    fn source_walker_is_windows_apc() {
+        let apc = make_apc(1000, 200, ApcType::UserMode, true);
+        let events = apc.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_apc");
+    }
+
+    // -----------------------------------------------------------------------
+    // FiberInfo tests (Walker 2)
+    // -----------------------------------------------------------------------
+
+    fn make_fiber(pid: u64, tid: u64, is_converted: bool, fls_callback_unbacked: bool) -> FiberInfo {
+        FiberInfo {
+            pid,
+            tid,
+            image_name: "explorer.exe".to_string(),
+            fiber_rip: 0x0040_1000,
+            fiber_stack_base: 0x0030_0000,
+            is_converted,
+            fls_callback_unbacked,
+        }
+    }
+
+    #[test]
+    fn unbacked_fls_callback_is_high() {
+        let f = make_fiber(2000, 300, true, true);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert!((events[0].confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn converted_fiber_without_unbacked_callback_is_medium() {
+        let f = make_fiber(2000, 300, true, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normal_fiber_is_info() {
+        let f = make_fiber(2000, 300, false, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn unbacked_fls_has_t1055() {
+        let f = make_fiber(2000, 300, true, true);
+        let events = f.into_forensic_events();
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
+    }
+
+    #[test]
+    fn source_walker_is_windows_fiber() {
+        let f = make_fiber(2000, 300, false, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_fiber");
+    }
+
+    // -----------------------------------------------------------------------
+    // DkomDiscrepancy tests (Walker 3)
+    // -----------------------------------------------------------------------
+
+    fn make_dkom(pid: u64, dtype: DkomType) -> DkomDiscrepancy {
+        DkomDiscrepancy {
+            pid,
+            image_name: "hidden.exe".to_string(),
+            present_in: vec!["CidTable".to_string()],
+            missing_from: vec!["PsActiveProcessHead".to_string()],
+            discrepancy_type: dtype,
+        }
+    }
+
+    #[test]
+    fn process_unlinked_is_critical() {
+        let d = make_dkom(3000, DkomType::ProcessUnlinked);
+        let events = d.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn driver_unlinked_is_high() {
+        let d = make_dkom(0, DkomType::DriverUnlinked);
+        let events = d.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn thread_unlinked_is_high() {
+        let d = make_dkom(4000, DkomType::ThreadUnlinked);
+        let events = d.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn all_types_have_t1014() {
+        for dtype in [DkomType::ProcessUnlinked, DkomType::DriverUnlinked, DkomType::ThreadUnlinked] {
+            let d = make_dkom(100, dtype);
+            let events = d.into_forensic_events();
+            let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+            assert!(ids.contains(&"T1014"), "expected T1014 for dtype");
+        }
+    }
+
+    #[test]
+    fn source_walker_is_windows_dkom() {
+        let d = make_dkom(3000, DkomType::ProcessUnlinked);
+        let events = d.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_dkom");
+    }
+
+    // -----------------------------------------------------------------------
+    // TlsCallbackInfo tests (Walker 4)
+    // -----------------------------------------------------------------------
+
+    fn make_tls(pid: u64, callback_count: usize, is_outside_module: bool) -> TlsCallbackInfo {
+        TlsCallbackInfo {
+            pid,
+            image_name: "notepad.exe".to_string(),
+            module_name: "evil.dll".to_string(),
+            callback_address: 0x1000_0000,
+            callback_count,
+            is_outside_module,
+        }
+    }
+
+    #[test]
+    fn outside_module_callback_is_high() {
+        let t = make_tls(5000, 1, true);
+        let events = t.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert!((events[0].confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn many_callbacks_is_medium() {
+        let t = make_tls(5000, 4, false);
+        let events = t.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normal_tls_is_info() {
+        let t = make_tls(5000, 1, false);
+        let events = t.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn outside_module_has_t1055_001() {
+        let t = make_tls(5000, 1, true);
+        let events = t.into_forensic_events();
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
+    }
+
+    #[test]
+    fn source_walker_is_windows_tls() {
+        let t = make_tls(5000, 1, false);
+        let events = t.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_tls");
+    }
+
+    // -----------------------------------------------------------------------
+    // ClrAssemblyInfo tests (Walker 5)
+    // -----------------------------------------------------------------------
+
+    fn make_clr(pid: u64, is_dynamic: bool, has_pe_header: bool) -> ClrAssemblyInfo {
+        ClrAssemblyInfo {
+            pid,
+            image_name: "powershell.exe".to_string(),
+            assembly_name: "ReflectivePayload".to_string(),
+            is_dynamic,
+            has_pe_header,
+            module_path: if is_dynamic { String::new() } else { "C:\\Windows\\assembly\\legit.dll".to_string() },
+        }
+    }
+
+    #[test]
+    fn dynamic_with_pe_header_is_critical() {
+        let c = make_clr(6000, true, true);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert!((events[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dynamic_without_pe_header_is_high() {
+        let c = make_clr(6000, true, false);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn file_backed_assembly_is_info() {
+        let c = make_clr(6000, false, false);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn dynamic_pe_assembly_has_t1620() {
+        let c = make_clr(6000, true, true);
+        let events = c.into_forensic_events();
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1620"), "expected T1620 in {ids:?}");
+    }
+
+    #[test]
+    fn source_walker_is_windows_clr() {
+        let c = make_clr(6000, false, false);
+        let events = c.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_clr");
+    }
+
+    // -----------------------------------------------------------------------
+    // Wow64AnomalyInfo tests (Walker 6)
+    // -----------------------------------------------------------------------
+
+    fn make_wow64(heavens_gate: bool, syscall_tampered: bool, has_peb32: bool) -> Wow64AnomalyInfo {
+        Wow64AnomalyInfo {
+            pid: 7000,
+            image_name: "malware32.exe".to_string(),
+            has_peb32,
+            heavens_gate_detected: heavens_gate,
+            wow64_dll_path: if has_peb32 { "C:\\Windows\\SysWOW64\\wow64.dll".to_string() } else { String::new() },
+            syscall_stub_tampered: syscall_tampered,
+        }
+    }
+
+    #[test]
+    fn heavens_gate_detected_is_high() {
+        let w = make_wow64(true, false, true);
+        let events = w.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn tampered_syscall_stub_is_high() {
+        let w = make_wow64(false, true, true);
+        let events = w.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn clean_wow64_is_info() {
+        let w = make_wow64(false, false, true);
+        let events = w.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn heavens_gate_has_t1055() {
+        let w = make_wow64(true, false, true);
+        let events = w.into_forensic_events();
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
+    }
+
+    #[test]
+    fn source_walker_is_windows_wow64() {
+        let w = make_wow64(false, false, true);
+        let events = w.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_wow64");
+    }
+
+    // -----------------------------------------------------------------------
+    // SectionObjectInfo tests (Walker 7)
+    // -----------------------------------------------------------------------
+
+    fn make_section(
+        is_image_section: bool,
+        file_on_disk: bool,
+        protection: u32,
+        mapped_process_count: usize,
+        backing_file: &str,
+    ) -> SectionObjectInfo {
+        SectionObjectInfo {
+            pid: 8000,
+            image_name: "cmd.exe".to_string(),
+            section_name: String::new(),
+            backing_file: backing_file.to_string(),
+            protection,
+            mapped_process_count,
+            is_image_section,
+            file_on_disk,
+        }
+    }
+
+    #[test]
+    fn image_section_without_disk_file_is_critical() {
+        let s = make_section(true, false, 0x20, 1, "");
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert!((events[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rwx_section_is_high() {
+        // PAGE_EXECUTE_READWRITE = 0x40
+        let s = make_section(false, false, 0x40, 1, "");
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn multi_process_anonymous_section_is_high() {
+        let s = make_section(false, false, 0x04, 3, "");
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!((events[0].confidence - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normal_section_is_info() {
+        let s = make_section(true, true, 0x20, 1, "C:\\Windows\\System32\\ntdll.dll");
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_windows_section() {
+        let s = make_section(true, true, 0x20, 1, "C:\\Windows\\System32\\ntdll.dll");
+        let events = s.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_section");
+    }
+
+    // -----------------------------------------------------------------------
+    // HeapSprayInfo tests (Walker 8)
+    // -----------------------------------------------------------------------
+
+    fn make_heap_spray(nop_sled: bool, alloc_count: usize) -> HeapSprayInfo {
+        HeapSprayInfo {
+            pid: 9000,
+            image_name: "iexplore.exe".to_string(),
+            heap_base: 0x0020_0000,
+            suspicious_allocation_count: alloc_count,
+            nop_sled_detected: nop_sled,
+            committed_bytes: 0x100_0000,
+        }
+    }
+
+    #[test]
+    fn nop_sled_is_high() {
+        let h = make_heap_spray(true, 10);
+        let events = h.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+        assert!((events[0].confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn many_allocations_is_medium() {
+        let h = make_heap_spray(false, 1001);
+        let events = h.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+        assert!((events[0].confidence - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normal_heap_is_info() {
+        let h = make_heap_spray(false, 5);
+        let events = h.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_windows_heap_spray() {
+        let h = make_heap_spray(false, 5);
+        let events = h.into_forensic_events();
+        assert_eq!(events[0].source_walker, "windows_heap_spray");
     }
 }

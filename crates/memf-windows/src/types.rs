@@ -840,6 +840,241 @@ pub struct DirectSyscallInfo {
     pub is_suspicious: bool,
 }
 
+// ── APC Queue Forensics types ────────────────────────────────────────
+
+/// APC type — whether the APC targets kernel-mode or user-mode execution.
+///
+/// Corresponds to the `KAPC_ENVIRONMENT` or the `NormalRoutine` presence
+/// in a `_KAPC` structure: if `NormalRoutine` is non-null the APC has a
+/// user-mode component; otherwise it is a kernel-mode–only APC.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum ApcType {
+    /// Kernel-mode APC (no user-mode `NormalRoutine`).
+    KernelMode,
+    /// User-mode APC (has a non-null `NormalRoutine`).
+    UserMode,
+}
+
+/// APC entry found in a `KTHREAD->ApcState` queue.
+///
+/// Each `_KAPC` that is queued but not yet delivered is captured here.
+/// Used for MITRE ATT&CK T1055.004 (Asynchronous Procedure Call) detection.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApcInfo {
+    /// Owning process ID.
+    pub pid: u64,
+    /// Thread ID on which the APC is queued.
+    pub tid: u64,
+    /// Image name of the owning process.
+    pub image_name: String,
+    /// APC category (kernel-mode vs user-mode).
+    pub apc_type: ApcType,
+    /// Value of `_KAPC.NormalRoutine` — the user-mode callback pointer.
+    pub normal_routine: u64,
+    /// Value of `_KAPC.KernelRoutine` — the kernel-mode callback pointer.
+    pub kernel_routine: u64,
+    /// True when `NormalRoutine` does not fall within any loaded module's
+    /// address range (i.e. points to unbacked shellcode).
+    pub is_unbacked: bool,
+}
+
+// ── Fiber / FLS abuse detection types ───────────────────────────────
+
+/// Fiber context information for a Windows thread.
+///
+/// Windows fibers are user-mode cooperative threads that share a stack.
+/// Malware can convert a thread to a fiber, then switch to a malicious
+/// fiber whose saved RIP points to shellcode. Fiber Local Storage (FLS)
+/// callbacks are also a persistence / injection vector.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FiberInfo {
+    /// Owning process ID.
+    pub pid: u64,
+    /// Thread ID of the fiber's host thread.
+    pub tid: u64,
+    /// Image name of the owning process.
+    pub image_name: String,
+    /// Saved instruction pointer in the fiber context.
+    pub fiber_rip: u64,
+    /// Base address of the fiber's stack.
+    pub fiber_stack_base: u64,
+    /// True if the thread has been converted to a fiber
+    /// (`ConvertThreadToFiber` called).
+    pub is_converted: bool,
+    /// True if an FLS callback pointer resolves outside all loaded modules.
+    pub fls_callback_unbacked: bool,
+}
+
+// ── DKOM cross-reference detection types ────────────────────────────
+
+/// Type of kernel-object unlinking detected.
+///
+/// DKOM (Direct Kernel Object Manipulation) rootkits hide objects by
+/// removing them from one or more kernel linked lists while leaving
+/// residual references in other places.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum DkomType {
+    /// PID is in `CidTable` but absent from `PsActiveProcessHead` list.
+    ProcessUnlinked,
+    /// Driver is in `MmDriverList` but absent from `PsLoadedModuleList`.
+    DriverUnlinked,
+    /// A `_KTHREAD` exists but is not linked into its owning process's thread list.
+    ThreadUnlinked,
+}
+
+/// A cross-reference discrepancy indicative of DKOM rootkit activity.
+///
+/// Detected by comparing multiple kernel enumerations (active process list,
+/// CID handle table, object directory, etc.) for the same object.
+/// MITRE ATT&CK T1014.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DkomDiscrepancy {
+    /// Process (or object) ID involved.
+    pub pid: u64,
+    /// Image name, if available.
+    pub image_name: String,
+    /// Kernel list names that *do* contain this object.
+    pub present_in: Vec<String>,
+    /// Kernel list names that are *missing* this object.
+    pub missing_from: Vec<String>,
+    /// Specific type of unlinking detected.
+    pub discrepancy_type: DkomType,
+}
+
+// ── TLS callback validation types ───────────────────────────────────
+
+/// A TLS (Thread Local Storage) callback entry discovered in a loaded PE.
+///
+/// Windows executes TLS callbacks before `DllMain` and before the process
+/// entry point. Malware abuses this to run code early, before most
+/// security tooling has initialized.  MITRE ATT&CK T1055.001 (DLL injection
+/// via TLS) / T1106.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TlsCallbackInfo {
+    /// Owning process ID.
+    pub pid: u64,
+    /// Image name of the owning process.
+    pub image_name: String,
+    /// Name of the module that contains the TLS directory.
+    pub module_name: String,
+    /// Absolute virtual address of the TLS callback function.
+    pub callback_address: u64,
+    /// Total number of callbacks in this module's TLS directory.
+    pub callback_count: usize,
+    /// True when `callback_address` resolves outside the module's mapped
+    /// address range (i.e. the callback has been patched to shellcode).
+    pub is_outside_module: bool,
+}
+
+// ── Reflective .NET assembly detection types ─────────────────────────
+
+/// A CLR (Common Language Runtime) assembly found in process memory.
+///
+/// Reflective .NET loaders inject an entire PE into memory without writing
+/// it to disk and then run it via the CLR hosting APIs.  Detecting these
+/// requires scanning CLR heap domains for assemblies whose backing file
+/// path is empty or whose module image is present in memory but absent
+/// on disk. MITRE ATT&CK T1620 (Reflective Code Loading).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClrAssemblyInfo {
+    /// Owning process ID.
+    pub pid: u64,
+    /// Image name of the owning process.
+    pub image_name: String,
+    /// Assembly simple name (e.g. `"evil"` for `evil.dll`).
+    pub assembly_name: String,
+    /// True when the assembly has no backing file on disk (fileless).
+    pub is_dynamic: bool,
+    /// True when an `MZ`/`PE` signature was found at the assembly's base.
+    pub has_pe_header: bool,
+    /// Full file path of the assembly module; empty for dynamic assemblies.
+    pub module_path: String,
+}
+
+// ── WoW64 / Heaven's Gate detection types ───────────────────────────
+
+/// WoW64 anomaly information for a 32-bit process running on 64-bit Windows.
+///
+/// "Heaven's Gate" is a technique where 32-bit malware switches the CPU
+/// into 64-bit mode (segment CS=0x33) to issue 64-bit system calls or run
+/// 64-bit shellcode, bypassing 32-bit API hooks.
+/// MITRE ATT&CK T1055.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Wow64AnomalyInfo {
+    /// Owning process ID.
+    pub pid: u64,
+    /// Image name of the owning process.
+    pub image_name: String,
+    /// True when the process has a valid `PEB32` structure.
+    pub has_peb32: bool,
+    /// True when a 64-bit CS selector (0x33) transition was detected within
+    /// a nominally 32-bit process — the "Heaven's Gate" pattern.
+    pub heavens_gate_detected: bool,
+    /// Path of `wow64.dll` as recorded in the process's module list; empty
+    /// if the DLL is absent (WoW64 layer missing — suspicious).
+    pub wow64_dll_path: String,
+    /// True when the WoW64 syscall stub in `ntdll.dll` (32-bit) has been
+    /// patched, indicating hook bypass.
+    pub syscall_stub_tampered: bool,
+}
+
+// ── Section object forensics types ──────────────────────────────────
+
+/// A Windows section object (`_SECTION` / `_SEGMENT`) extracted from the
+/// object manager.
+///
+/// Section objects back shared memory mappings, image mappings, and
+/// page-file–backed anonymous sections. Malicious use includes anonymous
+/// RWX sections for code injection and image sections whose backing file
+/// no longer exists on disk (process doppelgänging, process ghosting).
+/// MITRE ATT&CK T1055.012 (Process Doppelgänging) — referenced as T1055.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SectionObjectInfo {
+    /// PID of the process that owns the primary handle to this section.
+    pub pid: u64,
+    /// Image name of the owning process.
+    pub image_name: String,
+    /// Object-manager name of the section (e.g. `\BaseNamedObjects\foo`);
+    /// empty for anonymous sections.
+    pub section_name: String,
+    /// Path of the file that backs this section; empty for anonymous.
+    pub backing_file: String,
+    /// `PAGE_*` protection flags (e.g. `PAGE_EXECUTE_READWRITE = 0x40`).
+    pub protection: u32,
+    /// Number of processes that have this section mapped.
+    pub mapped_process_count: usize,
+    /// True when this is an image section (created with `SEC_IMAGE`).
+    pub is_image_section: bool,
+    /// True when the backing file is present on disk.
+    pub file_on_disk: bool,
+}
+
+// ── Heap spray detection types ───────────────────────────────────────
+
+/// Heap spray analysis results for a single process heap.
+///
+/// Heap spraying fills large regions of the heap with NOP sleds and
+/// shellcode to increase the probability that an exploited code-reuse
+/// primitive lands on attacker-controlled data.
+/// MITRE ATT&CK T1203 (Exploitation for Client Execution).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeapSprayInfo {
+    /// Owning process ID.
+    pub pid: u64,
+    /// Image name of the owning process.
+    pub image_name: String,
+    /// Base address of the heap being analysed.
+    pub heap_base: u64,
+    /// Number of allocations that match spray heuristics (uniform size,
+    /// repeated byte patterns, NOP-like content).
+    pub suspicious_allocation_count: usize,
+    /// True when a NOP sled pattern (`0x90` repeated) was detected in the
+    /// heap allocations.
+    pub nop_sled_detected: bool,
+    /// Total committed bytes in this heap segment.
+    pub committed_bytes: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
