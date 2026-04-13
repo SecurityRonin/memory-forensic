@@ -5723,4 +5723,57 @@ mod tests_batch_d {
             assert!(ids.contains(expected), "CATALOG missing: {expected}");
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Batch G — LinuxPersist-sourced artifacts (RED)
+    // Source: https://github.com/GuyEldad/LinuxPersist
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test] fn linux_etc_environment_md() {
+        assert_eq!(LINUX_ETC_ENVIRONMENT.id, "linux_etc_environment");
+        assert_eq!(LINUX_ETC_ENVIRONMENT.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_ETC_ENVIRONMENT.scope, DataScope::System);
+        assert!(LINUX_ETC_ENVIRONMENT.mitre_techniques.contains(&"T1546.004"));
+    }
+    #[test] fn linux_xdg_autostart_user_md() {
+        assert_eq!(LINUX_XDG_AUTOSTART_USER.id, "linux_xdg_autostart_user");
+        assert_eq!(LINUX_XDG_AUTOSTART_USER.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_XDG_AUTOSTART_USER.scope, DataScope::User);
+        assert!(LINUX_XDG_AUTOSTART_USER.mitre_techniques.contains(&"T1547.014"));
+    }
+    #[test] fn linux_xdg_autostart_system_md() {
+        assert_eq!(LINUX_XDG_AUTOSTART_SYSTEM.id, "linux_xdg_autostart_system");
+        assert_eq!(LINUX_XDG_AUTOSTART_SYSTEM.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_XDG_AUTOSTART_SYSTEM.scope, DataScope::System);
+        assert!(LINUX_XDG_AUTOSTART_SYSTEM.mitre_techniques.contains(&"T1547.014"));
+    }
+    #[test] fn linux_networkmanager_dispatcher_md() {
+        assert_eq!(LINUX_NETWORKMANAGER_DISPATCHER.id, "linux_networkmanager_dispatcher");
+        assert_eq!(LINUX_NETWORKMANAGER_DISPATCHER.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_NETWORKMANAGER_DISPATCHER.scope, DataScope::System);
+        assert!(LINUX_NETWORKMANAGER_DISPATCHER.mitre_techniques.contains(&"T1547.013"));
+    }
+    #[test] fn linux_apt_hooks_md() {
+        assert_eq!(LINUX_APT_HOOKS.id, "linux_apt_hooks");
+        assert_eq!(LINUX_APT_HOOKS.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_APT_HOOKS.scope, DataScope::System);
+        assert_eq!(LINUX_APT_HOOKS.os_scope, OsScope::LinuxDebian);
+        assert!(LINUX_APT_HOOKS.mitre_techniques.contains(&"T1546.004"));
+    }
+
+    // ── CATALOG completeness (batch G) ────────────────────────────────────
+
+    #[test]
+    fn catalog_contains_batch_g() {
+        let ids: Vec<&str> = CATALOG.list().iter().map(|d| d.id).collect();
+        for expected in &[
+            "linux_etc_environment",
+            "linux_xdg_autostart_user",
+            "linux_xdg_autostart_system",
+            "linux_networkmanager_dispatcher",
+            "linux_apt_hooks",
+        ] {
+            assert!(ids.contains(expected), "CATALOG missing: {expected}");
+        }
+    }
 }
