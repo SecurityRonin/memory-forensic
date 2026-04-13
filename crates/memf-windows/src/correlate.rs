@@ -260,7 +260,33 @@ impl IntoForensicEvents for WinTokenInfo {
 
 impl IntoForensicEvents for ApcInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let mitre_t1055 = vec![MitreAttackId::new("T1055").expect("valid id")];
+
+        let (severity, finding, mitre, confidence) = if self.is_unbacked {
+            (Severity::High, Finding::ProcessHollowing, mitre_t1055, 0.9f64)
+        } else if self.apc_type == ApcType::KernelMode {
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("apc_enumerated".into()), vec![], 0.4f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_apc")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
@@ -268,7 +294,36 @@ impl IntoForensicEvents for ApcInfo {
 
 impl IntoForensicEvents for FiberInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) = if self.fls_callback_unbacked {
+            (
+                Severity::High,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.85f64,
+            )
+        } else if self.is_converted {
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.5f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("fiber_enumerated".into()), vec![], 0.4f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_fiber")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
@@ -276,7 +331,26 @@ impl IntoForensicEvents for FiberInfo {
 
 impl IntoForensicEvents for DkomDiscrepancy {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let mitre = vec![MitreAttackId::new("T1014").expect("valid id")];
+
+        let (severity, confidence) = match self.discrepancy_type {
+            DkomType::ProcessUnlinked => (Severity::Critical, 0.95f64),
+            DkomType::DriverUnlinked => (Severity::High, 0.9f64),
+            DkomType::ThreadUnlinked => (Severity::High, 0.8f64),
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_dkom")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(Finding::DefenseEvasion)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
@@ -284,7 +358,36 @@ impl IntoForensicEvents for DkomDiscrepancy {
 
 impl IntoForensicEvents for TlsCallbackInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) = if self.is_outside_module {
+            (
+                Severity::High,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.85f64,
+            )
+        } else if self.callback_count > 3 {
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1106").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("tls_enumerated".into()), vec![], 0.4f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_tls")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
@@ -292,7 +395,36 @@ impl IntoForensicEvents for TlsCallbackInfo {
 
 impl IntoForensicEvents for ClrAssemblyInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) = if self.is_dynamic && self.has_pe_header {
+            (
+                Severity::Critical,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1620").expect("valid id")],
+                0.9f64,
+            )
+        } else if self.is_dynamic {
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1620").expect("valid id")],
+                0.75f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("clr_assembly_enumerated".into()), vec![], 0.4f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_clr")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
@@ -300,15 +432,84 @@ impl IntoForensicEvents for ClrAssemblyInfo {
 
 impl IntoForensicEvents for Wow64AnomalyInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) = if self.heavens_gate_detected {
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.9f64,
+            )
+        } else if self.syscall_stub_tampered {
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.85f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("wow64_enumerated".into()), vec![], 0.4f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_wow64")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 // ── Walker 7: SectionObjectInfo ──────────────────────────────────────────────
 
+/// `PAGE_EXECUTE_READWRITE` protection flag.
+const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
 impl IntoForensicEvents for SectionObjectInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) =
+            if self.is_image_section && !self.file_on_disk {
+                (
+                    Severity::Critical,
+                    Finding::ProcessHollowing,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.9f64,
+                )
+            } else if self.protection == PAGE_EXECUTE_READWRITE {
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.85f64,
+                )
+            } else if self.mapped_process_count > 2 && !self.file_on_disk {
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.8f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("section_enumerated".into()), vec![], 0.4f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_section")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
@@ -316,7 +517,36 @@ impl IntoForensicEvents for SectionObjectInfo {
 
 impl IntoForensicEvents for HeapSprayInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!()
+        let (severity, finding, mitre, confidence) = if self.nop_sled_detected {
+            (
+                Severity::High,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1203").expect("valid id")],
+                0.85f64,
+            )
+        } else if self.suspicious_allocation_count > 1000 {
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1203").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("heap_enumerated".into()), vec![], 0.4f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("windows_heap_spray")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.image_name.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
