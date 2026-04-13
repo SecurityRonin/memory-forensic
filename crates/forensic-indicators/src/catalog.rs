@@ -2352,6 +2352,817 @@ pub static WIFI_PROFILES: ArtifactDescriptor = ArtifactDescriptor {
     fields: WIFI_FIELDS,
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Batch D — Linux persistence / execution / credential artifacts
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Shared Linux field schemas ────────────────────────────────────────────
+
+/// Cron / script line — single scheduled command or shell line.
+static CRON_LINE_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "schedule_line",
+    value_type: ValueType::Text,
+    description: "Cron schedule expression and command, or shell script line",
+    is_uid_component: false,
+}];
+
+/// SSH public key entry.
+static SSH_KEY_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "public_key",
+    value_type: ValueType::Text,
+    description: "SSH public key entry (key-type base64 comment)",
+    is_uid_component: true,
+}];
+
+/// Linux account entry (colon-delimited fields).
+static ACCOUNT_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "username",
+        value_type: ValueType::Text,
+        description: "Account username",
+        is_uid_component: true,
+    },
+    FieldSchema {
+        name: "uid",
+        value_type: ValueType::UnsignedInt,
+        description: "Numeric user ID (0 = root)",
+        is_uid_component: false,
+    },
+];
+
+/// Log line / journal entry.
+static LOG_LINE_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "log_line",
+    value_type: ValueType::Text,
+    description: "Log line or structured journal entry",
+    is_uid_component: false,
+}];
+
+// ── Linux persistence: cron ───────────────────────────────────────────────
+
+/// System-wide crontab at `/etc/crontab` (T1053.003).
+///
+/// Format: `minute hour dom month dow user command`. Field `user` distinguishes
+/// this from per-user crontabs. Any non-root `user` with unusual commands is suspicious.
+pub static LINUX_CRONTAB_SYSTEM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_crontab_system",
+    name: "System Crontab (/etc/crontab)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/crontab"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "System-wide scheduled job definitions; user field allows cross-account execution",
+    mitre_techniques: &["T1053.003"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// Drop-in cron jobs directory `/etc/cron.d/` (T1053.003).
+///
+/// Files here follow the same format as `/etc/crontab` (with user field).
+/// Attackers drop files here for system-level persistence without editing crontab.
+pub static LINUX_CRON_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_cron_d",
+    name: "Cron Drop-in Directory (/etc/cron.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/cron.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Drop-in cron files with full crontab format; easy to add without touching crontab",
+    mitre_techniques: &["T1053.003"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// Periodic cron directories (daily/hourly/weekly/monthly) (T1053.003).
+///
+/// Scripts placed here are executed by run-parts at the named interval.
+/// No schedule expression needed — just a plain executable script.
+pub static LINUX_CRON_PERIODIC: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_cron_periodic",
+    name: "Cron Periodic Directories (/etc/cron.{daily,hourly,weekly,monthly}/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/cron.daily"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Shell scripts executed periodically by crond/anacron; no schedule syntax required",
+    mitre_techniques: &["T1053.003"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// Per-user crontab spool at `/var/spool/cron/crontabs/{user}` (T1053.003).
+///
+/// Each file is owned by and runs commands as the named user.
+/// `crontab -e` edits this file. Direct edits by root are possible.
+pub static LINUX_USER_CRONTAB: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_user_crontab",
+    name: "Per-User Crontab Spool",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/var/spool/cron/crontabs/*"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Per-user scheduled jobs; attacker can set up recurring execution without admin",
+    mitre_techniques: &["T1053.003"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// Anacron configuration at `/etc/anacrontab`.
+///
+/// Anacron runs jobs that were missed due to system downtime — useful for
+/// laptops. Format: `period delay job-id command`.
+pub static LINUX_ANACRONTAB: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_anacrontab",
+    name: "Anacrontab (/etc/anacrontab)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/anacrontab"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Deferred cron jobs for irregular uptime; period-based rather than time-based",
+    mitre_techniques: &["T1053.003"],
+    fields: CRON_LINE_FIELDS,
+};
+
+// ── Linux persistence: systemd ────────────────────────────────────────────
+
+/// System-level systemd service units (T1543.002).
+///
+/// `.service` files in `/etc/systemd/system/` (admin-installed, highest priority)
+/// or `/lib/systemd/system/` (package-installed). Key fields: `ExecStart`,
+/// `WantedBy`, `After`. Malicious units often `WantedBy=multi-user.target`.
+pub static LINUX_SYSTEMD_SYSTEM_UNIT: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_systemd_system_unit",
+    name: "systemd System Service Units",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/systemd/system"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxSystemd,
+    decoder: Decoder::Identity,
+    meaning: "Service definitions executed as root at boot; WantedBy=multi-user.target = auto-start",
+    mitre_techniques: &["T1543.002"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// Per-user systemd service units (T1543.002).
+///
+/// Stored in `~/.config/systemd/user/*.service`; executed as the user's
+/// session starts. No root required. `systemctl --user enable` activates.
+pub static LINUX_SYSTEMD_USER_UNIT: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_systemd_user_unit",
+    name: "systemd User Service Units",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.config/systemd/user"),
+    scope: DataScope::User,
+    os_scope: OsScope::LinuxSystemd,
+    decoder: Decoder::Identity,
+    meaning: "User-scope service definitions; executed without root on user login",
+    mitre_techniques: &["T1543.002"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// systemd timer units — cron-like scheduling (T1053.006).
+///
+/// `.timer` files trigger associated `.service` units on a schedule.
+/// More flexible than cron: supports calendar expressions and monotonic timers.
+pub static LINUX_SYSTEMD_TIMER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_systemd_timer",
+    name: "systemd Timer Units",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/systemd/system"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxSystemd,
+    decoder: Decoder::Identity,
+    meaning: "Timer-based scheduled execution; malicious timers trigger services on a schedule",
+    mitre_techniques: &["T1053.006"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+// ── Linux persistence: init / rc.local ───────────────────────────────────
+
+/// `/etc/rc.local` — legacy startup script (T1037.004).
+///
+/// Executed at the end of each multiuser runlevel. Still supported on most
+/// distros. Must be executable (+x). Any command here runs as root at boot.
+pub static LINUX_RC_LOCAL: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_rc_local",
+    name: "rc.local Startup Script",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/rc.local"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Legacy boot-time script executed as root; simple and widely supported",
+    mitre_techniques: &["T1037.004"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// SysV init scripts directory `/etc/init.d/`.
+///
+/// Scripts here are executed by the init system at specific runlevels.
+/// Symlinks in `/etc/rc{N}.d/` control when they run. Legacy but still present.
+pub static LINUX_INIT_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_init_d",
+    name: "SysV Init Scripts (/etc/init.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/init.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "SysV init scripts; malicious script here runs at boot across reboots",
+    mitre_techniques: &["T1543.002"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+// ── Linux persistence: shell startup files ────────────────────────────────
+
+/// `~/.bashrc` — per-user Bash interactive shell startup (T1546.004).
+///
+/// Sourced for every non-login interactive bash shell. Attackers add aliases,
+/// functions, or background processes here. Survives reboots.
+pub static LINUX_BASHRC_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_bashrc_user",
+    name: "User ~/.bashrc",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.bashrc"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Sourced on every interactive bash session; persistent aliases, functions, or background processes",
+    mitre_techniques: &["T1546.004"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `~/.bash_profile` — Bash login shell startup (T1546.004).
+pub static LINUX_BASH_PROFILE_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_bash_profile_user",
+    name: "User ~/.bash_profile",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.bash_profile"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Sourced on Bash login shells; runs at SSH login and console login",
+    mitre_techniques: &["T1546.004"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `~/.profile` — POSIX login shell startup.
+pub static LINUX_PROFILE_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_profile_user",
+    name: "User ~/.profile",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.profile"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "POSIX login shell startup; sourced by sh, dash, and bash on login",
+    mitre_techniques: &["T1546.004"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `~/.zshrc` — per-user Zsh interactive startup (T1546.004).
+pub static LINUX_ZSHRC_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_zshrc_user",
+    name: "User ~/.zshrc",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.zshrc"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Sourced on every interactive Zsh session; same persistence vector as .bashrc",
+    mitre_techniques: &["T1546.004"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `/etc/profile` — system-wide login shell startup.
+pub static LINUX_PROFILE_SYSTEM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_profile_system",
+    name: "System /etc/profile",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/profile"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "System-wide login shell startup; modifications affect all users",
+    mitre_techniques: &["T1546.004"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `/etc/profile.d/` — drop-in system-wide shell startup scripts.
+pub static LINUX_PROFILE_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_profile_d",
+    name: "System /etc/profile.d/ Drop-ins",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/profile.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Shell scripts sourced by /etc/profile for all users at login; drop-in persistence",
+    mitre_techniques: &["T1546.004"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+// ── Linux persistence: dynamic linker ────────────────────────────────────
+
+/// `/etc/ld.so.preload` — system-wide library preload (T1574.006).
+///
+/// Libraries listed here are loaded into EVERY process before any other
+/// library, including setuid binaries. This is a classic rootkit technique.
+/// An empty or absent file is normal; ANY entry is highly suspicious.
+pub static LINUX_LD_SO_PRELOAD: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_ld_so_preload",
+    name: "Dynamic Linker Preload (/etc/ld.so.preload)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/ld.so.preload"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Libraries preloaded into EVERY process system-wide; standard rootkit hiding mechanism",
+    mitre_techniques: &["T1574.006"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `/etc/ld.so.conf.d/` — linker search path configuration (T1574.006).
+///
+/// Adding a directory containing malicious `.so` files here allows library
+/// hijacking without needing LD_PRELOAD.
+pub static LINUX_LD_SO_CONF_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_ld_so_conf_d",
+    name: "Linker Config Directory (/etc/ld.so.conf.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/ld.so.conf.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Library search path config; malicious entry adds attacker directory to ldconfig paths",
+    mitre_techniques: &["T1574.006"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+// ── Linux persistence: SSH ────────────────────────────────────────────────
+
+/// SSH authorized_keys — persistent backdoor public keys (T1098.004).
+///
+/// Any public key listed here allows passwordless SSH login as the owner.
+/// Attackers add their key for persistent remote access.
+pub static LINUX_SSH_AUTHORIZED_KEYS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_ssh_authorized_keys",
+    name: "SSH authorized_keys",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.ssh/authorized_keys"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Public keys permitting passwordless SSH login; attacker key = permanent backdoor",
+    mitre_techniques: &["T1098.004"],
+    fields: SSH_KEY_FIELDS,
+};
+
+// ── Linux persistence: PAM / privilege / kernel ───────────────────────────
+
+/// `/etc/pam.d/` — PAM module configuration (T1556.003).
+///
+/// Each file configures authentication for a service (e.g., `sshd`, `sudo`,
+/// `su`). Replacing `pam_unix.so` or adding a malicious module intercepts
+/// ALL authentication for that service.
+pub static LINUX_PAM_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_pam_d",
+    name: "PAM Configuration (/etc/pam.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/pam.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "PAM module configs per service; malicious module intercepts and logs all passwords",
+    mitre_techniques: &["T1556.003"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// `/etc/sudoers.d/` — drop-in sudoers rules (T1548.003).
+///
+/// `NOPASSWD` entries allow sudo without password. Attackers add entries for
+/// specific commands or ALL commands without password prompting.
+pub static LINUX_SUDOERS_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_sudoers_d",
+    name: "Sudoers Drop-ins (/etc/sudoers.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/sudoers.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Drop-in sudoers rules; NOPASSWD entries enable privilege escalation without credentials",
+    mitre_techniques: &["T1548.003"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// `/etc/modules-load.d/` — kernel modules loaded at boot (T1547.006).
+///
+/// Each `.conf` file lists module names to load. Attackers register a
+/// rootkit or malicious kernel module here for persistent kernel-level access.
+pub static LINUX_MODULES_LOAD_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_modules_load_d",
+    name: "Kernel Module Load Config (/etc/modules-load.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/modules-load.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxSystemd,
+    decoder: Decoder::Identity,
+    meaning: "Kernel modules auto-loaded at boot; rootkit module here = persistent kernel access",
+    mitre_techniques: &["T1547.006"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// `/etc/update-motd.d/` — dynamic MOTD scripts executed on login (Debian/Ubuntu).
+///
+/// Every script here runs as root at SSH login to generate the MOTD.
+/// A persistent backdoor can be hidden here as it looks like a status script.
+pub static LINUX_MOTD_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_motd_d",
+    name: "Dynamic MOTD Scripts (/etc/update-motd.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/update-motd.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxDebian,
+    decoder: Decoder::Identity,
+    meaning: "Scripts run as root at SSH login for MOTD generation; covert execution vector",
+    mitre_techniques: &["T1037.004"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// `/etc/udev/rules.d/` — udev device event rules (T1546).
+///
+/// Rules can execute commands when devices are connected. An attacker can
+/// create a rule that runs a payload whenever a USB is inserted or a network
+/// interface comes up.
+pub static LINUX_UDEV_RULES_D: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_udev_rules_d",
+    name: "udev Rules (/etc/udev/rules.d/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/udev/rules.d"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxSystemd,
+    decoder: Decoder::Identity,
+    meaning: "Device event rules; RUN+= directive executes payload on device attach/detach",
+    mitre_techniques: &["T1546"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+// ── Linux execution evidence ──────────────────────────────────────────────
+
+/// `~/.bash_history` — Bash interactive command history (T1059.004).
+///
+/// Contains commands entered in interactive Bash sessions. Attackers often
+/// clear this with `history -c` or `unset HISTFILE`. An absent or empty file
+/// is itself suspicious.
+pub static LINUX_BASH_HISTORY: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_bash_history",
+    name: "Bash History (~/.bash_history)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.bash_history"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Interactive Bash command history; reveals lateral movement, exfil, and recon commands",
+    mitre_techniques: &["T1059.004", "T1552"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `~/.zsh_history` — Zsh interactive command history.
+pub static LINUX_ZSH_HISTORY: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_zsh_history",
+    name: "Zsh History (~/.zsh_history)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.zsh_history"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Interactive Zsh command history; extended format optionally includes timestamps",
+    mitre_techniques: &["T1059.004", "T1552"],
+    fields: CRON_LINE_FIELDS,
+};
+
+/// `/var/log/wtmp` — binary successful login history (T1078).
+///
+/// Utmp-format binary file; `last` command reads it. Records login, logout,
+/// reboot, and shutdown events. Tampered by log-clearing tools.
+pub static LINUX_WTMP: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_wtmp",
+    name: "Login History (/var/log/wtmp)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/var/log/wtmp"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Binary record of all successful logins/logouts/reboots; evidence of valid-account abuse",
+    mitre_techniques: &["T1078", "T1021.004"],
+    fields: LOG_LINE_FIELDS,
+};
+
+/// `/var/log/btmp` — binary failed login attempts.
+///
+/// Utmp-format binary; `lastb` command reads it. Brute-force evidence.
+pub static LINUX_BTMP: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_btmp",
+    name: "Failed Login Attempts (/var/log/btmp)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/var/log/btmp"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Binary record of failed authentication attempts; brute-force and credential-stuffing evidence",
+    mitre_techniques: &["T1110"],
+    fields: LOG_LINE_FIELDS,
+};
+
+/// `/var/log/lastlog` — binary last-login-per-UID database.
+///
+/// Fixed-offset binary file indexed by UID. `lastlog` command reads it.
+/// Each entry records last login time and source IP.
+pub static LINUX_LASTLOG: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_lastlog",
+    name: "Last Login Database (/var/log/lastlog)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/var/log/lastlog"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Per-UID last-login record including source IP; never-logged-in vs recent entries",
+    mitre_techniques: &["T1078"],
+    fields: LOG_LINE_FIELDS,
+};
+
+/// `/var/log/auth.log` — authentication and sudo event log (Debian/Ubuntu).
+///
+/// Contains PAM authentication events, sudo commands, SSH logins, and su usage.
+/// Red Hat equivalent: `/var/log/secure`.
+pub static LINUX_AUTH_LOG: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_auth_log",
+    name: "Auth Log (/var/log/auth.log)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/var/log/auth.log"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxDebian,
+    decoder: Decoder::Identity,
+    meaning: "PAM auth events, SSH logins, sudo commands, su usage; primary lateral-movement log",
+    mitre_techniques: &["T1078", "T1548.003"],
+    fields: LOG_LINE_FIELDS,
+};
+
+/// systemd journal directory `/var/log/journal/`.
+///
+/// Binary journal files; `journalctl` reads them. Contains all system and
+/// service log messages. More tamper-resistant than syslog text files.
+pub static LINUX_JOURNAL_DIR: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_journal_dir",
+    name: "systemd Journal (/var/log/journal/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/var/log/journal"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxSystemd,
+    decoder: Decoder::Identity,
+    meaning: "Structured binary system journal; includes boot IDs, service crashes, and audit events",
+    mitre_techniques: &["T1078", "T1059.004"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+// ── Linux credential artifacts ────────────────────────────────────────────
+
+/// `/etc/passwd` — local user account database (T1087.001).
+///
+/// World-readable; fields: `user:x:uid:gid:gecos:home:shell`.
+/// UID=0 duplicates, unusual shells (`/bin/bash` for service accounts),
+/// and accounts with homedir `/` are suspicious.
+pub static LINUX_PASSWD: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_passwd",
+    name: "User Account Database (/etc/passwd)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/passwd"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Local user enumeration; UID=0 duplicates or unusual shells indicate backdoor accounts",
+    mitre_techniques: &["T1087.001", "T1136.001"],
+    fields: ACCOUNT_FIELDS,
+};
+
+/// `/etc/shadow` — password hash database (T1003.008).
+///
+/// Root-readable only. Hash formats: `$1$`=MD5, `$5$`=SHA256, `$6$`=SHA512,
+/// `$y$`=yescrypt (modern). `*` or `!` prefix = locked account.
+pub static LINUX_SHADOW: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_shadow",
+    name: "Shadow Password File (/etc/shadow)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/shadow"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Password hashes for all local accounts; crackable offline once read",
+    mitre_techniques: &["T1003.008"],
+    fields: ACCOUNT_FIELDS,
+};
+
+/// SSH private key files — stolen keys enable impersonation (T1552.004).
+///
+/// Unencrypted keys (no `Proc-Type: ENCRYPTED` header) are immediately usable.
+/// Encrypted keys require the passphrase but are still high-value targets.
+pub static LINUX_SSH_PRIVATE_KEY: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_ssh_private_key",
+    name: "SSH Private Keys (~/.ssh/id_*)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.ssh/id_*"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Private key material for SSH authentication; unencrypted keys = immediate lateral movement",
+    mitre_techniques: &["T1552.004"],
+    fields: SSH_KEY_FIELDS,
+};
+
+/// `~/.ssh/known_hosts` — previously connected SSH server fingerprints (T1021.004).
+///
+/// Records host key fingerprints of servers the user has connected to.
+/// Reveals lateral movement destinations and external access patterns.
+pub static LINUX_SSH_KNOWN_HOSTS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_ssh_known_hosts",
+    name: "SSH Known Hosts (~/.ssh/known_hosts)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.ssh/known_hosts"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Previously-connected SSH server fingerprints; lateral movement destination history",
+    mitre_techniques: &["T1021.004", "T1083"],
+    fields: SSH_KEY_FIELDS,
+};
+
+/// `~/.gnupg/private-keys-v1.d/` — GnuPG private key store (T1552.004).
+///
+/// Modern GnuPG (2.1+) stores one `.key` file per secret key.
+/// Exporting these enables code-signing forgery and decryption of PGP messages.
+pub static LINUX_GNUPG_PRIVATE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_gnupg_private",
+    name: "GnuPG Private Key Store (~/.gnupg/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.gnupg"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "GnuPG private keys; enables message decryption and code-signing forgery",
+    mitre_techniques: &["T1552.004"],
+    fields: DPAPI_FIELDS,
+};
+
+/// `~/.aws/credentials` — AWS access key material (T1552.001).
+///
+/// INI-format file with `aws_access_key_id` and `aws_secret_access_key`.
+/// May also contain `aws_session_token` for temporary credentials.
+pub static LINUX_AWS_CREDENTIALS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_aws_credentials",
+    name: "AWS Credentials (~/.aws/credentials)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.aws/credentials"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "AWS long-term or temporary credentials; enables cloud infrastructure compromise",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
+/// `~/.docker/config.json` — Docker registry auth tokens (T1552.001).
+///
+/// Contains base64-encoded `auth` tokens or `credsStore` references for
+/// container registries. Grants push/pull access to private registries.
+pub static LINUX_DOCKER_CONFIG: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_docker_config",
+    name: "Docker Config (~/.docker/config.json)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.docker/config.json"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Docker registry credentials; enables container image exfil or malicious image push",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
 // ── Global catalog ───────────────────────────────────────────────────────────
 
 /// The global forensic artifact catalog containing all known artifact descriptors.
@@ -2421,6 +3232,53 @@ pub static CATALOG: ForensicCatalog = ForensicCatalog::new(&[
     CHROME_LOGIN_DATA,
     FIREFOX_LOGINS,
     WIFI_PROFILES,
+    // Batch D — Linux cron / init persistence
+    LINUX_CRONTAB_SYSTEM,
+    LINUX_CRON_D,
+    LINUX_CRON_PERIODIC,
+    LINUX_USER_CRONTAB,
+    LINUX_ANACRONTAB,
+    // Batch D — Linux systemd persistence
+    LINUX_SYSTEMD_SYSTEM_UNIT,
+    LINUX_SYSTEMD_USER_UNIT,
+    LINUX_SYSTEMD_TIMER,
+    // Batch D — Linux SysV init
+    LINUX_RC_LOCAL,
+    LINUX_INIT_D,
+    // Batch D — Linux shell startup persistence
+    LINUX_BASHRC_USER,
+    LINUX_BASH_PROFILE_USER,
+    LINUX_PROFILE_USER,
+    LINUX_ZSHRC_USER,
+    LINUX_PROFILE_SYSTEM,
+    LINUX_PROFILE_D,
+    // Batch D — Linux dynamic linker hijack
+    LINUX_LD_SO_PRELOAD,
+    LINUX_LD_SO_CONF_D,
+    // Batch D — Linux SSH persistence
+    LINUX_SSH_AUTHORIZED_KEYS,
+    // Batch D — Linux auth / privilege escalation
+    LINUX_PAM_D,
+    LINUX_SUDOERS_D,
+    LINUX_MODULES_LOAD_D,
+    LINUX_MOTD_D,
+    LINUX_UDEV_RULES_D,
+    // Batch D — Linux execution evidence
+    LINUX_BASH_HISTORY,
+    LINUX_ZSH_HISTORY,
+    LINUX_WTMP,
+    LINUX_BTMP,
+    LINUX_LASTLOG,
+    LINUX_AUTH_LOG,
+    LINUX_JOURNAL_DIR,
+    // Batch D — Linux credentials
+    LINUX_PASSWD,
+    LINUX_SHADOW,
+    LINUX_SSH_PRIVATE_KEY,
+    LINUX_SSH_KNOWN_HOSTS,
+    LINUX_GNUPG_PRIVATE,
+    LINUX_AWS_CREDENTIALS,
+    LINUX_DOCKER_CONFIG,
 ]);
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -2488,7 +3346,7 @@ mod tests {
     #[test]
     fn catalog_has_entries() {
         assert!(!CATALOG.list().is_empty());
-        assert_eq!(CATALOG.list().len(), 62);
+        assert_eq!(CATALOG.list().len(), 100);
     }
 
     #[test]
