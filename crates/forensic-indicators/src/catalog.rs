@@ -928,14 +928,560 @@ pub static PCA_APPLAUNCH_DIC: ArtifactDescriptor = ArtifactDescriptor {
     fields: PCA_FIELDS_SCHEMA,
 };
 
+// ── Run key HKCU variants ────────────────────────────────────────────────────
+
+/// HKCU Run key — per-user autostart persistence.
+pub static RUN_KEY_HKCU_RUN: ArtifactDescriptor = ArtifactDescriptor {
+    id: "run_key_hkcu",
+    name: "Run Key (HKCU)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Windows\CurrentVersion\Run",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Per-user autostart entry executed at every logon",
+    mitre_techniques: &["T1547.001"],
+    fields: RUN_KEY_FIELDS,
+};
+
+/// HKCU RunOnce — per-user one-shot autostart (deleted after execution).
+pub static RUN_KEY_HKCU_RUNONCE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "run_key_hkcu_once",
+    name: "RunOnce Key (HKCU)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Per-user one-time autostart, deleted after first execution",
+    mitre_techniques: &["T1547.001"],
+    fields: RUN_KEY_FIELDS,
+};
+
+/// HKLM RunOnce — system-wide one-shot autostart.
+pub static RUN_KEY_HKLM_RUNONCE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "run_key_hklm_once",
+    name: "RunOnce Key (HKLM)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\Windows\CurrentVersion\RunOnce",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "System-wide one-time autostart, deleted after first execution",
+    mitre_techniques: &["T1547.001"],
+    fields: RUN_KEY_FIELDS,
+};
+
+// ── IFEO ──────────────────────────────────────────────────────────────────────
+
+static IFEO_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "debugger",
+    value_type: ValueType::Text,
+    description: "Debugger path that hijacks the target process launch",
+    is_uid_component: false,
+}];
+
+/// Image File Execution Options — Debugger value hijack (T1546.012).
+///
+/// Attacker sets `Debugger` under a target EXE's IFEO key to redirect
+/// its launch to an arbitrary binary (e.g., `cmd.exe`).
+pub static IFEO_DEBUGGER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "ifeo_debugger",
+    name: "IFEO Debugger Hijack",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
+    value_name: Some("Debugger"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Redirects target-process launch to an attacker-controlled binary",
+    mitre_techniques: &["T1546.012"],
+    fields: IFEO_FIELDS,
+};
+
+// ── UserAssist (Folder GUID) ─────────────────────────────────────────────────
+
+/// UserAssist Folder GUID entries (NTUSER.DAT).
+///
+/// GUID: `{F4E57C4B-2036-45F0-A9AB-443BCFE33D9F}` — records folder access.
+pub static USERASSIST_FOLDER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "userassist_folder",
+    name: "UserAssist (Folder)",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\{F4E57C4B-2036-45F0-A9AB-443BCFE33D9F}\Count",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Rot13NameWithBinaryValue(USERASSIST_BINARY_FIELDS),
+    meaning: "Folder navigation history with access counts and timestamps",
+    mitre_techniques: &["T1083"],
+    fields: USERASSIST_FIELDS,
+};
+
+// ── ShellBags ─────────────────────────────────────────────────────────────────
+
+static SHELLBAGS_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "indices",
+    value_type: ValueType::List,
+    description: "MRU order of accessed shell folder slots",
+    is_uid_component: false,
+}];
+
+/// ShellBags — folder navigation history in UsrClass.dat.
+///
+/// Records folders the user browsed via Explorer, including deleted, network,
+/// and removable-media paths. Survives folder deletion.
+pub static SHELLBAGS_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "shellbags_user",
+    name: "ShellBags (User)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::UsrClass),
+    key_path: r"Local Settings\Software\Microsoft\Windows\Shell\Bags",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::MruListEx,
+    meaning: "Folder access history; persists paths even after folder deletion",
+    mitre_techniques: &["T1083", "T1005"],
+    fields: SHELLBAGS_FIELDS,
+};
+
+// ── Amcache ───────────────────────────────────────────────────────────────────
+
+static AMCACHE_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "file_id",
+        value_type: ValueType::Text,
+        description: "Volume GUID + MFT file reference (unique file identity)",
+        is_uid_component: true,
+    },
+    FieldSchema {
+        name: "sha1",
+        value_type: ValueType::Text,
+        description: "SHA1 of the first 31.25 MB (0000-prefixed)",
+        is_uid_component: false,
+    },
+];
+
+/// Amcache InventoryApplicationFile — program execution evidence with hashes.
+pub static AMCACHE_APP_FILE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "amcache_app_file",
+    name: "Amcache InventoryApplicationFile",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::Amcache),
+    key_path: r"Root\InventoryApplicationFile",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::Win8Plus,
+    decoder: Decoder::Identity,
+    meaning: "Program execution evidence with file hash; persists after binary deletion",
+    mitre_techniques: &["T1218", "T1204.002"],
+    fields: AMCACHE_FIELDS,
+};
+
+// ── ShimCache (AppCompatCache) ────────────────────────────────────────────────
+
+static SHIMCACHE_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "raw",
+    value_type: ValueType::Bytes,
+    description: "Raw AppCompatCache binary blob (parsed by shimcache module)",
+    is_uid_component: false,
+}];
+
+/// ShimCache — application compatibility cache with executable metadata.
+///
+/// Stored as a single binary value `AppCompatCache` under the SYSTEM hive.
+/// Contains executable paths and last-modified timestamps (NOT execution times
+/// on Win8+). Parsed by the shimcache module.
+pub static SHIMCACHE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "shimcache",
+    name: "ShimCache (AppCompatCache)",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\Session Manager\AppCompatCache",
+    value_name: Some("AppCompatCache"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Executable metadata cache; presence proves binary existed on disk",
+    mitre_techniques: &["T1218", "T1059"],
+    fields: SHIMCACHE_FIELDS,
+};
+
+// ── BAM / DAM ─────────────────────────────────────────────────────────────────
+
+static BAM_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "last_exec",
+    value_type: ValueType::Timestamp,
+    description: "FILETIME of last background execution",
+    is_uid_component: false,
+}];
+
+/// Background Activity Moderator — per-user background process execution times.
+///
+/// Each value under a SID sub-key is the executable path; value data is an
+/// 8-byte FILETIME of the last execution. Win10 1709+.
+pub static BAM_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "bam_user",
+    name: "BAM (Background Activity Moderator)",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Services\bam\State\UserSettings",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::Mixed,
+    os_scope: OsScope::Win10Plus,
+    decoder: Decoder::FiletimeAt { offset: 0 },
+    meaning: "Last execution time of background/UWP processes per-user SID",
+    mitre_techniques: &["T1059", "T1204"],
+    fields: BAM_FIELDS,
+};
+
+static DAM_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "last_exec",
+    value_type: ValueType::Timestamp,
+    description: "FILETIME of last desktop application execution",
+    is_uid_component: false,
+}];
+
+/// Desktop Activity Moderator — per-user desktop application execution times.
+pub static DAM_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "dam_user",
+    name: "DAM (Desktop Activity Moderator)",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Services\dam\State\UserSettings",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::Mixed,
+    os_scope: OsScope::Win10Plus,
+    decoder: Decoder::FiletimeAt { offset: 0 },
+    meaning: "Last execution time of desktop applications per-user SID",
+    mitre_techniques: &["T1059", "T1204"],
+    fields: DAM_FIELDS,
+};
+
+// ── SAM ───────────────────────────────────────────────────────────────────────
+
+static SAM_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "username",
+    value_type: ValueType::Text,
+    description: "Local account username (sub-key name)",
+    is_uid_component: true,
+}];
+
+/// SAM local user account enumeration.
+///
+/// Each sub-key under `Names` is a local account username. The adjacent
+/// `Users\<RID>` keys contain F/V binary records with password hash metadata.
+pub static SAM_USERS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "sam_users",
+    name: "SAM User Accounts",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSam),
+    key_path: r"SAM\Domains\Account\Users\Names",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Local Windows accounts; F/V records contain login counts and NTLM hash metadata",
+    mitre_techniques: &["T1003.002", "T1087.001"],
+    fields: SAM_FIELDS,
+};
+
+// ── LSA Secrets / DCC2 ───────────────────────────────────────────────────────
+
+static LSA_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "secret_name",
+    value_type: ValueType::Text,
+    description: "LSA secret key name (e.g. _SC_*, DPAPI_SYSTEM, DefaultPassword)",
+    is_uid_component: true,
+}];
+
+/// LSA Secrets — encrypted service credentials and DPAPI material.
+pub static LSA_SECRETS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "lsa_secrets",
+    name: "LSA Secrets",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSecurity),
+    key_path: r"Policy\Secrets",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Encrypted service credentials, auto-logon passwords, and DPAPI master key",
+    mitre_techniques: &["T1003.004", "T1552.002"],
+    fields: LSA_FIELDS,
+};
+
+static DCC2_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "slot_name",
+    value_type: ValueType::Text,
+    description: "Cache slot name (NL$1 through NL$25)",
+    is_uid_component: true,
+}];
+
+/// Domain Cached Credentials 2 (MS-Cache v2 / DCC2).
+///
+/// PBKDF2-SHA1 hashes of the last N domain logons, enabling offline logon
+/// when no DC is reachable. Crackable offline.
+pub static DCC2_CACHE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "dcc2_cache",
+    name: "Domain Cached Credentials 2 (DCC2)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSecurity),
+    key_path: r"Cache",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "MS-Cache v2 (PBKDF2-SHA1) hashes enabling offline domain logon",
+    mitre_techniques: &["T1003.005"],
+    fields: DCC2_FIELDS,
+};
+
+// ── TypedURLsTime ─────────────────────────────────────────────────────────────
+
+static TYPED_URLS_TIME_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "timestamp",
+    value_type: ValueType::Timestamp,
+    description: "FILETIME when the URL slot was typed",
+    is_uid_component: false,
+}];
+
+/// IE/Edge TypedURLsTime — FILETIME timestamps parallel to TypedURLs.
+pub static TYPED_URLS_TIME: ArtifactDescriptor = ArtifactDescriptor {
+    id: "typed_urls_time",
+    name: "TypedURLsTime (IE/Edge)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Internet Explorer\TypedURLsTime",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::FiletimeAt { offset: 0 },
+    meaning: "Timestamps of URLs typed into IE/Edge address bar (paired with TypedURLs)",
+    mitre_techniques: &["T1071.001"],
+    fields: TYPED_URLS_TIME_FIELDS,
+};
+
+// ── MRU RecentDocs ────────────────────────────────────────────────────────────
+
+static MRU_RECENT_DOCS_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "indices",
+    value_type: ValueType::List,
+    description: "MRUListEx order indices of recently accessed documents",
+    is_uid_component: false,
+}];
+
+/// Explorer RecentDocs MRU — most-recently-used document list.
+pub static MRU_RECENT_DOCS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "mru_recent_docs",
+    name: "MRU RecentDocs",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::MruListEx,
+    meaning: "Most-recently-used documents list (MRUListEx order of shell32 items)",
+    mitre_techniques: &["T1005", "T1083"],
+    fields: MRU_RECENT_DOCS_FIELDS,
+};
+
+// ── USB device enumeration ────────────────────────────────────────────────────
+
+static USB_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "device_id",
+    value_type: ValueType::Text,
+    description: "USB device instance ID (VID&PID sub-key name)",
+    is_uid_component: true,
+}];
+
+/// USBSTOR — USB storage device connection history.
+///
+/// Each sub-key records a device that was ever connected. Survives device removal.
+pub static USB_ENUM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "usb_enum",
+    name: "USB Device Enumeration (USBSTOR)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Enum\USBSTOR",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "USB storage device connection history; persists after device removal",
+    mitre_techniques: &["T1200", "T1052.001"],
+    fields: USB_FIELDS,
+};
+
+// ── MUICache ──────────────────────────────────────────────────────────────────
+
+static MUICACHE_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "display_name",
+    value_type: ValueType::Text,
+    description: "Localized display name of the executed application",
+    is_uid_component: false,
+}];
+
+/// MUICache — cached display names of executed applications.
+///
+/// Value name is the full executable path; data is the localized display name
+/// (UTF-16 LE). Program execution evidence that survives log clearing.
+pub static MUICACHE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "muicache",
+    name: "MUICache",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::UsrClass),
+    key_path: r"Local Settings\MuiCache",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Utf16Le,
+    meaning: "Cached display names keyed by executable path; program execution evidence",
+    mitre_techniques: &["T1059", "T1204.002"],
+    fields: MUICACHE_FIELDS,
+};
+
+// ── AppInit_DLLs ──────────────────────────────────────────────────────────────
+
+static APPINIT_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "dll_list",
+    value_type: ValueType::Text,
+    description: "Comma/space-separated DLL paths injected into user32.dll consumers",
+    is_uid_component: false,
+}];
+
+/// AppInit_DLLs — DLL injection into every user-mode process (T1546.010).
+///
+/// Disabled by Secure Boot; still active on systems without it.
+pub static APPINIT_DLLS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "appinit_dlls",
+    name: "AppInit_DLLs",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\Windows NT\CurrentVersion\Windows",
+    value_name: Some("AppInit_DLLs"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "DLLs injected into every process that loads user32.dll",
+    mitre_techniques: &["T1546.010"],
+    fields: APPINIT_FIELDS,
+};
+
+// ── Winlogon Userinit ─────────────────────────────────────────────────────────
+
+static WINLOGON_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "userinit",
+    value_type: ValueType::Text,
+    description: "Comma-separated executables launched by Winlogon at logon",
+    is_uid_component: false,
+}];
+
+/// Winlogon Userinit — process launched after user authentication (T1547.004).
+///
+/// Default value: `C:\Windows\System32\userinit.exe,`
+/// Attackers append `,malware.exe` or replace entirely.
+pub static WINLOGON_USERINIT: ArtifactDescriptor = ArtifactDescriptor {
+    id: "winlogon_userinit",
+    name: "Winlogon Userinit",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\Windows NT\CurrentVersion\Winlogon",
+    value_name: Some("Userinit"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Process(es) launched by Winlogon at logon; default is userinit.exe,",
+    mitre_techniques: &["T1547.004"],
+    fields: WINLOGON_FIELDS,
+};
+
+// ── Screensaver persistence ───────────────────────────────────────────────────
+
+static SCREENSAVER_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "path",
+    value_type: ValueType::Text,
+    description: "Path to the screensaver executable (.scr)",
+    is_uid_component: false,
+}];
+
+/// Screensaver executable persistence (T1546.002).
+///
+/// `.scr` files are PE executables; an attacker can replace the screensaver
+/// path with a malicious binary that executes when the screen locks.
+pub static SCREENSAVER_EXE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "screensaver_exe",
+    name: "Screensaver Executable",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Control Panel\Desktop",
+    value_name: Some("SCRNSAVE.EXE"),
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Screensaver path; malicious .scr enables persistence on screen lock",
+    mitre_techniques: &["T1546.002"],
+    fields: SCREENSAVER_FIELDS,
+};
+
 // ── Global catalog ───────────────────────────────────────────────────────────
 
 /// The global forensic artifact catalog containing all known artifact descriptors.
 pub static CATALOG: ForensicCatalog = ForensicCatalog::new(&[
     USERASSIST_EXE,
+    USERASSIST_FOLDER,
     RUN_KEY_HKLM_RUN,
+    RUN_KEY_HKCU_RUN,
+    RUN_KEY_HKCU_RUNONCE,
+    RUN_KEY_HKLM_RUNONCE,
     TYPED_URLS,
+    TYPED_URLS_TIME,
     PCA_APPLAUNCH_DIC,
+    IFEO_DEBUGGER,
+    SHELLBAGS_USER,
+    AMCACHE_APP_FILE,
+    SHIMCACHE,
+    BAM_USER,
+    DAM_USER,
+    SAM_USERS,
+    LSA_SECRETS,
+    DCC2_CACHE,
+    MRU_RECENT_DOCS,
+    USB_ENUM,
+    MUICACHE,
+    APPINIT_DLLS,
+    WINLOGON_USERINIT,
+    SCREENSAVER_EXE,
 ]);
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1003,7 +1549,7 @@ mod tests {
     #[test]
     fn catalog_has_entries() {
         assert!(!CATALOG.list().is_empty());
-        assert_eq!(CATALOG.list().len(), 4);
+        assert_eq!(CATALOG.list().len(), 24);
     }
 
     #[test]
@@ -1778,7 +2324,7 @@ mod tests_new_descriptors {
     fn bam_user_metadata() {
         assert_eq!(BAM_USER.id, "bam_user");
         assert_eq!(BAM_USER.hive, Some(HiveTarget::HklmSystem));
-        assert_eq!(BAM_USER.scope, DataScope::Both);
+        assert_eq!(BAM_USER.scope, DataScope::Mixed);
         assert_eq!(BAM_USER.os_scope, OsScope::Win10Plus);
         assert!(BAM_USER.key_path.contains("bam"));
     }
@@ -1787,7 +2333,7 @@ mod tests_new_descriptors {
     fn dam_user_metadata() {
         assert_eq!(DAM_USER.id, "dam_user");
         assert_eq!(DAM_USER.hive, Some(HiveTarget::HklmSystem));
-        assert_eq!(DAM_USER.scope, DataScope::Both);
+        assert_eq!(DAM_USER.scope, DataScope::Mixed);
         assert_eq!(DAM_USER.os_scope, OsScope::Win10Plus);
         assert!(DAM_USER.key_path.contains("dam"));
     }
