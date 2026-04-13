@@ -3163,6 +3163,618 @@ pub static LINUX_DOCKER_CONFIG: ArtifactDescriptor = ArtifactDescriptor {
     fields: FILE_PATH_FIELDS,
 };
 
+// ── Batch E — Windows execution / persistence / credential ───────────────────
+
+// ── Execution evidence ────────────────────────────────────────────────────────
+
+pub static LNK_FILES: ArtifactDescriptor = ArtifactDescriptor {
+    id: "lnk_files",
+    name: "LNK / Shell Link Recent Files",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%APPDATA%\Microsoft\Windows\Recent\"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Shell Link (.lnk) files record target path, MAC timestamps, volume serial, and \
+              NetBIOS host — evidence of file access even after target deletion. T1547.009.",
+    mitre_techniques: &["T1547.009", "T1070.004"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+pub static JUMP_LIST_AUTO: ArtifactDescriptor = ArtifactDescriptor {
+    id: "jump_list_auto",
+    name: "Jump Lists — AutomaticDestinations",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%APPDATA%\Microsoft\Windows\Recent\AutomaticDestinations\"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "OLE Compound Document storing per-AppID MRU lists; reveals recently opened files \
+              for each application including timestamps and target metadata.",
+    mitre_techniques: &["T1547.009", "T1070.004"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+pub static JUMP_LIST_CUSTOM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "jump_list_custom",
+    name: "Jump Lists — CustomDestinations",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%APPDATA%\Microsoft\Windows\Recent\CustomDestinations\"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Application-pinned and custom jump list entries; may persist after file deletion, \
+              revealing attacker-pinned tools or exfiltrated document access.",
+    mitre_techniques: &["T1547.009", "T1070.004"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+pub static EVTX_DIR: ArtifactDescriptor = ArtifactDescriptor {
+    id: "evtx_dir",
+    name: "Windows Event Log Directory (EVTX)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\System32\winevt\Logs\"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Binary EVTX log files — Security.evtx (4624/4625/4688), System.evtx, \
+              PowerShell/Operational.evtx. Primary execution, logon, and process-creation record.",
+    mitre_techniques: &["T1070.001", "T1059.001"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+pub static USN_JOURNAL: ArtifactDescriptor = ArtifactDescriptor {
+    id: "usn_journal",
+    name: "USN Journal ($UsnJrnl:$J)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"\\.\C:\$Extend\$UsnJrnl:$J"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "NTFS change journal records file create/delete/rename operations with USN sequence \
+              number; persists even after file deletion, proving prior file existence.",
+    mitre_techniques: &["T1070.004", "T1059"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+
+pub static WMI_MOF_DIR: ArtifactDescriptor = ArtifactDescriptor {
+    id: "wmi_mof_dir",
+    name: "WMI MOF Subscription Repository",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\System32\wbem\Repository\"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "WMI CIM repository stores EventFilter, EventConsumer, and FilterToConsumerBinding \
+              objects; persistence survives reboots and is invisible to registry-only tools.",
+    mitre_techniques: &["T1546.003"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+pub static BITS_DB: ArtifactDescriptor = ArtifactDescriptor {
+    id: "bits_db",
+    name: "BITS Job Queue Database",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\ProgramData\Microsoft\Network\Downloader\"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Background Intelligent Transfer Service queue DB (qmgr0.dat); records download \
+              jobs including URL, destination, and command-to-notify — abused for stealthy malware staging.",
+    mitre_techniques: &["T1197"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+static WMI_SUB_FIELDS: &[FieldSchema] = &[
+    FieldSchema { name: "filter_name", description: "WMI EventFilter name", value_type: ValueType::Text, is_uid_component: true },
+    FieldSchema { name: "consumer_type", description: "Consumer type (Script/CommandLine)", value_type: ValueType::Text, is_uid_component: false },
+    FieldSchema { name: "consumer_value", description: "Script or command executed on trigger", value_type: ValueType::Text, is_uid_component: false },
+    FieldSchema { name: "query", description: "WQL query that triggers the subscription", value_type: ValueType::Text, is_uid_component: false },
+];
+
+pub static WMI_SUBSCRIPTIONS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "wmi_subscriptions",
+    name: "WMI Event Subscriptions (Registry)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\WBEM\ESS\//./root/subscription",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::MultiSz,
+    meaning: "Registry-side index of WMI subscriptions; cross-reference with MOF repository for \
+              complete picture of WMI-based persistence.",
+    mitre_techniques: &["T1546.003"],
+    fields: WMI_SUB_FIELDS,
+};
+
+pub static LOGON_SCRIPTS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "logon_scripts",
+    name: "Logon Scripts (UserInitMprLogonScript)",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Environment",
+    value_name: Some("UserInitMprLogonScript"),
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Script executed at logon via WinLogon; per-user value allowing unprivileged \
+              persistence that survives password resets.",
+    mitre_techniques: &["T1037.001"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+pub static WINSOCK_LSP: ArtifactDescriptor = ArtifactDescriptor {
+    id: "winsock_lsp",
+    name: "Winsock Layered Service Provider",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Services\WinSock2\Parameters\Protocol_Catalog9",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "LSP DLLs intercept all Winsock traffic; malicious LSPs can log credentials from \
+              plaintext protocols. Rare but high-signal indicator of network interception.",
+    mitre_techniques: &["T1547.010"],
+    fields: DLL_FIELDS,
+};
+
+pub static APPSHIM_DB: ArtifactDescriptor = ArtifactDescriptor {
+    id: "appshim_db",
+    name: "Application Shim Database",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\apppatch\Custom\"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Custom SDB shim databases; attackers inject shims to redirect API calls, \
+              disable security checks, or load malicious DLLs without modifying the target binary.",
+    mitre_techniques: &["T1546.011"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+pub static PASSWORD_FILTER_DLL: ArtifactDescriptor = ArtifactDescriptor {
+    id: "password_filter_dll",
+    name: "Password Filter DLL (Notification Packages)",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\Lsa",
+    value_name: Some("Notification Packages"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::MultiSz,
+    meaning: "DLLs registered here receive cleartext passwords during every password change; \
+              malicious filter captures and exfiltrates credentials.",
+    mitre_techniques: &["T1556.002"],
+    fields: DLL_FIELDS,
+};
+
+pub static OFFICE_NORMAL_DOTM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "office_normal_dotm",
+    name: "Office Normal Template (Normal.dotm)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%APPDATA%\Microsoft\Templates\Normal.dotm"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Global Word template auto-loaded on every document open; malicious macros \
+              embedded here achieve persistence across all Word sessions.",
+    mitre_techniques: &["T1137.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static POWERSHELL_PROFILE_ALL: ArtifactDescriptor = ArtifactDescriptor {
+    id: "powershell_profile_all",
+    name: "PowerShell All-Users Profile (profile.ps1)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\profile.ps1"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "System-wide PowerShell profile executed for every user on every PS session start; \
+              SYSTEM-writable, provides privileged persistence without registry modification.",
+    mitre_techniques: &["T1546.013"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+// ── Credentials ───────────────────────────────────────────────────────────────
+
+pub static DPAPI_SYSTEM_MASTERKEY: ArtifactDescriptor = ArtifactDescriptor {
+    id: "dpapi_system_masterkey",
+    name: "DPAPI System Master Key",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\System32\Microsoft\Protect\S-1-5-18\User\"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "DPAPI master keys for the SYSTEM account; used to decrypt SYSTEM-scope secrets \
+              such as LSA secrets, service credentials, and scheduled task credentials.",
+    mitre_techniques: &["T1555.004"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static DPAPI_CREDHIST: ArtifactDescriptor = ArtifactDescriptor {
+    id: "dpapi_credhist",
+    name: "DPAPI CREDHIST File",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%APPDATA%\Microsoft\Protect\CREDHIST"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Chain of previous DPAPI master key derivation entries; enables decryption of \
+              secrets encrypted with old passwords after a password change.",
+    mitre_techniques: &["T1555.004"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static CHROME_COOKIES: ArtifactDescriptor = ArtifactDescriptor {
+    id: "chrome_cookies",
+    name: "Chrome/Edge Cookies (SQLite)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Network\Cookies"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "SQLite database of browser session/authentication cookies; adversaries can replay \
+              these to bypass MFA and impersonate authenticated sessions (pass-the-cookie).",
+    mitre_techniques: &["T1539", "T1185"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static EDGE_WEBCACHE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "edge_webcache",
+    name: "IE/Edge Legacy WebCacheV01.dat",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%LOCALAPPDATA%\Microsoft\Windows\INetCache\"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "ESE database recording all IE/Edge Legacy web history, downloads, and cached \
+              content; reveals browsing patterns and potential data exfiltration URLs.",
+    mitre_techniques: &["T1539", "T1217"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static VPN_RAS_PHONEBOOK: ArtifactDescriptor = ArtifactDescriptor {
+    id: "vpn_ras_phonebook",
+    name: "VPN Credentials — RAS Phonebook",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%APPDATA%\Microsoft\Network\Connections\Pbk\rasphone.pbk"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Plain-text INI phonebook storing VPN connection entries including server address \
+              and saved credential references; reveals network pivoting paths.",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static WINDOWS_HELLO_NGC: ArtifactDescriptor = ArtifactDescriptor {
+    id: "windows_hello_ngc",
+    name: "Windows Hello / NGC Folder",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\Microsoft\Ngc\"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win10Plus,
+    decoder: Decoder::Identity,
+    meaning: "Stores Windows Hello credential provider keys (PIN protectors, biometric keys); \
+              compromise reveals authentication material bypassing traditional password forensics.",
+    mitre_techniques: &["T1555"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static USER_CERT_PRIVATE_KEY: ArtifactDescriptor = ArtifactDescriptor {
+    id: "user_cert_private_key",
+    name: "User Certificate Private Keys",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"%APPDATA%\Microsoft\SystemCertificates\My\"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "DPAPI-protected user certificate private keys for code signing, S/MIME, and \
+              smart-card emulation; exfiltration enables impersonation and signing of malicious artifacts.",
+    mitre_techniques: &["T1552.004"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static MACHINE_CERT_STORE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "machine_cert_store",
+    name: "Machine Certificate Private Keys",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Machine-scope RSA private keys protected by DPAPI SYSTEM; used for TLS mutual \
+              auth, code signing, and IPSec — high-value credential exfiltration target.",
+    mitre_techniques: &["T1552.004"],
+    fields: FILE_PATH_FIELDS,
+};
+
+// ── Batch F — Linux extended credentials / execution ─────────────────────────
+
+pub static LINUX_AT_QUEUE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_at_queue",
+    name: "AT Job Queue (/var/spool/at/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/var/spool/at/"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "One-shot delayed execution jobs from the `at` command; each file contains a shell \
+              script to run at a specified time, used for stealthy one-shot persistence.",
+    mitre_techniques: &["T1053.001"],
+    fields: CRON_LINE_FIELDS,
+};
+
+pub static LINUX_SSHD_CONFIG: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_sshd_config",
+    name: "SSH Daemon Configuration (/etc/ssh/sshd_config)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/ssh/sshd_config"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "SSH server config; look for unauthorized AuthorizedKeysFile overrides, \
+              ForceCommand bypass, PermitRootLogin yes, or AllowUsers modifications.",
+    mitre_techniques: &["T1098.004", "T1021.004"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+pub static LINUX_ETC_GROUP: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_etc_group",
+    name: "Group Accounts (/etc/group)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/group"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Group membership database; cross-reference with /etc/passwd and sudo log to \
+              detect unauthorized group additions (e.g., added to `sudo` or `docker` group).",
+    mitre_techniques: &["T1087.001", "T1078.003"],
+    fields: ACCOUNT_FIELDS,
+};
+
+pub static LINUX_GNOME_KEYRING: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_gnome_keyring",
+    name: "GNOME Keyring (keyrings/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.local/share/keyrings/"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "GNOME keyring stores WiFi PSK, SSH passphrases, web service passwords, and \
+              browser master passwords encrypted with user login credential.",
+    mitre_techniques: &["T1555.003"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_KDE_KWALLET: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_kde_kwallet",
+    name: "KDE KWallet (kwalletd/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.local/share/kwalletd/"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "KDE wallet encrypted credential store; stores passwords, SSH keys, and browser \
+              credentials for KDE applications.",
+    mitre_techniques: &["T1555.003"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_CHROME_LOGIN_LINUX: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_chrome_login_linux",
+    name: "Chrome/Chromium Login Data (Linux)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.config/google-chrome/Default/Login Data"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "SQLite database of saved Chrome passwords on Linux; encryption key stored in \
+              GNOME Keyring or plaintext depending on configuration.",
+    mitre_techniques: &["T1555.003"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_FIREFOX_LOGINS_LINUX: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_firefox_logins_linux",
+    name: "Firefox logins.json (Linux)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.mozilla/firefox/"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "JSON-encoded saved Firefox credentials protected by NSS (key4.db); \
+              can be decrypted with master password or via memory forensics of the Firefox process.",
+    mitre_techniques: &["T1555.003"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_UTMP: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_utmp",
+    name: "Current Login Sessions (/run/utmp)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/run/utmp"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Binary utmp records of currently logged-in users; cross-reference with wtmp \
+              to detect sessions not present in persistent logs (anti-forensics via utmp wiper).",
+    mitre_techniques: &["T1078"],
+    fields: LOG_LINE_FIELDS,
+};
+
+pub static LINUX_GCP_CREDENTIALS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_gcp_credentials",
+    name: "GCP Application Default Credentials",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.config/gcloud/"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "GCP access tokens and service account keys stored by gcloud CLI; \
+              exfiltration enables cloud resource takeover without password.",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_AZURE_CREDENTIALS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_azure_credentials",
+    name: "Azure CLI Credentials (~/.azure/)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.azure/"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Azure CLI access tokens and service principal credentials; \
+              msal_token_cache.json contains active OAuth tokens enabling lateral movement in Azure.",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_KUBE_CONFIG: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_kube_config",
+    name: "Kubernetes Config (~/.kube/config)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.kube/config"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "kubectl cluster credentials including bearer tokens, client certificates, \
+              and cluster API endpoints; enables full cluster takeover if exfiltrated.",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_GIT_CREDENTIALS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_git_credentials",
+    name: "Git Credential Store (~/.git-credentials)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.git-credentials"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Plaintext git credential store: URL + username + PAT/password per line; \
+              personal access tokens here can access source repositories and CI/CD pipelines.",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
+pub static LINUX_NETRC: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_netrc",
+    name: "Netrc Credential File (~/.netrc)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.netrc"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Auto-authentication file for ftp, curl, and legacy tools; stores plaintext \
+              hostname/login/password triplets, often forgotten and highly sensitive.",
+    mitre_techniques: &["T1552.001"],
+    fields: FILE_PATH_FIELDS,
+};
+
 // ── Global catalog ───────────────────────────────────────────────────────────
 
 /// The global forensic artifact catalog containing all known artifact descriptors.
@@ -3279,6 +3891,45 @@ pub static CATALOG: ForensicCatalog = ForensicCatalog::new(&[
     LINUX_GNUPG_PRIVATE,
     LINUX_AWS_CREDENTIALS,
     LINUX_DOCKER_CONFIG,
+    // Batch E — Windows execution evidence
+    LNK_FILES,
+    JUMP_LIST_AUTO,
+    JUMP_LIST_CUSTOM,
+    EVTX_DIR,
+    USN_JOURNAL,
+    // Batch E — Windows persistence
+    WMI_MOF_DIR,
+    BITS_DB,
+    WMI_SUBSCRIPTIONS,
+    LOGON_SCRIPTS,
+    WINSOCK_LSP,
+    APPSHIM_DB,
+    PASSWORD_FILTER_DLL,
+    OFFICE_NORMAL_DOTM,
+    POWERSHELL_PROFILE_ALL,
+    // Batch E — Windows credentials
+    DPAPI_SYSTEM_MASTERKEY,
+    DPAPI_CREDHIST,
+    CHROME_COOKIES,
+    EDGE_WEBCACHE,
+    VPN_RAS_PHONEBOOK,
+    WINDOWS_HELLO_NGC,
+    USER_CERT_PRIVATE_KEY,
+    MACHINE_CERT_STORE,
+    // Batch F — Linux extended
+    LINUX_AT_QUEUE,
+    LINUX_SSHD_CONFIG,
+    LINUX_ETC_GROUP,
+    LINUX_GNOME_KEYRING,
+    LINUX_KDE_KWALLET,
+    LINUX_CHROME_LOGIN_LINUX,
+    LINUX_FIREFOX_LOGINS_LINUX,
+    LINUX_UTMP,
+    LINUX_GCP_CREDENTIALS,
+    LINUX_AZURE_CREDENTIALS,
+    LINUX_KUBE_CONFIG,
+    LINUX_GIT_CREDENTIALS,
+    LINUX_NETRC,
 ]);
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -3346,7 +3997,7 @@ mod tests {
     #[test]
     fn catalog_has_entries() {
         assert!(!CATALOG.list().is_empty());
-        assert_eq!(CATALOG.list().len(), 100);
+        assert_eq!(CATALOG.list().len(), 135);
     }
 
     #[test]
