@@ -188,31 +188,210 @@ impl IntoForensicEvents for ModuleInfo {
 
 impl IntoForensicEvents for HiddenProcessInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement HiddenProcessInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) =
+            if self.present_in_pid_ns && !self.present_in_task_list {
+                // Visible in PID namespace but not in task list — classic DKOM rootkit (T1014)
+                (
+                    Severity::Critical,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1014").expect("valid id")],
+                    0.95f64,
+                )
+            } else if self.present_in_pid_hash && !self.present_in_task_list {
+                // In PID hash but not task list — partial DKOM (T1014)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1014").expect("valid id")],
+                    0.85f64,
+                )
+            } else if self.present_in_task_list && !self.present_in_pid_ns {
+                // In task list but not PID namespace — namespace hiding (T1014)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1014").expect("valid id")],
+                    0.8f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("process_enumerated".into()), vec![], 0.3f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_proc_hidden")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for VdsoTamperInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement VdsoTamperInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) =
+            if self.differs_from_canonical && self.diff_byte_count > 16 {
+                // Large vDSO diff — likely patched syscall stubs (T1055)
+                (
+                    Severity::Critical,
+                    Finding::ProcessHollowing,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.95f64,
+                )
+            } else if self.differs_from_canonical {
+                // Small vDSO diff — possible targeted patch (T1055)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.8f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("vdso_clean".into()), vec![], 0.3f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_vdso_tamper")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for UserNsEscalationInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement UserNsEscalationInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) =
+            if self.has_cap_sys_admin && self.owner_uid != self.process_uid {
+                // CAP_SYS_ADMIN mapped for a different UID — privilege escalation (T1611)
+                (
+                    Severity::Critical,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    0.9f64,
+                )
+            } else if self.ns_depth > 3 {
+                // Deeply nested user namespace — evasion technique (T1611)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    0.7f64,
+                )
+            } else if self.has_cap_sys_admin && self.owner_uid == 0 {
+                // Root-owned namespace with CAP_SYS_ADMIN (T1548)
+                (
+                    Severity::Medium,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1548").expect("valid id")],
+                    0.6f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("user_ns_enumerated".into()), vec![], 0.3f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_user_ns")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for AuditTamperInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement AuditTamperInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) = if self.audit_globally_disabled {
+            // Audit subsystem globally disabled — Defense Evasion (T1562)
+            (
+                Severity::Critical,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1562").expect("valid id")],
+                0.95f64,
+            )
+        } else if !self.suppressed_pids.is_empty() {
+            // PIDs excluded from auditing — targeted evasion (T1562)
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1562").expect("valid id")],
+                0.85f64,
+            )
+        } else if self.backlog_limit < 64 {
+            // Very low backlog limit — audit log flooding / evasion (T1562)
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1562").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("audit_enumerated".into()), vec![], 0.3f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_netlink_audit")
+            .entity(Entity::File { path: "kernel:audit".into() })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for CpuPinningInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement CpuPinningInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) =
+            if self.pinned_cpu_count == 1 && self.cpu_time_ns > 1_000_000_000 {
+                // Single CPU affinity with high CPU consumption — cryptominer pattern (T1496)
+                (
+                    Severity::High,
+                    Finding::Other("cryptomining_suspected".into()),
+                    vec![MitreAttackId::new("T1496").expect("valid id")],
+                    0.8f64,
+                )
+            } else if self.sched_policy == 3 || self.sched_policy == 5 {
+                // SCHED_BATCH or SCHED_IDLE — stealth scheduling (T1496)
+                (
+                    Severity::Medium,
+                    Finding::Other("stealth_scheduling".into()),
+                    vec![MitreAttackId::new("T1496").expect("valid id")],
+                    0.5f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("cpu_pinning_enumerated".into()), vec![], 0.3f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_cpu_pinning")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
@@ -222,25 +401,176 @@ impl IntoForensicEvents for CpuPinningInfo {
 
 impl IntoForensicEvents for ContainerEscapeCorrelateInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement ContainerEscapeCorrelateInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) =
+            if self.has_host_mounts && self.in_non_init_pid_ns {
+                // Host filesystem mounts visible from within a container (T1611)
+                (
+                    Severity::Critical,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    0.9f64,
+                )
+            } else if self.cap_sys_admin && self.in_non_init_pid_ns {
+                // CAP_SYS_ADMIN inside a container namespace (T1611)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    0.8f64,
+                )
+            } else if self.pid_ns_differs_from_cgroup_ns {
+                // PID/cgroup namespace mismatch — suspicious escape attempt (T1611)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    0.75f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("container_enumerated".into()), vec![], 0.3f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_container_escape")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for FdAbuseInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement FdAbuseInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) =
+            if self.fd_type == FdAbuseType::SignalFd && self.signal_mask & (1u64 << 15) != 0 {
+                // signalfd intercepting SIGTERM — Defense Evasion (T1205)
+                (
+                    Severity::High,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1205").expect("valid id")],
+                    0.8f64,
+                )
+            } else if self.fd_type == FdAbuseType::TimerFd && self.interval_ns < 1_000_000_000 {
+                // Sub-second timerfd interval — potential beaconing (T1071)
+                (
+                    Severity::Medium,
+                    Finding::NetworkBeaconing,
+                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    0.5f64,
+                )
+            } else if self.is_cross_process_shared {
+                // Cross-process fd sharing — covert channel (T1071)
+                (
+                    Severity::Medium,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    0.6f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("fd_enumerated".into()), vec![], 0.3f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_timerfd_signalfd")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for SharedMemAnomalyInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement SharedMemAnomalyInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) =
+            if self.is_memfd && self.is_executable {
+                // Executable memfd — in-memory code execution (T1027)
+                (
+                    Severity::Critical,
+                    Finding::ProcessHollowing,
+                    vec![MitreAttackId::new("T1027").expect("valid id")],
+                    0.9f64,
+                )
+            } else if self.has_elf_header && self.is_executable {
+                // Executable shared region with ELF header — process injection (T1055)
+                (
+                    Severity::High,
+                    Finding::ProcessHollowing,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.85f64,
+                )
+            } else if self.is_cross_uid {
+                // Cross-UID shared memory — possible privilege escalation vector (T1055)
+                (
+                    Severity::Medium,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.6f64,
+                )
+            } else {
+                (Severity::Info, Finding::Other("shared_mem_enumerated".into()), vec![], 0.3f64)
+            };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_shared_mem")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
 impl IntoForensicEvents for FuseAbuseInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        todo!("implement FuseAbuseInfo::into_forensic_events")
+        let (severity, finding, mitre, confidence) = if self.is_over_sensitive_path {
+            // FUSE mounted over /proc, /sys, /etc — Hide Artifacts (T1564)
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1564").expect("valid id")],
+                0.9f64,
+            )
+        } else if self.daemon_is_root && self.allow_other {
+            // Root FUSE daemon with allow_other — privilege escalation risk (T1564)
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1564").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (Severity::Info, Finding::Other("fuse_mount_enumerated".into()), vec![], 0.3f64)
+        };
+
+        vec![ForensicEvent::builder()
+            .source_walker("linux_fuse")
+            .entity(Entity::Process {
+                pid: self.pid as u32,
+                name: self.comm.clone(),
+                ppid: None,
+            })
+            .finding(finding)
+            .severity(severity)
+            .confidence(confidence)
+            .mitre_attack(mitre)
+            .build()]
     }
 }
 
