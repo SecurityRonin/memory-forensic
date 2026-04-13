@@ -60,15 +60,25 @@ pub enum DataScope {
     Mixed,
 }
 
-/// Minimum Windows version required for the artifact to exist.
+/// Minimum OS version / platform required for the artifact to exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OsScope {
+    // ── Windows ──────────────────────────────────────────────────────────
     All,
     Win7Plus,
     Win8Plus,
     Win10Plus,
     Win11Plus,
     Win11_22H2,
+    // ── Linux ────────────────────────────────────────────────────────────
+    /// All Linux distributions (kernel + standard POSIX userland).
+    Linux,
+    /// systemd-based distros (Ubuntu 16.04+, Fedora 15+, Debian 8+, Arch).
+    LinuxSystemd,
+    /// Debian / Ubuntu specific paths or tools.
+    LinuxDebian,
+    /// Red Hat / CentOS / Fedora specific paths.
+    LinuxRhel,
 }
 
 // ── Binary field layout ──────────────────────────────────────────────────────
@@ -3663,6 +3673,279 @@ mod tests_batch_c {
             "dpapi_cred_roaming", "windows_vault_user", "windows_vault_system",
             "rdp_client_servers", "rdp_client_default", "ntds_dit",
             "chrome_login_data", "firefox_logins", "wifi_profiles",
+        ] {
+            assert!(ids.contains(expected), "CATALOG missing: {expected}");
+        }
+    }
+}
+
+// ── Tests for Batch D (Linux persistence / execution / credential) ────────────
+
+#[cfg(test)]
+mod tests_batch_d {
+    use super::*;
+
+    // ── Linux persistence: cron ───────────────────────────────────────────
+
+    #[test] fn linux_crontab_system_md() {
+        assert_eq!(LINUX_CRONTAB_SYSTEM.id, "linux_crontab_system");
+        assert_eq!(LINUX_CRONTAB_SYSTEM.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_CRONTAB_SYSTEM.scope, DataScope::System);
+        assert_eq!(LINUX_CRONTAB_SYSTEM.os_scope, OsScope::Linux);
+        assert!(LINUX_CRONTAB_SYSTEM.mitre_techniques.contains(&"T1053.003"));
+    }
+    #[test] fn linux_cron_d_md() {
+        assert_eq!(LINUX_CRON_D.id, "linux_cron_d");
+        assert_eq!(LINUX_CRON_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_CRON_D.scope, DataScope::System);
+        assert_eq!(LINUX_CRON_D.os_scope, OsScope::Linux);
+    }
+    #[test] fn linux_cron_periodic_md() {
+        assert_eq!(LINUX_CRON_PERIODIC.id, "linux_cron_periodic");
+        assert_eq!(LINUX_CRON_PERIODIC.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_CRON_PERIODIC.scope, DataScope::System);
+    }
+    #[test] fn linux_user_crontab_md() {
+        assert_eq!(LINUX_USER_CRONTAB.id, "linux_user_crontab");
+        assert_eq!(LINUX_USER_CRONTAB.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_USER_CRONTAB.scope, DataScope::User);
+        assert!(LINUX_USER_CRONTAB.mitre_techniques.contains(&"T1053.003"));
+    }
+    #[test] fn linux_anacrontab_md() {
+        assert_eq!(LINUX_ANACRONTAB.id, "linux_anacrontab");
+        assert_eq!(LINUX_ANACRONTAB.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_ANACRONTAB.scope, DataScope::System);
+    }
+
+    // ── Linux persistence: systemd ────────────────────────────────────────
+
+    #[test] fn linux_systemd_system_unit_md() {
+        assert_eq!(LINUX_SYSTEMD_SYSTEM_UNIT.id, "linux_systemd_system_unit");
+        assert_eq!(LINUX_SYSTEMD_SYSTEM_UNIT.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_SYSTEMD_SYSTEM_UNIT.scope, DataScope::System);
+        assert_eq!(LINUX_SYSTEMD_SYSTEM_UNIT.os_scope, OsScope::LinuxSystemd);
+        assert!(LINUX_SYSTEMD_SYSTEM_UNIT.mitre_techniques.contains(&"T1543.002"));
+    }
+    #[test] fn linux_systemd_user_unit_md() {
+        assert_eq!(LINUX_SYSTEMD_USER_UNIT.id, "linux_systemd_user_unit");
+        assert_eq!(LINUX_SYSTEMD_USER_UNIT.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_SYSTEMD_USER_UNIT.scope, DataScope::User);
+        assert_eq!(LINUX_SYSTEMD_USER_UNIT.os_scope, OsScope::LinuxSystemd);
+    }
+    #[test] fn linux_systemd_timer_md() {
+        assert_eq!(LINUX_SYSTEMD_TIMER.id, "linux_systemd_timer");
+        assert_eq!(LINUX_SYSTEMD_TIMER.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_SYSTEMD_TIMER.os_scope, OsScope::LinuxSystemd);
+        assert!(LINUX_SYSTEMD_TIMER.mitre_techniques.contains(&"T1053.006"));
+    }
+
+    // ── Linux persistence: init / rc.local ───────────────────────────────
+
+    #[test] fn linux_rc_local_md() {
+        assert_eq!(LINUX_RC_LOCAL.id, "linux_rc_local");
+        assert_eq!(LINUX_RC_LOCAL.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_RC_LOCAL.scope, DataScope::System);
+        assert!(LINUX_RC_LOCAL.mitre_techniques.contains(&"T1037.004"));
+    }
+    #[test] fn linux_init_d_md() {
+        assert_eq!(LINUX_INIT_D.id, "linux_init_d");
+        assert_eq!(LINUX_INIT_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_INIT_D.scope, DataScope::System);
+    }
+
+    // ── Linux persistence: shell startup ─────────────────────────────────
+
+    #[test] fn linux_bashrc_user_md() {
+        assert_eq!(LINUX_BASHRC_USER.id, "linux_bashrc_user");
+        assert_eq!(LINUX_BASHRC_USER.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_BASHRC_USER.scope, DataScope::User);
+        assert!(LINUX_BASHRC_USER.mitre_techniques.contains(&"T1546.004"));
+    }
+    #[test] fn linux_bash_profile_user_md() {
+        assert_eq!(LINUX_BASH_PROFILE_USER.id, "linux_bash_profile_user");
+        assert_eq!(LINUX_BASH_PROFILE_USER.scope, DataScope::User);
+        assert!(LINUX_BASH_PROFILE_USER.mitre_techniques.contains(&"T1546.004"));
+    }
+    #[test] fn linux_profile_user_md() {
+        assert_eq!(LINUX_PROFILE_USER.id, "linux_profile_user");
+        assert_eq!(LINUX_PROFILE_USER.scope, DataScope::User);
+    }
+    #[test] fn linux_zshrc_user_md() {
+        assert_eq!(LINUX_ZSHRC_USER.id, "linux_zshrc_user");
+        assert_eq!(LINUX_ZSHRC_USER.scope, DataScope::User);
+        assert!(LINUX_ZSHRC_USER.mitre_techniques.contains(&"T1546.004"));
+    }
+    #[test] fn linux_profile_system_md() {
+        assert_eq!(LINUX_PROFILE_SYSTEM.id, "linux_profile_system");
+        assert_eq!(LINUX_PROFILE_SYSTEM.scope, DataScope::System);
+    }
+    #[test] fn linux_profile_d_md() {
+        assert_eq!(LINUX_PROFILE_D.id, "linux_profile_d");
+        assert_eq!(LINUX_PROFILE_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_PROFILE_D.scope, DataScope::System);
+    }
+
+    // ── Linux persistence: LD_PRELOAD / linker ────────────────────────────
+
+    #[test] fn linux_ld_so_preload_md() {
+        assert_eq!(LINUX_LD_SO_PRELOAD.id, "linux_ld_so_preload");
+        assert_eq!(LINUX_LD_SO_PRELOAD.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_LD_SO_PRELOAD.scope, DataScope::System);
+        assert!(LINUX_LD_SO_PRELOAD.mitre_techniques.contains(&"T1574.006"));
+    }
+    #[test] fn linux_ld_so_conf_d_md() {
+        assert_eq!(LINUX_LD_SO_CONF_D.id, "linux_ld_so_conf_d");
+        assert_eq!(LINUX_LD_SO_CONF_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_LD_SO_CONF_D.scope, DataScope::System);
+    }
+
+    // ── Linux persistence: SSH ────────────────────────────────────────────
+
+    #[test] fn linux_ssh_authorized_keys_md() {
+        assert_eq!(LINUX_SSH_AUTHORIZED_KEYS.id, "linux_ssh_authorized_keys");
+        assert_eq!(LINUX_SSH_AUTHORIZED_KEYS.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_SSH_AUTHORIZED_KEYS.scope, DataScope::User);
+        assert!(LINUX_SSH_AUTHORIZED_KEYS.mitre_techniques.contains(&"T1098.004"));
+    }
+
+    // ── Linux persistence: PAM / sudo / kernel ────────────────────────────
+
+    #[test] fn linux_pam_d_md() {
+        assert_eq!(LINUX_PAM_D.id, "linux_pam_d");
+        assert_eq!(LINUX_PAM_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_PAM_D.scope, DataScope::System);
+        assert!(LINUX_PAM_D.mitre_techniques.contains(&"T1556.003"));
+    }
+    #[test] fn linux_sudoers_d_md() {
+        assert_eq!(LINUX_SUDOERS_D.id, "linux_sudoers_d");
+        assert_eq!(LINUX_SUDOERS_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_SUDOERS_D.scope, DataScope::System);
+        assert!(LINUX_SUDOERS_D.mitre_techniques.contains(&"T1548.003"));
+    }
+    #[test] fn linux_modules_load_d_md() {
+        assert_eq!(LINUX_MODULES_LOAD_D.id, "linux_modules_load_d");
+        assert_eq!(LINUX_MODULES_LOAD_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_MODULES_LOAD_D.scope, DataScope::System);
+        assert!(LINUX_MODULES_LOAD_D.mitre_techniques.contains(&"T1547.006"));
+    }
+    #[test] fn linux_motd_d_md() {
+        assert_eq!(LINUX_MOTD_D.id, "linux_motd_d");
+        assert_eq!(LINUX_MOTD_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_MOTD_D.scope, DataScope::System);
+    }
+    #[test] fn linux_udev_rules_d_md() {
+        assert_eq!(LINUX_UDEV_RULES_D.id, "linux_udev_rules_d");
+        assert_eq!(LINUX_UDEV_RULES_D.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_UDEV_RULES_D.scope, DataScope::System);
+        assert!(LINUX_UDEV_RULES_D.mitre_techniques.contains(&"T1546"));
+    }
+
+    // ── Linux execution evidence ──────────────────────────────────────────
+
+    #[test] fn linux_bash_history_md() {
+        assert_eq!(LINUX_BASH_HISTORY.id, "linux_bash_history");
+        assert_eq!(LINUX_BASH_HISTORY.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_BASH_HISTORY.scope, DataScope::User);
+        assert!(LINUX_BASH_HISTORY.mitre_techniques.contains(&"T1059.004"));
+    }
+    #[test] fn linux_zsh_history_md() {
+        assert_eq!(LINUX_ZSH_HISTORY.id, "linux_zsh_history");
+        assert_eq!(LINUX_ZSH_HISTORY.scope, DataScope::User);
+    }
+    #[test] fn linux_wtmp_md() {
+        assert_eq!(LINUX_WTMP.id, "linux_wtmp");
+        assert_eq!(LINUX_WTMP.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_WTMP.scope, DataScope::System);
+        assert!(LINUX_WTMP.mitre_techniques.contains(&"T1078"));
+    }
+    #[test] fn linux_btmp_md() {
+        assert_eq!(LINUX_BTMP.id, "linux_btmp");
+        assert_eq!(LINUX_BTMP.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_BTMP.scope, DataScope::System);
+    }
+    #[test] fn linux_lastlog_md() {
+        assert_eq!(LINUX_LASTLOG.id, "linux_lastlog");
+        assert_eq!(LINUX_LASTLOG.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_LASTLOG.scope, DataScope::System);
+    }
+    #[test] fn linux_auth_log_md() {
+        assert_eq!(LINUX_AUTH_LOG.id, "linux_auth_log");
+        assert_eq!(LINUX_AUTH_LOG.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_AUTH_LOG.scope, DataScope::System);
+        assert!(LINUX_AUTH_LOG.mitre_techniques.contains(&"T1078"));
+    }
+    #[test] fn linux_journal_dir_md() {
+        assert_eq!(LINUX_JOURNAL_DIR.id, "linux_journal_dir");
+        assert_eq!(LINUX_JOURNAL_DIR.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_JOURNAL_DIR.os_scope, OsScope::LinuxSystemd);
+    }
+
+    // ── Linux credentials ─────────────────────────────────────────────────
+
+    #[test] fn linux_passwd_md() {
+        assert_eq!(LINUX_PASSWD.id, "linux_passwd");
+        assert_eq!(LINUX_PASSWD.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_PASSWD.scope, DataScope::System);
+        assert!(LINUX_PASSWD.mitre_techniques.contains(&"T1087.001"));
+    }
+    #[test] fn linux_shadow_md() {
+        assert_eq!(LINUX_SHADOW.id, "linux_shadow");
+        assert_eq!(LINUX_SHADOW.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_SHADOW.scope, DataScope::System);
+        assert!(LINUX_SHADOW.mitre_techniques.contains(&"T1003.008"));
+    }
+    #[test] fn linux_ssh_private_key_md() {
+        assert_eq!(LINUX_SSH_PRIVATE_KEY.id, "linux_ssh_private_key");
+        assert_eq!(LINUX_SSH_PRIVATE_KEY.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_SSH_PRIVATE_KEY.scope, DataScope::User);
+        assert!(LINUX_SSH_PRIVATE_KEY.mitre_techniques.contains(&"T1552.004"));
+    }
+    #[test] fn linux_ssh_known_hosts_md() {
+        assert_eq!(LINUX_SSH_KNOWN_HOSTS.id, "linux_ssh_known_hosts");
+        assert_eq!(LINUX_SSH_KNOWN_HOSTS.scope, DataScope::User);
+        assert!(LINUX_SSH_KNOWN_HOSTS.mitre_techniques.contains(&"T1021.004"));
+    }
+    #[test] fn linux_gnupg_private_md() {
+        assert_eq!(LINUX_GNUPG_PRIVATE.id, "linux_gnupg_private");
+        assert_eq!(LINUX_GNUPG_PRIVATE.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_GNUPG_PRIVATE.scope, DataScope::User);
+        assert!(LINUX_GNUPG_PRIVATE.mitre_techniques.contains(&"T1552.004"));
+    }
+    #[test] fn linux_aws_credentials_md() {
+        assert_eq!(LINUX_AWS_CREDENTIALS.id, "linux_aws_credentials");
+        assert_eq!(LINUX_AWS_CREDENTIALS.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_AWS_CREDENTIALS.scope, DataScope::User);
+        assert!(LINUX_AWS_CREDENTIALS.mitre_techniques.contains(&"T1552.001"));
+    }
+    #[test] fn linux_docker_config_md() {
+        assert_eq!(LINUX_DOCKER_CONFIG.id, "linux_docker_config");
+        assert_eq!(LINUX_DOCKER_CONFIG.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_DOCKER_CONFIG.scope, DataScope::User);
+        assert!(LINUX_DOCKER_CONFIG.mitre_techniques.contains(&"T1552.001"));
+    }
+
+    // ── CATALOG completeness (batch D) ────────────────────────────────────
+
+    #[test]
+    fn catalog_contains_batch_d() {
+        let ids: Vec<&str> = CATALOG.list().iter().map(|d| d.id).collect();
+        for expected in &[
+            "linux_crontab_system", "linux_cron_d", "linux_cron_periodic",
+            "linux_user_crontab", "linux_anacrontab",
+            "linux_systemd_system_unit", "linux_systemd_user_unit", "linux_systemd_timer",
+            "linux_rc_local", "linux_init_d",
+            "linux_bashrc_user", "linux_bash_profile_user", "linux_profile_user",
+            "linux_zshrc_user", "linux_profile_system", "linux_profile_d",
+            "linux_ld_so_preload", "linux_ld_so_conf_d",
+            "linux_ssh_authorized_keys",
+            "linux_pam_d", "linux_sudoers_d", "linux_modules_load_d",
+            "linux_motd_d", "linux_udev_rules_d",
+            "linux_bash_history", "linux_zsh_history",
+            "linux_wtmp", "linux_btmp", "linux_lastlog",
+            "linux_auth_log", "linux_journal_dir",
+            "linux_passwd", "linux_shadow",
+            "linux_ssh_private_key", "linux_ssh_known_hosts",
+            "linux_gnupg_private", "linux_aws_credentials", "linux_docker_config",
         ] {
             assert!(ids.contains(expected), "CATALOG missing: {expected}");
         }
