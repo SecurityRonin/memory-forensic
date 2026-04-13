@@ -1685,3 +1685,245 @@ mod tests {
         );
     }
 }
+
+// ── Tests for new batch-A/B descriptors ──────────────────────────────────────
+
+#[cfg(test)]
+mod tests_new_descriptors {
+    use super::*;
+
+    // ── Run key variants ─────────────────────────────────────────────────
+
+    #[test]
+    fn run_key_hkcu_run_metadata() {
+        assert_eq!(RUN_KEY_HKCU_RUN.id, "run_key_hkcu");
+        assert_eq!(RUN_KEY_HKCU_RUN.hive, Some(HiveTarget::NtUser));
+        assert_eq!(RUN_KEY_HKCU_RUN.scope, DataScope::User);
+        assert!(RUN_KEY_HKCU_RUN.mitre_techniques.contains(&"T1547.001"));
+        assert!(RUN_KEY_HKCU_RUN.key_path.contains("Run"));
+    }
+
+    #[test]
+    fn run_key_hkcu_runonce_metadata() {
+        assert_eq!(RUN_KEY_HKCU_RUNONCE.id, "run_key_hkcu_once");
+        assert_eq!(RUN_KEY_HKCU_RUNONCE.hive, Some(HiveTarget::NtUser));
+        assert_eq!(RUN_KEY_HKCU_RUNONCE.scope, DataScope::User);
+        assert!(RUN_KEY_HKCU_RUNONCE.key_path.contains("RunOnce"));
+    }
+
+    #[test]
+    fn run_key_hklm_runonce_metadata() {
+        assert_eq!(RUN_KEY_HKLM_RUNONCE.id, "run_key_hklm_once");
+        assert_eq!(RUN_KEY_HKLM_RUNONCE.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(RUN_KEY_HKLM_RUNONCE.scope, DataScope::System);
+        assert!(RUN_KEY_HKLM_RUNONCE.key_path.contains("RunOnce"));
+    }
+
+    // ── IFEO ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ifeo_debugger_metadata() {
+        assert_eq!(IFEO_DEBUGGER.id, "ifeo_debugger");
+        assert_eq!(IFEO_DEBUGGER.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(IFEO_DEBUGGER.scope, DataScope::System);
+        assert!(IFEO_DEBUGGER.mitre_techniques.contains(&"T1546.012"));
+        assert!(IFEO_DEBUGGER.key_path.contains("Image File Execution Options"));
+    }
+
+    // ── UserAssist folder GUID ────────────────────────────────────────────
+
+    #[test]
+    fn userassist_folder_metadata() {
+        assert_eq!(USERASSIST_FOLDER.id, "userassist_folder");
+        assert_eq!(USERASSIST_FOLDER.hive, Some(HiveTarget::NtUser));
+        assert_eq!(USERASSIST_FOLDER.scope, DataScope::User);
+        assert!(USERASSIST_FOLDER.key_path.contains("UserAssist"));
+    }
+
+    // ── Shellbags ────────────────────────────────────────────────────────
+
+    #[test]
+    fn shellbags_user_metadata() {
+        assert_eq!(SHELLBAGS_USER.id, "shellbags_user");
+        assert_eq!(SHELLBAGS_USER.hive, Some(HiveTarget::UsrClass));
+        assert_eq!(SHELLBAGS_USER.scope, DataScope::User);
+        assert!(SHELLBAGS_USER.mitre_techniques.contains(&"T1083"));
+        assert!(SHELLBAGS_USER.key_path.contains("Shell"));
+    }
+
+    // ── Amcache ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn amcache_app_file_metadata() {
+        assert_eq!(AMCACHE_APP_FILE.id, "amcache_app_file");
+        assert_eq!(AMCACHE_APP_FILE.hive, Some(HiveTarget::Amcache));
+        assert_eq!(AMCACHE_APP_FILE.scope, DataScope::System);
+        assert!(AMCACHE_APP_FILE.mitre_techniques.contains(&"T1218"));
+    }
+
+    // ── ShimCache ────────────────────────────────────────────────────────
+
+    #[test]
+    fn shimcache_metadata() {
+        assert_eq!(SHIMCACHE.id, "shimcache");
+        assert_eq!(SHIMCACHE.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(SHIMCACHE.scope, DataScope::System);
+        assert!(SHIMCACHE.mitre_techniques.contains(&"T1218"));
+        assert!(SHIMCACHE.key_path.contains("AppCompatCache"));
+    }
+
+    // ── BAM / DAM ────────────────────────────────────────────────────────
+
+    #[test]
+    fn bam_user_metadata() {
+        assert_eq!(BAM_USER.id, "bam_user");
+        assert_eq!(BAM_USER.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(BAM_USER.scope, DataScope::Both);
+        assert_eq!(BAM_USER.os_scope, OsScope::Win10Plus);
+        assert!(BAM_USER.key_path.contains("bam"));
+    }
+
+    #[test]
+    fn dam_user_metadata() {
+        assert_eq!(DAM_USER.id, "dam_user");
+        assert_eq!(DAM_USER.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(DAM_USER.scope, DataScope::Both);
+        assert_eq!(DAM_USER.os_scope, OsScope::Win10Plus);
+        assert!(DAM_USER.key_path.contains("dam"));
+    }
+
+    // ── SAM ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sam_users_metadata() {
+        assert_eq!(SAM_USERS.id, "sam_users");
+        assert_eq!(SAM_USERS.hive, Some(HiveTarget::HklmSam));
+        assert_eq!(SAM_USERS.scope, DataScope::System);
+        assert!(SAM_USERS.key_path.contains("Users"));
+        assert!(SAM_USERS.mitre_techniques.contains(&"T1003.002"));
+    }
+
+    // ── LSA ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn lsa_secrets_metadata() {
+        assert_eq!(LSA_SECRETS.id, "lsa_secrets");
+        assert_eq!(LSA_SECRETS.hive, Some(HiveTarget::HklmSecurity));
+        assert_eq!(LSA_SECRETS.scope, DataScope::System);
+        assert!(LSA_SECRETS.key_path.contains("Secrets"));
+        assert!(LSA_SECRETS.mitre_techniques.contains(&"T1003.004"));
+    }
+
+    #[test]
+    fn dcc2_cache_metadata() {
+        assert_eq!(DCC2_CACHE.id, "dcc2_cache");
+        assert_eq!(DCC2_CACHE.hive, Some(HiveTarget::HklmSecurity));
+        assert_eq!(DCC2_CACHE.scope, DataScope::System);
+        assert!(DCC2_CACHE.mitre_techniques.contains(&"T1003.005"));
+    }
+
+    // ── TypedURLsTime ────────────────────────────────────────────────────
+
+    #[test]
+    fn typed_urls_time_metadata() {
+        assert_eq!(TYPED_URLS_TIME.id, "typed_urls_time");
+        assert_eq!(TYPED_URLS_TIME.hive, Some(HiveTarget::NtUser));
+        assert_eq!(TYPED_URLS_TIME.scope, DataScope::User);
+        assert!(TYPED_URLS_TIME.key_path.contains("TypedURLsTime"));
+    }
+
+    // ── MRU RecentDocs ───────────────────────────────────────────────────
+
+    #[test]
+    fn mru_recent_docs_metadata() {
+        assert_eq!(MRU_RECENT_DOCS.id, "mru_recent_docs");
+        assert_eq!(MRU_RECENT_DOCS.hive, Some(HiveTarget::NtUser));
+        assert_eq!(MRU_RECENT_DOCS.scope, DataScope::User);
+        assert!(MRU_RECENT_DOCS.key_path.contains("RecentDocs"));
+    }
+
+    // ── USB ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn usb_enum_metadata() {
+        assert_eq!(USB_ENUM.id, "usb_enum");
+        assert_eq!(USB_ENUM.hive, Some(HiveTarget::HklmSystem));
+        assert_eq!(USB_ENUM.scope, DataScope::System);
+        assert!(USB_ENUM.mitre_techniques.contains(&"T1200"));
+        assert!(USB_ENUM.key_path.contains("USBSTOR"));
+    }
+
+    // ── MUICache ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn muicache_metadata() {
+        assert_eq!(MUICACHE.id, "muicache");
+        assert_eq!(MUICACHE.hive, Some(HiveTarget::UsrClass));
+        assert_eq!(MUICACHE.scope, DataScope::User);
+        assert!(MUICACHE.key_path.contains("MuiCache"));
+    }
+
+    // ── AppInit DLLs ─────────────────────────────────────────────────────
+
+    #[test]
+    fn appinit_dlls_metadata() {
+        assert_eq!(APPINIT_DLLS.id, "appinit_dlls");
+        assert_eq!(APPINIT_DLLS.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(APPINIT_DLLS.scope, DataScope::System);
+        assert!(APPINIT_DLLS.mitre_techniques.contains(&"T1546.010"));
+        assert!(APPINIT_DLLS.key_path.contains("Windows NT"));
+    }
+
+    // ── Winlogon ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn winlogon_userinit_metadata() {
+        assert_eq!(WINLOGON_USERINIT.id, "winlogon_userinit");
+        assert_eq!(WINLOGON_USERINIT.hive, Some(HiveTarget::HklmSoftware));
+        assert_eq!(WINLOGON_USERINIT.scope, DataScope::System);
+        assert!(WINLOGON_USERINIT.mitre_techniques.contains(&"T1547.004"));
+        assert!(WINLOGON_USERINIT.key_path.contains("Winlogon"));
+    }
+
+    // ── Screensaver ──────────────────────────────────────────────────────
+
+    #[test]
+    fn screensaver_exe_metadata() {
+        assert_eq!(SCREENSAVER_EXE.id, "screensaver_exe");
+        assert_eq!(SCREENSAVER_EXE.hive, Some(HiveTarget::NtUser));
+        assert_eq!(SCREENSAVER_EXE.scope, DataScope::User);
+        assert!(SCREENSAVER_EXE.mitre_techniques.contains(&"T1546.002"));
+        assert!(SCREENSAVER_EXE.key_path.contains("Desktop"));
+    }
+
+    // ── CATALOG completeness ──────────────────────────────────────────────
+
+    #[test]
+    fn catalog_contains_all_new_descriptors() {
+        let ids: Vec<&str> = CATALOG.list().iter().map(|d| d.id).collect();
+        for expected in &[
+            "run_key_hkcu",
+            "run_key_hkcu_once",
+            "run_key_hklm_once",
+            "ifeo_debugger",
+            "userassist_folder",
+            "shellbags_user",
+            "amcache_app_file",
+            "shimcache",
+            "bam_user",
+            "dam_user",
+            "sam_users",
+            "lsa_secrets",
+            "dcc2_cache",
+            "typed_urls_time",
+            "mru_recent_docs",
+            "usb_enum",
+            "muicache",
+            "appinit_dlls",
+            "winlogon_userinit",
+            "screensaver_exe",
+        ] {
+            assert!(ids.contains(expected), "CATALOG missing: {expected}");
+        }
+    }
+}
