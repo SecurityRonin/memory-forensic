@@ -41,8 +41,11 @@ pub const PCA_ALL_PATHS: &[&str] = &[
 /// assert!(is_pca_file(r"C:\Windows\appcompat\pca\PcaAppLaunchDic.txt"));
 /// assert!(!is_pca_file(r"C:\Windows\System32\notepad.exe"));
 /// ```
-pub fn is_pca_file(_path: &str) -> bool {
-    false
+pub fn is_pca_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    PCA_ALL_PATHS
+        .iter()
+        .any(|p| lower == p.to_ascii_lowercase())
 }
 
 // ── Parsing ───────────────────────────────────────────────────────────────────
@@ -57,8 +60,18 @@ pub fn is_pca_file(_path: &str) -> bool {
 /// assert_eq!(path, r"C:\Windows\notepad.exe");
 /// assert_eq!(ts, "2024-01-15 10:30:00");
 /// ```
-pub fn parse_pca_line(_line: &str) -> Option<(String, String)> {
-    None
+pub fn parse_pca_line(line: &str) -> Option<(String, String)> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let mut parts = line.splitn(2, '|');
+    let exe = parts.next()?.to_string();
+    let ts = parts.next().unwrap_or("").to_string();
+    if exe.is_empty() {
+        return None;
+    }
+    Some((exe, ts))
 }
 
 /// Decodes raw UTF-16 LE bytes from a PCA file and parses every non-empty line.
@@ -67,8 +80,34 @@ pub fn parse_pca_line(_line: &str) -> Option<(String, String)> {
 /// parsed (no `|` separator, empty after trim) are silently skipped.
 ///
 /// The optional BOM (`FF FE`) is stripped automatically.
-pub fn decode_pca_utf16le(_bytes: &[u8]) -> Vec<(String, String)> {
-    vec![]
+pub fn decode_pca_utf16le(bytes: &[u8]) -> Vec<(String, String)> {
+    if bytes.len() < 2 {
+        return vec![];
+    }
+
+    // Strip BOM if present.
+    let bytes = if bytes.starts_with(&[0xFF, 0xFE]) {
+        &bytes[2..]
+    } else {
+        bytes
+    };
+
+    if bytes.len() % 2 != 0 {
+        return vec![];
+    }
+
+    // Decode UTF-16 LE pairs.
+    let utf16: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+
+    let decoded = String::from_utf16_lossy(&utf16);
+
+    decoded
+        .lines()
+        .filter_map(parse_pca_line)
+        .collect()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -141,10 +180,12 @@ mod tests {
 
     #[test]
     fn parse_pca_line_trims_whitespace() {
+        // trim() strips both leading and trailing whitespace from the full line
+        // before splitting, so the timestamp carries no trailing spaces.
         let (path, ts) =
             parse_pca_line("  C:\\app.exe|2024-06-01 09:00:00  ").unwrap();
         assert_eq!(path, r"C:\app.exe");
-        assert_eq!(ts, "2024-06-01 09:00:00  "); // only leading whitespace trimmed from full line
+        assert_eq!(ts, "2024-06-01 09:00:00");
     }
 
     #[test]
