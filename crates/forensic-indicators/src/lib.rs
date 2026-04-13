@@ -11,6 +11,7 @@ pub mod commands;
 pub mod encryption;
 pub mod lolbins;
 pub mod paths;
+pub mod pca;
 pub mod persistence;
 pub mod ports;
 pub mod processes;
