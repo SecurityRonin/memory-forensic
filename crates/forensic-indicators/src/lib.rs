@@ -6,6 +6,7 @@
 //! masquerading targets, malicious command patterns, and anti-forensics indicators.
 
 pub mod antiforensics;
+pub mod catalog;
 pub mod commands;
 pub mod encryption;
 pub mod lolbins;
