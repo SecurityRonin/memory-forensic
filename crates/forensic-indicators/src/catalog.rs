@@ -3775,6 +3775,98 @@ pub static LINUX_NETRC: ArtifactDescriptor = ArtifactDescriptor {
     fields: FILE_PATH_FIELDS,
 };
 
+// ── Batch G — LinuxPersist-sourced persistence artifacts ─────────────────────
+// Source: https://github.com/GuyEldad/LinuxPersist
+
+pub static LINUX_ETC_ENVIRONMENT: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_etc_environment",
+    name: "System Environment Variables (/etc/environment)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/environment"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "System-wide environment variable definitions loaded for every login session and \
+              PAM-based authentication. Attackers inject PATH hijacks or LD_PRELOAD values here \
+              to redirect binary execution system-wide without modifying shell configuration files.",
+    mitre_techniques: &["T1546.004"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+pub static LINUX_XDG_AUTOSTART_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_xdg_autostart_user",
+    name: "XDG User Autostart (.desktop files)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("~/.config/autostart/"),
+    scope: DataScope::User,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Per-user XDG autostart .desktop files executed when a desktop session starts \
+              (GNOME/KDE/XFCE). Exec= field runs arbitrary commands at GUI login without \
+              root privileges — frequently overlooked by server-focused forensic checklists.",
+    mitre_techniques: &["T1547.014"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+pub static LINUX_XDG_AUTOSTART_SYSTEM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_xdg_autostart_system",
+    name: "XDG System Autostart (.desktop files)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/xdg/autostart/"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "System-wide XDG autostart .desktop entries executed for all users at desktop session \
+              start. Provides privileged persistence targeting all GUI logins on a workstation.",
+    mitre_techniques: &["T1547.014"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+pub static LINUX_NETWORKMANAGER_DISPATCHER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_networkmanager_dispatcher",
+    name: "NetworkManager Dispatcher Scripts",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/NetworkManager/dispatcher.d/"),
+    scope: DataScope::System,
+    os_scope: OsScope::Linux,
+    decoder: Decoder::Identity,
+    meaning: "Scripts executed by NetworkManager when network interfaces change state (up/down). \
+              Provides network-event-triggered persistence — scripts fire on VPN connect, \
+              WiFi association, or interface cycling, making detection harder than at-boot persistence.",
+    mitre_techniques: &["T1547.013"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+pub static LINUX_APT_HOOKS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "linux_apt_hooks",
+    name: "APT Package Manager Hook Scripts",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some("/etc/apt/apt.conf.d/"),
+    scope: DataScope::System,
+    os_scope: OsScope::LinuxDebian,
+    decoder: Decoder::Identity,
+    meaning: "APT configuration snippets that can define DPkg::Pre-Install-Pkgs, \
+              DPkg::Post-Invoke, or APT::Update::Post-Invoke hooks; execute as root during \
+              every package install or update — long-lived trigger-based privilege persistence.",
+    mitre_techniques: &["T1546.004"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
 // ── Global catalog ───────────────────────────────────────────────────────────
 
 /// The global forensic artifact catalog containing all known artifact descriptors.
@@ -3930,6 +4022,12 @@ pub static CATALOG: ForensicCatalog = ForensicCatalog::new(&[
     LINUX_KUBE_CONFIG,
     LINUX_GIT_CREDENTIALS,
     LINUX_NETRC,
+    // Batch G — LinuxPersist-sourced
+    LINUX_ETC_ENVIRONMENT,
+    LINUX_XDG_AUTOSTART_USER,
+    LINUX_XDG_AUTOSTART_SYSTEM,
+    LINUX_NETWORKMANAGER_DISPATCHER,
+    LINUX_APT_HOOKS,
 ]);
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -3997,7 +4095,7 @@ mod tests {
     #[test]
     fn catalog_has_entries() {
         assert!(!CATALOG.list().is_empty());
-        assert_eq!(CATALOG.list().len(), 135);
+        assert_eq!(CATALOG.list().len(), 140);
     }
 
     #[test]
