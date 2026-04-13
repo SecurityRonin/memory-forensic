@@ -1454,6 +1454,894 @@ pub static SCREENSAVER_EXE: ArtifactDescriptor = ArtifactDescriptor {
     fields: SCREENSAVER_FIELDS,
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Batch C — Windows persistence / execution / credential artifacts
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Shared field schemas (reused across multiple descriptors) ─────────────
+
+/// Generic "command or path" field — suitable for persistence value descriptors.
+static PERSIST_CMD_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "command",
+    value_type: ValueType::Text,
+    description: "Command, DLL path, or executable registered for execution",
+    is_uid_component: false,
+}];
+
+/// Generic "DLL path" field.
+static DLL_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "dll_path",
+    value_type: ValueType::Text,
+    description: "Path to the DLL registered for injection or loading",
+    is_uid_component: false,
+}];
+
+/// Generic "directory listing" field for filesystem directory artifacts.
+static DIR_ENTRY_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "entry_name",
+    value_type: ValueType::Text,
+    description: "Name of the file or shortcut present in this directory",
+    is_uid_component: true,
+}];
+
+/// Generic "file path" for single-file artifacts.
+static FILE_PATH_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "path",
+    value_type: ValueType::Text,
+    description: "Full path to the artifact file",
+    is_uid_component: true,
+}];
+
+// ── Windows persistence: advanced registry ────────────────────────────────
+
+/// Winlogon Shell value — replaceable Windows Explorer shell (T1547.004).
+///
+/// Default: `explorer.exe`. Attackers replace or append to gain persistence
+/// that launches their binary as the user's shell at logon.
+pub static WINLOGON_SHELL: ArtifactDescriptor = ArtifactDescriptor {
+    id: "winlogon_shell",
+    name: "Winlogon Shell",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\Windows NT\CurrentVersion\Winlogon",
+    value_name: Some("Shell"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Windows shell process(es) launched by Winlogon; default is explorer.exe",
+    mitre_techniques: &["T1547.004"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+/// Windows Services — ImagePath value indicates binary launched as a service.
+///
+/// Each sub-key under `Services\*` has `ImagePath` (the executable) and
+/// `Start` (0=Boot, 1=System, 2=Auto, 3=Manual, 4=Disabled).
+pub static SERVICES_IMAGEPATH: ArtifactDescriptor = ArtifactDescriptor {
+    id: "services_imagepath",
+    name: "Services ImagePath",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Services",
+    value_name: Some("ImagePath"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Executable path of a Windows service; auto-started services persist across reboots",
+    mitre_techniques: &["T1543.003"],
+    fields: PERSIST_CMD_FIELDS,
+};
+
+static ACTIVE_SETUP_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "stub_path",
+    value_type: ValueType::Text,
+    description: "StubPath command executed once per user at logon for new installs",
+    is_uid_component: false,
+}];
+
+/// Active Setup HKLM — system-side component registration (T1547.014).
+///
+/// Each CLSID sub-key has `StubPath`. Windows compares HKLM and HKCU versions;
+/// if HKCU is missing or older, StubPath is executed as the user at logon.
+pub static ACTIVE_SETUP_HKLM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "active_setup_hklm",
+    name: "Active Setup (HKLM)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\Active Setup\Installed Components",
+    value_name: Some("StubPath"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Per-user setup command executed by HKLM Active Setup; malicious StubPath = user-context persistence",
+    mitre_techniques: &["T1547.014"],
+    fields: ACTIVE_SETUP_FIELDS,
+};
+
+/// Active Setup HKCU — user-side Active Setup version tracking.
+///
+/// Attacker may delete HKCU entry to trigger HKLM StubPath re-execution.
+pub static ACTIVE_SETUP_HKCU: ArtifactDescriptor = ArtifactDescriptor {
+    id: "active_setup_hkcu",
+    name: "Active Setup (HKCU)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Active Setup\Installed Components",
+    value_name: Some("Version"),
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "User-side Active Setup version; mismatch with HKLM triggers StubPath re-execution",
+    mitre_techniques: &["T1547.014"],
+    fields: RUN_KEY_FIELDS,
+};
+
+/// COM Hijacking via HKCU CLSID registration (T1546.015).
+///
+/// When an application resolves a CLSID, Windows checks HKCU\Classes before
+/// HKLM. Registering a malicious InprocServer32 in HKCU wins the race
+/// without requiring admin privileges.
+pub static COM_HIJACK_CLSID_HKCU: ArtifactDescriptor = ArtifactDescriptor {
+    id: "com_hijack_clsid_hkcu",
+    name: "COM Hijack CLSID (HKCU)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::UsrClass),
+    key_path: r"CLSID",
+    value_name: Some("InprocServer32"),
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "User-space CLSID registration overriding system COM server; no admin needed",
+    mitre_techniques: &["T1546.015"],
+    fields: DLL_FIELDS,
+};
+
+/// AppCert DLLs — DLL injected into every process calling CreateProcess (T1546.009).
+///
+/// Unlike AppInit_DLLs, these are loaded into more process types. Rarely
+/// legitimate; any non-empty value is highly suspicious.
+pub static APPCERT_DLLS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "appcert_dlls",
+    name: "AppCertDlls",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\Session Manager\AppCertDlls",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "DLLs injected into every process that calls CreateProcess-family APIs",
+    mitre_techniques: &["T1546.009"],
+    fields: DLL_FIELDS,
+};
+
+static BOOT_EXECUTE_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "commands",
+    value_type: ValueType::List,
+    description: "Commands executed by Session Manager before Win32 subsystem starts",
+    is_uid_component: false,
+}];
+
+/// Boot Execute — commands run by smss.exe before Win32 subsystem (T1547.001).
+///
+/// Default: `autocheck autochk *`. Additional entries run native NT executables
+/// at boot, before antivirus and most defences are loaded.
+pub static BOOT_EXECUTE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "boot_execute",
+    name: "Boot Execute",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\Session Manager",
+    value_name: Some("BootExecute"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::MultiSz,
+    meaning: "Native executables run by smss.exe at boot; executes before most security software",
+    mitre_techniques: &["T1547.001"],
+    fields: BOOT_EXECUTE_FIELDS,
+};
+
+/// LSA Security Support Providers — SSPs injected into LSASS (T1547.005).
+///
+/// Legitimate SSPs: kerberos, msv1_0, schannel, wdigest. Extra entries
+/// indicate credential-harvesting or persistence.
+pub static LSA_SECURITY_PKGS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "lsa_security_pkgs",
+    name: "LSA Security Packages",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\Lsa",
+    value_name: Some("Security Packages"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::MultiSz,
+    meaning: "Security Support Providers loaded into LSASS; malicious SSP = persistent LSASS credential access",
+    mitre_techniques: &["T1547.005"],
+    fields: BOOT_EXECUTE_FIELDS,
+};
+
+/// LSA Authentication Packages — loaded by LSASS for auth (T1547.002).
+pub static LSA_AUTH_PKGS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "lsa_auth_pkgs",
+    name: "LSA Authentication Packages",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\Lsa",
+    value_name: Some("Authentication Packages"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::MultiSz,
+    meaning: "Authentication packages loaded by LSASS; extra DLLs intercept logon credentials",
+    mitre_techniques: &["T1547.002"],
+    fields: BOOT_EXECUTE_FIELDS,
+};
+
+/// Print Monitors — DLL loaded by the spooler service (T1547.010).
+///
+/// Requires admin. DLL runs as SYSTEM inside spoolsv.exe across reboots.
+pub static PRINT_MONITORS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "print_monitors",
+    name: "Print Monitors",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\Print\Monitors",
+    value_name: Some("Driver"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "DLL loaded into spoolsv.exe (SYSTEM); extra monitors = SYSTEM persistence",
+    mitre_techniques: &["T1547.010"],
+    fields: DLL_FIELDS,
+};
+
+/// Time Provider DLLs — loaded into svchost as part of W32Time (T1547.003).
+pub static TIME_PROVIDERS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "time_providers",
+    name: "W32Time Time Provider DLLs",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Services\W32Time\TimeProviders",
+    value_name: Some("DllName"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "DLLs loaded by the Windows Time service; malicious entry = SYSTEM persistence",
+    mitre_techniques: &["T1547.003"],
+    fields: DLL_FIELDS,
+};
+
+/// Netsh Helper DLLs — COM-like DLLs loaded by netsh.exe (T1546.007).
+pub static NETSH_HELPER_DLLS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "netsh_helper_dlls",
+    name: "Netsh Helper DLLs",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\NetSh",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "DLLs loaded whenever netsh.exe is invoked; attacker DLL runs in user's netsh context",
+    mitre_techniques: &["T1546.007"],
+    fields: DLL_FIELDS,
+};
+
+static BHO_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "clsid",
+    value_type: ValueType::Text,
+    description: "CLSID of the Browser Helper Object (sub-key name)",
+    is_uid_component: true,
+}];
+
+/// Browser Helper Objects — COM components loaded by IE (T1176).
+///
+/// BHOs run inside iexplore.exe and can intercept HTTP traffic, steal
+/// credentials, and maintain persistence via the COM registry.
+pub static BROWSER_HELPER_OBJECTS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "browser_helper_objects",
+    name: "Internet Explorer Browser Helper Objects",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::HklmSoftware),
+    key_path: r"Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "COM components auto-loaded into IE; can intercept browsing and steal credentials",
+    mitre_techniques: &["T1176"],
+    fields: BHO_FIELDS,
+};
+
+// ── Windows persistence: filesystem ──────────────────────────────────────
+
+/// User Startup Folder — files/LNKs here execute at user logon (T1547.001).
+pub static STARTUP_FOLDER_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "startup_folder_user",
+    name: "User Startup Folder",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"),
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Executables and LNKs here run at user logon; no admin required",
+    mitre_techniques: &["T1547.001"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// System Startup Folder — files/LNKs here execute for all users at logon.
+pub static STARTUP_FOLDER_SYSTEM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "startup_folder_system",
+    name: "System Startup Folder",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"),
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Executables and LNKs run for every user at logon; requires admin to plant",
+    mitre_techniques: &["T1547.001"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// Windows Task Scheduler task XML files (T1053.005).
+///
+/// Each task is stored as an XML file; key elements: `<Actions>` (what runs),
+/// `<Triggers>` (when), `<Principal>` (which user/privileges).
+pub static SCHEDULED_TASKS_DIR: ArtifactDescriptor = ArtifactDescriptor {
+    id: "scheduled_tasks_dir",
+    name: "Scheduled Tasks Directory",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\System32\Tasks"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "XML task definitions; malicious tasks can run at boot, logon, or arbitrary intervals",
+    mitre_techniques: &["T1053.005"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// WDigest credential caching control (T1003.001).
+///
+/// Setting `UseLogonCredential` = 1 re-enables cleartext credential caching
+/// in LSASS memory on Windows 8.1+ (disabled by default since KB2871997).
+pub static WDIGEST_CACHING: ArtifactDescriptor = ArtifactDescriptor {
+    id: "wdigest_caching",
+    name: "WDigest UseLogonCredential",
+    artifact_type: ArtifactType::RegistryValue,
+    hive: Some(HiveTarget::HklmSystem),
+    key_path: r"CurrentControlSet\Control\SecurityProviders\WDigest",
+    value_name: Some("UseLogonCredential"),
+    file_path: None,
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::DwordLe,
+    meaning: "1 = cleartext creds in LSASS; attackers set this before Mimikatz to harvest passwords",
+    mitre_techniques: &["T1003.001"],
+    fields: RUN_KEY_FIELDS,
+};
+
+// ── Windows execution evidence ────────────────────────────────────────────
+
+/// WordWheelQuery — Explorer search bar history (MRUListEx).
+pub static WORDWHEEL_QUERY: ArtifactDescriptor = ArtifactDescriptor {
+    id: "wordwheel_query",
+    name: "WordWheelQuery (Explorer Search)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Windows\CurrentVersion\Explorer\WordWheelQuery",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::MruListEx,
+    meaning: "Search terms entered into Windows Explorer search bar; reveals attacker reconnaissance",
+    mitre_techniques: &["T1083"],
+    fields: MRU_RECENT_DOCS_FIELDS,
+};
+
+/// OpenSaveMRU — files opened/saved via Windows common dialog (T1083).
+///
+/// Each file extension has a sub-key containing an MRU list of paths.
+/// The `*` sub-key shows all extensions combined.
+pub static OPENSAVE_MRU: ArtifactDescriptor = ArtifactDescriptor {
+    id: "opensave_mru",
+    name: "OpenSaveMRU (Common Dialog)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSaveMRU",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::MruListEx,
+    meaning: "Paths of files opened or saved via Win32 common dialog boxes; per-extension history",
+    mitre_techniques: &["T1083"],
+    fields: MRU_RECENT_DOCS_FIELDS,
+};
+
+/// LastVisitedMRU — last folder visited in common dialog per-application.
+pub static LASTVISITED_MRU: ArtifactDescriptor = ArtifactDescriptor {
+    id: "lastvisited_mru",
+    name: "LastVisitedMRU (Common Dialog)",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedMRU",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::MruListEx,
+    meaning: "Application + last-used folder from common dialog; reveals programs accessing files",
+    mitre_techniques: &["T1083"],
+    fields: MRU_RECENT_DOCS_FIELDS,
+};
+
+/// Windows Prefetch files directory — execution evidence (T1204.002).
+///
+/// Each `.pf` file records: executable name, run count, last 8 run timestamps,
+/// and volume/file references. Requires Prefetch service enabled.
+pub static PREFETCH_DIR: ArtifactDescriptor = ArtifactDescriptor {
+    id: "prefetch_dir",
+    name: "Prefetch Files Directory",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\Prefetch"),
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Binary .pf files recording 30-day program execution history with timestamps",
+    mitre_techniques: &["T1204.002"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+static SRUM_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "app_name",
+        value_type: ValueType::Text,
+        description: "Application executable path or service name",
+        is_uid_component: true,
+    },
+    FieldSchema {
+        name: "user_sid",
+        value_type: ValueType::Text,
+        description: "SID of the user who ran the application",
+        is_uid_component: false,
+    },
+];
+
+/// System Resource Usage Monitor database — rich execution timeline (Win8+).
+///
+/// SQLite database at `C:\Windows\System32\sru\SRUDB.dat`. Key tables:
+/// `{D10CA2FE-...}` = Application Resource Usage (network, CPU per app),
+/// `{5C8CF1C7-...}` = Network Data Usage. Retains ~30-60 days of history.
+pub static SRUM_DB: ArtifactDescriptor = ArtifactDescriptor {
+    id: "srum_db",
+    name: "SRUM Database (SRUDB.dat)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\System32\sru\SRUDB.dat"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win8Plus,
+    decoder: Decoder::Identity,
+    meaning: "Per-app CPU, network, and energy usage records; execution timeline survives log clearing",
+    mitre_techniques: &["T1204.002"],
+    fields: SRUM_FIELDS,
+};
+
+/// Windows Timeline / Activities Cache — cross-device activity history (Win10+).
+///
+/// SQLite database; `Activity` table records application focus events,
+/// file opens, and clipboard content with timestamps.
+pub static WINDOWS_TIMELINE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "windows_timeline",
+    name: "Windows Timeline (ActivitiesCache.db)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Local\ConnectedDevicesPlatform\*\ActivitiesCache.db"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win10Plus,
+    decoder: Decoder::Identity,
+    meaning: "Application activity timeline including focus time, file access, and clipboard events",
+    mitre_techniques: &["T1059", "T1204.002"],
+    fields: SRUM_FIELDS,
+};
+
+/// PowerShell PSReadLine command history (T1059.001).
+///
+/// Plain-text file; contains full command history including sensitive strings,
+/// filenames, and lateral movement commands typed interactively.
+pub static POWERSHELL_HISTORY: ArtifactDescriptor = ArtifactDescriptor {
+    id: "powershell_history",
+    name: "PowerShell PSReadLine History",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win10Plus,
+    decoder: Decoder::Identity,
+    meaning: "Line-by-line PowerShell interactive command history; attackers often clear this",
+    mitre_techniques: &["T1059.001", "T1552"],
+    fields: FILE_PATH_FIELDS,
+};
+
+/// Recycle Bin ($I metadata files) — deletion evidence (T1070.004).
+///
+/// Each `$I{RAND}` file (8 bytes header + original path) records file size,
+/// deletion timestamp, and original full path of the deleted file.
+pub static RECYCLE_BIN: ArtifactDescriptor = ArtifactDescriptor {
+    id: "recycle_bin",
+    name: "Recycle Bin ($I Metadata)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\$Recycle.Bin\*"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "$I files reveal original path and deletion time even after Recycle Bin is emptied",
+    mitre_techniques: &["T1070.004", "T1083"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// Windows Explorer Thumbnail Cache — file-access and image evidence.
+///
+/// Proprietary binary format; contains thumbnails for files browsed via
+/// Explorer, including since-deleted images/documents.
+pub static THUMBCACHE: ArtifactDescriptor = ArtifactDescriptor {
+    id: "thumbcache",
+    name: "Explorer Thumbnail Cache",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Local\Microsoft\Windows\Explorer"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Cached thumbnails including deleted files; proves files were viewed via Explorer",
+    mitre_techniques: &["T1083"],
+    fields: DIR_ENTRY_FIELDS,
+};
+
+/// Windows Search database — indexed file/content search history.
+///
+/// ESE/JET database at the system level recording filenames, content excerpts,
+/// and metadata for all indexed items. Survives file deletion.
+pub static SEARCH_DB_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "search_db_user",
+    name: "Windows Search Database (Windows.db)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\ProgramData\Microsoft\Search\Data\Applications\Windows\Windows.edb"),
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "ESE database of indexed file metadata; reveals filenames and content even after deletion",
+    mitre_techniques: &["T1083"],
+    fields: FILE_PATH_FIELDS,
+};
+
+// ── Windows credential artifacts ──────────────────────────────────────────
+
+static DPAPI_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "guid",
+    value_type: ValueType::Text,
+    description: "GUID filename of the DPAPI master key or credential blob",
+    is_uid_component: true,
+}];
+
+/// DPAPI User Master Keys — key material protecting all user-encrypted data.
+///
+/// Each file is named by a GUID; the content is the DPAPI master key encrypted
+/// with the user's password hash. Decrypting unlocks all DPAPI-protected secrets.
+pub static DPAPI_MASTERKEY_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "dpapi_masterkey_user",
+    name: "DPAPI User Master Keys",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Roaming\Microsoft\Protect\*"),
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Master keys protecting all DPAPI-encrypted user secrets (credentials, browser passwords, WiFi PSKs)",
+    mitre_techniques: &["T1555.004"],
+    fields: DPAPI_FIELDS,
+};
+
+/// DPAPI Credential Blobs (Local) — encrypted credential store entries.
+///
+/// GUID-named binary files; each contains a DPAPI-encrypted credential blob
+/// protecting a username/password pair for a network resource or application.
+pub static DPAPI_CRED_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "dpapi_cred_user",
+    name: "DPAPI Credential Blobs (Local)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Local\Microsoft\Credentials"),
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "DPAPI-encrypted credential blobs for network resources; decryptable with DPAPI master key",
+    mitre_techniques: &["T1555.004"],
+    fields: DPAPI_FIELDS,
+};
+
+/// DPAPI Credential Blobs (Roaming) — roaming profile credential store.
+pub static DPAPI_CRED_ROAMING: ArtifactDescriptor = ArtifactDescriptor {
+    id: "dpapi_cred_roaming",
+    name: "DPAPI Credential Blobs (Roaming)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Roaming\Microsoft\Credentials"),
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Roaming DPAPI credential blobs; same structure as Local, synced across domain machines",
+    mitre_techniques: &["T1555.004"],
+    fields: DPAPI_FIELDS,
+};
+
+static VAULT_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "policy_file",
+        value_type: ValueType::Text,
+        description: ".vpol policy file containing encryption key material",
+        is_uid_component: false,
+    },
+    FieldSchema {
+        name: "vcrd_file",
+        value_type: ValueType::Text,
+        description: ".vcrd credential file containing the encrypted credential",
+        is_uid_component: true,
+    },
+];
+
+/// Windows Vault (User) — Windows Credential Manager per-user vault.
+///
+/// `.vpol` file stores encrypted vault key; `.vcrd` files store individual
+/// credentials. Credential Manager UI entries live here.
+pub static WINDOWS_VAULT_USER: ArtifactDescriptor = ArtifactDescriptor {
+    id: "windows_vault_user",
+    name: "Windows Vault (User)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Local\Microsoft\Vault"),
+    scope: DataScope::User,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "Per-user Credential Manager vault (.vpol + .vcrd); contains WEB and WINDOWS saved credentials",
+    mitre_techniques: &["T1555.004"],
+    fields: VAULT_FIELDS,
+};
+
+/// Windows Vault (System) — system-wide Windows Credential Manager vault.
+pub static WINDOWS_VAULT_SYSTEM: ArtifactDescriptor = ArtifactDescriptor {
+    id: "windows_vault_system",
+    name: "Windows Vault (System)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\ProgramData\Microsoft\Vault"),
+    scope: DataScope::System,
+    os_scope: OsScope::Win7Plus,
+    decoder: Decoder::Identity,
+    meaning: "System-level Windows Credential Manager vault; contains machine-scoped credentials",
+    mitre_techniques: &["T1555.004"],
+    fields: VAULT_FIELDS,
+};
+
+static RDP_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "username_hint",
+    value_type: ValueType::Text,
+    description: "Last username used to connect to this RDP server",
+    is_uid_component: false,
+}];
+
+/// RDP Saved Server Connections — lateral movement evidence (T1021.001).
+///
+/// Each sub-key is a hostname/IP; the `UsernameHint` value shows the username
+/// used for that connection. Evidence of RDP-based lateral movement.
+pub static RDP_CLIENT_SERVERS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "rdp_client_servers",
+    name: "RDP Client Saved Servers",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Terminal Server Client\Servers",
+    value_name: Some("UsernameHint"),
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Hostnames and usernames of previously-connected RDP servers; lateral movement evidence",
+    mitre_techniques: &["T1021.001"],
+    fields: RDP_FIELDS,
+};
+
+static RDP_MRU_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "server",
+    value_type: ValueType::Text,
+    description: "RDP server address from the most-recently-used list",
+    is_uid_component: true,
+}];
+
+/// RDP Client Default MRU — ordered list of recently connected RDP servers.
+pub static RDP_CLIENT_DEFAULT: ArtifactDescriptor = ArtifactDescriptor {
+    id: "rdp_client_default",
+    name: "RDP Client Default MRU",
+    artifact_type: ArtifactType::RegistryKey,
+    hive: Some(HiveTarget::NtUser),
+    key_path: r"Software\Microsoft\Terminal Server Client\Default",
+    value_name: None,
+    file_path: None,
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "MRU0-MRU9 ordered list of RDP server addresses; confirms specific hosts were targeted",
+    mitre_techniques: &["T1021.001"],
+    fields: RDP_MRU_FIELDS,
+};
+
+static NTDS_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "path",
+    value_type: ValueType::Text,
+    description: "Full path to the NTDS.dit file",
+    is_uid_component: true,
+}];
+
+/// NTDS.dit — Active Directory database (DC only) (T1003.003).
+///
+/// Contains all domain user account hashes. Extracting and cracking these
+/// grants access to every domain account. Requires VSS or offline access.
+pub static NTDS_DIT: ArtifactDescriptor = ArtifactDescriptor {
+    id: "ntds_dit",
+    name: "Active Directory Database (NTDS.dit)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Windows\NTDS\NTDS.dit"),
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "Domain controller AD database; contains NTLM hashes for all domain accounts",
+    mitre_techniques: &["T1003.003"],
+    fields: NTDS_FIELDS,
+};
+
+static BROWSER_CRED_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "origin_url",
+        value_type: ValueType::Text,
+        description: "URL the credential is associated with",
+        is_uid_component: true,
+    },
+    FieldSchema {
+        name: "username_value",
+        value_type: ValueType::Text,
+        description: "Saved username",
+        is_uid_component: false,
+    },
+];
+
+/// Chrome/Edge Login Data — SQLite database of saved browser passwords (T1555.003).
+pub static CHROME_LOGIN_DATA: ArtifactDescriptor = ArtifactDescriptor {
+    id: "chrome_login_data",
+    name: "Chrome/Edge Login Data (SQLite)",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Local\Google\Chrome\User Data\Default\Login Data"),
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "SQLite DB with DPAPI-encrypted passwords for saved Chrome/Edge credentials",
+    mitre_techniques: &["T1555.003"],
+    fields: BROWSER_CRED_FIELDS,
+};
+
+static FIREFOX_CRED_FIELDS: &[FieldSchema] = &[FieldSchema {
+    name: "hostname",
+    value_type: ValueType::Text,
+    description: "Hostname the Firefox credential is associated with",
+    is_uid_component: true,
+}];
+
+/// Firefox logins.json — JSON credential store (T1555.003).
+///
+/// NSS3-encrypted credentials; decryptable with `key4.db` and user's Firefox password.
+pub static FIREFOX_LOGINS: ArtifactDescriptor = ArtifactDescriptor {
+    id: "firefox_logins",
+    name: "Firefox logins.json",
+    artifact_type: ArtifactType::File,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\Users\*\AppData\Roaming\Mozilla\Firefox\Profiles\*\logins.json"),
+    scope: DataScope::User,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "NSS3-encrypted Firefox saved credentials; decryptable with key4.db and master password",
+    mitre_techniques: &["T1555.003"],
+    fields: FIREFOX_CRED_FIELDS,
+};
+
+static WIFI_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "ssid",
+        value_type: ValueType::Text,
+        description: "WiFi network SSID (network name)",
+        is_uid_component: true,
+    },
+    FieldSchema {
+        name: "key_material",
+        value_type: ValueType::Text,
+        description: "Pre-shared key or 802.1X EAP credentials (may be DPAPI-encrypted)",
+        is_uid_component: false,
+    },
+];
+
+/// Wireless Network Profiles — contains PSKs for previously joined networks (T1552.001).
+///
+/// XML files; `<keyMaterial>` field may contain the plaintext PSK or a
+/// DPAPI-encrypted blob depending on profile type.
+pub static WIFI_PROFILES: ArtifactDescriptor = ArtifactDescriptor {
+    id: "wifi_profiles",
+    name: "Wireless Network Profiles (WLAN)",
+    artifact_type: ArtifactType::Directory,
+    hive: None,
+    key_path: "",
+    value_name: None,
+    file_path: Some(r"C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces"),
+    scope: DataScope::System,
+    os_scope: OsScope::All,
+    decoder: Decoder::Identity,
+    meaning: "XML profiles for previously joined WiFi networks; may contain plaintext PSKs",
+    mitre_techniques: &["T1552.001"],
+    fields: WIFI_FIELDS,
+};
+
 // ── Global catalog ───────────────────────────────────────────────────────────
 
 /// The global forensic artifact catalog containing all known artifact descriptors.
@@ -1482,6 +2370,47 @@ pub static CATALOG: ForensicCatalog = ForensicCatalog::new(&[
     APPINIT_DLLS,
     WINLOGON_USERINIT,
     SCREENSAVER_EXE,
+    // Batch C — Windows persistence
+    WINLOGON_SHELL,
+    SERVICES_IMAGEPATH,
+    ACTIVE_SETUP_HKLM,
+    ACTIVE_SETUP_HKCU,
+    COM_HIJACK_CLSID_HKCU,
+    APPCERT_DLLS,
+    BOOT_EXECUTE,
+    LSA_SECURITY_PKGS,
+    LSA_AUTH_PKGS,
+    PRINT_MONITORS,
+    TIME_PROVIDERS,
+    NETSH_HELPER_DLLS,
+    BROWSER_HELPER_OBJECTS,
+    STARTUP_FOLDER_USER,
+    STARTUP_FOLDER_SYSTEM,
+    SCHEDULED_TASKS_DIR,
+    WDIGEST_CACHING,
+    // Batch C — Windows execution evidence
+    WORDWHEEL_QUERY,
+    OPENSAVE_MRU,
+    LASTVISITED_MRU,
+    PREFETCH_DIR,
+    SRUM_DB,
+    WINDOWS_TIMELINE,
+    POWERSHELL_HISTORY,
+    RECYCLE_BIN,
+    THUMBCACHE,
+    SEARCH_DB_USER,
+    // Batch C — Windows credentials
+    DPAPI_MASTERKEY_USER,
+    DPAPI_CRED_USER,
+    DPAPI_CRED_ROAMING,
+    WINDOWS_VAULT_USER,
+    WINDOWS_VAULT_SYSTEM,
+    RDP_CLIENT_SERVERS,
+    RDP_CLIENT_DEFAULT,
+    NTDS_DIT,
+    CHROME_LOGIN_DATA,
+    FIREFOX_LOGINS,
+    WIFI_PROFILES,
 ]);
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1549,7 +2478,7 @@ mod tests {
     #[test]
     fn catalog_has_entries() {
         assert!(!CATALOG.list().is_empty());
-        assert_eq!(CATALOG.list().len(), 24);
+        assert_eq!(CATALOG.list().len(), 62);
     }
 
     #[test]
@@ -1604,8 +2533,11 @@ mod tests {
             ..Default::default()
         };
         let results = CATALOG.filter(&q);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "pca_applaunch_dic");
+        // Multiple File artifacts now exist (PCA, SRUM, Timeline, PowerShell history,
+        // NTDS.dit, Chrome Login Data, Firefox logins, Windows Search DB).
+        assert!(!results.is_empty());
+        // PCA must still be present.
+        assert!(results.iter().any(|d| d.id == "pca_applaunch_dic"));
     }
 
     #[test]
