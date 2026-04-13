@@ -4808,4 +4808,268 @@ mod tests_batch_d {
             assert!(ids.contains(expected), "CATALOG missing: {expected}");
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Batch E — Windows execution / persistence / credential (RED)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ── Windows execution evidence ────────────────────────────────────────
+
+    #[test] fn lnk_files_md() {
+        assert_eq!(LNK_FILES.id, "lnk_files");
+        assert_eq!(LNK_FILES.artifact_type, ArtifactType::Directory);
+        assert_eq!(LNK_FILES.scope, DataScope::User);
+        assert!(LNK_FILES.mitre_techniques.contains(&"T1547.009"));
+    }
+    #[test] fn jump_list_auto_md() {
+        assert_eq!(JUMP_LIST_AUTO.id, "jump_list_auto");
+        assert_eq!(JUMP_LIST_AUTO.artifact_type, ArtifactType::Directory);
+        assert_eq!(JUMP_LIST_AUTO.scope, DataScope::User);
+        assert!(JUMP_LIST_AUTO.mitre_techniques.contains(&"T1547.009"));
+    }
+    #[test] fn jump_list_custom_md() {
+        assert_eq!(JUMP_LIST_CUSTOM.id, "jump_list_custom");
+        assert_eq!(JUMP_LIST_CUSTOM.artifact_type, ArtifactType::Directory);
+        assert_eq!(JUMP_LIST_CUSTOM.scope, DataScope::User);
+        assert!(JUMP_LIST_CUSTOM.mitre_techniques.contains(&"T1547.009"));
+    }
+    #[test] fn evtx_dir_md() {
+        assert_eq!(EVTX_DIR.id, "evtx_dir");
+        assert_eq!(EVTX_DIR.artifact_type, ArtifactType::Directory);
+        assert_eq!(EVTX_DIR.scope, DataScope::System);
+        assert!(EVTX_DIR.mitre_techniques.contains(&"T1070.001"));
+    }
+    #[test] fn usn_journal_md() {
+        assert_eq!(USN_JOURNAL.id, "usn_journal");
+        assert_eq!(USN_JOURNAL.artifact_type, ArtifactType::File);
+        assert_eq!(USN_JOURNAL.scope, DataScope::System);
+        assert_eq!(USN_JOURNAL.os_scope, OsScope::Win7Plus);
+    }
+
+    // ── Windows persistence ───────────────────────────────────────────────
+
+    #[test] fn wmi_mof_dir_md() {
+        assert_eq!(WMI_MOF_DIR.id, "wmi_mof_dir");
+        assert_eq!(WMI_MOF_DIR.artifact_type, ArtifactType::Directory);
+        assert_eq!(WMI_MOF_DIR.scope, DataScope::System);
+        assert!(WMI_MOF_DIR.mitre_techniques.contains(&"T1546.003"));
+    }
+    #[test] fn bits_db_md() {
+        assert_eq!(BITS_DB.id, "bits_db");
+        assert_eq!(BITS_DB.artifact_type, ArtifactType::Directory);
+        assert_eq!(BITS_DB.scope, DataScope::System);
+        assert!(BITS_DB.mitre_techniques.contains(&"T1197"));
+    }
+    #[test] fn wmi_subscriptions_md() {
+        assert_eq!(WMI_SUBSCRIPTIONS.id, "wmi_subscriptions");
+        assert_eq!(WMI_SUBSCRIPTIONS.artifact_type, ArtifactType::RegistryKey);
+        assert_eq!(WMI_SUBSCRIPTIONS.scope, DataScope::System);
+        assert!(WMI_SUBSCRIPTIONS.mitre_techniques.contains(&"T1546.003"));
+    }
+    #[test] fn logon_scripts_md() {
+        assert_eq!(LOGON_SCRIPTS.id, "logon_scripts");
+        assert_eq!(LOGON_SCRIPTS.artifact_type, ArtifactType::RegistryValue);
+        assert_eq!(LOGON_SCRIPTS.scope, DataScope::User);
+        assert!(LOGON_SCRIPTS.mitre_techniques.contains(&"T1037.001"));
+    }
+    #[test] fn winsock_lsp_md() {
+        assert_eq!(WINSOCK_LSP.id, "winsock_lsp");
+        assert_eq!(WINSOCK_LSP.artifact_type, ArtifactType::RegistryKey);
+        assert_eq!(WINSOCK_LSP.scope, DataScope::System);
+        assert!(WINSOCK_LSP.mitre_techniques.contains(&"T1547.010"));
+    }
+    #[test] fn appshim_db_md() {
+        assert_eq!(APPSHIM_DB.id, "appshim_db");
+        assert_eq!(APPSHIM_DB.artifact_type, ArtifactType::Directory);
+        assert_eq!(APPSHIM_DB.scope, DataScope::System);
+        assert!(APPSHIM_DB.mitre_techniques.contains(&"T1546.011"));
+    }
+    #[test] fn password_filter_dll_md() {
+        assert_eq!(PASSWORD_FILTER_DLL.id, "password_filter_dll");
+        assert_eq!(PASSWORD_FILTER_DLL.artifact_type, ArtifactType::RegistryValue);
+        assert_eq!(PASSWORD_FILTER_DLL.scope, DataScope::System);
+        assert!(PASSWORD_FILTER_DLL.mitre_techniques.contains(&"T1556.002"));
+    }
+    #[test] fn office_normal_dotm_md() {
+        assert_eq!(OFFICE_NORMAL_DOTM.id, "office_normal_dotm");
+        assert_eq!(OFFICE_NORMAL_DOTM.artifact_type, ArtifactType::File);
+        assert_eq!(OFFICE_NORMAL_DOTM.scope, DataScope::User);
+        assert!(OFFICE_NORMAL_DOTM.mitre_techniques.contains(&"T1137.001"));
+    }
+    #[test] fn powershell_profile_all_md() {
+        assert_eq!(POWERSHELL_PROFILE_ALL.id, "powershell_profile_all");
+        assert_eq!(POWERSHELL_PROFILE_ALL.artifact_type, ArtifactType::File);
+        assert_eq!(POWERSHELL_PROFILE_ALL.scope, DataScope::System);
+        assert!(POWERSHELL_PROFILE_ALL.mitre_techniques.contains(&"T1546.013"));
+    }
+
+    // ── Windows credentials ───────────────────────────────────────────────
+
+    #[test] fn dpapi_system_masterkey_md() {
+        assert_eq!(DPAPI_SYSTEM_MASTERKEY.id, "dpapi_system_masterkey");
+        assert_eq!(DPAPI_SYSTEM_MASTERKEY.artifact_type, ArtifactType::Directory);
+        assert_eq!(DPAPI_SYSTEM_MASTERKEY.scope, DataScope::System);
+        assert!(DPAPI_SYSTEM_MASTERKEY.mitre_techniques.contains(&"T1555.004"));
+    }
+    #[test] fn dpapi_credhist_md() {
+        assert_eq!(DPAPI_CREDHIST.id, "dpapi_credhist");
+        assert_eq!(DPAPI_CREDHIST.artifact_type, ArtifactType::File);
+        assert_eq!(DPAPI_CREDHIST.scope, DataScope::User);
+        assert!(DPAPI_CREDHIST.mitre_techniques.contains(&"T1555.004"));
+    }
+    #[test] fn chrome_cookies_md() {
+        assert_eq!(CHROME_COOKIES.id, "chrome_cookies");
+        assert_eq!(CHROME_COOKIES.artifact_type, ArtifactType::File);
+        assert_eq!(CHROME_COOKIES.scope, DataScope::User);
+        assert!(CHROME_COOKIES.mitre_techniques.contains(&"T1539"));
+    }
+    #[test] fn edge_webcache_md() {
+        assert_eq!(EDGE_WEBCACHE.id, "edge_webcache");
+        assert_eq!(EDGE_WEBCACHE.artifact_type, ArtifactType::Directory);
+        assert_eq!(EDGE_WEBCACHE.scope, DataScope::User);
+        assert!(EDGE_WEBCACHE.mitre_techniques.contains(&"T1539"));
+    }
+    #[test] fn vpn_ras_phonebook_md() {
+        assert_eq!(VPN_RAS_PHONEBOOK.id, "vpn_ras_phonebook");
+        assert_eq!(VPN_RAS_PHONEBOOK.artifact_type, ArtifactType::File);
+        assert_eq!(VPN_RAS_PHONEBOOK.scope, DataScope::User);
+        assert!(VPN_RAS_PHONEBOOK.mitre_techniques.contains(&"T1552.001"));
+    }
+    #[test] fn windows_hello_ngc_md() {
+        assert_eq!(WINDOWS_HELLO_NGC.id, "windows_hello_ngc");
+        assert_eq!(WINDOWS_HELLO_NGC.artifact_type, ArtifactType::Directory);
+        assert_eq!(WINDOWS_HELLO_NGC.scope, DataScope::System);
+        assert!(WINDOWS_HELLO_NGC.mitre_techniques.contains(&"T1555"));
+    }
+    #[test] fn user_cert_private_key_md() {
+        assert_eq!(USER_CERT_PRIVATE_KEY.id, "user_cert_private_key");
+        assert_eq!(USER_CERT_PRIVATE_KEY.artifact_type, ArtifactType::Directory);
+        assert_eq!(USER_CERT_PRIVATE_KEY.scope, DataScope::User);
+        assert!(USER_CERT_PRIVATE_KEY.mitre_techniques.contains(&"T1552.004"));
+    }
+    #[test] fn machine_cert_store_md() {
+        assert_eq!(MACHINE_CERT_STORE.id, "machine_cert_store");
+        assert_eq!(MACHINE_CERT_STORE.artifact_type, ArtifactType::Directory);
+        assert_eq!(MACHINE_CERT_STORE.scope, DataScope::System);
+        assert!(MACHINE_CERT_STORE.mitre_techniques.contains(&"T1552.004"));
+    }
+
+    // ── CATALOG completeness (batch E) ────────────────────────────────────
+
+    #[test]
+    fn catalog_contains_batch_e() {
+        let ids: Vec<&str> = CATALOG.list().iter().map(|d| d.id).collect();
+        for expected in &[
+            "lnk_files", "jump_list_auto", "jump_list_custom",
+            "evtx_dir", "usn_journal",
+            "wmi_mof_dir", "bits_db", "wmi_subscriptions",
+            "logon_scripts", "winsock_lsp", "appshim_db",
+            "password_filter_dll", "office_normal_dotm", "powershell_profile_all",
+            "dpapi_system_masterkey", "dpapi_credhist",
+            "chrome_cookies", "edge_webcache", "vpn_ras_phonebook",
+            "windows_hello_ngc", "user_cert_private_key", "machine_cert_store",
+        ] {
+            assert!(ids.contains(expected), "CATALOG missing: {expected}");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Batch F — Linux extended credential / execution artifacts (RED)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test] fn linux_at_queue_md() {
+        assert_eq!(LINUX_AT_QUEUE.id, "linux_at_queue");
+        assert_eq!(LINUX_AT_QUEUE.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_AT_QUEUE.scope, DataScope::System);
+        assert!(LINUX_AT_QUEUE.mitre_techniques.contains(&"T1053.001"));
+    }
+    #[test] fn linux_sshd_config_md() {
+        assert_eq!(LINUX_SSHD_CONFIG.id, "linux_sshd_config");
+        assert_eq!(LINUX_SSHD_CONFIG.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_SSHD_CONFIG.scope, DataScope::System);
+        assert!(LINUX_SSHD_CONFIG.mitre_techniques.contains(&"T1098.004"));
+    }
+    #[test] fn linux_etc_group_md() {
+        assert_eq!(LINUX_ETC_GROUP.id, "linux_etc_group");
+        assert_eq!(LINUX_ETC_GROUP.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_ETC_GROUP.scope, DataScope::System);
+        assert!(LINUX_ETC_GROUP.mitre_techniques.contains(&"T1087.001"));
+    }
+    #[test] fn linux_gnome_keyring_md() {
+        assert_eq!(LINUX_GNOME_KEYRING.id, "linux_gnome_keyring");
+        assert_eq!(LINUX_GNOME_KEYRING.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_GNOME_KEYRING.scope, DataScope::User);
+        assert!(LINUX_GNOME_KEYRING.mitre_techniques.contains(&"T1555.003"));
+    }
+    #[test] fn linux_kde_kwallet_md() {
+        assert_eq!(LINUX_KDE_KWALLET.id, "linux_kde_kwallet");
+        assert_eq!(LINUX_KDE_KWALLET.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_KDE_KWALLET.scope, DataScope::User);
+        assert!(LINUX_KDE_KWALLET.mitre_techniques.contains(&"T1555.003"));
+    }
+    #[test] fn linux_chrome_login_linux_md() {
+        assert_eq!(LINUX_CHROME_LOGIN_LINUX.id, "linux_chrome_login_linux");
+        assert_eq!(LINUX_CHROME_LOGIN_LINUX.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_CHROME_LOGIN_LINUX.scope, DataScope::User);
+        assert!(LINUX_CHROME_LOGIN_LINUX.mitre_techniques.contains(&"T1555.003"));
+    }
+    #[test] fn linux_firefox_logins_linux_md() {
+        assert_eq!(LINUX_FIREFOX_LOGINS_LINUX.id, "linux_firefox_logins_linux");
+        assert_eq!(LINUX_FIREFOX_LOGINS_LINUX.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_FIREFOX_LOGINS_LINUX.scope, DataScope::User);
+        assert!(LINUX_FIREFOX_LOGINS_LINUX.mitre_techniques.contains(&"T1555.003"));
+    }
+    #[test] fn linux_utmp_md() {
+        assert_eq!(LINUX_UTMP.id, "linux_utmp");
+        assert_eq!(LINUX_UTMP.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_UTMP.scope, DataScope::System);
+        assert!(LINUX_UTMP.mitre_techniques.contains(&"T1078"));
+    }
+    #[test] fn linux_gcp_credentials_md() {
+        assert_eq!(LINUX_GCP_CREDENTIALS.id, "linux_gcp_credentials");
+        assert_eq!(LINUX_GCP_CREDENTIALS.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_GCP_CREDENTIALS.scope, DataScope::User);
+        assert!(LINUX_GCP_CREDENTIALS.mitre_techniques.contains(&"T1552.001"));
+    }
+    #[test] fn linux_azure_credentials_md() {
+        assert_eq!(LINUX_AZURE_CREDENTIALS.id, "linux_azure_credentials");
+        assert_eq!(LINUX_AZURE_CREDENTIALS.artifact_type, ArtifactType::Directory);
+        assert_eq!(LINUX_AZURE_CREDENTIALS.scope, DataScope::User);
+        assert!(LINUX_AZURE_CREDENTIALS.mitre_techniques.contains(&"T1552.001"));
+    }
+    #[test] fn linux_kube_config_md() {
+        assert_eq!(LINUX_KUBE_CONFIG.id, "linux_kube_config");
+        assert_eq!(LINUX_KUBE_CONFIG.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_KUBE_CONFIG.scope, DataScope::User);
+        assert!(LINUX_KUBE_CONFIG.mitre_techniques.contains(&"T1552.001"));
+    }
+    #[test] fn linux_git_credentials_md() {
+        assert_eq!(LINUX_GIT_CREDENTIALS.id, "linux_git_credentials");
+        assert_eq!(LINUX_GIT_CREDENTIALS.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_GIT_CREDENTIALS.scope, DataScope::User);
+        assert!(LINUX_GIT_CREDENTIALS.mitre_techniques.contains(&"T1552.001"));
+    }
+    #[test] fn linux_netrc_md() {
+        assert_eq!(LINUX_NETRC.id, "linux_netrc");
+        assert_eq!(LINUX_NETRC.artifact_type, ArtifactType::File);
+        assert_eq!(LINUX_NETRC.scope, DataScope::User);
+        assert!(LINUX_NETRC.mitre_techniques.contains(&"T1552.001"));
+    }
+
+    // ── CATALOG completeness (batch F) ────────────────────────────────────
+
+    #[test]
+    fn catalog_contains_batch_f() {
+        let ids: Vec<&str> = CATALOG.list().iter().map(|d| d.id).collect();
+        for expected in &[
+            "linux_at_queue", "linux_sshd_config", "linux_etc_group",
+            "linux_gnome_keyring", "linux_kde_kwallet",
+            "linux_chrome_login_linux", "linux_firefox_logins_linux",
+            "linux_utmp",
+            "linux_gcp_credentials", "linux_azure_credentials",
+            "linux_kube_config", "linux_git_credentials", "linux_netrc",
+        ] {
+            assert!(ids.contains(expected), "CATALOG missing: {expected}");
+        }
+    }
 }
