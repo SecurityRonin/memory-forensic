@@ -4,7 +4,11 @@ use memf_correlate::event::{Entity, Finding, ForensicEvent, Severity};
 use memf_correlate::mitre::MitreAttackId;
 use memf_correlate::traits::IntoForensicEvents;
 
-use crate::types::{ConnectionInfo, ModuleInfo, ModuleState, ProcessInfo, ProcessState, VmaInfo};
+use crate::types::{
+    AuditTamperInfo, ConnectionInfo, ContainerEscapeCorrelateInfo, CpuPinningInfo, FdAbuseInfo,
+    FdAbuseType, FuseAbuseInfo, HiddenProcessInfo, ModuleInfo, ModuleState, ProcessInfo,
+    ProcessState, SharedMemAnomalyInfo, UserNsEscalationInfo, VdsoTamperInfo, VmaInfo,
+};
 
 impl IntoForensicEvents for VmaInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
@@ -175,6 +179,68 @@ impl IntoForensicEvents for ModuleInfo {
             .confidence(confidence)
             .mitre_attack(mitre)
             .build()]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Batch 1: proc_hidden, vdso_tamper, user_ns_escalation, netlink_audit, cpu_pinning
+// ---------------------------------------------------------------------------
+
+impl IntoForensicEvents for HiddenProcessInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement HiddenProcessInfo::into_forensic_events")
+    }
+}
+
+impl IntoForensicEvents for VdsoTamperInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement VdsoTamperInfo::into_forensic_events")
+    }
+}
+
+impl IntoForensicEvents for UserNsEscalationInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement UserNsEscalationInfo::into_forensic_events")
+    }
+}
+
+impl IntoForensicEvents for AuditTamperInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement AuditTamperInfo::into_forensic_events")
+    }
+}
+
+impl IntoForensicEvents for CpuPinningInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement CpuPinningInfo::into_forensic_events")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2: container_escape, timerfd_signalfd, shared_mem_anomaly, fuse_abuse
+// ---------------------------------------------------------------------------
+
+impl IntoForensicEvents for ContainerEscapeCorrelateInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement ContainerEscapeCorrelateInfo::into_forensic_events")
+    }
+}
+
+impl IntoForensicEvents for FdAbuseInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement FdAbuseInfo::into_forensic_events")
+    }
+}
+
+impl IntoForensicEvents for SharedMemAnomalyInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement SharedMemAnomalyInfo::into_forensic_events")
+    }
+}
+
+impl IntoForensicEvents for FuseAbuseInfo {
+    fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        todo!("implement FuseAbuseInfo::into_forensic_events")
     }
 }
 
@@ -453,5 +519,615 @@ mod tests {
         let m = make_module("xfs", ModuleState::Live);
         let events = m.into_forensic_events();
         assert_eq!(events[0].source_walker, "linux_module");
+    }
+
+    // -----------------------------------------------------------------------
+    // HiddenProcessInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_hidden_process(
+        pid: u64,
+        comm: &str,
+        present_in_pid_ns: bool,
+        present_in_task_list: bool,
+        present_in_pid_hash: bool,
+    ) -> HiddenProcessInfo {
+        HiddenProcessInfo {
+            pid,
+            comm: comm.to_string(),
+            present_in_pid_ns,
+            present_in_task_list,
+            present_in_pid_hash,
+        }
+    }
+
+    #[test]
+    fn pid_ns_only_process_is_critical_rootkit() {
+        let h = make_hidden_process(1234, "rootkit", true, false, false);
+        let events = h.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1014"), "expected T1014, got {ids:?}");
+        assert!((events[0].confidence - 0.95).abs() < 1e-9);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+    }
+
+    #[test]
+    fn task_list_only_process_is_high() {
+        let h = make_hidden_process(999, "ghost", false, true, false);
+        let events = h.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1014"), "expected T1014, got {ids:?}");
+        assert!((events[0].confidence - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pid_hash_without_task_list_is_high() {
+        let h = make_hidden_process(555, "hidden", false, false, true);
+        let events = h.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1014"), "expected T1014, got {ids:?}");
+        assert!((events[0].confidence - 0.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn all_structures_present_is_info() {
+        let h = make_hidden_process(100, "normal", true, true, true);
+        let events = h.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_proc_hidden() {
+        let h = make_hidden_process(1, "init", true, true, true);
+        let events = h.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_proc_hidden");
+    }
+
+    // -----------------------------------------------------------------------
+    // VdsoTamperInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_vdso(
+        pid: u64,
+        comm: &str,
+        differs: bool,
+        diff_byte_count: usize,
+    ) -> VdsoTamperInfo {
+        VdsoTamperInfo {
+            pid,
+            comm: comm.to_string(),
+            vdso_base: 0x7fff_f000_0000,
+            vdso_size: 0x2000,
+            differs_from_canonical: differs,
+            diff_byte_count,
+        }
+    }
+
+    #[test]
+    fn large_vdso_diff_is_critical() {
+        let v = make_vdso(1234, "evil", true, 32);
+        let events = v.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
+        assert!((events[0].confidence - 0.95).abs() < 1e-9);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+    }
+
+    #[test]
+    fn small_vdso_diff_is_high() {
+        let v = make_vdso(2345, "sneaky", true, 8);
+        let events = v.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
+        assert!((events[0].confidence - 0.8).abs() < 1e-9);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+    }
+
+    #[test]
+    fn clean_vdso_is_info() {
+        let v = make_vdso(42, "bash", false, 0);
+        let events = v.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn tampered_vdso_has_t1055() {
+        let v = make_vdso(77, "sshd", true, 100);
+        let events = v.into_forensic_events();
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055 for tampered vDSO, got {ids:?}");
+    }
+
+    #[test]
+    fn source_walker_is_linux_vdso_tamper() {
+        let v = make_vdso(1, "init", false, 0);
+        let events = v.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_vdso_tamper");
+    }
+
+    // -----------------------------------------------------------------------
+    // UserNsEscalationInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_user_ns(
+        pid: u64,
+        comm: &str,
+        ns_depth: u32,
+        owner_uid: u32,
+        process_uid: u32,
+        has_cap_sys_admin: bool,
+    ) -> UserNsEscalationInfo {
+        UserNsEscalationInfo {
+            pid,
+            comm: comm.to_string(),
+            ns_depth,
+            owner_uid,
+            process_uid,
+            has_cap_sys_admin,
+            is_suspicious: false,
+        }
+    }
+
+    #[test]
+    fn cap_sys_admin_with_different_uid_is_critical() {
+        let u = make_user_ns(1234, "evil", 1, 0, 1000, true);
+        let events = u.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
+        assert!((events[0].confidence - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deep_namespace_nesting_is_high() {
+        let u = make_user_ns(555, "nested", 5, 1000, 1000, false);
+        let events = u.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
+        assert!((events[0].confidence - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn root_owned_cap_admin_is_medium() {
+        // owner_uid == 0 && has_cap_sys_admin && owner_uid == process_uid → Medium T1548
+        let u = make_user_ns(777, "daemon", 1, 0, 0, true);
+        let events = u.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1548"), "expected T1548, got {ids:?}");
+        assert!((events[0].confidence - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_namespace_is_info() {
+        let u = make_user_ns(100, "bash", 1, 1000, 1000, false);
+        let events = u.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_user_ns() {
+        let u = make_user_ns(1, "init", 0, 0, 0, false);
+        let events = u.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_user_ns");
+    }
+
+    // -----------------------------------------------------------------------
+    // AuditTamperInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_audit(
+        audit_enabled: bool,
+        backlog_limit: u32,
+        suppressed_pids: Vec<u64>,
+        audit_globally_disabled: bool,
+    ) -> AuditTamperInfo {
+        AuditTamperInfo {
+            audit_enabled,
+            backlog_limit,
+            suppressed_pids,
+            suppressed_uids: vec![],
+            audit_globally_disabled,
+        }
+    }
+
+    #[test]
+    fn globally_disabled_audit_is_critical() {
+        let a = make_audit(false, 256, vec![], true);
+        let events = a.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1562"), "expected T1562, got {ids:?}");
+        assert!((events[0].confidence - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn suppressed_pid_is_high() {
+        let a = make_audit(true, 256, vec![1234], false);
+        let events = a.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1562"), "expected T1562, got {ids:?}");
+        assert!((events[0].confidence - 0.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn low_backlog_limit_is_medium() {
+        let a = make_audit(true, 32, vec![], false);
+        let events = a.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1562"), "expected T1562, got {ids:?}");
+        assert!((events[0].confidence - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_audit_is_info() {
+        let a = make_audit(true, 256, vec![], false);
+        let events = a.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_netlink_audit() {
+        let a = make_audit(true, 256, vec![], false);
+        let events = a.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_netlink_audit");
+    }
+
+    // -----------------------------------------------------------------------
+    // CpuPinningInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_cpu_pinning(
+        pid: u64,
+        comm: &str,
+        pinned_cpu_count: u32,
+        total_cpu_count: u32,
+        sched_policy: u32,
+        cpu_time_ns: u64,
+    ) -> CpuPinningInfo {
+        CpuPinningInfo {
+            pid,
+            comm: comm.to_string(),
+            pinned_cpu_count,
+            total_cpu_count,
+            sched_policy,
+            cpu_time_ns,
+        }
+    }
+
+    #[test]
+    fn single_cpu_pinned_with_high_cpu_time_is_high() {
+        let c = make_cpu_pinning(1234, "miner", 1, 8, 0, 2_000_000_000);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1496"), "expected T1496, got {ids:?}");
+        assert!((events[0].confidence - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn batch_scheduling_is_medium() {
+        let c = make_cpu_pinning(2345, "bgworker", 4, 8, 3, 100_000_000);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1496"), "expected T1496, got {ids:?}");
+        assert!((events[0].confidence - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_process_is_info_cpu() {
+        let c = make_cpu_pinning(42, "bash", 4, 8, 0, 50_000_000);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_cpu_pinning() {
+        let c = make_cpu_pinning(1, "init", 4, 8, 0, 0);
+        let events = c.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_cpu_pinning");
+    }
+
+    // -----------------------------------------------------------------------
+    // ContainerEscapeCorrelateInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_container_escape(
+        pid: u64,
+        comm: &str,
+        pid_ns_differs_from_cgroup_ns: bool,
+        has_host_mounts: bool,
+        cap_sys_admin: bool,
+        in_non_init_pid_ns: bool,
+    ) -> ContainerEscapeCorrelateInfo {
+        ContainerEscapeCorrelateInfo {
+            pid,
+            comm: comm.to_string(),
+            pid_ns_differs_from_cgroup_ns,
+            has_host_mounts,
+            cap_sys_admin,
+            cap_sys_ptrace: false,
+            in_non_init_pid_ns,
+        }
+    }
+
+    #[test]
+    fn host_mounts_in_container_is_critical() {
+        let c = make_container_escape(1234, "evil", false, true, false, true);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
+        assert!((events[0].confidence - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cap_sys_admin_in_container_is_high() {
+        let c = make_container_escape(2345, "priv", false, false, true, true);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
+        assert!((events[0].confidence - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pid_cgroup_ns_mismatch_is_high() {
+        let c = make_container_escape(3456, "ns_mismatch", true, false, false, false);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
+        assert!((events[0].confidence - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_container_process_is_info() {
+        let c = make_container_escape(100, "nginx", false, false, false, true);
+        let events = c.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_container_escape() {
+        let c = make_container_escape(1, "init", false, false, false, false);
+        let events = c.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_container_escape");
+    }
+
+    // -----------------------------------------------------------------------
+    // FdAbuseInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_fd_abuse(
+        pid: u64,
+        comm: &str,
+        fd_type: FdAbuseType,
+        signal_mask: u64,
+        interval_ns: u64,
+        is_cross_process_shared: bool,
+    ) -> FdAbuseInfo {
+        FdAbuseInfo {
+            pid,
+            comm: comm.to_string(),
+            fd_type,
+            signal_mask,
+            interval_ns,
+            is_cross_process_shared,
+        }
+    }
+
+    #[test]
+    fn sigterm_intercepting_signalfd_is_high() {
+        // SIGTERM = signal 15, bit 15 = 1u64 << 15
+        let f = make_fd_abuse(1234, "evil", FdAbuseType::SignalFd, 1u64 << 15, 0, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1205"), "expected T1205, got {ids:?}");
+        assert!((events[0].confidence - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn subsecond_timerfd_is_medium() {
+        let f = make_fd_abuse(2345, "beacon", FdAbuseType::TimerFd, 0, 500_000_000, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1071"), "expected T1071, got {ids:?}");
+        assert!((events[0].confidence - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cross_process_eventfd_is_medium() {
+        let f = make_fd_abuse(3456, "shared", FdAbuseType::EventFd, 0, 5_000_000_000, true);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1071"), "expected T1071, got {ids:?}");
+        assert!((events[0].confidence - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_timerfd_is_info() {
+        let f = make_fd_abuse(42, "cron", FdAbuseType::TimerFd, 0, 60_000_000_000, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_timerfd_signalfd() {
+        let f = make_fd_abuse(1, "init", FdAbuseType::TimerFd, 0, 0, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_timerfd_signalfd");
+    }
+
+    // -----------------------------------------------------------------------
+    // SharedMemAnomalyInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_shared_mem(
+        pid: u64,
+        comm: &str,
+        is_memfd: bool,
+        is_executable: bool,
+        is_cross_uid: bool,
+        has_elf_header: bool,
+    ) -> SharedMemAnomalyInfo {
+        SharedMemAnomalyInfo {
+            pid,
+            comm: comm.to_string(),
+            shm_base: 0x7f00_0000_0000,
+            shm_size: 0x1000,
+            is_memfd,
+            is_executable,
+            is_cross_uid,
+            has_elf_header,
+        }
+    }
+
+    #[test]
+    fn executable_memfd_is_critical() {
+        let s = make_shared_mem(1234, "loader", true, true, false, false);
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Critical);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1027"), "expected T1027, got {ids:?}");
+        assert!((events[0].confidence - 0.9).abs() < 1e-9);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+    }
+
+    #[test]
+    fn executable_region_with_elf_header_is_high() {
+        let s = make_shared_mem(2345, "injector", false, true, false, true);
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
+        assert!((events[0].confidence - 0.85).abs() < 1e-9);
+        assert!(matches!(events[0].finding, Finding::ProcessHollowing));
+    }
+
+    #[test]
+    fn cross_uid_shared_mem_is_medium() {
+        let s = make_shared_mem(3456, "ipc", false, false, true, false);
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
+        assert!((events[0].confidence - 0.6).abs() < 1e-9);
+        assert!(matches!(events[0].finding, Finding::DefenseEvasion));
+    }
+
+    #[test]
+    fn normal_shared_mem_is_info() {
+        let s = make_shared_mem(42, "postgres", false, false, false, false);
+        let events = s.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_shared_mem() {
+        let s = make_shared_mem(1, "init", false, false, false, false);
+        let events = s.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_shared_mem");
+    }
+
+    // -----------------------------------------------------------------------
+    // FuseAbuseInfo tests
+    // -----------------------------------------------------------------------
+
+    fn make_fuse(
+        pid: u64,
+        comm: &str,
+        mount_point: &str,
+        is_over_sensitive_path: bool,
+        daemon_is_root: bool,
+        allow_other: bool,
+    ) -> FuseAbuseInfo {
+        FuseAbuseInfo {
+            pid,
+            comm: comm.to_string(),
+            mount_point: mount_point.to_string(),
+            is_over_sensitive_path,
+            daemon_is_root,
+            allow_other,
+        }
+    }
+
+    #[test]
+    fn fuse_over_sensitive_path_is_high() {
+        let f = make_fuse(1234, "fusermount", "/proc", true, false, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::High);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
+        assert!((events[0].confidence - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn root_fuse_with_allow_other_is_medium() {
+        let f = make_fuse(2345, "sshfs", "/mnt/data", false, true, true);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Medium);
+        let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
+        assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
+        assert!((events[0].confidence - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_fuse_mount_is_info() {
+        let f = make_fuse(42, "sshfs", "/home/user/remote", false, false, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn source_walker_is_linux_fuse() {
+        let f = make_fuse(1, "fusermount", "/mnt", false, false, false);
+        let events = f.into_forensic_events();
+        assert_eq!(events[0].source_walker, "linux_fuse");
     }
 }

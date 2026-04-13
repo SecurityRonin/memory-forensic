@@ -878,6 +878,182 @@ pub struct SshKeyInfo {
     pub comment: String,
 }
 
+// ---------------------------------------------------------------------------
+// Batch 1 walker types
+// ---------------------------------------------------------------------------
+
+/// PID namespace vs task list discrepancy — hidden process detection.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HiddenProcessInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process command name.
+    pub comm: String,
+    /// Whether the process was found in the PID namespace.
+    pub present_in_pid_ns: bool,
+    /// Whether the process was found in the task list.
+    pub present_in_task_list: bool,
+    /// Whether the process was found in the PID hash table.
+    pub present_in_pid_hash: bool,
+}
+
+/// vDSO tampering detection info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VdsoTamperInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process command name.
+    pub comm: String,
+    /// Base address of the vDSO mapping.
+    pub vdso_base: u64,
+    /// Size of the vDSO mapping.
+    pub vdso_size: u64,
+    /// Whether the vDSO differs from the canonical kernel copy.
+    pub differs_from_canonical: bool,
+    /// Number of bytes that differ.
+    pub diff_byte_count: usize,
+}
+
+/// User namespace escalation detection info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UserNsEscalationInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process command name.
+    pub comm: String,
+    /// Nesting depth of the user namespace.
+    pub ns_depth: u32,
+    /// UID that owns the user namespace.
+    pub owner_uid: u32,
+    /// UID of the process.
+    pub process_uid: u32,
+    /// Whether CAP_SYS_ADMIN is mapped in this namespace.
+    pub has_cap_sys_admin: bool,
+    /// Whether this namespace configuration is suspicious.
+    pub is_suspicious: bool,
+}
+
+/// Audit rule suppression / netlink audit tamper info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditTamperInfo {
+    /// Whether the audit subsystem is enabled.
+    pub audit_enabled: bool,
+    /// Audit backlog limit.
+    pub backlog_limit: u32,
+    /// PIDs excluded from auditing.
+    pub suppressed_pids: Vec<u64>,
+    /// UIDs excluded from auditing.
+    pub suppressed_uids: Vec<u32>,
+    /// Whether auditing is globally disabled.
+    pub audit_globally_disabled: bool,
+}
+
+/// CPU affinity / cryptominer detection info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CpuPinningInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process command name.
+    pub comm: String,
+    /// Number of CPUs this process is restricted to.
+    pub pinned_cpu_count: u32,
+    /// Total number of CPUs on the system.
+    pub total_cpu_count: u32,
+    /// Scheduling policy (SCHED_NORMAL=0, SCHED_BATCH=3, SCHED_IDLE=5).
+    pub sched_policy: u32,
+    /// CPU time in nanoseconds (utime + stime).
+    pub cpu_time_ns: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2 walker types
+// ---------------------------------------------------------------------------
+
+/// Container escape / breakout detection info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContainerEscapeCorrelateInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process command name.
+    pub comm: String,
+    /// Whether the PID namespace differs from the cgroup namespace.
+    pub pid_ns_differs_from_cgroup_ns: bool,
+    /// Whether the process has host filesystem mounts visible.
+    pub has_host_mounts: bool,
+    /// Whether the process has CAP_SYS_ADMIN.
+    pub cap_sys_admin: bool,
+    /// Whether the process has CAP_SYS_PTRACE.
+    pub cap_sys_ptrace: bool,
+    /// Whether the process is in a non-init PID namespace.
+    pub in_non_init_pid_ns: bool,
+}
+
+/// Timer/signal FD abuse type.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum FdAbuseType {
+    /// timerfd.
+    TimerFd,
+    /// signalfd.
+    SignalFd,
+    /// eventfd.
+    EventFd,
+}
+
+/// Timer/signal FD abuse info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FdAbuseInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process command name.
+    pub comm: String,
+    /// Type of file descriptor being abused.
+    pub fd_type: FdAbuseType,
+    /// For signalfd: bitmask of intercepted signals.
+    pub signal_mask: u64,
+    /// For timerfd: repeat interval in nanoseconds.
+    pub interval_ns: u64,
+    /// Whether the fd is shared across processes.
+    pub is_cross_process_shared: bool,
+}
+
+/// Shared memory anomaly info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SharedMemAnomalyInfo {
+    /// Process ID.
+    pub pid: u64,
+    /// Process command name.
+    pub comm: String,
+    /// Base address of the shared memory region.
+    pub shm_base: u64,
+    /// Size of the shared memory region.
+    pub shm_size: u64,
+    /// Whether the region was created with memfd_create.
+    pub is_memfd: bool,
+    /// Whether the region is executable.
+    pub is_executable: bool,
+    /// Whether the region is shared between processes with different UIDs.
+    pub is_cross_uid: bool,
+    /// Whether the region contains an ELF magic header.
+    pub has_elf_header: bool,
+}
+
+/// FUSE filesystem abuse info.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FuseAbuseInfo {
+    /// PID of the FUSE daemon.
+    pub pid: u64,
+    /// FUSE daemon command name.
+    pub comm: String,
+    /// Mount point path.
+    pub mount_point: String,
+    /// Whether the FUSE filesystem is mounted over a sensitive path (/proc, /sys, /etc).
+    pub is_over_sensitive_path: bool,
+    /// Whether the FUSE daemon runs as root.
+    pub daemon_is_root: bool,
+    /// Whether the `allow_other` mount option is set.
+    pub allow_other: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
