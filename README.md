@@ -1,204 +1,115 @@
-# memf
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.75+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org) [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey?style=for-the-badge)](https://github.com/SecurityRonin/memory-forensic) [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ff69b4?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
-A pure-Rust memory forensics framework. Reads physical memory dumps, walks Linux kernel structures, extracts strings, and classifies indicators of compromise.
+# memory-forensic
 
-Zero `unsafe` code. Apache-2.0 licensed. 237 tests.
+Parse LiME, AVML, crash dumps, ELF core, kdump, hiberfil.sys, and VMware snapshots — then walk processes, threads, modules, network connections, and injected memory — entirely in Rust, with no Python or Volatility dependency.
 
-## Why memf
+## Supported Memory Formats
 
-**For incident responders** who need to triage memory dumps from Linux servers. You point `memf` at a LiME, AVML, or ELF core dump and get processes, network connections, kernel modules, and classified strings in seconds.
+| Format | Source | Auto-detected |
+|---|---|---|
+| LiME (`.lime`) | Linux kernel module | Yes |
+| AVML v2 | Azure AVML | Yes |
+| ELF Core | QEMU, `gcore` | Yes |
+| Windows Crash Dump (`.dmp`) | DumpIt, WinDbg | Yes |
+| Hiberfil.sys | Windows hibernate / fast startup | Yes |
+| VMware State (`.vmss`, `.vmsn`) | VMware Workstation / ESXi | Yes |
+| kdump / diskdump | `makedumpfile` | Yes |
+| Raw / flat | Any fallback | Yes |
 
-**For forensic developers** who want a library they control. Every component is a separate crate with a clean trait boundary. Swap out the symbol resolver, add a new dump format, or write a custom string classifier without touching the rest of the codebase.
+Format is detected automatically from file headers — no flags required.
 
-**No C dependencies for core functionality.** The framework compiles on any platform Rust supports. YARA-X integration is the only native dependency, and only when you need rule-based string matching.
+## What You Can Extract
 
-### How it compares
+**Windows** — processes, threads, DLLs, drivers, handles, network connections, SSDT hooks, kernel callbacks, clipboard contents, DNS cache, Kerberos tickets, DPAPI keys, BitLocker keys, NTLM/SAM hashes, ETW patches, AMSI bypasses, pool tag scans, injected memory regions, PEB masquerade detection, COM hijacking, heap spray detection, APC injection, and more.
 
-| Capability | memf | Volatility3 | MemProcFS |
-|---|---|---|---|
-| Language | Rust (memory safe) | Python | C/C++ |
-| License | Apache-2.0 | Volatility Software License | AGPL-3.0 |
-| Dump formats | LiME, AVML, ELF core, Raw | 10+ | 10+ |
-| Linux process walking | Yes | Yes | Yes |
-| Network connections | Yes | Yes | Yes |
-| Kernel modules | Yes | Yes | Yes |
-| KASLR detection | Yes | Yes | Yes |
-| String classification | YARA-X + regex (12 categories) | yarascan plugin | No |
-| Symbol backends | ISF JSON, BTF | ISF JSON | PDB |
-| Page table walking | x86_64 (4KB/2MB/1GB) | x86_64, ARM64, x86 | x86_64, ARM64 |
-| `unsafe` code | None | N/A (Python) | Extensive |
+**Linux** — processes, kernel modules, network connections, open files, environment variables, mount points, namespaces, cgroups, BPF programs, eBPF hooks, ftrace tampering, IDT/syscall hook detection, DKOM-hidden processes, kernel timer abuse, `ld_preload` artifacts, memfd backdoors, container escape indicators, and more.
 
-memf covers Linux analysis today. Windows support, rootkit detection, and file reconstruction are in active development.
+**Cross-platform** — strings with IoC classification (URLs, IPs, domains, registry keys, crypto addresses, private keys, shell commands, YARA matches), hash lookups against NSRL/CIRCL known-good, MalwareBazaar/VirusShare known-bad, and loldrivers.io vulnerable driver hashes, plus MITRE ATT&CK-tagged cross-artifact correlation and timeline reconstruction.
 
-## Quick start
-
-### Install from source
+## Quick Start
 
 ```bash
-git clone https://github.com/SecurityRonin/memory-forensic.git
-cd memory-forensic
-cargo build --release
+# Show dump format and physical memory ranges
+memf info memdump.dmp
+
+# List all Windows processes with threads (ISF symbol file required)
+memf ps memdump.dmp --symbols ntkrnlmp.json --threads
+
+# Process tree with DLLs for a single PID
+memf ps memdump.dmp --symbols ntkrnlmp.json --tree --dlls --pid 1234
+
+# Network connections (table / json / csv output)
+memf net memdump.dmp --symbols ntkrnlmp.json --output json
+
+# Integrity checks: SSDT hooks and kernel callbacks
+memf check memdump.dmp --symbols ntkrnlmp.json --ssdt --callbacks
+
+# Linux syscall hook and malfind scan
+memf check memdump.lime --symbols linux.json --hooks --malfind
+
+# String extraction with YARA rules, minimum length 8
+memf strings memdump.dmp --rules ./yara-rules/ --min-length 8
 ```
 
-The binary lands at `target/release/memf`.
+Symbol files are ISF JSON (compatible with Volatility 3 symbol packs) or PDB. The `--cr3` flag lets you supply a page-table root manually for LiME/AVML dumps where auto-detection fails.
 
-### Inspect a memory dump
-
-```bash
-# Show format, size, and physical memory ranges
-memf info server.lime
-
-# Output:
-# Format:     LiME
-# Total size: 8589934592 bytes (8.00 GB)
-# Ranges:     3
-#
-# ┌───┬────────────────┬────────────────┬──────────┐
-# │ # │ Start          │ End            │ Size     │
-# ├───┼────────────────┼────────────────┼──────────┤
-# │ 0 │ 0x000000001000 │ 0x00000009f000 │ 632.00KB │
-# │ 1 │ 0x000000100000 │ 0x00007fff0000 │  2.00 GB │
-# │ 2 │ 0x000100000000 │ 0x000280000000 │  6.00 GB │
-# └───┴────────────────┴────────────────┴──────────┘
-```
-
-### Extract and classify strings
-
-```bash
-# From a memory dump (ASCII + UTF-16LE, min length 4)
-memf strings server.lime --output table
-
-# From a pre-extracted strings file
-memf strings --from-file memory-strings.ascii --output json
-
-# With custom YARA rules
-memf strings server.lime --rules ./yara-rules/ --output csv
-```
-
-String classification identifies 12 indicator categories: URLs, IPv4 addresses, email addresses, Unix paths, Windows paths, registry keys, cryptocurrency addresses, PEM private keys, base64 blobs, and shell commands. YARA rules add unlimited custom patterns on top.
-
-### List processes (requires ISF symbols)
-
-```bash
-memf ps server.lime --symbols linux-6.1.0.json --output table
-```
-
-### List kernel modules
-
-```bash
-memf modules server.lime --symbols linux-6.1.0.json
-```
-
-### List network connections
-
-```bash
-memf netstat server.lime --symbols linux-6.1.0.json
-```
-
-### Output formats
-
-Every subcommand supports `--output table` (default), `--output json` (NDJSON, one object per line), and `--output csv`.
-
-## Architecture
-
-```
-memf (CLI binary)
- ├── memf-format    Physical memory providers (LiME, AVML, ELF core, Raw)
- ├── memf-symbols   Symbol resolution (ISF JSON, BTF)
- ├── memf-core      Virtual address translation + object reader
- ├── memf-linux     Linux kernel walkers (processes, modules, network)
- └── memf-strings   String extraction + classification (regex, YARA-X)
-```
-
-### Crate responsibilities
-
-**memf-format** reads raw bytes from dump files. Each format implements `PhysicalMemoryProvider`, which provides `read_phys(addr, buf)` and `ranges()`. The `open_dump()` function auto-detects the format using a plugin scoring system powered by the `inventory` crate.
-
-**memf-symbols** resolves kernel struct layouts and symbol addresses. The `SymbolResolver` trait abstracts over ISF JSON (Volatility3 format) and BTF (Linux kernel's built-in type info). You get field offsets, struct sizes, and symbol virtual addresses.
-
-**memf-core** handles x86_64 4-level page table walking and kernel object reading. `VirtualAddressSpace` translates virtual addresses to physical. `ObjectReader` reads typed fields from kernel structs, follows pointers, and walks circular linked lists with cycle detection.
-
-**memf-linux** walks kernel data structures. Process enumeration follows the `task_struct` linked list from `init_task`. Module enumeration walks the `modules` list. Network enumeration scans `tcp_hashinfo.ehash` hash buckets. KASLR offset detection scans for the `"Linux version "` banner in physical memory.
-
-**memf-strings** extracts ASCII and UTF-16LE strings from physical memory in 64KB chunks with overlap handling for cross-boundary strings. The `classify_strings()` pipeline runs all registered classifiers (regex patterns + optional YARA rules) and tags each string with matching categories and confidence scores.
-
-### Plugin system
-
-Format providers and string classifiers register through Rust's `inventory` crate at compile time. Adding a new format:
+## Library Usage
 
 ```rust
-use memf_format::{FormatPlugin, PhysicalMemoryProvider};
+use memf_format::open;
+use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+use memf_core::object_reader::ObjectReader;
+use memf_symbols::isf::IsfSymbols;
 
-pub struct MyFormat { /* ... */ }
+// Open any supported format — detected from file headers
+let dump = open("memdump.dmp")?;
 
-impl PhysicalMemoryProvider for MyFormat { /* ... */ }
+// Load an ISF symbol file
+let symbols = IsfSymbols::from_file("ntkrnlmp.json")?;
 
-pub struct MyPlugin;
-impl FormatPlugin for MyPlugin {
-    fn name(&self) -> &str { "MyFormat" }
-    fn probe(&self, data: &[u8]) -> u8 { /* return 0-100 confidence */ }
-    fn open(&self, data: Vec<u8>) -> memf_format::Result<Box<dyn PhysicalMemoryProvider>> { /* ... */ }
+// Walk the x86_64 4-level page table
+let vas = VirtualAddressSpace::new(dump.clone(), TranslationMode::X64, cr3);
+let reader = ObjectReader::new(vas, symbols);
+
+// Walk EPROCESS list and print process names and PIDs
+for proc in reader.eprocess_list()? {
+    println!("{} (PID {})", proc.image_name()?, proc.pid()?);
 }
-
-inventory::submit!(Box::new(MyPlugin) as Box<dyn FormatPlugin>);
 ```
 
-### Symbol files
+<details>
+<summary>Crate layout</summary>
 
-memf reads ISF JSON files compatible with Volatility3's symbol packs. Generate them from a Linux kernel with debug info:
+| Crate | Purpose |
+|---|---|
+| `memf-format` | Format detection and physical memory providers. Parsers for LiME, AVML, ELF Core, Windows Crash Dump, hiberfil.sys, VMware state, kdump, and raw flat images. |
+| `memf-core` | Page table walking (x86_64 4-level/5-level, AArch64, x86 PAE/non-PAE), high-level `ObjectReader` for kernel struct traversal, pagefile access, LZO decompression. |
+| `memf-linux` | Linux kernel walkers: `task_struct` process list, network connections, kernel modules, open files, eBPF/BPF programs, ftrace/IDT/syscall hook detection, namespace and cgroup enumeration, DKOM-hidden process detection, container escape indicators, and ~40 additional analysis plugins. |
+| `memf-windows` | Windows NT kernel walkers: `EPROCESS`/`ETHREAD` enumeration, DLL and driver lists, handle tables, network sockets, pool tag scanning, callback tables, SSDT, ETW, clipboard, DNS cache, Kerberos tickets, DPAPI keys, BitLocker keys, SAM/NTLM hashes, injected memory detection, and ~50 additional plugins. |
+| `memf-strings` | String extraction (ASCII, UTF-8, UTF-16LE) with regex and YARA classification into IoC categories: URLs, IP addresses, domains, registry keys, crypto addresses, private keys, shell commands. |
+| `memf-symbols` | Symbol resolution from ISF JSON, BTF (Linux), and PDB files. Includes a symbol server client for on-demand PDB retrieval. |
+| `memf-correlate` | Cross-artifact correlation with MITRE ATT&CK technique tagging, process tree reconstruction, anomaly scoring, and timeline generation. |
+| `forensic-hashdb` | Zero-FP hash databases: NSRL/CIRCL known-good lookup, MalwareBazaar/VirusShare known-bad lookup, and embedded loldrivers.io vulnerable Windows driver hashes. |
 
-```bash
-# Using Volatility3's dwarf2json
-dwarf2json linux --elf /usr/lib/debug/boot/vmlinux-$(uname -r) > symbols.json
+</details>
 
-# Point memf at the file
-memf ps dump.lime --symbols symbols.json
+## Used By
 
-# Or at a directory of symbol files
-memf ps dump.lime --symbols /path/to/symbols/
+[RapidTriage](https://github.com/SecurityRonin/RapidTriage) — the `rt memf` subcommand drives live-response memory acquisition and triage reporting directly from this workspace.
 
-# Or set the environment variable
-export MEMF_SYMBOLS_PATH=/path/to/symbols/
-memf ps dump.lime
-```
+## Contributing
 
-## Supported dump formats
+This project follows strict TDD. For every change:
 
-| Format | Source | Detection |
-|---|---|---|
-| **LiME** | [LiME kernel module](https://github.com/504ensicsLabs/LiME) | Magic bytes `EMiL` (0x4C694D45) |
-| **AVML** | [Microsoft AVML](https://github.com/microsoft/avml) | Magic bytes `AVML` + version 2 |
-| **ELF core** | QEMU, libvirt, crash dumps | ELF header + PT_LOAD segments |
-| **Raw** | dd, /dev/mem, various tools | Fallback (flat memory image) |
+1. **RED** — write a failing test that defines the expected behavior, commit it, confirm it fails.
+2. **GREEN** — write the minimal implementation to make the test pass, commit it separately, confirm it passes.
+3. **REFACTOR** — clean up while keeping tests green.
 
-Format detection is automatic. `open_dump()` probes each registered plugin and selects the highest-confidence match.
-
-## Building and testing
-
-```bash
-# Build
-cargo build --release
-
-# Run all tests
-cargo test --workspace
-
-# Run tests for a specific crate
-cargo test -p memf-format
-cargo test -p memf-linux
-
-# Run with real dump data
-MEMF_TEST_DATA=/path/to/dumps cargo test --test real_data -- --ignored
-
-# Lint
-cargo clippy --workspace -- -D warnings
-```
-
-## Project status
-
-**Stable and tested:** Format detection, string extraction, regex + YARA classification, ISF/BTF symbol resolution, x86_64 page table walking, Linux process/module/network enumeration, KASLR detection.
-
-**In development:** Windows dump formats (crashdump, hiberfil.sys, VMware VMSS/VMSN), Windows kernel walking, ARM64 page tables, rootkit detection, file reconstruction from VADs, credential extraction, FUSE virtual filesystem.
+Pull requests that arrive as a single "add feature + tests" commit will be asked to split. The failing-test commit is the verifiable proof that tests were written first.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) for details.
+Apache-2.0. See [LICENSE](LICENSE).
+
+Sponsor this work: [github.com/sponsors/h4x0r](https://github.com/sponsors/h4x0r)
