@@ -98,18 +98,6 @@ for proc in reader.eprocess_list()? {
 
 [RapidTriage](https://github.com/SecurityRonin/RapidTriage) — the `rt memf` subcommand drives live-response memory acquisition and triage reporting directly from this workspace.
 
-## Contributing
+---
 
-This project follows strict TDD. For every change:
-
-1. **RED** — write a failing test that defines the expected behavior, commit it, confirm it fails.
-2. **GREEN** — write the minimal implementation to make the test pass, commit it separately, confirm it passes.
-3. **REFACTOR** — clean up while keeping tests green.
-
-Pull requests that arrive as a single "add feature + tests" commit will be asked to split. The failing-test commit is the verifiable proof that tests were written first.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
-
-Sponsor this work: [github.com/sponsors/h4x0r](https://github.com/sponsors/h4x0r)
+[Contributing](CONTRIBUTING.md) · © 2026 Security Ronin Ltd
