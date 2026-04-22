@@ -98,6 +98,3 @@ for proc in reader.eprocess_list()? {
 
 [RapidTriage](https://github.com/SecurityRonin/RapidTriage) — the `rt memf` subcommand drives live-response memory acquisition and triage reporting directly from this workspace.
 
----
-
-[Contributing](CONTRIBUTING.md) · © 2026 Security Ronin Ltd
