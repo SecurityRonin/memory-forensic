@@ -458,7 +458,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_scheduled_tasks(&reader).unwrap();
-        assert!(result.is_empty(), "unreadable list head should yield no tasks");
+        assert!(
+            result.is_empty(),
+            "unreadable list head should yield no tasks"
+        );
     }
 
     /// classify_scheduled_task: appdata path is suspicious.
@@ -533,11 +536,11 @@ mod tests {
     /// Tests the Flink-following code path with two iterations.
     #[test]
     fn walk_scheduled_tasks_two_entries_in_loop() {
-        let list_vaddr: u64  = 0xFFFF_8000_0082_0000;
+        let list_vaddr: u64 = 0xFFFF_8000_0082_0000;
         let entry1_vaddr: u64 = 0xFFFF_8000_0083_0000;
         let entry2_vaddr: u64 = 0xFFFF_8000_0084_0000;
 
-        let list_paddr: u64   = 0x0082_0000;
+        let list_paddr: u64 = 0x0082_0000;
         let entry1_paddr: u64 = 0x0083_0000;
         let entry2_paddr: u64 = 0x0084_0000;
 
@@ -558,7 +561,7 @@ mod tests {
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(list_vaddr,   list_paddr,   flags::WRITABLE)
+            .map_4k(list_vaddr, list_paddr, flags::WRITABLE)
             .write_phys(list_paddr, &head_page)
             .map_4k(entry1_vaddr, entry1_paddr, flags::WRITABLE)
             .write_phys(entry1_paddr, &e1_page)

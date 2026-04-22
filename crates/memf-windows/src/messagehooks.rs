@@ -44,21 +44,21 @@ pub fn hook_type_name(raw: u32) -> String {
     // No entry for type 8 (reserved/not defined in standard headers)
     match raw {
         0xFFFF_FFFF => "WH_MSGFILTER".to_string(),
-        0  => "WH_JOURNALRECORD".to_string(),
-        1  => "WH_JOURNALPLAYBACK".to_string(),
-        2  => "WH_KEYBOARD".to_string(),
-        3  => "WH_GETMESSAGE".to_string(),
-        4  => "WH_CALLWNDPROC".to_string(),
-        5  => "WH_CBT".to_string(),
-        6  => "WH_SYSMSGFILTER".to_string(),
-        7  => "WH_MOUSE".to_string(),
-        9  => "WH_DEBUG".to_string(),
+        0 => "WH_JOURNALRECORD".to_string(),
+        1 => "WH_JOURNALPLAYBACK".to_string(),
+        2 => "WH_KEYBOARD".to_string(),
+        3 => "WH_GETMESSAGE".to_string(),
+        4 => "WH_CALLWNDPROC".to_string(),
+        5 => "WH_CBT".to_string(),
+        6 => "WH_SYSMSGFILTER".to_string(),
+        7 => "WH_MOUSE".to_string(),
+        9 => "WH_DEBUG".to_string(),
         10 => "WH_SHELL".to_string(),
         11 => "WH_FOREGROUNDIDLE".to_string(),
         12 => "WH_CALLWNDPROCRET".to_string(),
         13 => "WH_KEYBOARD_LL".to_string(),
         14 => "WH_MOUSE_LL".to_string(),
-        n  => format!("WH_UNKNOWN({n})"),
+        n => format!("WH_UNKNOWN({n})"),
     }
 }
 
@@ -88,9 +88,7 @@ pub fn classify_message_hook(hook_type: &str, module: &str) -> bool {
     }
 
     // Check if module ends with a known benign module name
-    let is_benign_module = BENIGN_MODULES
-        .iter()
-        .any(|&m| lower_module.ends_with(m));
+    let is_benign_module = BENIGN_MODULES.iter().any(|&m| lower_module.ends_with(m));
 
     if is_benign_module {
         return false;
@@ -149,11 +147,26 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
         .unwrap_or(0x38) as u64;
 
     // Field offsets for _HOOK
-    let hook_next_off  = reader.symbols().field_offset("_HOOK", "phkNext").unwrap_or(0x00) as u64;
-    let hook_type_off  = reader.symbols().field_offset("_HOOK", "iHook").unwrap_or(0x08) as u64;
-    let hook_proc_off  = reader.symbols().field_offset("_HOOK", "pfn").unwrap_or(0x10) as u64;
-    let hook_ihmod_off = reader.symbols().field_offset("_HOOK", "ihmod").unwrap_or(0x18) as u64;
-    let hook_pti_off   = reader.symbols().field_offset("_HOOK", "pti").unwrap_or(0x20) as u64;
+    let hook_next_off = reader
+        .symbols()
+        .field_offset("_HOOK", "phkNext")
+        .unwrap_or(0x00) as u64;
+    let hook_type_off = reader
+        .symbols()
+        .field_offset("_HOOK", "iHook")
+        .unwrap_or(0x08) as u64;
+    let hook_proc_off = reader
+        .symbols()
+        .field_offset("_HOOK", "pfn")
+        .unwrap_or(0x10) as u64;
+    let hook_ihmod_off = reader
+        .symbols()
+        .field_offset("_HOOK", "ihmod")
+        .unwrap_or(0x18) as u64;
+    let hook_pti_off = reader
+        .symbols()
+        .field_offset("_HOOK", "pti")
+        .unwrap_or(0x20) as u64;
 
     // Field offsets for PID chain from tagTHREADINFO
     let threadinfo_eprocess_off = reader
@@ -330,7 +343,10 @@ mod tests {
     /// WH_MOUSE_LL from a temp directory is suspicious.
     #[test]
     fn classify_mouse_ll_temp_dir_suspicious() {
-        assert!(classify_message_hook("WH_MOUSE_LL", r"C:\Users\user\AppData\Local\Temp\payload.dll"));
+        assert!(classify_message_hook(
+            "WH_MOUSE_LL",
+            r"C:\Users\user\AppData\Local\Temp\payload.dll"
+        ));
     }
 
     /// WH_CBT from a known system module (msctf.dll) is benign.
@@ -342,7 +358,10 @@ mod tests {
     /// Any hook from an AppData path is suspicious.
     #[test]
     fn classify_any_hook_appdata_suspicious() {
-        assert!(classify_message_hook("WH_CBT", r"C:\Users\user\AppData\Roaming\mal.dll"));
+        assert!(classify_message_hook(
+            "WH_CBT",
+            r"C:\Users\user\AppData\Roaming\mal.dll"
+        ));
     }
 
     /// Empty module name is suspicious (unknown origin).
@@ -395,13 +414,19 @@ mod tests {
     /// Module path with \\downloads\\ is suspicious regardless of hook type.
     #[test]
     fn classify_downloads_path_suspicious() {
-        assert!(classify_message_hook("WH_GETMESSAGE", r"C:\Users\user\Downloads\hook.dll"));
+        assert!(classify_message_hook(
+            "WH_GETMESSAGE",
+            r"C:\Users\user\Downloads\hook.dll"
+        ));
     }
 
     /// Module name that ends with a system module name (path-qualified) is benign.
     #[test]
     fn classify_path_qualified_system_module_benign() {
-        assert!(!classify_message_hook("WH_KEYBOARD_LL", r"C:\Windows\System32\user32.dll"));
+        assert!(!classify_message_hook(
+            "WH_KEYBOARD_LL",
+            r"C:\Windows\System32\user32.dll"
+        ));
     }
 
     // ── walk_message_hooks tests ─────────────────────────────────────────
@@ -468,8 +493,8 @@ mod tests {
     fn walk_message_hooks_nonzero_winsta_zero_desktop() {
         const SYM_VADDR: u64 = 0xFFFF_8000_0097_0000;
         const SYM_PADDR: u64 = 0x0097_0000;
-        const WS_VADDR:  u64 = 0xFFFF_8000_0096_0000;
-        const WS_PADDR:  u64 = 0x0096_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0096_0000;
+        const WS_PADDR: u64 = 0x0096_0000;
 
         let isf = IsfBuilder::new()
             .add_struct("_WINSTATION_OBJECT", 64)
@@ -502,7 +527,10 @@ mod tests {
     /// classify: WH_SHELL from downloads path is suspicious.
     #[test]
     fn classify_shell_hook_downloads_suspicious() {
-        assert!(classify_message_hook("WH_SHELL", r"C:\Users\user\Downloads\shell_hook.dll"));
+        assert!(classify_message_hook(
+            "WH_SHELL",
+            r"C:\Users\user\Downloads\shell_hook.dll"
+        ));
     }
 
     /// classify: WH_CBT from imm32.dll is benign.
@@ -520,7 +548,10 @@ mod tests {
     /// classify: path-qualified imm32.dll is benign for WH_KEYBOARD_LL.
     #[test]
     fn classify_path_qualified_imm32_benign() {
-        assert!(!classify_message_hook("WH_KEYBOARD_LL", r"C:\Windows\System32\imm32.dll"));
+        assert!(!classify_message_hook(
+            "WH_KEYBOARD_LL",
+            r"C:\Windows\System32\imm32.dll"
+        ));
     }
 
     /// hook_type_name: value 15 → unknown.
@@ -570,8 +601,8 @@ mod tests {
     /// PID reads ok → returns correct PID.
     #[test]
     fn extract_pid_from_threadinfo_valid_chain() {
-        const TI_VADDR:  u64 = 0xFFFF_8000_0094_0000;
-        const TI_PADDR:  u64 = 0x0094_0000;
+        const TI_VADDR: u64 = 0xFFFF_8000_0094_0000;
+        const TI_PADDR: u64 = 0x0094_0000;
         const ETH_VADDR: u64 = 0xFFFF_8000_0093_0000;
         const ETH_PADDR: u64 = 0x0093_0000;
         const EPS_VADDR: u64 = 0xFFFF_8000_0092_0000;
@@ -609,10 +640,10 @@ mod tests {
     /// The hook has ihmod <= 0xFFFF so module_name = "" → classify_message_hook → suspicious.
     #[test]
     fn walk_message_hooks_one_hook_inner_loop() {
-        const SYM_VADDR:  u64 = 0xFFFF_8000_0090_0000;
-        const SYM_PADDR:  u64 = 0x0090_0000;
-        const WS_VADDR:   u64 = 0xFFFF_8000_0091_0000;
-        const WS_PADDR:   u64 = 0x0091_0000;
+        const SYM_VADDR: u64 = 0xFFFF_8000_0090_0000;
+        const SYM_PADDR: u64 = 0x0090_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0091_0000;
+        const WS_PADDR: u64 = 0x0091_0000;
         const DESK_VADDR: u64 = 0xFFFF_8000_0092_0000;
         const DESK_PADDR: u64 = 0x0092_0000;
         const HOOK_VADDR: u64 = 0xFFFF_8000_0093_0000;
@@ -645,7 +676,7 @@ mod tests {
 
         let mut desk_page = vec![0u8; 4096];
         desk_page[0x28..0x30].copy_from_slice(&0u64.to_le_bytes()); // rpdeskNext = 0
-        // aphkStart[0] = HOOK_VADDR
+                                                                    // aphkStart[0] = HOOK_VADDR
         desk_page[0x38..0x40].copy_from_slice(&HOOK_VADDR.to_le_bytes());
 
         let mut hook_page = vec![0u8; 4096];

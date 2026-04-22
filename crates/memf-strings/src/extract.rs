@@ -391,11 +391,19 @@ mod tests {
         data[0x40..0x40 + utf16.len()].copy_from_slice(&utf16);
 
         let provider = RawProvider::from_bytes(&data);
-        let cfg = ExtractConfig { min_length: 3, ascii: true, utf16le: true };
+        let cfg = ExtractConfig {
+            min_length: 3,
+            ascii: true,
+            utf16le: true,
+        };
         let strings = extract_strings(&provider, &cfg);
 
-        let ascii_found = strings.iter().any(|s| s.value == "ASCII" && s.encoding == StringEncoding::Ascii);
-        let utf16_found = strings.iter().any(|s| s.value == "HI!" && s.encoding == StringEncoding::Utf16Le);
+        let ascii_found = strings
+            .iter()
+            .any(|s| s.value == "ASCII" && s.encoding == StringEncoding::Ascii);
+        let utf16_found = strings
+            .iter()
+            .any(|s| s.value == "HI!" && s.encoding == StringEncoding::Utf16Le);
         assert!(ascii_found, "ASCII string must be found in mixed dump");
         assert!(utf16_found, "UTF-16LE string must be found in mixed dump");
     }
@@ -409,17 +417,27 @@ mod tests {
         // Surrogate at offset 0: [0x00, 0xD8]
         data[0x00..0x02].copy_from_slice(&[0x00, 0xD8]);
         // "OK\0" as UTF-16LE at offset 0x10
-        let ok_utf16: Vec<u8> = "OKAY".encode_utf16().flat_map(|w| w.to_le_bytes()).collect();
+        let ok_utf16: Vec<u8> = "OKAY"
+            .encode_utf16()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
         data[0x10..0x10 + ok_utf16.len()].copy_from_slice(&ok_utf16);
 
         let provider = RawProvider::from_bytes(&data);
-        let cfg = ExtractConfig { min_length: 4, ascii: false, utf16le: true };
+        let cfg = ExtractConfig {
+            min_length: 4,
+            ascii: false,
+            utf16le: true,
+        };
         let strings = extract_strings(&provider, &cfg);
 
         // Must not panic; all extracted strings must be valid Rust strings (guaranteed
         // by the type system — surrogates cannot be represented in `char`/`String`).
         // Verify the valid string after the surrogate is still recovered.
         let ok_found = strings.iter().any(|s| s.value == "OKAY");
-        assert!(ok_found, "valid UTF-16LE string after surrogate must still be found");
+        assert!(
+            ok_found,
+            "valid UTF-16LE string after surrogate must still be found"
+        );
     }
 }

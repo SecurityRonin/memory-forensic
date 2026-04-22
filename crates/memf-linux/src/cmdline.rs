@@ -308,7 +308,10 @@ mod tests {
         let reader = make_test_reader(&data, vaddr, paddr, &[]);
         let result = walk_process_cmdline(&reader, vaddr).unwrap();
         assert_eq!(result.pid, 77);
-        assert_eq!(result.cmdline, "", "arg_end <= arg_start must produce empty cmdline");
+        assert_eq!(
+            result.cmdline, "",
+            "arg_end <= arg_start must produce empty cmdline"
+        );
     }
 
     #[test]
@@ -333,7 +336,7 @@ mod tests {
     #[test]
     fn walk_cmdlines_two_processes_both_pushed() {
         let tasks_off: u64 = 16u64;
-        let mm_off: u64    = 48u64;
+        let mm_off: u64 = 48u64;
         let arg_off_in_mm: u64 = 64u64;
         let arg_end_off_in_mm: u64 = 72u64;
 
@@ -360,8 +363,7 @@ mod tests {
             .copy_from_slice(&task2_tasks_vaddr.to_le_bytes());
         page1[24..32].copy_from_slice(&(init_vaddr + tasks_off).to_le_bytes());
         page1[32..36].copy_from_slice(b"init");
-        page1[mm_off as usize..mm_off as usize + 8]
-            .copy_from_slice(&mm1_vaddr.to_le_bytes());
+        page1[mm_off as usize..mm_off as usize + 8].copy_from_slice(&mm1_vaddr.to_le_bytes());
 
         let mut page2 = vec![0u8; 4096];
         page2[0..4].copy_from_slice(&2u32.to_le_bytes());
@@ -370,8 +372,7 @@ mod tests {
             .copy_from_slice(&init_tasks_vaddr.to_le_bytes());
         page2[24..32].copy_from_slice(&(task2_vaddr + tasks_off).to_le_bytes());
         page2[32..34].copy_from_slice(b"sh");
-        page2[mm_off as usize..mm_off as usize + 8]
-            .copy_from_slice(&mm2_vaddr.to_le_bytes());
+        page2[mm_off as usize..mm_off as usize + 8].copy_from_slice(&mm2_vaddr.to_le_bytes());
 
         let mut mm1_page = vec![0u8; 4096];
         mm1_page[arg_off_in_mm as usize..arg_off_in_mm as usize + 8]
@@ -424,7 +425,11 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_cmdlines(&reader).unwrap();
-        assert_eq!(result.len(), 2, "both init_task and task2 should have cmdlines");
+        assert_eq!(
+            result.len(),
+            2,
+            "both init_task and task2 should have cmdlines"
+        );
         let pids: Vec<u64> = result.iter().map(|r| r.pid).collect();
         assert!(pids.contains(&1), "init_task (pid=1) must be in results");
         assert!(pids.contains(&2), "task2 (pid=2) must be in results");

@@ -34,15 +34,15 @@ pub struct ClipboardEntry {
 /// Map a clipboard format code to a human-readable name.
 pub fn format_name(format: u32) -> &'static str {
     match format {
-        1  => "CF_TEXT",
-        2  => "CF_BITMAP",
-        3  => "CF_METAFILEPICT",
-        4  => "CF_SYLK",
-        5  => "CF_DIF",
-        6  => "CF_TIFF",
-        7  => "CF_OEMTEXT",
-        8  => "CF_DIB",
-        9  => "CF_PALETTE",
+        1 => "CF_TEXT",
+        2 => "CF_BITMAP",
+        3 => "CF_METAFILEPICT",
+        4 => "CF_SYLK",
+        5 => "CF_DIF",
+        6 => "CF_TIFF",
+        7 => "CF_OEMTEXT",
+        8 => "CF_DIB",
+        9 => "CF_PALETTE",
         10 => "CF_PENDATA",
         11 => "CF_RIFF",
         12 => "CF_WAVE",
@@ -51,7 +51,7 @@ pub fn format_name(format: u32) -> &'static str {
         15 => "CF_HDROP",
         16 => "CF_LOCALE",
         17 => "CF_DIBV5",
-        _  => "CF_UNKNOWN",
+        _ => "CF_UNKNOWN",
     }
 }
 
@@ -84,7 +84,9 @@ pub fn classify_clipboard(preview: &str) -> bool {
     // Long base64-like token: >100 chars, no spaces
     for token in preview.split_whitespace() {
         if token.len() > 100
-            && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
         {
             return true;
         }
@@ -101,17 +103,32 @@ fn contains_ip_url(text: &str) -> bool {
         while let Some(pos) = search.find(prefix) {
             let after = &search[pos + prefix.len()..];
             // Check if next char is a digit (start of IP octets)
-            if after.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            if after
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+            {
                 // Verify it looks like an IP: at least two dots in the host part
-                let host_end = after.find(|c: char| c == '/' || c == ':' || c == ' ' || c == '\n').unwrap_or(after.len());
+                let host_end = after
+                    .find(|c: char| c == '/' || c == ':' || c == ' ' || c == '\n')
+                    .unwrap_or(after.len());
                 let host = &after[..host_end];
                 if host.chars().filter(|&c| c == '.').count() >= 1
-                    && host.split('.').all(|part| part.is_empty() || part.chars().all(|c| c.is_ascii_digit()))
+                    && host
+                        .split('.')
+                        .all(|part| part.is_empty() || part.chars().all(|c| c.is_ascii_digit()))
                 {
                     return true;
                 }
                 // Even without all-digit parts, if host starts with digit and has a dot, flag it
-                if host.contains('.') && host.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                if host.contains('.')
+                    && host
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                {
                     return true;
                 }
             }
@@ -162,12 +179,10 @@ pub fn walk_clipboard<P: PhysicalMemoryProvider>(
 
     // Field offsets for _CLIP entry
     // _CLIP { fmt: u32, hData: u64, size: u64 }
-    let clip_fmt_off   = reader.symbols().field_offset("_CLIP", "fmt").unwrap_or(0) as u64;
+    let clip_fmt_off = reader.symbols().field_offset("_CLIP", "fmt").unwrap_or(0) as u64;
     let clip_hdata_off = reader.symbols().field_offset("_CLIP", "hData").unwrap_or(8) as u64;
-    let clip_size_off  = reader.symbols().field_offset("_CLIP", "size").unwrap_or(16) as u64;
-    let clip_entry_size= reader.symbols()
-        .struct_size("_CLIP")
-        .unwrap_or(24) as u64;
+    let clip_size_off = reader.symbols().field_offset("_CLIP", "size").unwrap_or(16) as u64;
+    let clip_entry_size = reader.symbols().struct_size("_CLIP").unwrap_or(24) as u64;
 
     let mut results = Vec::new();
 
@@ -223,8 +238,8 @@ pub fn walk_clipboard<P: PhysicalMemoryProvider>(
                 .unwrap_or(0);
 
             let (data_size, preview) = match fmt {
-                1 | 7 => read_ansi_preview(reader, hdata),    // CF_TEXT, CF_OEMTEXT
-                13 => read_unicode_preview(reader, hdata),     // CF_UNICODETEXT
+                1 | 7 => read_ansi_preview(reader, hdata), // CF_TEXT, CF_OEMTEXT
+                13 => read_unicode_preview(reader, hdata), // CF_UNICODETEXT
                 _ => (stored_size as usize, String::new()),
             };
 
@@ -264,7 +279,11 @@ fn read_ansi_preview<P: PhysicalMemoryProvider>(
     let null_pos = chunk.iter().position(|&b| b == 0).unwrap_or(chunk.len());
     let text = String::from_utf8_lossy(&chunk[..null_pos]).to_string();
     let size = null_pos + 1; // include null
-    let preview = if text.len() > 256 { text[..256].to_string() } else { text };
+    let preview = if text.len() > 256 {
+        text[..256].to_string()
+    } else {
+        text
+    };
     (size, preview)
 }
 
@@ -288,7 +307,11 @@ fn read_unicode_preview<P: PhysicalMemoryProvider>(
     let null_pos = units.iter().position(|&u| u == 0).unwrap_or(units.len());
     let text = String::from_utf16_lossy(&units[..null_pos]).to_string();
     let size = (null_pos + 1) * 2; // bytes including null
-    let preview = if text.len() > 256 { text[..256].to_string() } else { text };
+    let preview = if text.len() > 256 {
+        text[..256].to_string()
+    } else {
+        text
+    };
     (size, preview)
 }
 
@@ -453,7 +476,11 @@ mod tests {
 
     // ── read_ansi_preview and read_unicode_preview coverage ──────────
 
-    fn make_clip_reader_with_page(vaddr: u64, paddr: u64, page: &[u8]) -> ObjectReader<SyntheticPhysMem> {
+    fn make_clip_reader_with_page(
+        vaddr: u64,
+        paddr: u64,
+        page: &[u8],
+    ) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
@@ -607,14 +634,24 @@ mod tests {
     fn walk_clipboard_zero_num_formats_empty() {
         const SYM_VADDR: u64 = 0xFFFF_8000_0057_0000;
         const SYM_PADDR: u64 = 0x0057_0000;
-        const WS_VADDR:  u64 = 0xFFFF_8000_0056_0000;
-        const WS_PADDR:  u64 = 0x0056_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0056_0000;
+        const WS_PADDR: u64 = 0x0056_0000;
         let isf = IsfBuilder::new()
             .add_struct("_WINSTATION_OBJECT", 64)
             .add_field("_WINSTATION_OBJECT", "rpwinstaNext", 0x28, "pointer")
-            .add_field("_WINSTATION_OBJECT", "cNumClipFormats", 0x40, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "cNumClipFormats",
+                0x40,
+                "unsigned long",
+            )
             .add_field("_WINSTATION_OBJECT", "pClipBase", 0x48, "pointer")
-            .add_field("_WINSTATION_OBJECT", "dwClipOwnerPid", 0x50, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "dwClipOwnerPid",
+                0x50,
+                "unsigned long",
+            )
             .add_symbol("grpWinStaList", SYM_VADDR)
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -638,14 +675,24 @@ mod tests {
     fn walk_clipboard_too_many_formats_empty() {
         const SYM_VADDR: u64 = 0xFFFF_8000_0055_0000;
         const SYM_PADDR: u64 = 0x0055_0000;
-        const WS_VADDR:  u64 = 0xFFFF_8000_0054_0000;
-        const WS_PADDR:  u64 = 0x0054_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0054_0000;
+        const WS_PADDR: u64 = 0x0054_0000;
         let isf = IsfBuilder::new()
             .add_struct("_WINSTATION_OBJECT", 64)
             .add_field("_WINSTATION_OBJECT", "rpwinstaNext", 0x28, "pointer")
-            .add_field("_WINSTATION_OBJECT", "cNumClipFormats", 0x40, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "cNumClipFormats",
+                0x40,
+                "unsigned long",
+            )
             .add_field("_WINSTATION_OBJECT", "pClipBase", 0x48, "pointer")
-            .add_field("_WINSTATION_OBJECT", "dwClipOwnerPid", 0x50, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "dwClipOwnerPid",
+                0x50,
+                "unsigned long",
+            )
             .add_symbol("grpWinStaList", SYM_VADDR)
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -672,14 +719,24 @@ mod tests {
     fn walk_clipboard_zero_clip_base_empty() {
         const SYM_VADDR: u64 = 0xFFFF_8000_0053_0000;
         const SYM_PADDR: u64 = 0x0053_0000;
-        const WS_VADDR:  u64 = 0xFFFF_8000_0052_0000;
-        const WS_PADDR:  u64 = 0x0052_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0052_0000;
+        const WS_PADDR: u64 = 0x0052_0000;
         let isf = IsfBuilder::new()
             .add_struct("_WINSTATION_OBJECT", 64)
             .add_field("_WINSTATION_OBJECT", "rpwinstaNext", 0x28, "pointer")
-            .add_field("_WINSTATION_OBJECT", "cNumClipFormats", 0x40, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "cNumClipFormats",
+                0x40,
+                "unsigned long",
+            )
             .add_field("_WINSTATION_OBJECT", "pClipBase", 0x48, "pointer")
-            .add_field("_WINSTATION_OBJECT", "dwClipOwnerPid", 0x50, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "dwClipOwnerPid",
+                0x50,
+                "unsigned long",
+            )
             .add_symbol("grpWinStaList", SYM_VADDR)
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -704,9 +761,19 @@ mod tests {
         IsfBuilder::new()
             .add_struct("_WINSTATION_OBJECT", 128)
             .add_field("_WINSTATION_OBJECT", "rpwinstaNext", 0x28, "pointer")
-            .add_field("_WINSTATION_OBJECT", "cNumClipFormats", 0x40, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "cNumClipFormats",
+                0x40,
+                "unsigned long",
+            )
             .add_field("_WINSTATION_OBJECT", "pClipBase", 0x48, "pointer")
-            .add_field("_WINSTATION_OBJECT", "dwClipOwnerPid", 0x50, "unsigned long")
+            .add_field(
+                "_WINSTATION_OBJECT",
+                "dwClipOwnerPid",
+                0x50,
+                "unsigned long",
+            )
             .add_struct("_CLIP", 24)
             .add_field("_CLIP", "fmt", 0, "unsigned long")
             .add_field("_CLIP", "hData", 8, "pointer")
@@ -718,10 +785,10 @@ mod tests {
     /// walk_clipboard: full path with one CF_TEXT entry (suspicious password content).
     #[test]
     fn walk_clipboard_cf_text_entry_suspicious() {
-        const SYM_VADDR:  u64 = 0xFFFF_8000_0050_0000;
-        const SYM_PADDR:  u64 = 0x0050_0000;
-        const WS_VADDR:   u64 = 0xFFFF_8000_004F_0000;
-        const WS_PADDR:   u64 = 0x004F_0000;
+        const SYM_VADDR: u64 = 0xFFFF_8000_0050_0000;
+        const SYM_PADDR: u64 = 0x0050_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_004F_0000;
+        const WS_PADDR: u64 = 0x004F_0000;
         const CLIP_VADDR: u64 = 0xFFFF_8000_004E_0000;
         const CLIP_PADDR: u64 = 0x004E_0000;
         const DATA_VADDR: u64 = 0xFFFF_8000_004D_0000;
@@ -750,10 +817,14 @@ mod tests {
         data_page[..text.len()].copy_from_slice(text);
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(SYM_VADDR, SYM_PADDR, flags::WRITABLE).write_phys(SYM_PADDR, &sym_page)
-            .map_4k(WS_VADDR, WS_PADDR, flags::WRITABLE).write_phys(WS_PADDR, &ws_page)
-            .map_4k(CLIP_VADDR, CLIP_PADDR, flags::WRITABLE).write_phys(CLIP_PADDR, &clip_page)
-            .map_4k(DATA_VADDR, DATA_PADDR, flags::WRITABLE).write_phys(DATA_PADDR, &data_page)
+            .map_4k(SYM_VADDR, SYM_PADDR, flags::WRITABLE)
+            .write_phys(SYM_PADDR, &sym_page)
+            .map_4k(WS_VADDR, WS_PADDR, flags::WRITABLE)
+            .write_phys(WS_PADDR, &ws_page)
+            .map_4k(CLIP_VADDR, CLIP_PADDR, flags::WRITABLE)
+            .write_phys(CLIP_PADDR, &clip_page)
+            .map_4k(DATA_VADDR, DATA_PADDR, flags::WRITABLE)
+            .write_phys(DATA_PADDR, &data_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
@@ -769,10 +840,10 @@ mod tests {
     /// walk_clipboard: CF_UNICODETEXT entry with benign content.
     #[test]
     fn walk_clipboard_cf_unicodetext_entry_benign() {
-        const SYM_VADDR:  u64 = 0xFFFF_8000_004C_0000;
-        const SYM_PADDR:  u64 = 0x004C_0000;
-        const WS_VADDR:   u64 = 0xFFFF_8000_004B_0000;
-        const WS_PADDR:   u64 = 0x004B_0000;
+        const SYM_VADDR: u64 = 0xFFFF_8000_004C_0000;
+        const SYM_PADDR: u64 = 0x004C_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_004B_0000;
+        const WS_PADDR: u64 = 0x004B_0000;
         const CLIP_VADDR: u64 = 0xFFFF_8000_004A_0000;
         const CLIP_PADDR: u64 = 0x004A_0000;
         const DATA_VADDR: u64 = 0xFFFF_8000_0049_0000;
@@ -799,10 +870,14 @@ mod tests {
         data_page[..utf16.len()].copy_from_slice(&utf16);
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(SYM_VADDR, SYM_PADDR, flags::WRITABLE).write_phys(SYM_PADDR, &sym_page)
-            .map_4k(WS_VADDR, WS_PADDR, flags::WRITABLE).write_phys(WS_PADDR, &ws_page)
-            .map_4k(CLIP_VADDR, CLIP_PADDR, flags::WRITABLE).write_phys(CLIP_PADDR, &clip_page)
-            .map_4k(DATA_VADDR, DATA_PADDR, flags::WRITABLE).write_phys(DATA_PADDR, &data_page)
+            .map_4k(SYM_VADDR, SYM_PADDR, flags::WRITABLE)
+            .write_phys(SYM_PADDR, &sym_page)
+            .map_4k(WS_VADDR, WS_PADDR, flags::WRITABLE)
+            .write_phys(WS_PADDR, &ws_page)
+            .map_4k(CLIP_VADDR, CLIP_PADDR, flags::WRITABLE)
+            .write_phys(CLIP_PADDR, &clip_page)
+            .map_4k(DATA_VADDR, DATA_PADDR, flags::WRITABLE)
+            .write_phys(DATA_PADDR, &data_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
@@ -816,10 +891,10 @@ mod tests {
     /// walk_clipboard: unknown (non-text) format produces an entry with empty preview.
     #[test]
     fn walk_clipboard_unknown_format_no_preview() {
-        const SYM_VADDR:  u64 = 0xFFFF_8000_0048_0000;
-        const SYM_PADDR:  u64 = 0x0048_0000;
-        const WS_VADDR:   u64 = 0xFFFF_8000_0047_0000;
-        const WS_PADDR:   u64 = 0x0047_0000;
+        const SYM_VADDR: u64 = 0xFFFF_8000_0048_0000;
+        const SYM_PADDR: u64 = 0x0048_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0047_0000;
+        const WS_PADDR: u64 = 0x0047_0000;
         const CLIP_VADDR: u64 = 0xFFFF_8000_0046_0000;
         const CLIP_PADDR: u64 = 0x0046_0000;
 
@@ -839,9 +914,12 @@ mod tests {
         clip_page[16..24].copy_from_slice(&1024u64.to_le_bytes()); // size = 1024
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(SYM_VADDR, SYM_PADDR, flags::WRITABLE).write_phys(SYM_PADDR, &sym_page)
-            .map_4k(WS_VADDR, WS_PADDR, flags::WRITABLE).write_phys(WS_PADDR, &ws_page)
-            .map_4k(CLIP_VADDR, CLIP_PADDR, flags::WRITABLE).write_phys(CLIP_PADDR, &clip_page)
+            .map_4k(SYM_VADDR, SYM_PADDR, flags::WRITABLE)
+            .write_phys(SYM_PADDR, &sym_page)
+            .map_4k(WS_VADDR, WS_PADDR, flags::WRITABLE)
+            .write_phys(WS_PADDR, &ws_page)
+            .map_4k(CLIP_VADDR, CLIP_PADDR, flags::WRITABLE)
+            .write_phys(CLIP_PADDR, &clip_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));

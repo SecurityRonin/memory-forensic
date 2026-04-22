@@ -100,7 +100,11 @@ impl ScoringEngine {
             .collect();
 
         // Sort descending by score.
-        scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scores.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Self { scores }
     }
 
@@ -125,7 +129,10 @@ impl ScoringEngine {
     /// Return the score for a specific PID, or `None` if the PID has no events.
     pub fn score_for_pid(&self, pid: u32) -> Option<f64> {
         let key = pid.to_string();
-        self.scores.iter().find(|s| s.entity_key == key).map(|s| s.score)
+        self.scores
+            .iter()
+            .find(|s| s.entity_key == key)
+            .map(|s| s.score)
     }
 }
 
@@ -136,7 +143,12 @@ mod tests {
 
     use crate::event::{Entity, Finding, ForensicEvent, Protocol, Severity};
 
-    fn proc_event(pid: u32, finding: Finding, severity: Severity, confidence: f64) -> ForensicEvent {
+    fn proc_event(
+        pid: u32,
+        finding: Finding,
+        severity: Severity,
+        confidence: f64,
+    ) -> ForensicEvent {
         ForensicEvent::builder()
             .source_walker("test_walker")
             .entity(Entity::Process {
@@ -150,7 +162,13 @@ mod tests {
             .build()
     }
 
-    fn conn_event(src_port: u16, dst_port: u16, finding: Finding, severity: Severity, confidence: f64) -> ForensicEvent {
+    fn conn_event(
+        src_port: u16,
+        dst_port: u16,
+        finding: Finding,
+        severity: Severity,
+        confidence: f64,
+    ) -> ForensicEvent {
         ForensicEvent::builder()
             .source_walker("test_walker")
             .entity(Entity::Connection {
@@ -174,9 +192,12 @@ mod tests {
     #[test]
     fn single_high_event_scores_correctly() {
         // High = 5.0 weight, confidence 0.8 → 5.0 × 0.8 = 4.0
-        let engine = ScoringEngine::new(vec![
-            proc_event(100, Finding::ProcessHollowing, Severity::High, 0.8),
-        ]);
+        let engine = ScoringEngine::new(vec![proc_event(
+            100,
+            Finding::ProcessHollowing,
+            Severity::High,
+            0.8,
+        )]);
         let scores = engine.score_all();
         assert_eq!(scores.len(), 1);
         let diff = (scores[0].score - 4.0).abs();
@@ -194,15 +215,22 @@ mod tests {
         assert_eq!(scores.len(), 1);
         let expected = 5.0 * 0.5 + 2.0 * 1.0;
         let diff = (scores[0].score - expected).abs();
-        assert!(diff < 1e-9, "expected {expected} but got {}", scores[0].score);
+        assert!(
+            diff < 1e-9,
+            "expected {expected} but got {}",
+            scores[0].score
+        );
     }
 
     #[test]
     fn critical_event_scores_highest() {
         // Critical/1.0 → 10.0 × 1.0 = 10.0
-        let engine = ScoringEngine::new(vec![
-            proc_event(1, Finding::ProcessHollowing, Severity::Critical, 1.0),
-        ]);
+        let engine = ScoringEngine::new(vec![proc_event(
+            1,
+            Finding::ProcessHollowing,
+            Severity::Critical,
+            1.0,
+        )]);
         let scores = engine.score_all();
         assert_eq!(scores.len(), 1);
         let diff = (scores[0].score - 10.0).abs();
@@ -226,14 +254,24 @@ mod tests {
     #[test]
     fn score_all_sorted_descending() {
         let engine = ScoringEngine::new(vec![
-            proc_event(1, Finding::DefenseEvasion, Severity::Info, 1.0),    // 0.5
+            proc_event(1, Finding::DefenseEvasion, Severity::Info, 1.0), // 0.5
             proc_event(2, Finding::ProcessHollowing, Severity::Critical, 1.0), // 10.0
-            proc_event(3, Finding::CredentialAccess, Severity::Medium, 1.0),  // 2.0
+            proc_event(3, Finding::CredentialAccess, Severity::Medium, 1.0), // 2.0
         ]);
         let scores = engine.score_all();
         assert_eq!(scores.len(), 3);
-        assert!(scores[0].score >= scores[1].score, "not sorted descending: {} >= {}", scores[0].score, scores[1].score);
-        assert!(scores[1].score >= scores[2].score, "not sorted descending: {} >= {}", scores[1].score, scores[2].score);
+        assert!(
+            scores[0].score >= scores[1].score,
+            "not sorted descending: {} >= {}",
+            scores[0].score,
+            scores[1].score
+        );
+        assert!(
+            scores[1].score >= scores[2].score,
+            "not sorted descending: {} >= {}",
+            scores[1].score,
+            scores[2].score
+        );
     }
 
     #[test]
@@ -251,19 +289,27 @@ mod tests {
 
     #[test]
     fn score_for_pid_returns_none_for_unknown() {
-        let engine = ScoringEngine::new(vec![
-            proc_event(1, Finding::DefenseEvasion, Severity::Info, 1.0),
-        ]);
+        let engine = ScoringEngine::new(vec![proc_event(
+            1,
+            Finding::DefenseEvasion,
+            Severity::Info,
+            1.0,
+        )]);
         assert!(engine.score_for_pid(9999).is_none());
     }
 
     #[test]
     fn score_for_pid_returns_correct_score() {
         // pid 42: High/0.5 = 2.5
-        let engine = ScoringEngine::new(vec![
-            proc_event(42, Finding::DefenseEvasion, Severity::High, 0.5),
-        ]);
-        let score = engine.score_for_pid(42).expect("pid 42 should have a score");
+        let engine = ScoringEngine::new(vec![proc_event(
+            42,
+            Finding::DefenseEvasion,
+            Severity::High,
+            0.5,
+        )]);
+        let score = engine
+            .score_for_pid(42)
+            .expect("pid 42 should have a score");
         let diff = (score - 2.5).abs();
         assert!(diff < 1e-9, "expected 2.5 but got {score}");
     }
@@ -279,6 +325,9 @@ mod tests {
         assert_eq!(scores.len(), 2);
         let keys: Vec<&str> = scores.iter().map(|s| s.entity_key.as_str()).collect();
         assert!(keys.contains(&"7"), "expected key '7', got: {keys:?}");
-        assert!(keys.iter().any(|k| k.contains("->")), "expected a connection key with '->'");
+        assert!(
+            keys.iter().any(|k| k.contains("->")),
+            "expected a connection key with '->'"
+        );
     }
 }

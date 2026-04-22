@@ -48,7 +48,14 @@ pub fn walk_mutants<P: PhysicalMemoryProvider>(
         .unwrap_or(0x30) as u64;
 
     let mut results = Vec::new();
-    walk_directory_recursive(reader, root_dir_addr, ob_type_table_addr, body_offset, 0, &mut results)?;
+    walk_directory_recursive(
+        reader,
+        root_dir_addr,
+        ob_type_table_addr,
+        body_offset,
+        0,
+        &mut results,
+    )?;
     Ok(results)
 }
 
@@ -83,7 +90,14 @@ fn walk_directory_recursive<P: PhysicalMemoryProvider>(
             }
         } else if type_name == "Directory" {
             // Recurse into subdirectory
-            let _ = walk_directory_recursive(reader, body_addr, ob_type_table_addr, body_offset, depth + 1, results);
+            let _ = walk_directory_recursive(
+                reader,
+                body_addr,
+                ob_type_table_addr,
+                body_offset,
+                depth + 1,
+                results,
+            );
         }
     }
     Ok(())
@@ -257,10 +271,10 @@ mod tests {
 
         let mut obj_page = vec![0u8; 4096];
         // _OBJECT_HEADER_NAME_INFO.Name (_UNICODE_STRING) at +0x10
-        obj_page[0x10..0x12].copy_from_slice(&len.to_le_bytes());   // Length
-        obj_page[0x12..0x14].copy_from_slice(&len.to_le_bytes());   // MaximumLength
+        obj_page[0x10..0x12].copy_from_slice(&len.to_le_bytes()); // Length
+        obj_page[0x12..0x14].copy_from_slice(&len.to_le_bytes()); // MaximumLength
         obj_page[0x18..0x20].copy_from_slice(&str_vaddr.to_le_bytes()); // Buffer
-        // _OBJECT_HEADER at +0x20: InfoMask at +0x1a = 0x02 (NAME_INFO present)
+                                                                        // _OBJECT_HEADER at +0x20: InfoMask at +0x1a = 0x02 (NAME_INFO present)
         obj_page[0x20 + 0x1a] = 0x02;
         // TypeIndex at _OBJECT_HEADER + 0x18
         obj_page[0x20 + 0x18] = type_index;
@@ -311,8 +325,8 @@ mod tests {
     /// Build an empty root directory pointed to by `ObpRootDirectoryObject`.
     fn build_empty_root() -> PageTableBuilder {
         // OBP_ROOT_DIR_OBJ_VADDR symbol holds a pointer to ROOT_DIR_VADDR
-        const SYM_VADDR:  u64 = OBP_ROOT_DIR_OBJ_VADDR;
-        const SYM_PADDR:  u64 = 0x00B0_0000;
+        const SYM_VADDR: u64 = OBP_ROOT_DIR_OBJ_VADDR;
+        const SYM_PADDR: u64 = 0x00B0_0000;
         const ROOT_VADDR: u64 = 0xFFFF_8000_0040_0000;
         const ROOT_PADDR: u64 = 0x0040_0000;
 
@@ -345,20 +359,20 @@ mod tests {
         tid: u64,
         abandoned: bool,
     ) -> PageTableBuilder {
-        const SYM_VADDR:       u64 = OBP_ROOT_DIR_OBJ_VADDR;
-        const SYM_PADDR:       u64 = 0x00B1_0000;
+        const SYM_VADDR: u64 = OBP_ROOT_DIR_OBJ_VADDR;
+        const SYM_PADDR: u64 = 0x00B1_0000;
         const OBJ_TABLE_VADDR: u64 = OB_TYPE_INDEX_TABLE_VADDR;
         const OBJ_TABLE_PADDR: u64 = 0x00B2_0000;
-        const MTYPE_VADDR:     u64 = 0xFFFF_8000_0050_0000;
-        const MTYPE_PADDR:     u64 = 0x0050_0000;
-        const ROOT_VADDR:      u64 = 0xFFFF_8000_0051_0000;
-        const ROOT_PADDR:      u64 = 0x0051_0000;
-        const OBJ_VADDR:       u64 = 0xFFFF_8000_0052_0000;
-        const OBJ_PADDR:       u64 = 0x0052_0000;
-        const ENTRY_VADDR:     u64 = 0xFFFF_8000_0053_0000;
-        const ENTRY_PADDR:     u64 = 0x0053_0000;
-        const ETHREAD_VADDR:   u64 = 0xFFFF_8000_0054_0000;
-        const ETHREAD_PADDR:   u64 = 0x0054_0000;
+        const MTYPE_VADDR: u64 = 0xFFFF_8000_0050_0000;
+        const MTYPE_PADDR: u64 = 0x0050_0000;
+        const ROOT_VADDR: u64 = 0xFFFF_8000_0051_0000;
+        const ROOT_PADDR: u64 = 0x0051_0000;
+        const OBJ_VADDR: u64 = 0xFFFF_8000_0052_0000;
+        const OBJ_PADDR: u64 = 0x0052_0000;
+        const ENTRY_VADDR: u64 = 0xFFFF_8000_0053_0000;
+        const ENTRY_PADDR: u64 = 0x0053_0000;
+        const ETHREAD_VADDR: u64 = 0xFFFF_8000_0054_0000;
+        const ETHREAD_PADDR: u64 = 0x0054_0000;
 
         // String for "Mutant" lives at offset 0x100 within MTYPE page
         let mtype_str_vaddr = MTYPE_VADDR + 0x100;
@@ -501,7 +515,14 @@ mod tests {
     fn walk_directory_recursive_depth_limit_returns_ok() {
         let reader = make_test_reader(PageTableBuilder::new());
         let mut results = Vec::new();
-        let result = walk_directory_recursive(&reader, 0xFFFF_DEAD_0000_0000, 0, 0x30, MAX_DIR_DEPTH, &mut results);
+        let result = walk_directory_recursive(
+            &reader,
+            0xFFFF_DEAD_0000_0000,
+            0,
+            0x30,
+            MAX_DIR_DEPTH,
+            &mut results,
+        );
         assert!(result.is_ok());
         assert!(results.is_empty());
     }
@@ -538,8 +559,8 @@ mod tests {
         // ObTypeIndexTable slot 1 → TYPE_VADDR; _OBJECT_TYPE.Name has Length=0
         const TABLE_VADDR: u64 = OB_TYPE_INDEX_TABLE_VADDR;
         const TABLE_PADDR: u64 = 0x00C0_0000;
-        const TYPE_VADDR:  u64 = 0xFFFF_8000_0060_0000;
-        const TYPE_PADDR:  u64 = 0x0060_0000;
+        const TYPE_VADDR: u64 = 0xFFFF_8000_0060_0000;
+        const TYPE_PADDR: u64 = 0x0060_0000;
 
         let isf = make_isf();
         let resolver = IsfResolver::from_value(&isf).unwrap();

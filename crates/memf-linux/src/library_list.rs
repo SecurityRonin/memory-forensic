@@ -525,9 +525,18 @@ mod tests {
     #[test]
     fn classify_library_exact_tmp_dir() {
         // Covers line 59: clean == "/tmp" (exact match without trailing slash)
-        assert!(classify_library("/tmp"), "exact /tmp path must be suspicious");
-        assert!(classify_library("/dev/shm"), "/dev/shm exact match must be suspicious");
-        assert!(classify_library("/var/tmp"), "/var/tmp exact match must be suspicious");
+        assert!(
+            classify_library("/tmp"),
+            "exact /tmp path must be suspicious"
+        );
+        assert!(
+            classify_library("/dev/shm"),
+            "/dev/shm exact match must be suspicious"
+        );
+        assert!(
+            classify_library("/var/tmp"),
+            "/var/tmp exact match must be suspicious"
+        );
     }
 
     #[test]
@@ -537,7 +546,10 @@ mod tests {
         // normal hidden-file path which the existing tests already cover.
         // This test focuses on the fallthrough: basename doesn't start with '.'.
         // A path like "/usr/lib/normallib.so" falls through all checks → benign.
-        assert!(!classify_library("/usr/lib/normallib.so"), "normal .so must be benign");
+        assert!(
+            !classify_library("/usr/lib/normallib.so"),
+            "normal .so must be benign"
+        );
     }
 
     #[test]
@@ -550,7 +562,7 @@ mod tests {
 
         // task_struct
         data[0..4].copy_from_slice(&10u32.to_le_bytes()); // pid
-        data[32..36].copy_from_slice(b"cycl");            // comm
+        data[32..36].copy_from_slice(b"cycl"); // comm
         let mm_addr = vaddr + 0x200;
         data[48..56].copy_from_slice(&mm_addr.to_le_bytes()); // mm
 
@@ -567,7 +579,10 @@ mod tests {
         let reader = make_test_reader(&data, vaddr, paddr);
         // Should not hang or overflow; cycle detection breaks the loop.
         let libs = walk_library_list(&reader, vaddr, 10, "cycl").unwrap();
-        assert!(libs.is_empty(), "cycle VMA with null vm_file should yield no libraries");
+        assert!(
+            libs.is_empty(),
+            "cycle VMA with null vm_file should yield no libraries"
+        );
     }
 
     #[test]
@@ -580,7 +595,7 @@ mod tests {
 
         // task_struct
         data[0..4].copy_from_slice(&20u32.to_le_bytes()); // pid
-        data[32..37].copy_from_slice(b"proc\0");          // comm
+        data[32..37].copy_from_slice(b"proc\0"); // comm
         let mm_addr = vaddr + 0x100;
         data[48..56].copy_from_slice(&mm_addr.to_le_bytes()); // mm
 
@@ -594,14 +609,14 @@ mod tests {
         let vma2_addr = vaddr + 0x300;
         data[0x200..0x208].copy_from_slice(&0x7F00_2000u64.to_le_bytes()); // vm_start
         data[0x208..0x210].copy_from_slice(&0x7F00_4000u64.to_le_bytes()); // vm_end
-        data[0x210..0x218].copy_from_slice(&vma2_addr.to_le_bytes());        // vm_next
-        data[0x228..0x230].copy_from_slice(&file_addr.to_le_bytes());        // vm_file
+        data[0x210..0x218].copy_from_slice(&vma2_addr.to_le_bytes()); // vm_next
+        data[0x228..0x230].copy_from_slice(&file_addr.to_le_bytes()); // vm_file
 
         // VMA2 at +0x300: vm_start=0x7F00_0000 (lower than VMA1), vm_next → NULL
         data[0x300..0x308].copy_from_slice(&0x7F00_0000u64.to_le_bytes()); // vm_start (lower!)
         data[0x308..0x310].copy_from_slice(&0x7F00_2000u64.to_le_bytes()); // vm_end
-        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes());             // vm_next = NULL
-        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes());        // vm_file (same lib)
+        data[0x310..0x318].copy_from_slice(&0u64.to_le_bytes()); // vm_next = NULL
+        data[0x328..0x330].copy_from_slice(&file_addr.to_le_bytes()); // vm_file (same lib)
 
         // file at +0x600: dentry at +0x700
         let dentry_addr = vaddr + 0x700;
@@ -620,7 +635,10 @@ mod tests {
 
         assert_eq!(libs.len(), 1, "single deduplicated library expected");
         // base_addr should be the minimum: 0x7F00_0000 (from VMA2)
-        assert_eq!(libs[0].base_addr, 0x7F00_0000, "base_addr must be the minimum vm_start");
+        assert_eq!(
+            libs[0].base_addr, 0x7F00_0000,
+            "base_addr must be the minimum vm_start"
+        );
         // size = (0x7F00_4000 - 0x7F00_2000) + (0x7F00_2000 - 0x7F00_0000) = 0x4000
         assert_eq!(libs[0].size, 0x4000);
     }
@@ -655,7 +673,10 @@ mod tests {
 
         let reader = make_test_reader(&data, vaddr, paddr);
         let libs = walk_library_list(&reader, vaddr, 30, "null").unwrap();
-        assert!(libs.is_empty(), "null dentry_ptr → read_vma_file_path returns None → no library");
+        assert!(
+            libs.is_empty(),
+            "null dentry_ptr → read_vma_file_path returns None → no library"
+        );
     }
 
     // --- read_vma_file_path: name_ptr == 0 → returns None → VMA skipped ---
@@ -691,7 +712,10 @@ mod tests {
 
         let reader = make_test_reader(&data, vaddr, paddr);
         let libs = walk_library_list(&reader, vaddr, 31, "npnl").unwrap();
-        assert!(libs.is_empty(), "name_ptr == 0 → read_vma_file_path returns None → no library");
+        assert!(
+            libs.is_empty(),
+            "name_ptr == 0 → read_vma_file_path returns None → no library"
+        );
     }
 
     // --- read_vma_file_path: name is empty string → returns None → VMA skipped ---
@@ -728,7 +752,10 @@ mod tests {
         let reader = make_test_reader(&data, vaddr, paddr);
         let libs = walk_library_list(&reader, vaddr, 32, "empt").unwrap();
         // Empty name from read_string → read_vma_file_path returns None → no library
-        assert!(libs.is_empty(), "empty name → read_vma_file_path returns None");
+        assert!(
+            libs.is_empty(),
+            "empty name → read_vma_file_path returns None"
+        );
     }
 
     // --- SharedLibraryInfo: Debug, Clone, Serialize ---
@@ -834,7 +861,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_library_list(&reader, vaddr, 9, "proc");
-        assert!(result.is_err(), "missing file.f_path field must return an error");
+        assert!(
+            result.is_err(),
+            "missing file.f_path field must return an error"
+        );
     }
 
     // --- walk_library_list: path.dentry field missing → error ---
@@ -874,7 +904,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_library_list(&reader, vaddr, 10, "proc");
-        assert!(result.is_err(), "missing path.dentry field must return an error");
+        assert!(
+            result.is_err(),
+            "missing path.dentry field must return an error"
+        );
     }
 
     // --- walk_library_list: dentry.d_name field missing → error ---
@@ -914,7 +947,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_library_list(&reader, vaddr, 11, "proc");
-        assert!(result.is_err(), "missing dentry.d_name field must return an error");
+        assert!(
+            result.is_err(),
+            "missing dentry.d_name field must return an error"
+        );
     }
 
     // --- walk_library_list: qstr.name field missing → error ---
@@ -954,7 +990,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_library_list(&reader, vaddr, 12, "proc");
-        assert!(result.is_err(), "missing qstr.name field must return an error");
+        assert!(
+            result.is_err(),
+            "missing qstr.name field must return an error"
+        );
     }
 
     // --- classify_library: path without any '/' → basename = whole path ---
@@ -964,8 +1003,14 @@ mod tests {
     fn classify_library_no_slash_path() {
         // A path without '/' — basename is the whole string.
         // "libc.so.6" does not start with '.' and contains ".so." → benign.
-        assert!(!classify_library("libc.so.6"), "bare name with .so. must be benign");
+        assert!(
+            !classify_library("libc.so.6"),
+            "bare name with .so. must be benign"
+        );
         // ".hidden.so.1" starts with '.' → suspicious.
-        assert!(classify_library(".hidden.so.1"), "hidden bare name must be suspicious");
+        assert!(
+            classify_library(".hidden.so.1"),
+            "hidden bare name must be suspicious"
+        );
     }
 }

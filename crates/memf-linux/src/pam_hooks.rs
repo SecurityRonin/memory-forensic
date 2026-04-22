@@ -354,7 +354,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_pam_hooks(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "kernel thread with mm==NULL should produce no PAM findings");
+        assert!(
+            result.is_empty(),
+            "kernel thread with mm==NULL should produce no PAM findings"
+        );
     }
 
     #[test]
@@ -514,11 +517,21 @@ mod tests {
             ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_pam_hooks(&reader).expect("walk should not error");
-        assert_eq!(result.len(), 1, "should detect exactly one suspicious PAM entry");
+        assert_eq!(
+            result.len(),
+            1,
+            "should detect exactly one suspicious PAM entry"
+        );
         let entry = &result[0];
         assert_eq!(entry.pid, 5000);
-        assert!(entry.is_suspicious, "non-system PAM path must be suspicious");
-        assert!(!entry.is_system_path, "path must not be considered a system path");
+        assert!(
+            entry.is_suspicious,
+            "non-system PAM path must be suspicious"
+        );
+        assert!(
+            !entry.is_system_path,
+            "path must not be considered a system path"
+        );
         assert!(
             entry.library_path.contains("pam"),
             "library_path should contain 'pam'"
@@ -597,6 +610,9 @@ mod tests {
             ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_pam_hooks(&reader).expect("walk should not error");
-        assert!(result.is_empty(), "anonymous VMA (vm_file==0) should produce no PAM findings");
+        assert!(
+            result.is_empty(),
+            "anonymous VMA (vm_file==0) should produce no PAM findings"
+        );
     }
 }

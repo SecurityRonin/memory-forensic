@@ -510,12 +510,18 @@ mod tests {
 
     #[test]
     fn finding_process_hollowing_display_name() {
-        assert_eq!(Finding::ProcessHollowing.display_name(), "Process Hollowing");
+        assert_eq!(
+            Finding::ProcessHollowing.display_name(),
+            "Process Hollowing"
+        );
     }
 
     #[test]
     fn finding_network_beaconing_display_name() {
-        assert_eq!(Finding::NetworkBeaconing.display_name(), "Network Beaconing");
+        assert_eq!(
+            Finding::NetworkBeaconing.display_name(),
+            "Network Beaconing"
+        );
     }
 
     #[test]
@@ -667,8 +673,7 @@ mod tests {
         assert!(!json.is_empty());
 
         // Verify it's valid JSON by parsing it back
-        let value: serde_json::Value =
-            serde_json::from_str(&json).expect("should be valid JSON");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
         assert!(value.is_object());
     }
 

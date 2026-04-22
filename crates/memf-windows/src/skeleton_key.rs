@@ -347,15 +347,18 @@ mod tests {
         pid: u64,
         cr3_val: u64,
         peb_val: u64,
-    ) -> (ObjectReader<memf_core::test_builders::SyntheticPhysMem>, u64) {
+    ) -> (
+        ObjectReader<memf_core::test_builders::SyntheticPhysMem>,
+        u64,
+    ) {
         use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
         // PsActiveProcessHead symbol vaddr (from preset)
-        let head_vaddr: u64  = 0xFFFFF805_5A400000;
-        let head_paddr: u64  = 0x0010_0000;
+        let head_vaddr: u64 = 0xFFFFF805_5A400000;
+        let head_paddr: u64 = 0x0010_0000;
         let eproc_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let eproc_paddr: u64 = 0x0020_0000;
 
@@ -410,7 +413,10 @@ mod tests {
     fn walk_skeleton_key_lsass_zero_cr3_returns_empty() {
         let (reader, _) = make_reader_with_process("lsass.exe", 668, 0, 0x7FF0_0000);
         let results = walk_skeleton_key(&reader).unwrap();
-        assert!(results.is_empty(), "lsass.exe with cr3=0 → empty indicators");
+        assert!(
+            results.is_empty(),
+            "lsass.exe with cr3=0 → empty indicators"
+        );
     }
 
     /// lsass.exe found with non-zero cr3 but peb_addr == 0 → returns empty.
@@ -419,7 +425,10 @@ mod tests {
     fn walk_skeleton_key_lsass_zero_peb_returns_empty() {
         let (reader, _) = make_reader_with_process("lsass.exe", 668, 0x1AB000, 0);
         let results = walk_skeleton_key(&reader).unwrap();
-        assert!(results.is_empty(), "lsass.exe with peb_addr=0 → empty indicators");
+        assert!(
+            results.is_empty(),
+            "lsass.exe with peb_addr=0 → empty indicators"
+        );
     }
 
     /// lsass.exe found with valid cr3 and peb_addr, but DLL walk fails
@@ -429,7 +438,10 @@ mod tests {
         // peb_addr is non-zero but points to unmapped memory → walk_dlls fails.
         let (reader, _) = make_reader_with_process("lsass.exe", 668, 0x1AB000, 0xFFFF_DEAD_0000);
         let results = walk_skeleton_key(&reader).unwrap();
-        assert!(results.is_empty(), "lsass.exe with unmapped PEB → empty indicators");
+        assert!(
+            results.is_empty(),
+            "lsass.exe with unmapped PEB → empty indicators"
+        );
     }
 
     // -- find_nop_sled tests -------------------------------------------------
@@ -456,7 +468,9 @@ mod tests {
     #[test]
     fn find_nop_sled_returns_first_occurrence() {
         // First sled starts at index 0 (5 NOPs), second starts at index 8.
-        let data = [0x90u8, 0x90, 0x90, 0x90, 0x90, 0x48, 0x89, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90];
+        let data = [
+            0x90u8, 0x90, 0x90, 0x90, 0x90, 0x48, 0x89, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90,
+        ];
         assert_eq!(find_nop_sled(&data, 5), Some(0));
     }
 
@@ -544,12 +558,16 @@ mod tests {
 
     #[test]
     fn suspicious_path_systemroot_benign() {
-        assert!(!is_suspicious_dll_path("\\SystemRoot\\System32\\msv1_0.dll"));
+        assert!(!is_suspicious_dll_path(
+            "\\SystemRoot\\System32\\msv1_0.dll"
+        ));
     }
 
     #[test]
     fn suspicious_path_device_prefix_benign() {
-        assert!(!is_suspicious_dll_path("\\??\\C:\\Windows\\System32\\lsasrv.dll"));
+        assert!(!is_suspicious_dll_path(
+            "\\??\\C:\\Windows\\System32\\lsasrv.dll"
+        ));
     }
 
     #[test]
@@ -559,7 +577,9 @@ mod tests {
 
     #[test]
     fn suspicious_path_appdata_suspicious() {
-        assert!(is_suspicious_dll_path("C:\\Users\\evil\\AppData\\Roaming\\msv1_0.dll"));
+        assert!(is_suspicious_dll_path(
+            "C:\\Users\\evil\\AppData\\Roaming\\msv1_0.dll"
+        ));
     }
 
     #[test]
@@ -650,8 +670,12 @@ mod tests {
     #[test]
     fn suspicious_path_comprehensive() {
         assert!(!is_suspicious_dll_path("C:\\Windows\\System32\\msv1_0.dll"));
-        assert!(!is_suspicious_dll_path("\\SystemRoot\\System32\\lsasrv.dll"));
-        assert!(!is_suspicious_dll_path("\\??\\C:\\Windows\\System32\\kdcsvc.dll"));
+        assert!(!is_suspicious_dll_path(
+            "\\SystemRoot\\System32\\lsasrv.dll"
+        ));
+        assert!(!is_suspicious_dll_path(
+            "\\??\\C:\\Windows\\System32\\kdcsvc.dll"
+        ));
         assert!(!is_suspicious_dll_path(""));
         assert!(is_suspicious_dll_path("C:\\evil\\msv1_0.dll"));
         assert!(is_suspicious_dll_path("C:\\Users\\attacker\\cryptdll.dll"));

@@ -462,14 +462,14 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        let tasks_offset: u64   = 0x10;
-        let parent_offset: u64  = 0x40;
-        let cred_offset: u64    = 0x48;
-        let mm_offset: u64      = 0x50;
-        let signal_offset: u64  = 0x58;
+        let tasks_offset: u64 = 0x10;
+        let parent_offset: u64 = 0x40;
+        let cred_offset: u64 = 0x48;
+        let mm_offset: u64 = 0x50;
+        let signal_offset: u64 = 0x58;
 
-        let sym_vaddr: u64    = 0xFFFF_8800_00B0_0000;
-        let sym_paddr: u64    = 0x00B0_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_00B0_0000;
+        let sym_paddr: u64 = 0x00B0_0000;
         let parent_vaddr: u64 = 0xFFFF_8800_00B1_0000;
         let parent_paddr: u64 = 0x00B1_0000;
 
@@ -516,10 +516,16 @@ mod tests {
         let result = walk_psaux(&reader).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].pid, 42);
-        assert_eq!(result[0].ppid, 1, "ppid should be read from real_parent.pid");
+        assert_eq!(
+            result[0].ppid, 1,
+            "ppid should be read from real_parent.pid"
+        );
         assert_eq!(result[0].uid, 0, "cred=null → uid defaults to 0");
         assert_eq!(result[0].vsize, 0, "mm=null → vsize defaults to 0");
-        assert!(result[0].tty.is_empty(), "signal=null → tty defaults to empty");
+        assert!(
+            result[0].tty.is_empty(),
+            "signal=null → tty defaults to empty"
+        );
     }
 
     #[test]
@@ -529,54 +535,51 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        let tasks_offset:    u64 = 0x10;
-        let pid_offset:      u64 = 0x00;
-        let comm_offset:     u64 = 0x20;
-        let state_offset:    u64 = 0x08;
+        let tasks_offset: u64 = 0x10;
+        let pid_offset: u64 = 0x00;
+        let comm_offset: u64 = 0x20;
+        let state_offset: u64 = 0x08;
         let real_parent_off: u64 = 0x40;
-        let cred_offset:     u64 = 0x48;
-        let mm_offset:       u64 = 0x50;
-        let signal_offset:   u64 = 0x58;
+        let cred_offset: u64 = 0x48;
+        let mm_offset: u64 = 0x50;
+        let signal_offset: u64 = 0x58;
         let static_prio_off: u64 = 0x60;
-        let flags_offset:    u64 = 0x64;
+        let flags_offset: u64 = 0x64;
 
-        let cred_uid_off:    u64 = 0x04;
-        let cred_gid_off:    u64 = 0x08;
-        let total_vm_off:    u64 = 0x00;
-        let rss_stat_off:    u64 = 0x08;
-        let sig_tty_off:     u64 = 0x00;
-        let tty_name_off:    u64 = 0x00;
+        let cred_uid_off: u64 = 0x04;
+        let cred_gid_off: u64 = 0x08;
+        let total_vm_off: u64 = 0x00;
+        let rss_stat_off: u64 = 0x08;
+        let sig_tty_off: u64 = 0x00;
+        let tty_name_off: u64 = 0x00;
 
         let init_vaddr: u64 = 0xFFFF_8800_00E0_0000;
         let init_paddr: u64 = 0x00E0_0000;
-        let t2_vaddr:   u64 = 0xFFFF_8800_00E1_0000;
-        let t2_paddr:   u64 = 0x00E1_0000;
+        let t2_vaddr: u64 = 0xFFFF_8800_00E1_0000;
+        let t2_paddr: u64 = 0x00E1_0000;
         let cred_vaddr: u64 = 0xFFFF_8800_00E2_0000;
         let cred_paddr: u64 = 0x00E2_0000;
-        let mm_vaddr:   u64 = 0xFFFF_8800_00E3_0000;
-        let mm_paddr:   u64 = 0x00E3_0000;
-        let sig_vaddr:  u64 = 0xFFFF_8800_00E4_0000;
-        let sig_paddr:  u64 = 0x00E4_0000;
-        let tty_vaddr:  u64 = 0xFFFF_8800_00E5_0000;
-        let tty_paddr:  u64 = 0x00E5_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00E3_0000;
+        let mm_paddr: u64 = 0x00E3_0000;
+        let sig_vaddr: u64 = 0xFFFF_8800_00E4_0000;
+        let sig_paddr: u64 = 0x00E4_0000;
+        let tty_vaddr: u64 = 0xFFFF_8800_00E5_0000;
+        let tty_paddr: u64 = 0x00E5_0000;
 
         let mut init_page = [0u8; 4096];
         let t2_list_node = t2_vaddr + tasks_offset;
         init_page[tasks_offset as usize..tasks_offset as usize + 8]
             .copy_from_slice(&t2_list_node.to_le_bytes());
-        init_page[comm_offset as usize..comm_offset as usize + 7]
-            .copy_from_slice(b"swapper");
+        init_page[comm_offset as usize..comm_offset as usize + 7].copy_from_slice(b"swapper");
 
         let mut t2_page = [0u8; 4096];
-        t2_page[pid_offset as usize..pid_offset as usize + 4]
-            .copy_from_slice(&42u32.to_le_bytes());
+        t2_page[pid_offset as usize..pid_offset as usize + 4].copy_from_slice(&42u32.to_le_bytes());
         t2_page[state_offset as usize..state_offset as usize + 4]
             .copy_from_slice(&1u32.to_le_bytes());
         let init_list_node = init_vaddr + tasks_offset;
         t2_page[tasks_offset as usize..tasks_offset as usize + 8]
             .copy_from_slice(&init_list_node.to_le_bytes());
-        t2_page[comm_offset as usize..comm_offset as usize + 4]
-            .copy_from_slice(b"bash");
+        t2_page[comm_offset as usize..comm_offset as usize + 4].copy_from_slice(b"bash");
         t2_page[real_parent_off as usize..real_parent_off as usize + 8]
             .copy_from_slice(&init_vaddr.to_le_bytes());
         t2_page[cred_offset as usize..cred_offset as usize + 8]
@@ -605,8 +608,7 @@ mod tests {
             .copy_from_slice(&tty_vaddr.to_le_bytes());
 
         let mut tty_page = [0u8; 4096];
-        tty_page[tty_name_off as usize..tty_name_off as usize + 6]
-            .copy_from_slice(b"pts/0\0");
+        tty_page[tty_name_off as usize..tty_name_off as usize + 6].copy_from_slice(b"pts/0\0");
 
         let isf = IsfBuilder::new()
             .add_symbol("init_task", init_vaddr)
@@ -704,7 +706,11 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_psaux(&reader).unwrap();
-        assert_eq!(result.len(), 1, "only init_task should appear (self-pointing list)");
+        assert_eq!(
+            result.len(),
+            1,
+            "only init_task should appear (self-pointing list)"
+        );
         assert_eq!(result[0].pid, 0);
     }
 }

@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::Wow64AnomalyInfo};
+use crate::{types::Wow64AnomalyInfo, Result};
 
 /// Scan all WoW64 (32-bit) processes for Heaven's Gate and syscall-stub
 /// tampering anomalies.

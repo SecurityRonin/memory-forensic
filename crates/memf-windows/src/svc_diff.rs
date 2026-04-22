@@ -369,9 +369,7 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .build_json();
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -511,9 +509,7 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .build_json();
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -656,8 +652,8 @@ mod tests {
     #[test]
     fn walk_svc_diff_nonzero_hive_unreadable_returns_empty() {
         let reader = make_reader(); // no pages mapped
-        // hive_addr non-zero but all reads fail → enum_direct_subkeys returns []
-        // → scm_services empty → result empty
+                                    // hive_addr non-zero but all reads fail → enum_direct_subkeys returns []
+                                    // → scm_services empty → result empty
         let result = walk_svc_diff(&reader, 0, 0xFFFF_8000_BEEF_0000).unwrap();
         assert!(result.is_empty());
     }
@@ -826,9 +822,11 @@ mod tests {
         let n = 4usize;
         cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
         // stable_count = 1
-        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
+        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
         // list_cell = 0x80
-        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
+        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4]
+            .copy_from_slice(&0x80u32.to_le_bytes());
 
         // List cell at 0x80 (lh, 8-byte entries):
         let lc = 0x80usize;
@@ -843,7 +841,8 @@ mod tests {
         let cn = cc + 4;
         cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
         let ccs_name = b"CurrentControlSet";
-        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(ccs_name.len() as u16).to_le_bytes());
+        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2]
+            .copy_from_slice(&(ccs_name.len() as u16).to_le_bytes());
         cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + ccs_name.len()].copy_from_slice(ccs_name);
         // stable_count = 0 (already zero-initialized) → Services not found
 
@@ -882,8 +881,10 @@ mod tests {
         cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
         let n = 4usize;
         cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
-        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
+        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4]
+            .copy_from_slice(&0x80u32.to_le_bytes());
 
         // lh list at 0x80:
         let lc = 0x80usize;
@@ -898,7 +899,8 @@ mod tests {
         let cn = cc + 4;
         cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
         let svc_name = b"Dnscache";
-        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
+        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2]
+            .copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
         cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
 
         let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
@@ -1014,8 +1016,10 @@ mod tests {
         cell_page[0..4].copy_from_slice(&(-0x400i32).to_le_bytes());
         let n = 4usize;
         cell_page[n..n + 2].copy_from_slice(&NK_SIG.to_le_bytes());
-        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
-        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4].copy_from_slice(&0x80u32.to_le_bytes());
+        cell_page[n + NK_STABLE_COUNT..n + NK_STABLE_COUNT + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        cell_page[n + NK_STABLE_LIST..n + NK_STABLE_LIST + 4]
+            .copy_from_slice(&0x80u32.to_le_bytes());
 
         // li list at 0x80:
         let lc = 0x80usize;
@@ -1030,7 +1034,8 @@ mod tests {
         let cn = cc + 4;
         cell_page[cn..cn + 2].copy_from_slice(&NK_SIG.to_le_bytes());
         let svc_name = b"Spooler";
-        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2].copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
+        cell_page[cn + NK_NAME_LEN..cn + NK_NAME_LEN + 2]
+            .copy_from_slice(&(svc_name.len() as u16).to_le_bytes());
         cell_page[cn + NK_NAME_DATA..cn + NK_NAME_DATA + svc_name.len()].copy_from_slice(svc_name);
 
         let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
@@ -1087,7 +1092,9 @@ mod tests {
     // ── walk_svc_diff with a real SCM service list ─────────────────────
 
     /// ISF builder that includes _SERVICE_RECORD, _LIST_ENTRY, _UNICODE_STRING.
-    fn make_svc_diff_reader(ptb: PageTableBuilder) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+    fn make_svc_diff_reader(
+        ptb: PageTableBuilder,
+    ) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         // _SERVICE_RECORD field offsets (matching service.rs tests).
         const SR_SERVICE_LIST: u64 = 0x00;
         const SR_SERVICE_NAME: u64 = 0x10;
@@ -1101,22 +1108,47 @@ mod tests {
 
         let isf = IsfBuilder::new()
             .add_struct("_SERVICE_RECORD", 0x80)
-            .add_field("_SERVICE_RECORD", "ServiceList",   SR_SERVICE_LIST,   "_LIST_ENTRY")
-            .add_field("_SERVICE_RECORD", "ServiceName",   SR_SERVICE_NAME,   "pointer")
-            .add_field("_SERVICE_RECORD", "DisplayName",   SR_DISPLAY_NAME,   "pointer")
-            .add_field("_SERVICE_RECORD", "CurrentState",  SR_CURRENT_STATE,  "unsigned int")
-            .add_field("_SERVICE_RECORD", "ServiceType",   SR_SERVICE_TYPE,   "unsigned int")
-            .add_field("_SERVICE_RECORD", "StartType",     SR_START_TYPE,     "unsigned int")
-            .add_field("_SERVICE_RECORD", "ImagePath",     SR_IMAGE_PATH,     "pointer")
-            .add_field("_SERVICE_RECORD", "ObjectName",    SR_OBJECT_NAME,    "pointer")
-            .add_field("_SERVICE_RECORD", "ProcessId",     SR_PROCESS_ID,     "unsigned int")
+            .add_field(
+                "_SERVICE_RECORD",
+                "ServiceList",
+                SR_SERVICE_LIST,
+                "_LIST_ENTRY",
+            )
+            .add_field("_SERVICE_RECORD", "ServiceName", SR_SERVICE_NAME, "pointer")
+            .add_field("_SERVICE_RECORD", "DisplayName", SR_DISPLAY_NAME, "pointer")
+            .add_field(
+                "_SERVICE_RECORD",
+                "CurrentState",
+                SR_CURRENT_STATE,
+                "unsigned int",
+            )
+            .add_field(
+                "_SERVICE_RECORD",
+                "ServiceType",
+                SR_SERVICE_TYPE,
+                "unsigned int",
+            )
+            .add_field(
+                "_SERVICE_RECORD",
+                "StartType",
+                SR_START_TYPE,
+                "unsigned int",
+            )
+            .add_field("_SERVICE_RECORD", "ImagePath", SR_IMAGE_PATH, "pointer")
+            .add_field("_SERVICE_RECORD", "ObjectName", SR_OBJECT_NAME, "pointer")
+            .add_field(
+                "_SERVICE_RECORD",
+                "ProcessId",
+                SR_PROCESS_ID,
+                "unsigned int",
+            )
             .add_struct("_LIST_ENTRY", 16)
             .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
             .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
             .add_struct("_UNICODE_STRING", 16)
-            .add_field("_UNICODE_STRING", "Length",        0, "unsigned short")
+            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
             .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
-            .add_field("_UNICODE_STRING", "Buffer",        8, "pointer")
+            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
             .build_json();
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -1141,10 +1173,10 @@ mod tests {
         // Virtual addresses (paddr must be < 0x00FF_FFFF for SyntheticPhysMem).
         let head_vaddr: u64 = 0xFFFF_8000_00D0_0000;
         let head_paddr: u64 = 0x00D0_0000;
-        let sr_vaddr:   u64 = 0xFFFF_8000_00D1_0000;
-        let sr_paddr:   u64 = 0x00D1_0000;
-        let str_vaddr:  u64 = 0xFFFF_8000_00D2_0000;
-        let str_paddr:  u64 = 0x00D2_0000;
+        let sr_vaddr: u64 = 0xFFFF_8000_00D1_0000;
+        let sr_paddr: u64 = 0x00D1_0000;
+        let str_vaddr: u64 = 0xFFFF_8000_00D2_0000;
+        let str_paddr: u64 = 0x00D2_0000;
 
         // Encode "EvilSvc" as UTF-16LE for the ServiceName string buffer.
         let name_utf16 = utf16le_bytes("EvilSvc");
@@ -1184,11 +1216,11 @@ mod tests {
         let mut sr_page = vec![0u8; 0x100];
         sr_page[0x00..0x08].copy_from_slice(&head_vaddr.to_le_bytes()); // Flink → sentinel
         sr_page[0x08..0x10].copy_from_slice(&head_vaddr.to_le_bytes()); // Blink
-        sr_page[0x10..0x18].copy_from_slice(&str_vaddr.to_le_bytes());  // ServiceName
-        sr_page[0x20..0x24].copy_from_slice(&4u32.to_le_bytes());        // CurrentState Running
-        sr_page[0x24..0x28].copy_from_slice(&0x10u32.to_le_bytes());     // ServiceType
-        sr_page[0x28..0x2C].copy_from_slice(&2u32.to_le_bytes());        // StartType AutoStart
-        sr_page[0x40..0x44].copy_from_slice(&1234u32.to_le_bytes());     // ProcessId
+        sr_page[0x10..0x18].copy_from_slice(&str_vaddr.to_le_bytes()); // ServiceName
+        sr_page[0x20..0x24].copy_from_slice(&4u32.to_le_bytes()); // CurrentState Running
+        sr_page[0x24..0x28].copy_from_slice(&0x10u32.to_le_bytes()); // ServiceType
+        sr_page[0x28..0x2C].copy_from_slice(&2u32.to_le_bytes()); // StartType AutoStart
+        sr_page[0x40..0x44].copy_from_slice(&1234u32.to_le_bytes()); // ProcessId
 
         let ptb = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
@@ -1207,9 +1239,12 @@ mod tests {
         let entry = result.iter().find(|e| e.service_name == "EvilSvc");
         assert!(entry.is_some(), "should find EvilSvc");
         let entry = entry.unwrap();
-        assert!(entry.in_scm,    "EvilSvc should be in SCM");
+        assert!(entry.in_scm, "EvilSvc should be in SCM");
         assert!(!entry.in_registry, "EvilSvc should not be in registry");
-        assert!(entry.is_suspicious, "SCM-only AutoStart service is suspicious");
+        assert!(
+            entry.is_suspicious,
+            "SCM-only AutoStart service is suspicious"
+        );
         assert_eq!(entry.start_type, 2, "start_type from SCM = AutoStart=2");
     }
 
@@ -1283,8 +1318,8 @@ mod tests {
         w32(&mut cp, 0x300, 0xFFFF_FF00u32);
         w16(&mut cp, 0x304, NK_SIG);
         w32(&mut cp, 0x304 + NK_STABLE_COUNT, 0u32);
-        w32(&mut cp, 0x304 + 0x24, 1u32);        // value_count = 1
-        w32(&mut cp, 0x304 + 0x28, 0x380u32);    // values_list cell = 0x380
+        w32(&mut cp, 0x304 + 0x24, 1u32); // value_count = 1
+        w32(&mut cp, 0x304 + 0x28, 0x380u32); // values_list cell = 0x380
         w16(&mut cp, 0x304 + NK_NAME_LEN, bd_name.len() as u16);
         cp[0x304 + NK_NAME_DATA..0x304 + NK_NAME_DATA + bd_name.len()].copy_from_slice(bd_name);
 
@@ -1299,7 +1334,7 @@ mod tests {
         w16(&mut cp, 0x406, start_name.len() as u16);
         w32(&mut cp, 0x408, 0x8000_0002u32); // inline, 2 bytes
         w32(&mut cp, 0x40C, 0x0000_0032u32); // inline data = '2' in UTF-16LE
-        w32(&mut cp, 0x410, 1u32);           // type = REG_SZ
+        w32(&mut cp, 0x410, 1u32); // type = REG_SZ
         cp[0x404 + 0x14..0x404 + 0x14 + start_name.len()].copy_from_slice(start_name);
 
         let mut hive_page = vec![0u8; 0x1000];
@@ -1317,9 +1352,12 @@ mod tests {
         let entry = result.iter().find(|e| e.service_name == "BackdoorSvc");
         assert!(entry.is_some(), "should find BackdoorSvc");
         let entry = entry.unwrap();
-        assert!(!entry.in_scm,    "BackdoorSvc should not be in SCM");
+        assert!(!entry.in_scm, "BackdoorSvc should not be in SCM");
         assert!(entry.in_registry, "BackdoorSvc should be in registry");
         assert_eq!(entry.start_type, 2, "start_type should be 2 (AutoStart)");
-        assert!(entry.is_suspicious, "registry-only AutoStart service is suspicious");
+        assert!(
+            entry.is_suspicious,
+            "registry-only AutoStart service is suspicious"
+        );
     }
 }

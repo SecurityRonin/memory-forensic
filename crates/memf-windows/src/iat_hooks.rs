@@ -716,7 +716,10 @@ mod tests {
         } else {
             hook_module_name.is_empty()
         };
-        assert!(is_suspicious, "hook against unknown DLL with unresolvable target must be flagged suspicious");
+        assert!(
+            is_suspicious,
+            "hook against unknown DLL with unresolvable target must be flagged suspicious"
+        );
     }
 
     /// When the originating DLL is not in the module list but the hook destination
@@ -724,9 +727,8 @@ mod tests {
     #[test]
     fn unresolvable_originating_dll_with_known_hook_module_is_not_suspicious() {
         let hook_target: u64 = 0x7FF8_0000_1000;
-        let ranges: Vec<(u64, u64, String)> = vec![
-            (0x7FF8_0000_0000, 0x7FF8_0010_0000, "ntdll.dll".to_string()),
-        ];
+        let ranges: Vec<(u64, u64, String)> =
+            vec![(0x7FF8_0000_0000, 0x7FF8_0010_0000, "ntdll.dll".to_string())];
         let hook_module_name = resolve_module(hook_target, &ranges);
         assert_eq!(hook_module_name, "ntdll.dll");
 
@@ -737,7 +739,10 @@ mod tests {
         } else {
             hook_module_name.is_empty()
         };
-        assert!(!is_suspicious, "hook that resolves to a known module should not be flagged suspicious");
+        assert!(
+            !is_suspicious,
+            "hook that resolves to a known module should not be flagged suspicious"
+        );
     }
 
     // ── resolve_module and find_module_range coverage ─────────────────
@@ -756,9 +761,8 @@ mod tests {
     /// resolve_module returns empty string when no range contains the addr.
     #[test]
     fn resolve_module_no_match_returns_empty() {
-        let ranges: Vec<(u64, u64, String)> = vec![
-            (0x1000_0000, 0x1010_0000, "ntdll.dll".to_string()),
-        ];
+        let ranges: Vec<(u64, u64, String)> =
+            vec![(0x1000_0000, 0x1010_0000, "ntdll.dll".to_string())];
         // Address below the range
         assert_eq!(resolve_module(0x0FFF_FFFF, &ranges), "");
         // Address at or above end (exclusive)
@@ -780,9 +784,11 @@ mod tests {
     /// find_module_range returns base and size for a matching module name.
     #[test]
     fn find_module_range_found() {
-        let ranges: Vec<(u64, u64, String)> = vec![
-            (0x7FF8_0000_0000, 0x7FF8_0010_0000, "KERNEL32.DLL".to_string()),
-        ];
+        let ranges: Vec<(u64, u64, String)> = vec![(
+            0x7FF8_0000_0000,
+            0x7FF8_0010_0000,
+            "KERNEL32.DLL".to_string(),
+        )];
         // Case-insensitive lookup
         let result = find_module_range("kernel32.dll", &ranges);
         assert!(result.is_some());
@@ -794,9 +800,11 @@ mod tests {
     /// find_module_range returns None when the name is not present.
     #[test]
     fn find_module_range_not_found() {
-        let ranges: Vec<(u64, u64, String)> = vec![
-            (0x7FF8_0000_0000, 0x7FF8_0010_0000, "kernel32.dll".to_string()),
-        ];
+        let ranges: Vec<(u64, u64, String)> = vec![(
+            0x7FF8_0000_0000,
+            0x7FF8_0010_0000,
+            "kernel32.dll".to_string(),
+        )];
         assert!(find_module_range("ntdll.dll", &ranges).is_none());
         assert!(find_module_range("kernel32.dll", &[]).is_none());
     }
@@ -804,9 +812,7 @@ mod tests {
     /// find_module_range trims whitespace from the query name.
     #[test]
     fn find_module_range_trims_whitespace() {
-        let ranges: Vec<(u64, u64, String)> = vec![
-            (0x1000, 0x2000, "ntdll.dll".to_string()),
-        ];
+        let ranges: Vec<(u64, u64, String)> = vec![(0x1000, 0x2000, "ntdll.dll".to_string())];
         let result = find_module_range("  ntdll.dll  ", &ranges);
         assert!(result.is_some());
     }
@@ -837,7 +843,10 @@ mod tests {
 
         let ranges: Vec<(u64, u64, String)> = vec![];
         let result = parse_module_imports(&reader, image_base, "test.dll", &ranges, 1, "test", 100);
-        assert!(result.is_empty(), "short header (<0x40) should return empty");
+        assert!(
+            result.is_empty(),
+            "short header (<0x40) should return empty"
+        );
     }
 
     /// parse_module_imports rejects a header without PE\0\0 signature.
@@ -860,7 +869,7 @@ mod tests {
         header[0] = 0x4D; // M
         header[1] = 0x5A; // Z
         header[0x3C] = 0x40; // e_lfanew = 64
-        // At offset 0x40: write "XX\0\0" instead of "PE\0\0"
+                             // At offset 0x40: write "XX\0\0" instead of "PE\0\0"
         header[0x40] = b'X';
         header[0x41] = b'X';
         header[0x42] = 0;
@@ -1057,7 +1066,10 @@ mod tests {
 
         let ranges: Vec<(u64, u64, String)> = vec![];
         let result = parse_module_imports(&reader, image_base, "test.dll", &ranges, 1, "test", 100);
-        assert!(result.is_empty(), "PE32 with zero import_rva should return empty");
+        assert!(
+            result.is_empty(),
+            "PE32 with zero import_rva should return empty"
+        );
     }
 
     /// IatHookInfo with is_suspicious=false still serializes correctly.
@@ -1103,36 +1115,37 @@ mod tests {
         //   name_rva   = 0x3000 → "kernel32.dll" at 0x0018_0000 (page 3)
         let image_base: u64 = 0x0015_0000;
         let import_rva: u32 = 0x1000;
-        let iat_rva: u32    = 0x2000;
-        let name_rva: u32   = 0x3000;
+        let iat_rva: u32 = 0x2000;
+        let name_rva: u32 = 0x3000;
 
         // The "kernel32.dll" module range.
         let k32_base: u64 = 0x7FF8_0000_0000u64;
         let k32_size: u32 = 0x10_0000;
-        let k32_end: u64  = k32_base + k32_size as u64;
+        let k32_end: u64 = k32_base + k32_size as u64;
 
         // IAT entry that IS inside kernel32.dll range.
         let iat_entry: u64 = k32_base + 0x1234;
 
         // --- Page 0: PE header (MZ + PE32+ optional header) ---
         let mut header = vec![0u8; 4096];
-        header[0] = 0x4D; header[1] = 0x5A; // MZ
+        header[0] = 0x4D;
+        header[1] = 0x5A; // MZ
         let e_lfanew: u32 = 0x40;
         header[0x3C..0x40].copy_from_slice(&e_lfanew.to_le_bytes());
         let nt_off = 0x40usize;
-        header[nt_off]     = b'P'; header[nt_off + 1] = b'E';
-        header[nt_off + 2] = 0;   header[nt_off + 3] = 0;
+        header[nt_off] = b'P';
+        header[nt_off + 1] = b'E';
+        header[nt_off + 2] = 0;
+        header[nt_off + 3] = 0;
         // COFF at nt_off+4, optional at nt_off+4+20 = nt_off+24
         let opt_off = nt_off + 4 + 20;
-        header[opt_off]     = 0x0B; // PE32+ magic
+        header[opt_off] = 0x0B; // PE32+ magic
         header[opt_off + 1] = 0x02;
         // import dir for PE32+: opt_off + 120
         let import_dir_off = opt_off + 120;
-        header[import_dir_off..import_dir_off + 4]
-            .copy_from_slice(&import_rva.to_le_bytes());
+        header[import_dir_off..import_dir_off + 4].copy_from_slice(&import_rva.to_le_bytes());
         // import_size = 40 (two 20-byte descriptors: one real + one null terminator)
-        header[import_dir_off + 4..import_dir_off + 8]
-            .copy_from_slice(&40u32.to_le_bytes());
+        header[import_dir_off + 4..import_dir_off + 8].copy_from_slice(&40u32.to_le_bytes());
 
         // --- Page 1: Import descriptor table ---
         // Descriptor: ilt_rva=0, name_rva=name_rva, iat_rva=iat_rva (20 bytes)
@@ -1145,13 +1158,13 @@ mod tests {
         import_table[8..12].copy_from_slice(&0u32.to_le_bytes()); // ForwarderChain
         import_table[12..16].copy_from_slice(&name_rva.to_le_bytes()); // name_rva
         import_table[16..20].copy_from_slice(&iat_rva.to_le_bytes()); // iat_rva
-        // desc[1]: all zeros (null terminator)
+                                                                      // desc[1]: all zeros (null terminator)
 
         // --- Page 2: IAT data ---
         // One non-zero IAT entry (8 bytes for PE32+), followed by null terminator.
         let mut iat_data = vec![0u8; 4096];
         iat_data[0..8].copy_from_slice(&iat_entry.to_le_bytes()); // entry = k32_base+0x1234
-        // iat_data[8..16] = 0 (null terminator)
+                                                                  // iat_data[8..16] = 0 (null terminator)
 
         // --- Page 3: Module name string "kernel32.dll\0" ---
         let mut name_page = vec![0u8; 4096];
@@ -1161,31 +1174,36 @@ mod tests {
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(image_base, image_base, flags::WRITABLE)
             .write_phys(image_base, &header)
-            .map_4k(image_base + import_rva as u64, image_base + import_rva as u64, flags::WRITABLE)
+            .map_4k(
+                image_base + import_rva as u64,
+                image_base + import_rva as u64,
+                flags::WRITABLE,
+            )
             .write_phys(image_base + import_rva as u64, &import_table)
-            .map_4k(image_base + iat_rva as u64, image_base + iat_rva as u64, flags::WRITABLE)
+            .map_4k(
+                image_base + iat_rva as u64,
+                image_base + iat_rva as u64,
+                flags::WRITABLE,
+            )
             .write_phys(image_base + iat_rva as u64, &iat_data)
-            .map_4k(image_base + name_rva as u64, image_base + name_rva as u64, flags::WRITABLE)
+            .map_4k(
+                image_base + name_rva as u64,
+                image_base + name_rva as u64,
+                flags::WRITABLE,
+            )
             .write_phys(image_base + name_rva as u64, &name_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
-        let ranges: Vec<(u64, u64, String)> = vec![
-            (k32_base, k32_end, "kernel32.dll".to_string()),
-        ];
+        let ranges: Vec<(u64, u64, String)> = vec![(k32_base, k32_end, "kernel32.dll".to_string())];
 
         // iat_entry is inside k32 range → classify_iat_hook returns false → not pushed.
-        let result = parse_module_imports(
-            &reader,
-            image_base,
-            "test.exe",
-            &ranges,
-            1,
-            "test",
-            100,
+        let result = parse_module_imports(&reader, image_base, "test.exe", &ranges, 1, "test", 100);
+        assert!(
+            result.is_empty(),
+            "benign IAT entry (inside expected range) should not produce hook info"
         );
-        assert!(result.is_empty(), "benign IAT entry (inside expected range) should not produce hook info");
     }
 
     /// parse_module_imports with a valid PE32+ header and one IAT entry that
@@ -1203,29 +1221,32 @@ mod tests {
 
         let image_base: u64 = 0x0019_0000;
         let import_rva: u32 = 0x1000;
-        let iat_rva: u32    = 0x2000;
-        let name_rva: u32   = 0x3000;
+        let iat_rva: u32 = 0x2000;
+        let name_rva: u32 = 0x3000;
 
         let k32_base: u64 = 0x7FF8_0000_0000u64;
         let k32_size: u32 = 0x10_0000;
-        let k32_end: u64  = k32_base + k32_size as u64;
+        let k32_end: u64 = k32_base + k32_size as u64;
 
         // Hook target is OUTSIDE kernel32.dll range (will trigger suspicious).
         let hook_target: u64 = 0xDEAD_BEEF_1234u64;
 
         // Hook module is some other dll in ranges.
         let evil_base: u64 = 0xDEAD_BEEF_0000u64;
-        let evil_end: u64  = evil_base + 0x10_0000;
+        let evil_end: u64 = evil_base + 0x10_0000;
 
         let mut header = vec![0u8; 4096];
-        header[0] = 0x4D; header[1] = 0x5A;
+        header[0] = 0x4D;
+        header[1] = 0x5A;
         let e_lfanew: u32 = 0x40;
         header[0x3C..0x40].copy_from_slice(&e_lfanew.to_le_bytes());
         let nt_off = 0x40usize;
-        header[nt_off]     = b'P'; header[nt_off + 1] = b'E';
-        header[nt_off + 2] = 0;   header[nt_off + 3] = 0;
+        header[nt_off] = b'P';
+        header[nt_off + 1] = b'E';
+        header[nt_off + 2] = 0;
+        header[nt_off + 3] = 0;
         let opt_off = nt_off + 4 + 20;
-        header[opt_off]     = 0x0B;
+        header[opt_off] = 0x0B;
         header[opt_off + 1] = 0x02;
         let import_dir_off = opt_off + 120;
         header[import_dir_off..import_dir_off + 4].copy_from_slice(&import_rva.to_le_bytes());
@@ -1248,11 +1269,23 @@ mod tests {
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(image_base, image_base, flags::WRITABLE)
             .write_phys(image_base, &header)
-            .map_4k(image_base + import_rva as u64, image_base + import_rva as u64, flags::WRITABLE)
+            .map_4k(
+                image_base + import_rva as u64,
+                image_base + import_rva as u64,
+                flags::WRITABLE,
+            )
             .write_phys(image_base + import_rva as u64, &import_table)
-            .map_4k(image_base + iat_rva as u64, image_base + iat_rva as u64, flags::WRITABLE)
+            .map_4k(
+                image_base + iat_rva as u64,
+                image_base + iat_rva as u64,
+                flags::WRITABLE,
+            )
             .write_phys(image_base + iat_rva as u64, &iat_data)
-            .map_4k(image_base + name_rva as u64, image_base + name_rva as u64, flags::WRITABLE)
+            .map_4k(
+                image_base + name_rva as u64,
+                image_base + name_rva as u64,
+                flags::WRITABLE,
+            )
             .write_phys(image_base + name_rva as u64, &name_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);

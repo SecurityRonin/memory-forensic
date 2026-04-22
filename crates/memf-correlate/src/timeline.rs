@@ -41,18 +41,26 @@ impl Timeline {
     pub fn filter_by_pid(&self, pid: u32) -> Vec<&ForensicEvent> {
         self.entries
             .iter()
-            .filter(|e| matches!(&e.entity, crate::event::Entity::Process { pid: p, .. } if *p == pid))
+            .filter(
+                |e| matches!(&e.entity, crate::event::Entity::Process { pid: p, .. } if *p == pid),
+            )
             .collect()
     }
 
     /// Return only events from a specific walker (matched by `source_walker`).
     pub fn filter_by_walker(&self, walker: &str) -> Vec<&ForensicEvent> {
-        self.entries.iter().filter(|e| e.source_walker == walker).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.source_walker == walker)
+            .collect()
     }
 
     /// Return only events that have at least one MITRE ATT&CK ID.
     pub fn filter_mapped(&self) -> Vec<&ForensicEvent> {
-        self.entries.iter().filter(|e| !e.mitre_attack.is_empty()).collect()
+        self.entries
+            .iter()
+            .filter(|e| !e.mitre_attack.is_empty())
+            .collect()
     }
 
     /// Total number of events in the timeline.
@@ -74,15 +82,28 @@ mod tests {
     use crate::event::{Entity, Finding, ForensicEvent};
     use crate::mitre::MitreAttackId;
 
-    fn make_event(walker: &'static str, severity: Severity, pid: u32, ts_secs: Option<i64>) -> ForensicEvent {
+    fn make_event(
+        walker: &'static str,
+        severity: Severity,
+        pid: u32,
+        ts_secs: Option<i64>,
+    ) -> ForensicEvent {
         let mut b = ForensicEvent::builder()
             .source_walker(walker)
-            .entity(Entity::Process { pid, name: format!("proc_{pid}"), ppid: None })
+            .entity(Entity::Process {
+                pid,
+                name: format!("proc_{pid}"),
+                ppid: None,
+            })
             .finding(Finding::Other("test".into()))
             .severity(severity)
             .confidence(0.5);
         if let Some(s) = ts_secs {
-            b = b.timestamp(chrono::DateTime::from_timestamp(s, 0).unwrap().with_timezone(&Utc));
+            b = b.timestamp(
+                chrono::DateTime::from_timestamp(s, 0)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            );
         }
         b.build()
     }
@@ -90,7 +111,11 @@ mod tests {
     fn make_mitre_event(walker: &'static str, severity: Severity, pid: u32) -> ForensicEvent {
         ForensicEvent::builder()
             .source_walker(walker)
-            .entity(Entity::Process { pid, name: "evil".into(), ppid: None })
+            .entity(Entity::Process {
+                pid,
+                name: "evil".into(),
+                ppid: None,
+            })
             .finding(Finding::ProcessHollowing)
             .severity(severity)
             .confidence(0.9)
@@ -113,7 +138,9 @@ mod tests {
             make_event("w3", Severity::Info, 3, Some(200)),
         ];
         let t = Timeline::from_events(events);
-        let timestamps: Vec<i64> = t.entries().iter()
+        let timestamps: Vec<i64> = t
+            .entries()
+            .iter()
             .filter_map(|e| e.timestamp.map(|ts| ts.timestamp()))
             .collect();
         assert_eq!(timestamps, vec![100, 200, 300]);

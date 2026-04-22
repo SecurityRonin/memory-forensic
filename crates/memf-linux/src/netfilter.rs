@@ -415,7 +415,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_netfilter_rules(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "missing net.xt field → all tables fail → empty result");
+        assert!(
+            result.is_empty(),
+            "missing net.xt field → all tables fail → empty result"
+        );
     }
 
     #[test]
@@ -443,7 +446,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_netfilter_rules(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "missing netns_xt.tables → all tables fail → empty result");
+        assert!(
+            result.is_empty(),
+            "missing netns_xt.tables → all tables fail → empty result"
+        );
     }
 
     #[test]
@@ -489,7 +495,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_netfilter_rules(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "empty xt_table list should produce no rules");
+        assert!(
+            result.is_empty(),
+            "empty xt_table list should produce no rules"
+        );
     }
 
     #[test]
@@ -509,7 +518,10 @@ mod tests {
         assert_eq!(rules.len(), 1);
         // source should be Some with dotted notation
         let src = rules[0].source.as_deref().unwrap_or("");
-        assert!(src.contains('.'), "source IP should be dotted notation: {src}");
+        assert!(
+            src.contains('.'),
+            "source IP should be dotted notation: {src}"
+        );
     }
 
     // --- parse_ipt_entries: two chained entries (non-zero next_offset) ---
@@ -525,7 +537,7 @@ mod tests {
         let src1 = u32::from_le_bytes([1, 2, 3, 4]);
         data[0x00..0x04].copy_from_slice(&src1.to_le_bytes());
         data[0x10..0x12].copy_from_slice(&6u16.to_le_bytes()); // tcp
-        // target_offset at 0x58: 0x60 → but 0x60 > entry_size(128=0x80), still within 2*128=256
+                                                               // target_offset at 0x58: 0x60 → but 0x60 > entry_size(128=0x80), still within 2*128=256
         let target_off1: u16 = 0x60;
         data[0x58..0x5A].copy_from_slice(&target_off1.to_le_bytes());
         // next_offset at 0x5A = 128
@@ -537,9 +549,9 @@ mod tests {
         let dst2 = u32::from_le_bytes([5, 6, 7, 8]);
         data[entry_size + 0x04..entry_size + 0x08].copy_from_slice(&dst2.to_le_bytes());
         data[entry_size + 0x10..entry_size + 0x12].copy_from_slice(&17u16.to_le_bytes()); // udp
-        // target_offset for entry 2: since entry 2 starts at 128, target at 128+0x60=0xE0
-        // but we need it relative to entry 2's base: 0x60 places it at offset 96 within entry
-        // data[entry_size+0x60..] is within our 256-byte buffer
+                                                                                          // target_offset for entry 2: since entry 2 starts at 128, target at 128+0x60=0xE0
+                                                                                          // but we need it relative to entry 2's base: 0x60 places it at offset 96 within entry
+                                                                                          // data[entry_size+0x60..] is within our 256-byte buffer
         let target_off2: u16 = 0x60;
         data[entry_size + 0x58..entry_size + 0x5A].copy_from_slice(&target_off2.to_le_bytes());
         data[entry_size + 0x5A..entry_size + 0x5C].copy_from_slice(&0u16.to_le_bytes()); // next=0
@@ -550,7 +562,11 @@ mod tests {
         let reader = make_ipt_reader(&data, entry_vaddr, entry_paddr);
 
         let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
-        assert_eq!(rules.len(), 2, "two chained entries should produce two rules");
+        assert_eq!(
+            rules.len(),
+            2,
+            "two chained entries should produce two rules"
+        );
         assert_eq!(rules[0].target, "ACCEPT");
         assert_eq!(rules[0].protocol, "tcp");
         assert!(rules[0].source.is_some(), "entry 1 has src_ip");
@@ -572,7 +588,10 @@ mod tests {
 
         let rules = parse_ipt_entries(&reader, entry_vaddr, data.len() as u64, "filter").unwrap();
         assert_eq!(rules.len(), 1);
-        assert!(rules[0].target.is_empty(), "zero target_offset must produce empty target name");
+        assert!(
+            rules[0].target.is_empty(),
+            "zero target_offset must produce empty target name"
+        );
     }
 
     // --- walk_netfilter_rules: xt_table list has an entry whose name matches ---
@@ -607,7 +626,7 @@ mod tests {
         let mut page = [0u8; 4096];
 
         // AF_INET list_head at [32..48]: next=xt_table_vaddr, prev=af_inet_list_vaddr
-        page[32..40].copy_from_slice(&xt_table_vaddr.to_le_bytes());   // list_head.next → xt_table
+        page[32..40].copy_from_slice(&xt_table_vaddr.to_le_bytes()); // list_head.next → xt_table
         page[40..48].copy_from_slice(&af_inet_list_vaddr.to_le_bytes()); // list_head.prev
 
         // xt_table at [0x100..]:
@@ -696,9 +715,17 @@ mod tests {
 
         if private_ptr != 0 {
             builder = builder
-                .map_4k(table_info_vaddr, table_info_paddr, flags::PRESENT | flags::WRITABLE)
+                .map_4k(
+                    table_info_vaddr,
+                    table_info_paddr,
+                    flags::PRESENT | flags::WRITABLE,
+                )
                 .write_phys(table_info_paddr, &info_page)
-                .map_4k(entries_vaddr, entries_paddr, flags::PRESENT | flags::WRITABLE)
+                .map_4k(
+                    entries_vaddr,
+                    entries_paddr,
+                    flags::PRESENT | flags::WRITABLE,
+                )
                 .write_phys(entries_paddr, entry_data);
         }
 
@@ -713,12 +740,12 @@ mod tests {
     fn parse_table_rules_returns_rules_from_xt_table() {
         let entry_data = make_ipt_entry_data(0, 0, 6, "ACCEPT");
 
-        let table_vaddr: u64      = 0xFFFF_8000_0100_0000;
-        let table_paddr: u64      = 0x0010_0000;
+        let table_vaddr: u64 = 0xFFFF_8000_0100_0000;
+        let table_paddr: u64 = 0x0010_0000;
         let table_info_vaddr: u64 = 0xFFFF_8000_0101_0000;
         let table_info_paddr: u64 = 0x0011_0000;
-        let entries_vaddr: u64    = 0xFFFF_8000_0102_0000;
-        let entries_paddr: u64    = 0x0012_0000;
+        let entries_vaddr: u64 = 0xFFFF_8000_0102_0000;
+        let entries_paddr: u64 = 0x0012_0000;
 
         let reader = make_parse_table_rules_reader(
             table_info_vaddr, // private → points to xt_table_info

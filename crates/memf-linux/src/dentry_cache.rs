@@ -406,7 +406,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_dentry_cache(&reader).expect("should not error");
-        assert!(result.is_empty(), "missing tasks field must yield empty (graceful degradation)");
+        assert!(
+            result.is_empty(),
+            "missing tasks field must yield empty (graceful degradation)"
+        );
     }
 
     #[test]
@@ -429,7 +432,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_dentry_cache(&reader).expect("should not error");
-        assert!(result.is_empty(), "missing files field must yield empty (graceful degradation)");
+        assert!(
+            result.is_empty(),
+            "missing files field must yield empty (graceful degradation)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -476,7 +482,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_dentry_cache(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "no hidden dentries expected for task with files==NULL");
+        assert!(
+            result.is_empty(),
+            "no hidden dentries expected for task with files==NULL"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -15,7 +15,10 @@ use crate::{Error, HiddenModuleInfo, Result};
 /// module is present in the kobj/sysfs hierarchy. Returns `true` (assume
 /// present) if any required field offset is unavailable in the symbol table
 /// or if the memory is unreadable.
-fn check_module_in_sysfs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, mod_addr: u64) -> bool {
+fn check_module_in_sysfs<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    mod_addr: u64,
+) -> bool {
     let mkobj_offset = match reader.symbols().field_offset("module", "mkobj") {
         Some(off) => off,
         None => return true, // Can't verify — assume present
@@ -186,7 +189,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_hidden_modules(&reader);
-        assert!(result.is_err(), "missing module.list field should return error");
+        assert!(
+            result.is_err(),
+            "missing module.list field should return error"
+        );
     }
 
     #[test]
@@ -224,11 +230,18 @@ mod tests {
         let results = check_hidden_modules(&reader).unwrap();
 
         assert_eq!(results.len(), 1, "should find one module");
-        assert!(results[0].name.starts_with("rootkit"), "name should match: {}", results[0].name);
+        assert!(
+            results[0].name.starts_with("rootkit"),
+            "name should match: {}",
+            results[0].name
+        );
         assert_eq!(results[0].base_addr, base);
         assert_eq!(results[0].size, 4096);
         assert!(results[0].in_modules_list);
-        assert!(results[0].in_sysfs, "module with non-zero kobj entry.next should be in sysfs");
+        assert!(
+            results[0].in_sysfs,
+            "module with non-zero kobj entry.next should be in sysfs"
+        );
     }
 
     #[test]
@@ -287,6 +300,9 @@ mod tests {
         assert_eq!(results.len(), 1, "should find one module");
         assert!(results[0].name.starts_with("hidden"));
         assert!(results[0].in_modules_list);
-        assert!(!results[0].in_sysfs, "module with kobj entry.next==0 should not be in sysfs");
+        assert!(
+            !results[0].in_sysfs,
+            "module with kobj entry.next==0 should not be in sysfs"
+        );
     }
 }

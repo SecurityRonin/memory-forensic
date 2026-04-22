@@ -255,7 +255,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_psxview(&reader);
-        assert!(result.is_err(), "missing task_struct.tasks field should return error");
+        assert!(
+            result.is_err(),
+            "missing task_struct.tasks field should return error"
+        );
     }
 
     #[test]
@@ -305,7 +308,10 @@ mod tests {
 
         assert_eq!(results.len(), 2, "expected two tasks: init + task2");
 
-        let init_entry = results.iter().find(|r| r.pid == 1).expect("init_task missing");
+        let init_entry = results
+            .iter()
+            .find(|r| r.pid == 1)
+            .expect("init_task missing");
         assert!(init_entry.in_task_list);
         assert!(init_entry.in_pid_hash);
 

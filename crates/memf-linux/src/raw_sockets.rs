@@ -528,9 +528,9 @@ mod tests {
     #[test]
     fn walk_raw_sockets_symbol_present_files_null_returns_empty() {
         use memf_core::test_builders::flags as ptf;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
-        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
 
         // tasks at offset 0x10; pid at 0x00; comm at 0x20; files at 0x30.
         let tasks_offset: u64 = 0x10;
@@ -623,7 +623,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_raw_sockets(&reader).expect("should not error");
-        assert!(result.is_empty(), "fdt_ptr == 0 → early return → no raw sockets");
+        assert!(
+            result.is_empty(),
+            "fdt_ptr == 0 → early return → no raw sockets"
+        );
     }
 
     // --- collect_raw_sockets_for_task: fdt != 0, fd_array_ptr == 0 ---
@@ -687,7 +690,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_raw_sockets(&reader).expect("should not error");
-        assert!(result.is_empty(), "fd_array_ptr == 0 → early return → no raw sockets");
+        assert!(
+            result.is_empty(),
+            "fd_array_ptr == 0 → early return → no raw sockets"
+        );
     }
 
     // --- RawSocketInfo struct coverage ---
@@ -788,32 +794,32 @@ mod tests {
     fn walk_raw_sockets_af_packet_sock_detected() {
         use memf_core::test_builders::flags as ptf;
 
-        let tasks_offset: u64   = 0x10;
-        let files_offset: u64   = 0x30;
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
 
-        let sym_vaddr: u64      = 0xFFFF_8800_009A_0000;
-        let sym_paddr: u64      = 0x009A_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_009A_0000;
+        let sym_paddr: u64 = 0x009A_0000;
 
-        let files_vaddr: u64    = 0xFFFF_8800_009B_0000;
-        let files_paddr: u64    = 0x009B_0000;
+        let files_vaddr: u64 = 0xFFFF_8800_009B_0000;
+        let files_paddr: u64 = 0x009B_0000;
 
-        let fdt_vaddr: u64      = 0xFFFF_8800_009C_0000;
-        let fdt_paddr: u64      = 0x009C_0000;
+        let fdt_vaddr: u64 = 0xFFFF_8800_009C_0000;
+        let fdt_paddr: u64 = 0x009C_0000;
 
         let fd_array_vaddr: u64 = 0xFFFF_8800_009D_0000;
         let fd_array_paddr: u64 = 0x009D_0000;
 
         // file struct: private_data at offset 0 → sock_vaddr
-        let file_vaddr: u64     = 0xFFFF_8800_009E_0000;
-        let file_paddr: u64     = 0x009E_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_009E_0000;
+        let file_paddr: u64 = 0x009E_0000;
 
         // socket struct: type at 0, sk at 8
-        let sock_vaddr: u64     = 0xFFFF_8800_009F_0000;
-        let sock_paddr: u64     = 0x009F_0000;
+        let sock_vaddr: u64 = 0xFFFF_8800_009F_0000;
+        let sock_paddr: u64 = 0x009F_0000;
 
         // struct sock: sk_family at 0, sk_protocol at 2
-        let sk_vaddr: u64       = 0xFFFF_8800_00C0_0000;
-        let sk_paddr: u64       = 0x00C0_0000;
+        let sk_vaddr: u64 = 0xFFFF_8800_00C0_0000;
+        let sk_paddr: u64 = 0x00C0_0000;
 
         let isf = IsfBuilder::new()
             .add_symbol("init_task", sym_vaddr)
@@ -902,7 +908,10 @@ mod tests {
         assert_eq!(result.len(), 1, "one AF_PACKET socket should be detected");
         assert_eq!(result[0].socket_type, "AF_PACKET");
         assert_eq!(result[0].pid, 200);
-        assert!(!result[0].is_promiscuous, "promisc false when packet_sock missing");
+        assert!(
+            !result[0].is_promiscuous,
+            "promisc false when packet_sock missing"
+        );
     }
 
     // --- try_read_raw_socket: sk_ptr == 0 → returns None (exercises line 205-206) ---
@@ -910,21 +919,21 @@ mod tests {
     fn walk_raw_sockets_sk_ptr_null_no_entry() {
         use memf_core::test_builders::flags as ptf;
 
-        let tasks_offset: u64   = 0x10;
-        let files_offset: u64   = 0x30;
-        let sym_vaddr: u64      = 0xFFFF_8800_00D0_0000;
-        let sym_paddr: u64      = 0x00D0_0000;
-        let files_vaddr: u64    = 0xFFFF_8800_00D1_0000;
-        let files_paddr: u64    = 0x00D1_0000;
-        let fdt_vaddr: u64      = 0xFFFF_8800_00D2_0000;
-        let fdt_paddr: u64      = 0x00D2_0000;
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
+        let sym_vaddr: u64 = 0xFFFF_8800_00D0_0000;
+        let sym_paddr: u64 = 0x00D0_0000;
+        let files_vaddr: u64 = 0xFFFF_8800_00D1_0000;
+        let files_paddr: u64 = 0x00D1_0000;
+        let fdt_vaddr: u64 = 0xFFFF_8800_00D2_0000;
+        let fdt_paddr: u64 = 0x00D2_0000;
         let fd_array_vaddr: u64 = 0xFFFF_8800_00D3_0000;
         let fd_array_paddr: u64 = 0x00D3_0000;
-        let file_vaddr: u64     = 0xFFFF_8800_00D4_0000;
-        let file_paddr: u64     = 0x00D4_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00D4_0000;
+        let file_paddr: u64 = 0x00D4_0000;
         // socket struct: sock_ptr = private_data, sk = 0
-        let sock_vaddr: u64     = 0xFFFF_8800_00D5_0000;
-        let sock_paddr: u64     = 0x00D5_0000;
+        let sock_vaddr: u64 = 0xFFFF_8800_00D5_0000;
+        let sock_paddr: u64 = 0x00D5_0000;
 
         let isf = IsfBuilder::new()
             .add_symbol("init_task", sym_vaddr)
@@ -993,7 +1002,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_raw_sockets(&reader).expect("should not error");
-        assert!(result.is_empty(), "sk_ptr == 0 → returns None → no raw socket entry");
+        assert!(
+            result.is_empty(),
+            "sk_ptr == 0 → returns None → no raw socket entry"
+        );
     }
 
     // --- try_read_raw_socket: SOCK_RAW branch (sk_family != AF_PACKET, sock_type == SOCK_RAW) ---
@@ -1002,22 +1014,22 @@ mod tests {
     fn walk_raw_sockets_sock_raw_family_detected() {
         use memf_core::test_builders::flags as ptf;
 
-        let tasks_offset: u64   = 0x10;
-        let files_offset: u64   = 0x30;
-        let sym_vaddr: u64      = 0xFFFF_8800_00E0_0000;
-        let sym_paddr: u64      = 0x00E0_0000;
-        let files_vaddr: u64    = 0xFFFF_8800_00E1_0000;
-        let files_paddr: u64    = 0x00E1_0000;
-        let fdt_vaddr: u64      = 0xFFFF_8800_00E2_0000;
-        let fdt_paddr: u64      = 0x00E2_0000;
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
+        let sym_vaddr: u64 = 0xFFFF_8800_00E0_0000;
+        let sym_paddr: u64 = 0x00E0_0000;
+        let files_vaddr: u64 = 0xFFFF_8800_00E1_0000;
+        let files_paddr: u64 = 0x00E1_0000;
+        let fdt_vaddr: u64 = 0xFFFF_8800_00E2_0000;
+        let fdt_paddr: u64 = 0x00E2_0000;
         let fd_array_vaddr: u64 = 0xFFFF_8800_00E3_0000;
         let fd_array_paddr: u64 = 0x00E3_0000;
-        let file_vaddr: u64     = 0xFFFF_8800_00E4_0000;
-        let file_paddr: u64     = 0x00E4_0000;
-        let sock_vaddr: u64     = 0xFFFF_8800_00E5_0000;
-        let sock_paddr: u64     = 0x00E5_0000;
-        let sk_vaddr: u64       = 0xFFFF_8800_00E6_0000;
-        let sk_paddr: u64       = 0x00E6_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00E4_0000;
+        let file_paddr: u64 = 0x00E4_0000;
+        let sock_vaddr: u64 = 0xFFFF_8800_00E5_0000;
+        let sock_paddr: u64 = 0x00E5_0000;
+        let sk_vaddr: u64 = 0xFFFF_8800_00E6_0000;
+        let sk_paddr: u64 = 0x00E6_0000;
 
         let isf = IsfBuilder::new()
             .add_symbol("init_task", sym_vaddr)
@@ -1098,7 +1110,10 @@ mod tests {
         assert_eq!(result.len(), 1, "SOCK_RAW socket should be detected");
         assert_eq!(result[0].socket_type, "SOCK_RAW");
         assert_eq!(result[0].pid, 300);
-        assert!(result[0].is_suspicious, "unknown comm + SOCK_RAW → suspicious");
+        assert!(
+            result[0].is_suspicious,
+            "unknown comm + SOCK_RAW → suspicious"
+        );
     }
 
     // --- try_read_raw_socket: sk_family != AF_PACKET AND sock_type != SOCK_RAW → None ---
@@ -1107,22 +1122,22 @@ mod tests {
     fn walk_raw_sockets_not_raw_socket_returns_none() {
         use memf_core::test_builders::flags as ptf;
 
-        let tasks_offset: u64   = 0x10;
-        let files_offset: u64   = 0x30;
-        let sym_vaddr: u64      = 0xFFFF_8800_00F0_0000;
-        let sym_paddr: u64      = 0x00F0_0000;
-        let files_vaddr: u64    = 0xFFFF_8800_00F1_0000;
-        let files_paddr: u64    = 0x00F1_0000;
-        let fdt_vaddr: u64      = 0xFFFF_8800_00F2_0000;
-        let fdt_paddr: u64      = 0x00F2_0000;
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
+        let sym_vaddr: u64 = 0xFFFF_8800_00F0_0000;
+        let sym_paddr: u64 = 0x00F0_0000;
+        let files_vaddr: u64 = 0xFFFF_8800_00F1_0000;
+        let files_paddr: u64 = 0x00F1_0000;
+        let fdt_vaddr: u64 = 0xFFFF_8800_00F2_0000;
+        let fdt_paddr: u64 = 0x00F2_0000;
         let fd_array_vaddr: u64 = 0xFFFF_8800_00F3_0000;
         let fd_array_paddr: u64 = 0x00F3_0000;
-        let file_vaddr: u64     = 0xFFFF_8800_00F4_0000;
-        let file_paddr: u64     = 0x00F4_0000;
-        let sock_vaddr: u64     = 0xFFFF_8800_00F5_0000;
-        let sock_paddr: u64     = 0x00F5_0000;
-        let sk_vaddr: u64       = 0xFFFF_8800_00F6_0000;
-        let sk_paddr: u64       = 0x00F6_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00F4_0000;
+        let file_paddr: u64 = 0x00F4_0000;
+        let sock_vaddr: u64 = 0xFFFF_8800_00F5_0000;
+        let sock_paddr: u64 = 0x00F5_0000;
+        let sk_vaddr: u64 = 0xFFFF_8800_00F6_0000;
+        let sk_paddr: u64 = 0x00F6_0000;
 
         let isf = IsfBuilder::new()
             .add_symbol("init_task", sym_vaddr)
@@ -1197,7 +1212,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_raw_sockets(&reader).expect("should not error");
-        assert!(result.is_empty(), "SOCK_STREAM is not a raw socket → None → empty");
+        assert!(
+            result.is_empty(),
+            "SOCK_STREAM is not a raw socket → None → empty"
+        );
     }
 
     // --- try_read_raw_socket: private_data == 0 → returns None → no entry ---
@@ -1205,18 +1223,18 @@ mod tests {
     fn walk_raw_sockets_private_data_null_no_entry() {
         use memf_core::test_builders::flags as ptf;
 
-        let tasks_offset: u64   = 0x10;
-        let files_offset: u64   = 0x30;
-        let sym_vaddr: u64      = 0xFFFF_8800_00C1_0000;
-        let sym_paddr: u64      = 0x00C1_0000;
-        let files_vaddr: u64    = 0xFFFF_8800_00C2_0000;
-        let files_paddr: u64    = 0x00C2_0000;
-        let fdt_vaddr: u64      = 0xFFFF_8800_00C3_0000;
-        let fdt_paddr: u64      = 0x00C3_0000;
+        let tasks_offset: u64 = 0x10;
+        let files_offset: u64 = 0x30;
+        let sym_vaddr: u64 = 0xFFFF_8800_00C1_0000;
+        let sym_paddr: u64 = 0x00C1_0000;
+        let files_vaddr: u64 = 0xFFFF_8800_00C2_0000;
+        let files_paddr: u64 = 0x00C2_0000;
+        let fdt_vaddr: u64 = 0xFFFF_8800_00C3_0000;
+        let fdt_paddr: u64 = 0x00C3_0000;
         let fd_array_vaddr: u64 = 0xFFFF_8800_00C4_0000;
         let fd_array_paddr: u64 = 0x00C4_0000;
-        let file_vaddr: u64     = 0xFFFF_8800_00C5_0000;
-        let file_paddr: u64     = 0x00C5_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00C5_0000;
+        let file_paddr: u64 = 0x00C5_0000;
 
         let isf = IsfBuilder::new()
             .add_symbol("init_task", sym_vaddr)

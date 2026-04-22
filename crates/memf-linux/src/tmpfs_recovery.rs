@@ -534,7 +534,10 @@ mod tests {
         // s_type read on sb_addr (sb_list_vaddr - 0x10 = unmapped) fails → advance cursor.
         // read_bytes(sb_list_vaddr, 8) = sym_vaddr → sb_cursor == sb_list_addr → break.
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "loop body ran but s_type unreadable → no results");
+        assert!(
+            result.is_empty(),
+            "loop body ran but s_type unreadable → no results"
+        );
     }
 
     // --- walk_tmpfs_files: exercises s_inodes / inode walk when s_type is not tmpfs ---
@@ -600,7 +603,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "non-tmpfs superblock must not produce entries");
+        assert!(
+            result.is_empty(),
+            "non-tmpfs superblock must not produce entries"
+        );
     }
 
     // --- walk_tmpfs_files: s_type ptr == 0 → is_tmpfs = false ---
@@ -643,7 +649,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "null s_type ptr → is_tmpfs false → no entries");
+        assert!(
+            result.is_empty(),
+            "null s_type ptr → is_tmpfs false → no entries"
+        );
     }
 
     // --- walk_tmpfs_files: tmpfs superblock found, s_inodes missing → skips inode walk ---
@@ -703,7 +712,10 @@ mod tests {
 
         // is_tmpfs == true but s_inodes field missing → skips inode walk → empty
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "tmpfs sb without s_inodes offset → empty (graceful)");
+        assert!(
+            result.is_empty(),
+            "tmpfs sb without s_inodes offset → empty (graceful)"
+        );
     }
 
     // --- walk_tmpfs_files: tmpfs sb found, s_inodes present, missing i_sb_list → skips ---
@@ -762,7 +774,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "tmpfs sb with s_inodes but no i_sb_list → empty (graceful)");
+        assert!(
+            result.is_empty(),
+            "tmpfs sb with s_inodes but no i_sb_list → empty (graceful)"
+        );
     }
 
     // --- walk_tmpfs_files: s_type ptr readable, name_ptr == 0 → is_tmpfs = false ---
@@ -771,12 +786,12 @@ mod tests {
     fn walk_tmpfs_null_name_ptr_is_not_tmpfs() {
         use memf_core::test_builders::flags as ptf;
 
-        let sym_vaddr: u64       = 0xFFFF_8800_0054_0000;
-        let sym_paddr: u64       = 0x0054_0000;
-        let sb_entry_vaddr: u64  = 0xFFFF_8800_0055_0000;
-        let sb_entry_paddr: u64  = 0x0055_0000;
-        let fs_type_vaddr: u64   = 0xFFFF_8800_0056_0000;
-        let fs_type_paddr: u64   = 0x0056_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_0054_0000;
+        let sym_paddr: u64 = 0x0054_0000;
+        let sb_entry_vaddr: u64 = 0xFFFF_8800_0055_0000;
+        let sb_entry_paddr: u64 = 0x0055_0000;
+        let fs_type_vaddr: u64 = 0xFFFF_8800_0056_0000;
+        let fs_type_paddr: u64 = 0x0056_0000;
 
         let mut sym_page = [0u8; 4096];
         sym_page[0..8].copy_from_slice(&sb_entry_vaddr.to_le_bytes());
@@ -809,7 +824,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "null name_ptr → is_tmpfs false → no entries");
+        assert!(
+            result.is_empty(),
+            "null name_ptr → is_tmpfs false → no entries"
+        );
     }
 
     // --- walk_tmpfs_files: full path — tmpfs sb with one real inode in the list ---
@@ -836,32 +854,32 @@ mod tests {
         //   inode.i_sb_list (= inode_vaddr + i_sb_list_offset):
         //     first 8 bytes (next ptr) = inode_head (wraps back → loop ends)
 
-        let sym_vaddr:    u64 = 0xFFFF_8800_0057_0000;
-        let sym_paddr:    u64 = 0x0057_0000;
-        let sb_vaddr:     u64 = 0xFFFF_8800_0058_0000;
-        let sb_paddr:     u64 = 0x0058_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_0057_0000;
+        let sym_paddr: u64 = 0x0057_0000;
+        let sb_vaddr: u64 = 0xFFFF_8800_0058_0000;
+        let sb_paddr: u64 = 0x0058_0000;
         let fstype_vaddr: u64 = 0xFFFF_8800_0059_0000;
         let fstype_paddr: u64 = 0x0059_0000;
-        let name_vaddr:   u64 = 0xFFFF_8800_005A_0000;
-        let name_paddr:   u64 = 0x005A_0000;
-        let inode_vaddr:  u64 = 0xFFFF_8800_005B_0000;
-        let inode_paddr:  u64 = 0x005B_0000;
+        let name_vaddr: u64 = 0xFFFF_8800_005A_0000;
+        let name_paddr: u64 = 0x005A_0000;
+        let inode_vaddr: u64 = 0xFFFF_8800_005B_0000;
+        let inode_paddr: u64 = 0x005B_0000;
 
         // super_block field offsets:
-        let s_list_offset:   u64 = 0x00;
-        let s_type_offset:   u64 = 0x08;
+        let s_list_offset: u64 = 0x00;
+        let s_type_offset: u64 = 0x08;
         let s_inodes_offset: u64 = 0x20;
 
         // inode field offsets:
         let i_sb_list_offset: u64 = 0x08;
-        let i_ino_offset:     u64 = 0x10;
-        let i_size_offset:    u64 = 0x18;
-        let i_uid_offset:     u64 = 0x20;
-        let i_gid_offset:     u64 = 0x24;
-        let i_mode_offset:    u64 = 0x28;
-        let i_atime_offset:   u64 = 0x30;
-        let i_mtime_offset:   u64 = 0x38;
-        let i_ctime_offset:   u64 = 0x40;
+        let i_ino_offset: u64 = 0x10;
+        let i_size_offset: u64 = 0x18;
+        let i_uid_offset: u64 = 0x20;
+        let i_gid_offset: u64 = 0x24;
+        let i_mode_offset: u64 = 0x28;
+        let i_atime_offset: u64 = 0x30;
+        let i_mtime_offset: u64 = 0x38;
+        let i_ctime_offset: u64 = 0x40;
 
         // The inode list head is embedded in the super_block at s_inodes_offset.
         let inode_list_head = sb_vaddr + s_inodes_offset;
@@ -942,16 +960,16 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr,    sym_paddr,    ptf::WRITABLE)
-            .write_phys(sym_paddr,    &sym_page)
-            .map_4k(sb_vaddr,     sb_paddr,     ptf::WRITABLE)
-            .write_phys(sb_paddr,     &sb_page)
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .map_4k(sb_vaddr, sb_paddr, ptf::WRITABLE)
+            .write_phys(sb_paddr, &sb_page)
             .map_4k(fstype_vaddr, fstype_paddr, ptf::WRITABLE)
             .write_phys(fstype_paddr, &fstype_page)
-            .map_4k(name_vaddr,   name_paddr,   ptf::WRITABLE)
-            .write_phys(name_paddr,   &name_page)
-            .map_4k(inode_vaddr,  inode_paddr,  ptf::WRITABLE)
-            .write_phys(inode_paddr,  &inode_page)
+            .map_4k(name_vaddr, name_paddr, ptf::WRITABLE)
+            .write_phys(name_paddr, &name_page)
+            .map_4k(inode_vaddr, inode_paddr, ptf::WRITABLE)
+            .write_phys(inode_paddr, &inode_page)
             .build();
 
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -968,7 +986,10 @@ mod tests {
         assert_eq!(fi.atime_sec, 1000);
         assert_eq!(fi.mtime_sec, 2000);
         assert_eq!(fi.ctime_sec, 3000);
-        assert!(fi.is_suspicious, "executable regular file must be suspicious");
+        assert!(
+            fi.is_suspicious,
+            "executable regular file must be suspicious"
+        );
     }
 
     // --- dentry-based filename resolution ---
@@ -989,41 +1010,41 @@ mod tests {
         //   dentry_vaddr      — the dentry
         //   dname_str_vaddr   — "secret.txt\0"
 
-        let sym_vaddr:      u64 = 0xFFFF_8800_0060_0000;
-        let sym_paddr:      u64 = 0x0060_0000;
-        let sb_vaddr:       u64 = 0xFFFF_8800_0061_0000;
-        let sb_paddr:       u64 = 0x0061_0000;
-        let fstype_vaddr:   u64 = 0xFFFF_8800_0062_0000;
-        let fstype_paddr:   u64 = 0x0062_0000;
-        let fsname_vaddr:   u64 = 0xFFFF_8800_0063_0000;
-        let fsname_paddr:   u64 = 0x0063_0000;
-        let inode_vaddr:    u64 = 0xFFFF_8800_0064_0000;
-        let inode_paddr:    u64 = 0x0064_0000;
-        let dentry_vaddr:   u64 = 0xFFFF_8800_0065_0000;
-        let dentry_paddr:   u64 = 0x0065_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_0060_0000;
+        let sym_paddr: u64 = 0x0060_0000;
+        let sb_vaddr: u64 = 0xFFFF_8800_0061_0000;
+        let sb_paddr: u64 = 0x0061_0000;
+        let fstype_vaddr: u64 = 0xFFFF_8800_0062_0000;
+        let fstype_paddr: u64 = 0x0062_0000;
+        let fsname_vaddr: u64 = 0xFFFF_8800_0063_0000;
+        let fsname_paddr: u64 = 0x0063_0000;
+        let inode_vaddr: u64 = 0xFFFF_8800_0064_0000;
+        let inode_paddr: u64 = 0x0064_0000;
+        let dentry_vaddr: u64 = 0xFFFF_8800_0065_0000;
+        let dentry_paddr: u64 = 0x0065_0000;
         let dname_str_vaddr: u64 = 0xFFFF_8800_0066_0000;
         let dname_str_paddr: u64 = 0x0066_0000;
 
         // super_block field offsets
-        let s_list_off:    u64 = 0x00;
-        let s_type_off:    u64 = 0x08;
-        let s_inodes_off:  u64 = 0x20;
+        let s_list_off: u64 = 0x00;
+        let s_type_off: u64 = 0x08;
+        let s_inodes_off: u64 = 0x20;
 
         // inode field offsets
         let i_sb_list_off: u64 = 0x08;
-        let i_ino_off:     u64 = 0x10;
-        let i_size_off:    u64 = 0x18;
-        let i_uid_off:     u64 = 0x20;
-        let i_gid_off:     u64 = 0x24;
-        let i_mode_off:    u64 = 0x28;
-        let i_atime_off:   u64 = 0x30;
-        let i_mtime_off:   u64 = 0x38;
-        let i_ctime_off:   u64 = 0x40;
-        let i_dentry_off:  u64 = 0x48; // hlist_head.first pointer
+        let i_ino_off: u64 = 0x10;
+        let i_size_off: u64 = 0x18;
+        let i_uid_off: u64 = 0x20;
+        let i_gid_off: u64 = 0x24;
+        let i_mode_off: u64 = 0x28;
+        let i_atime_off: u64 = 0x30;
+        let i_mtime_off: u64 = 0x38;
+        let i_ctime_off: u64 = 0x40;
+        let i_dentry_off: u64 = 0x48; // hlist_head.first pointer
 
         // dentry field offsets
-        let d_alias_off:   u64 = 0x00; // hlist_node embedded at start of dentry
-        let d_name_off:    u64 = 0x20; // qstr struct
+        let d_alias_off: u64 = 0x00; // hlist_node embedded at start of dentry
+        let d_name_off: u64 = 0x20; // qstr struct
         let d_name_name_off: u64 = d_name_off + 0x08; // name pointer within qstr (after hash+len)
 
         // The hlist_node pointer stored in inode.i_dentry.first points at
@@ -1113,18 +1134,18 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr,       sym_paddr,       ptf::WRITABLE)
-            .write_phys(sym_paddr,       &sym_page)
-            .map_4k(sb_vaddr,        sb_paddr,        ptf::WRITABLE)
-            .write_phys(sb_paddr,        &sb_page)
-            .map_4k(fstype_vaddr,    fstype_paddr,    ptf::WRITABLE)
-            .write_phys(fstype_paddr,    &fstype_page)
-            .map_4k(fsname_vaddr,    fsname_paddr,    ptf::WRITABLE)
-            .write_phys(fsname_paddr,    &fsname_page)
-            .map_4k(inode_vaddr,     inode_paddr,     ptf::WRITABLE)
-            .write_phys(inode_paddr,     &inode_page)
-            .map_4k(dentry_vaddr,    dentry_paddr,    ptf::WRITABLE)
-            .write_phys(dentry_paddr,    &dentry_page)
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .map_4k(sb_vaddr, sb_paddr, ptf::WRITABLE)
+            .write_phys(sb_paddr, &sb_page)
+            .map_4k(fstype_vaddr, fstype_paddr, ptf::WRITABLE)
+            .write_phys(fstype_paddr, &fstype_page)
+            .map_4k(fsname_vaddr, fsname_paddr, ptf::WRITABLE)
+            .write_phys(fsname_paddr, &fsname_page)
+            .map_4k(inode_vaddr, inode_paddr, ptf::WRITABLE)
+            .write_phys(inode_paddr, &inode_page)
+            .map_4k(dentry_vaddr, dentry_paddr, ptf::WRITABLE)
+            .write_phys(dentry_paddr, &dentry_page)
             .map_4k(dname_str_vaddr, dname_str_paddr, ptf::WRITABLE)
             .write_phys(dname_str_paddr, &dname_str_page)
             .build();
@@ -1145,29 +1166,29 @@ mod tests {
     fn inode_without_dentry_returns_empty_filename() {
         use memf_core::test_builders::flags as ptf;
 
-        let sym_vaddr:    u64 = 0xFFFF_8800_0067_0000;
-        let sym_paddr:    u64 = 0x0067_0000;
-        let sb_vaddr:     u64 = 0xFFFF_8800_0068_0000;
-        let sb_paddr:     u64 = 0x0068_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_0067_0000;
+        let sym_paddr: u64 = 0x0067_0000;
+        let sb_vaddr: u64 = 0xFFFF_8800_0068_0000;
+        let sb_paddr: u64 = 0x0068_0000;
         let fstype_vaddr: u64 = 0xFFFF_8800_0069_0000;
         let fstype_paddr: u64 = 0x0069_0000;
         let fsname_vaddr: u64 = 0xFFFF_8800_006A_0000;
         let fsname_paddr: u64 = 0x006A_0000;
-        let inode_vaddr:  u64 = 0xFFFF_8800_006B_0000;
-        let inode_paddr:  u64 = 0x006B_0000;
+        let inode_vaddr: u64 = 0xFFFF_8800_006B_0000;
+        let inode_paddr: u64 = 0x006B_0000;
 
-        let s_list_off:   u64 = 0x00;
-        let s_type_off:   u64 = 0x08;
+        let s_list_off: u64 = 0x00;
+        let s_type_off: u64 = 0x08;
         let s_inodes_off: u64 = 0x20;
         let i_sb_list_off: u64 = 0x08;
-        let i_ino_off:    u64 = 0x10;
-        let i_size_off:   u64 = 0x18;
-        let i_uid_off:    u64 = 0x20;
-        let i_gid_off:    u64 = 0x24;
-        let i_mode_off:   u64 = 0x28;
-        let i_atime_off:  u64 = 0x30;
-        let i_mtime_off:  u64 = 0x38;
-        let i_ctime_off:  u64 = 0x40;
+        let i_ino_off: u64 = 0x10;
+        let i_size_off: u64 = 0x18;
+        let i_uid_off: u64 = 0x20;
+        let i_gid_off: u64 = 0x24;
+        let i_mode_off: u64 = 0x28;
+        let i_atime_off: u64 = 0x30;
+        let i_mtime_off: u64 = 0x38;
+        let i_ctime_off: u64 = 0x40;
         let i_dentry_off: u64 = 0x48;
 
         let inode_list_head = sb_vaddr + s_inodes_off;
@@ -1197,10 +1218,8 @@ mod tests {
             .copy_from_slice(&99u64.to_le_bytes());
         inode_page[i_size_off as usize..i_size_off as usize + 8]
             .copy_from_slice(&0u64.to_le_bytes());
-        inode_page[i_uid_off as usize..i_uid_off as usize + 4]
-            .copy_from_slice(&0u32.to_le_bytes());
-        inode_page[i_gid_off as usize..i_gid_off as usize + 4]
-            .copy_from_slice(&0u32.to_le_bytes());
+        inode_page[i_uid_off as usize..i_uid_off as usize + 4].copy_from_slice(&0u32.to_le_bytes());
+        inode_page[i_gid_off as usize..i_gid_off as usize + 4].copy_from_slice(&0u32.to_le_bytes());
         inode_page[i_mode_off as usize..i_mode_off as usize + 4]
             .copy_from_slice(&0o100_644u32.to_le_bytes());
         inode_page[i_atime_off as usize..i_atime_off as usize + 8]
@@ -1237,16 +1256,16 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sym_vaddr,    sym_paddr,    ptf::WRITABLE)
-            .write_phys(sym_paddr,    &sym_page)
-            .map_4k(sb_vaddr,     sb_paddr,     ptf::WRITABLE)
-            .write_phys(sb_paddr,     &sb_page)
+            .map_4k(sym_vaddr, sym_paddr, ptf::WRITABLE)
+            .write_phys(sym_paddr, &sym_page)
+            .map_4k(sb_vaddr, sb_paddr, ptf::WRITABLE)
+            .write_phys(sb_paddr, &sb_page)
             .map_4k(fstype_vaddr, fstype_paddr, ptf::WRITABLE)
             .write_phys(fstype_paddr, &fstype_page)
             .map_4k(fsname_vaddr, fsname_paddr, ptf::WRITABLE)
             .write_phys(fsname_paddr, &fsname_page)
-            .map_4k(inode_vaddr,  inode_paddr,  ptf::WRITABLE)
-            .write_phys(inode_paddr,  &inode_page)
+            .map_4k(inode_vaddr, inode_paddr, ptf::WRITABLE)
+            .write_phys(inode_paddr, &inode_page)
             .build();
 
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -1323,7 +1342,7 @@ mod tests {
         let mut sb_page = [0u8; 4096];
         sb_page[0x00..0x08].copy_from_slice(&sym_vaddr.to_le_bytes()); // s_list.next = head → ends loop
         sb_page[0x08..0x10].copy_from_slice(&fs_type_vaddr.to_le_bytes()); // s_type
-        // s_inodes.next = inode_list_head (self-pointer → inner loop exits immediately)
+                                                                           // s_inodes.next = inode_list_head (self-pointer → inner loop exits immediately)
         sb_page[s_inodes_offset as usize..s_inodes_offset as usize + 8]
             .copy_from_slice(&inode_list_head.to_le_bytes());
 
@@ -1368,6 +1387,9 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_tmpfs_files(&reader).unwrap();
-        assert!(result.is_empty(), "tmpfs sb with self-pointing inode list → 0 inodes");
+        assert!(
+            result.is_empty(),
+            "tmpfs sb with self-pointing inode list → 0 inodes"
+        );
     }
 }

@@ -6,7 +6,10 @@ use crate::event::{Entity, ForensicEvent, Severity};
 
 /// Compute a simple threat score for a set of events (same weights as ScoringEngine).
 fn score_events(events: &[ForensicEvent]) -> f64 {
-    events.iter().map(|e| severity_weight(e.severity) * e.confidence).sum()
+    events
+        .iter()
+        .map(|e| severity_weight(e.severity) * e.confidence)
+        .sum()
 }
 
 fn severity_weight(severity: Severity) -> f64 {
@@ -48,7 +51,9 @@ impl ProcessTree {
 
         for event in events {
             if let Entity::Process { pid, name, ppid } = &event.entity {
-                let entry = by_pid.entry(*pid).or_insert_with(|| (name.clone(), *ppid, vec![]));
+                let entry = by_pid
+                    .entry(*pid)
+                    .or_insert_with(|| (name.clone(), *ppid, vec![]));
                 // Keep the first seen name/ppid but accumulate events.
                 entry.2.push(event);
             }
@@ -87,7 +92,14 @@ impl ProcessTree {
                 .into_iter()
                 .map(|child_pid| build_node(child_pid, by_pid, parent_to_children))
                 .collect();
-            ProcessNode { pid, name, ppid, children, events, threat_score }
+            ProcessNode {
+                pid,
+                name,
+                ppid,
+                children,
+                events,
+                threat_score,
+            }
         }
 
         let roots = root_pids
@@ -153,7 +165,9 @@ impl ProcessTree {
     pub fn highest_threat_path(&self) -> Vec<&ProcessNode> {
         // Find the root with the highest threat_score.
         let best_root = self.roots.iter().max_by(|a, b| {
-            a.threat_score.partial_cmp(&b.threat_score).unwrap_or(std::cmp::Ordering::Equal)
+            a.threat_score
+                .partial_cmp(&b.threat_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let Some(start) = best_root else {
@@ -164,7 +178,9 @@ impl ProcessTree {
         let mut current = start;
         loop {
             let best_child = current.children.iter().max_by(|a, b| {
-                a.threat_score.partial_cmp(&b.threat_score).unwrap_or(std::cmp::Ordering::Equal)
+                a.threat_score
+                    .partial_cmp(&b.threat_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             match best_child {
                 Some(child) => {
@@ -185,7 +201,13 @@ mod tests {
 
     use crate::event::{Entity, Finding, ForensicEvent, Protocol, Severity};
 
-    fn proc_event(pid: u32, ppid: Option<u32>, finding: Finding, severity: Severity, confidence: f64) -> ForensicEvent {
+    fn proc_event(
+        pid: u32,
+        ppid: Option<u32>,
+        finding: Finding,
+        severity: Severity,
+        confidence: f64,
+    ) -> ForensicEvent {
         ForensicEvent::builder()
             .source_walker("test_walker")
             .entity(Entity::Process {
@@ -221,9 +243,13 @@ mod tests {
 
     #[test]
     fn single_process_with_no_ppid_is_root() {
-        let tree = ProcessTree::from_events(vec![
-            proc_event(1, None, Finding::Other("x".into()), Severity::Info, 0.5),
-        ]);
+        let tree = ProcessTree::from_events(vec![proc_event(
+            1,
+            None,
+            Finding::Other("x".into()),
+            Severity::Info,
+            0.5,
+        )]);
         let roots = tree.roots();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].pid, 1);
@@ -263,9 +289,13 @@ mod tests {
     #[test]
     fn orphaned_node_has_ppid_but_parent_missing() {
         // pid 99 claims ppid = 1 but pid 1 is not in any event
-        let tree = ProcessTree::from_events(vec![
-            proc_event(99, Some(1), Finding::Other("x".into()), Severity::Info, 0.5),
-        ]);
+        let tree = ProcessTree::from_events(vec![proc_event(
+            99,
+            Some(1),
+            Finding::Other("x".into()),
+            Severity::Info,
+            0.5,
+        )]);
         let orphans = tree.orphaned_nodes();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].pid, 99);
@@ -284,9 +314,13 @@ mod tests {
 
     #[test]
     fn find_pid_returns_none_for_unknown() {
-        let tree = ProcessTree::from_events(vec![
-            proc_event(1, None, Finding::Other("x".into()), Severity::Info, 0.5),
-        ]);
+        let tree = ProcessTree::from_events(vec![proc_event(
+            1,
+            None,
+            Finding::Other("x".into()),
+            Severity::Info,
+            0.5,
+        )]);
         assert!(tree.find_pid(9999).is_none());
     }
 
@@ -315,7 +349,10 @@ mod tests {
         let roots = tree.roots();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].pid, 1);
-        assert!(tree.find_pid(8080).is_none(), "connection src port should not be a pid node");
+        assert!(
+            tree.find_pid(8080).is_none(),
+            "connection src port should not be a pid node"
+        );
     }
 
     #[test]
@@ -328,7 +365,13 @@ mod tests {
             // pid 2: low-scoring child of 1
             proc_event(2, Some(1), Finding::Other("x".into()), Severity::Info, 0.5),
             // pid 3: high-scoring child of 1
-            proc_event(3, Some(1), Finding::ProcessHollowing, Severity::Critical, 1.0),
+            proc_event(
+                3,
+                Some(1),
+                Finding::ProcessHollowing,
+                Severity::Critical,
+                1.0,
+            ),
             // pid 4: child of 3
             proc_event(4, Some(3), Finding::NetworkBeaconing, Severity::High, 1.0),
         ];

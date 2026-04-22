@@ -425,14 +425,14 @@ mod tests {
         // Addresses (paddr < 0x00FF_FFFF):
         let obj_header_vaddr: u64 = 0xFFFF_8000_0030_0000;
         let obj_header_paddr: u64 = 0x0050_0000;
-        let file_obj_paddr  = obj_header_paddr + OBJ_HEADER_BODY;
+        let file_obj_paddr = obj_header_paddr + OBJ_HEADER_BODY;
 
-        let dev_vaddr:  u64 = 0xFFFF_8000_0031_0000;
-        let dev_paddr:  u64 = 0x0051_0000;
-        let drv_vaddr:  u64 = 0xFFFF_8000_0032_0000;
-        let drv_paddr:  u64 = 0x0052_0000;
-        let str_vaddr:  u64 = 0xFFFF_8000_0033_0000;
-        let str_paddr:  u64 = 0x0053_0000;
+        let dev_vaddr: u64 = 0xFFFF_8000_0031_0000;
+        let dev_paddr: u64 = 0x0051_0000;
+        let drv_vaddr: u64 = 0xFFFF_8000_0032_0000;
+        let drv_paddr: u64 = 0x0052_0000;
+        let str_vaddr: u64 = 0xFFFF_8000_0033_0000;
+        let str_paddr: u64 = 0x0053_0000;
 
         let driver_name = "\\Driver\\disk";
         let name_utf16 = utf16le(driver_name);
@@ -456,9 +456,9 @@ mod tests {
             // _DRIVER_OBJECT
             .map_4k(drv_vaddr, drv_paddr, flags::WRITABLE)
             // _DRIVER_OBJECT.DriverName (_UNICODE_STRING) at drv_paddr + 0x38
-            .write_phys(drv_paddr + 0x38, &name_len.to_le_bytes())               // Length
-            .write_phys(drv_paddr + 0x3A, &(name_len + 2).to_le_bytes())          // MaximumLength
-            .write_phys_u64(drv_paddr + 0x40, str_vaddr)                          // Buffer ptr
+            .write_phys(drv_paddr + 0x38, &name_len.to_le_bytes()) // Length
+            .write_phys(drv_paddr + 0x3A, &(name_len + 2).to_le_bytes()) // MaximumLength
+            .write_phys_u64(drv_paddr + 0x40, str_vaddr) // Buffer ptr
             // String data
             .map_4k(str_vaddr, str_paddr, flags::WRITABLE)
             .write_phys(str_paddr, &name_utf16);
@@ -476,7 +476,9 @@ mod tests {
 
         let result = walk_file_objects(&reader, &handles).unwrap();
         assert_eq!(result.len(), 1, "should find one file object");
-        assert_eq!(result[0].device_name, "\\Driver\\disk",
-            "device_name should be resolved from driver");
+        assert_eq!(
+            result[0].device_name, "\\Driver\\disk",
+            "device_name should be resolved from driver"
+        );
     }
 }

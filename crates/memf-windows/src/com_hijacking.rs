@@ -95,11 +95,7 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
     }
 
     // Navigate to `Software\Classes\CLSID` in the HKCU hive.
-    let clsid_cell = match find_key_cell(
-        reader,
-        hku_hive_addr,
-        &["Software", "Classes", "CLSID"],
-    ) {
+    let clsid_cell = match find_key_cell(reader, hku_hive_addr, &["Software", "Classes", "CLSID"]) {
         Some(c) => c,
         None => return Ok(Vec::new()),
     };
@@ -121,15 +117,12 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
             };
 
         // Read the default value of InprocServer32 in HKCU.
-        let hkcu_server = match read_default_value_string(reader, hku_hive_addr, hkcu_inproc_cell)
-        {
+        let hkcu_server = match read_default_value_string(reader, hku_hive_addr, hkcu_inproc_cell) {
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
 
-        let hkcu_path = format!(
-            r"HKCU\Software\Classes\CLSID\{guid_name}\InprocServer32"
-        );
+        let hkcu_path = format!(r"HKCU\Software\Classes\CLSID\{guid_name}\InprocServer32");
 
         // Look up the same CLSID in HKCR.
         let (hkcr_server, hkcr_path) = if hkcr_hive_addr != 0 {
@@ -143,9 +136,7 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
                         Some(ic) => {
                             let srv = read_default_value_string(reader, hkcr_hive_addr, ic)
                                 .unwrap_or_default();
-                            let path = format!(
-                                r"HKCR\CLSID\{guid_name}\InprocServer32"
-                            );
+                            let path = format!(r"HKCR\CLSID\{guid_name}\InprocServer32");
                             (srv, path)
                         }
                         None => (String::new(), String::new()),
@@ -183,10 +174,7 @@ fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
 }
 
 /// Read raw cell payload (skipping the 4-byte size header).
-fn read_cell<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    vaddr: u64,
-) -> Option<Vec<u8>> {
+fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<Vec<u8>> {
     reader.read_bytes(vaddr + 4, 4096).ok()
 }
 
@@ -237,20 +225,13 @@ fn find_subkey_named<P: PhysicalMemoryProvider>(
         return None;
     }
 
-    let count = u32::from_le_bytes(
-        data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4]
-            .try_into()
-            .ok()?,
-    ) as usize;
+    let count =
+        u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?) as usize;
     if count == 0 {
         return None;
     }
 
-    let list_cell = u32::from_le_bytes(
-        data[NK_STABLE_LIST..NK_STABLE_LIST + 4]
-            .try_into()
-            .ok()?,
-    );
+    let list_cell = u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
     let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
     if list_data.len() < 4 {
         return None;
@@ -270,8 +251,7 @@ fn find_subkey_named<P: PhysicalMemoryProvider>(
         if off + 4 > list_data.len() {
             break;
         }
-        let child_cell =
-            u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
+        let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
         let child_data = read_cell(reader, cell_vaddr(hive_addr, child_cell))?;
         let child_name = key_node_name(&child_data);
         if child_name.eq_ignore_ascii_case(name) {
@@ -296,20 +276,13 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
         return None;
     }
 
-    let count = u32::from_le_bytes(
-        data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4]
-            .try_into()
-            .ok()?,
-    ) as usize;
+    let count =
+        u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?) as usize;
     if count == 0 {
         return Some(Vec::new());
     }
 
-    let list_cell = u32::from_le_bytes(
-        data[NK_STABLE_LIST..NK_STABLE_LIST + 4]
-            .try_into()
-            .ok()?,
-    );
+    let list_cell = u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
     let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
     if list_data.len() < 4 {
         return None;
@@ -330,8 +303,7 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
         if off + 4 > list_data.len() {
             break;
         }
-        let child_cell =
-            u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
+        let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
         let child_data = match read_cell(reader, cell_vaddr(hive_addr, child_cell)) {
             Some(d) => d,
             None => continue,
@@ -384,8 +356,7 @@ fn read_default_value_string<P: PhysicalMemoryProvider>(
         if off + 4 > vl_data.len() {
             break;
         }
-        let vk_cell_idx =
-            u32::from_le_bytes(vl_data[off..off + 4].try_into().ok()?);
+        let vk_cell_idx = u32::from_le_bytes(vl_data[off..off + 4].try_into().ok()?);
         let vk_data = read_cell(reader, cell_vaddr(hive_addr, vk_cell_idx))?;
         if vk_data.len() < 0x14 {
             continue;
@@ -394,17 +365,22 @@ fn read_default_value_string<P: PhysicalMemoryProvider>(
         if vk_sig != VK_SIG {
             continue;
         }
-        let name_len =
-            u16::from_le_bytes(vk_data[0x02..0x04].try_into().ok()?) as usize;
+        let name_len = u16::from_le_bytes(vk_data[0x02..0x04].try_into().ok()?) as usize;
         // Default value has name_len == 0.
         if name_len != 0 {
             continue;
         }
 
-        let data_length_raw =
-            u32::from_le_bytes(vk_data[VK_DATA_LEN_OFF..VK_DATA_LEN_OFF + 4].try_into().ok()?);
-        let data_offset =
-            u32::from_le_bytes(vk_data[VK_DATA_OFF_OFF..VK_DATA_OFF_OFF + 4].try_into().ok()?);
+        let data_length_raw = u32::from_le_bytes(
+            vk_data[VK_DATA_LEN_OFF..VK_DATA_LEN_OFF + 4]
+                .try_into()
+                .ok()?,
+        );
+        let data_offset = u32::from_le_bytes(
+            vk_data[VK_DATA_OFF_OFF..VK_DATA_OFF_OFF + 4]
+                .try_into()
+                .ok()?,
+        );
 
         let raw_bytes: Vec<u8> = if data_length_raw & 0x8000_0000 != 0 {
             // Inline data (up to 4 bytes) stored in the DataOffset field.
@@ -492,10 +468,8 @@ mod tests {
             .copy_from_slice(&stable_subkey_count.to_le_bytes());
         data[NK_STABLE_LIST..NK_STABLE_LIST + 4]
             .copy_from_slice(&stable_subkeys_list.to_le_bytes());
-        data[NK_VALUE_COUNT..NK_VALUE_COUNT + 4]
-            .copy_from_slice(&value_count.to_le_bytes());
-        data[NK_VALUES_LIST..NK_VALUES_LIST + 4]
-            .copy_from_slice(&values_list.to_le_bytes());
+        data[NK_VALUE_COUNT..NK_VALUE_COUNT + 4].copy_from_slice(&value_count.to_le_bytes());
+        data[NK_VALUES_LIST..NK_VALUES_LIST + 4].copy_from_slice(&values_list.to_le_bytes());
         data[NK_NAME_LEN..NK_NAME_LEN + 2]
             .copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
         data[NK_NAME_DATA..NK_NAME_DATA + name_bytes.len()].copy_from_slice(name_bytes);
@@ -668,9 +642,15 @@ mod tests {
 
         place!(root_cell, build_cell(&build_nk("ROOT", 1, lf_root, 0, 0)));
         place!(lf_root, build_cell(&build_lf(&[nk_software])));
-        place!(nk_software, build_cell(&build_nk("Software", 1, lf_software, 0, 0)));
+        place!(
+            nk_software,
+            build_cell(&build_nk("Software", 1, lf_software, 0, 0))
+        );
         place!(lf_software, build_cell(&build_lf(&[nk_classes])));
-        place!(nk_classes, build_cell(&build_nk("Classes", 1, lf_classes, 0, 0)));
+        place!(
+            nk_classes,
+            build_cell(&build_nk("Classes", 1, lf_classes, 0, 0))
+        );
         place!(lf_classes, build_cell(&build_lf(&[nk_clsid])));
         place!(nk_clsid, build_cell(&build_nk("CLSID", 1, lf_clsid, 0, 0)));
         place!(lf_clsid, build_cell(&build_lf(&[nk_guid])));
@@ -813,7 +793,10 @@ mod tests {
     fn walk_com_hijacking_empty_when_no_hive() {
         let reader = make_reader(PageTableBuilder::new());
         let results = walk_com_hijacking(&reader, 0, 0).unwrap();
-        assert!(results.is_empty(), "zero hive addresses should return empty");
+        assert!(
+            results.is_empty(),
+            "zero hive addresses should return empty"
+        );
     }
 
     /// HKCU has a CLSID pointing to an evil DLL, HKCR has the same CLSID
@@ -848,7 +831,10 @@ mod tests {
             "hkcu_server mismatch: {}",
             entry.hkcu_server
         );
-        assert!(entry.is_suspicious, "override of HKCR entry must be suspicious");
+        assert!(
+            entry.is_suspicious,
+            "override of HKCR entry must be suspicious"
+        );
     }
 
     /// CLSID in HKCU but absent from HKCR → should still be flagged suspicious.

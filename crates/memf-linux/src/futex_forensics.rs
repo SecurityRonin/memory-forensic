@@ -346,13 +346,13 @@ mod tests {
 
         let zero_page = [0u8; 4096];
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(fq_vaddr,                  fq_paddr_base,          ptf::WRITABLE)
-            .write_phys(fq_paddr_base,          &zero_page)
-            .map_4k(fq_vaddr + 0x1000,          fq_paddr_base + 0x1000, ptf::WRITABLE)
+            .map_4k(fq_vaddr, fq_paddr_base, ptf::WRITABLE)
+            .write_phys(fq_paddr_base, &zero_page)
+            .map_4k(fq_vaddr + 0x1000, fq_paddr_base + 0x1000, ptf::WRITABLE)
             .write_phys(fq_paddr_base + 0x1000, &zero_page)
-            .map_4k(fq_vaddr + 0x2000,          fq_paddr_base + 0x2000, ptf::WRITABLE)
+            .map_4k(fq_vaddr + 0x2000, fq_paddr_base + 0x2000, ptf::WRITABLE)
             .write_phys(fq_paddr_base + 0x2000, &zero_page)
-            .map_4k(fq_vaddr + 0x3000,          fq_paddr_base + 0x3000, ptf::WRITABLE)
+            .map_4k(fq_vaddr + 0x3000, fq_paddr_base + 0x3000, ptf::WRITABLE)
             .write_phys(fq_paddr_base + 0x3000, &zero_page)
             .build();
 
@@ -382,8 +382,8 @@ mod tests {
         //                           [24..32]= 0 (key_offset_field → "private")
         let bucket_vaddr: u64 = 0xFFFF_8800_00C0_0000;
         let bucket_paddr: u64 = 0x00C0_0000; // < 16 MB
-        let node_vaddr: u64   = 0xFFFF_8800_00C1_0000;
-        let node_paddr: u64   = 0x00C1_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_00C1_0000;
+        let node_paddr: u64 = 0x00C1_0000;
 
         let mut bucket_page = [0u8; 4096];
         // chain at offset 0 points to node
@@ -423,8 +423,8 @@ mod tests {
 
         let bucket_vaddr: u64 = 0xFFFF_8800_00D0_0000;
         let bucket_paddr: u64 = 0x00D0_0000;
-        let node_vaddr: u64   = 0xFFFF_8800_00D1_0000;
-        let node_paddr: u64   = 0x00D1_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_00D1_0000;
+        let node_paddr: u64 = 0x00D1_0000;
 
         let mut bucket_page = [0u8; 4096];
         bucket_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
@@ -472,10 +472,10 @@ mod tests {
         //   task_vaddr   : task_struct with pid at offset 0 = 1234
         let bucket_vaddr: u64 = 0xFFFF_8800_00E0_0000;
         let bucket_paddr: u64 = 0x00E0_0000;
-        let node_vaddr: u64   = 0xFFFF_8800_00E1_0000;
-        let node_paddr: u64   = 0x00E1_0000;
-        let task_vaddr: u64   = 0xFFFF_8800_00E2_0000;
-        let task_paddr: u64   = 0x00E2_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_00E1_0000;
+        let node_paddr: u64 = 0x00E1_0000;
+        let task_vaddr: u64 = 0xFFFF_8800_00E2_0000;
+        let task_paddr: u64 = 0x00E2_0000;
 
         let mut bucket_page = [0u8; 4096];
         bucket_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
@@ -515,7 +515,10 @@ mod tests {
 
         let result = walk_futex_table(&reader).unwrap();
         assert_eq!(result.len(), 1, "one waiter → one entry");
-        assert_eq!(result[0].owner_pid, 1234, "pid should be read from task_struct");
+        assert_eq!(
+            result[0].owner_pid, 1234,
+            "pid should be read from task_struct"
+        );
         assert_eq!(result[0].waiter_count, 1);
     }
 
@@ -569,7 +572,11 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_futex_table(&reader).unwrap();
-        assert_eq!(result.len(), 1, "one bucket with two waiters → one aggregate entry");
+        assert_eq!(
+            result.len(),
+            1,
+            "one bucket with two waiters → one aggregate entry"
+        );
         assert_eq!(result[0].waiter_count, 2, "two nodes → waiter_count = 2");
         assert!(!result[0].is_suspicious, "count=2, key=0, pid=0 → benign");
     }

@@ -748,7 +748,11 @@ mod tests {
     #[test]
     fn classify_sam_no_password_non_normal_not_suspicious() {
         // UAC_PASSWORD_NOT_REQUIRED without UAC_NORMAL_ACCOUNT
-        assert!(!classify_sam_user("svcuser", 1010, UAC_PASSWORD_NOT_REQUIRED));
+        assert!(!classify_sam_user(
+            "svcuser",
+            1010,
+            UAC_PASSWORD_NOT_REQUIRED
+        ));
     }
 
     /// Known attack tool account names are suspicious.
@@ -758,8 +762,16 @@ mod tests {
         assert!(classify_sam_user("hacker", 1003, UAC_NORMAL_ACCOUNT));
         assert!(classify_sam_user("test123", 1003, UAC_NORMAL_ACCOUNT));
         assert!(classify_sam_user("svc_admin", 1003, UAC_NORMAL_ACCOUNT));
-        assert!(classify_sam_user("defaultaccount0", 1003, UAC_NORMAL_ACCOUNT));
-        assert!(classify_sam_user("support_388945a0", 1003, UAC_NORMAL_ACCOUNT));
+        assert!(classify_sam_user(
+            "defaultaccount0",
+            1003,
+            UAC_NORMAL_ACCOUNT
+        ));
+        assert!(classify_sam_user(
+            "support_388945a0",
+            1003,
+            UAC_NORMAL_ACCOUNT
+        ));
     }
 
     /// Known bad names are case-insensitive.
@@ -986,7 +998,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "zero root_cell_off should return empty Vec");
+        assert!(
+            result.is_empty(),
+            "zero root_cell_off should return empty Vec"
+        );
     }
 
     /// Hive with a non-zero root_cell_off exercises the storage/flat_base
@@ -1079,7 +1094,11 @@ mod tests {
     #[test]
     fn classify_sam_password_not_required_without_normal_not_suspicious() {
         // UAC_PASSWORD_NOT_REQUIRED alone (without UAC_NORMAL_ACCOUNT) is benign.
-        assert!(!classify_sam_user("svcuser2", 1030, UAC_PASSWORD_NOT_REQUIRED));
+        assert!(!classify_sam_user(
+            "svcuser2",
+            1030,
+            UAC_PASSWORD_NOT_REQUIRED
+        ));
     }
 
     /// walk_sam_users: subkey_count == 0 under users_key → returns empty.
@@ -1306,13 +1325,17 @@ mod tests {
 
         // SAM found via lh list, but Domains not found (SAM has 0 subkeys) → empty.
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "lh list SAM found but Domains missing → empty");
+        assert!(
+            result.is_empty(),
+            "lh list SAM found but Domains missing → empty"
+        );
     }
 
     /// SamUserInfo: all UAC flags can be combined and read back.
     #[test]
     fn sam_user_info_flag_combinations() {
-        let combined = UAC_ACCOUNT_DISABLED | UAC_LOCKOUT | UAC_PASSWORD_NOT_REQUIRED | UAC_NORMAL_ACCOUNT;
+        let combined =
+            UAC_ACCOUNT_DISABLED | UAC_LOCKOUT | UAC_PASSWORD_NOT_REQUIRED | UAC_NORMAL_ACCOUNT;
         let is_disabled = (combined & UAC_ACCOUNT_DISABLED) != 0;
         let is_locked = (combined & UAC_LOCKOUT) != 0;
         let no_pw = (combined & UAC_PASSWORD_NOT_REQUIRED) != 0;
@@ -1457,7 +1480,11 @@ mod tests {
     /// is suspicious on both axes: dollar and flags.
     #[test]
     fn classify_sam_combined_dollar_and_no_password_suspicious() {
-        assert!(classify_sam_user("hidden$", 1200, UAC_NORMAL_ACCOUNT | UAC_PASSWORD_NOT_REQUIRED));
+        assert!(classify_sam_user(
+            "hidden$",
+            1200,
+            UAC_NORMAL_ACCOUNT | UAC_PASSWORD_NOT_REQUIRED
+        ));
     }
 
     /// A regular name in a larger RID range with only lockout flag → benign.
@@ -1508,7 +1535,7 @@ mod tests {
 
         let root_off = (root_cell_off + 4) as usize; // 0x24 within flat_base page
         let list_off = (list_cell_off + 4) as usize; // 0x84
-        let sam_off = (sam_cell_off + 4) as usize;   // 0xC4
+        let sam_off = (sam_cell_off + 4) as usize; // 0xC4
 
         let mut hive_page = vec![0u8; 0x1000];
         hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
@@ -1708,7 +1735,8 @@ mod tests {
         // val_count=0 at +0x28 means read_f_value returns default.
         let rid_o = addr_off(rid_cell_off);
         let rid_name = b"000001F4";
-        flat_page[rid_o + 0x4A..rid_o + 0x4C].copy_from_slice(&(rid_name.len() as u16).to_le_bytes());
+        flat_page[rid_o + 0x4A..rid_o + 0x4C]
+            .copy_from_slice(&(rid_name.len() as u16).to_le_bytes());
         flat_page[rid_o + 0x4C..rid_o + 0x4C + rid_name.len()].copy_from_slice(rid_name);
         // val_count at +0x28 = 0 (already zero) → read_f_value returns defaults
     }
@@ -1806,7 +1834,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "subkey_count > MAX_USERS should return empty");
+        assert!(
+            result.is_empty(),
+            "subkey_count > MAX_USERS should return empty"
+        );
     }
 
     /// Full 5-level chain where the RID NK's name is "Names" — this key is
@@ -1856,7 +1887,10 @@ mod tests {
 
         // "Names" subkey is skipped by the guard at line 272 → no users pushed.
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "'Names' key should be skipped, resulting in empty");
+        assert!(
+            result.is_empty(),
+            "'Names' key should be skipped, resulting in empty"
+        );
     }
 
     /// Full 5-level chain where the RID NK name is not valid hex → `from_str_radix` fails,
@@ -1935,10 +1969,10 @@ mod tests {
         let names_list_off: u32 = 0x3C0;
         let uname_cell_off: u32 = 0x400;
         let uname_vlist_off: u32 = 0x440; // value list for username NK
-        let uname_vk_off: u32 = 0x480;    // VK for username NK (type = RID)
-        let rid_vlist_off: u32 = 0x4C0;   // value list for RID NK
-        let f_vk_off: u32 = 0x500;        // VK "F" cell
-        let f_data_off: u32 = 0x540;      // F value data cell
+        let uname_vk_off: u32 = 0x480; // VK for username NK (type = RID)
+        let rid_vlist_off: u32 = 0x4C0; // value list for RID NK
+        let f_vk_off: u32 = 0x500; // VK "F" cell
+        let f_data_off: u32 = 0x540; // F value data cell
 
         let addr = |off: u32| (off + 4) as usize;
 
@@ -1958,8 +1992,8 @@ mod tests {
         //  - Add Names cell entry at [1] = names_cell_off
         let ulo = addr(0x2E0); // users lf list addr offset
         flat_page[ulo + 2..ulo + 4].copy_from_slice(&2u16.to_le_bytes()); // count=2
-        // entry[0] already = rid_cell_off (0x320)
-        // entry[1] = names_cell_off (lf entry = 8 bytes)
+                                                                          // entry[0] already = rid_cell_off (0x320)
+                                                                          // entry[1] = names_cell_off (lf entry = 8 bytes)
         flat_page[ulo + 12..ulo + 16].copy_from_slice(&names_cell_off.to_le_bytes());
 
         // Also bump Users NK subkey_count to 2.
@@ -2051,9 +2085,9 @@ mod tests {
     /// succeeds with real timestamps and UAC flags.
     #[test]
     fn walk_sam_users_extended_chain_with_names_and_f_value() {
-        let hive_vaddr: u64 = 0x00A0_0000;  // reusing address space not taken by earlier tests
-        // NOTE: 0x00A0_0000 was used in walk_sam_users_lh_list_sam_found_domains_missing
-        // Use a fresh address range.
+        let hive_vaddr: u64 = 0x00A0_0000; // reusing address space not taken by earlier tests
+                                           // NOTE: 0x00A0_0000 was used in walk_sam_users_lh_list_sam_found_domains_missing
+                                           // Use a fresh address range.
         let hive_vaddr: u64 = 0x0045_0000;
         let hive_paddr: u64 = 0x0045_0000;
         let base_block: u64 = 0x0046_0000;
@@ -2143,8 +2177,10 @@ mod tests {
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
         // names_key found but subkey_count=0 → find_name_for_rid returns "RID-500"
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].username, "RID-500",
-            "Names with 0 subkeys should fall back to 'RID-<rid>'");
+        assert_eq!(
+            result[0].username, "RID-500",
+            "Names with 0 subkeys should fall back to 'RID-<rid>'"
+        );
     }
 
     /// find_name_for_rid: Names list has an entry but the VK type doesn't match → no username found → "RID-<rid>".
@@ -2188,8 +2224,10 @@ mod tests {
 
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].username, "RID-500",
-            "VK type mismatch should fall back to 'RID-<rid>'");
+        assert_eq!(
+            result[0].username, "RID-500",
+            "VK type mismatch should fall back to 'RID-<rid>'"
+        );
     }
 
     /// read_f_value: val_count=1 but VK NameLength != 1 → no "F" found → default.
@@ -2234,8 +2272,14 @@ mod tests {
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
         // VK NameLength=2 → skip → read_f_value returns default (all zeros)
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].account_flags, 0, "wrong VK name len → default flags");
-        assert_eq!(result[0].login_count, 0, "wrong VK name len → default login_count");
+        assert_eq!(
+            result[0].account_flags, 0,
+            "wrong VK name len → default flags"
+        );
+        assert_eq!(
+            result[0].login_count, 0,
+            "wrong VK name len → default login_count"
+        );
     }
 
     /// read_f_value: VK name is 'G' (not 'F') → continue → returns default.
@@ -2280,7 +2324,10 @@ mod tests {
         let result = walk_sam_users(&reader, hive_vaddr).unwrap();
         // VK name is 'G' → no F value found → read_f_value returns default
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].account_flags, 0, "wrong VK name byte → default flags");
+        assert_eq!(
+            result[0].account_flags, 0,
+            "wrong VK name byte → default flags"
+        );
         assert_eq!(result[0].login_count, 0);
     }
 

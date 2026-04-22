@@ -8,7 +8,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::SectionObjectInfo};
+use crate::{types::SectionObjectInfo, Result};
 
 /// Enumerate section objects from the kernel object manager and analyse
 /// them for suspicious attributes.

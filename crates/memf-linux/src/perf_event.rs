@@ -561,8 +561,18 @@ mod tests {
             .add_field("task_struct", "pid", pid_offset, "unsigned int")
             .add_field("task_struct", "comm", comm_offset, "char")
             .add_struct("perf_event_context", 0x200)
-            .add_field("perf_event_context", "pinned_groups", pinned_offset, "list_head")
-            .add_field("perf_event_context", "flexible_groups", flexible_offset, "list_head")
+            .add_field(
+                "perf_event_context",
+                "pinned_groups",
+                pinned_offset,
+                "list_head",
+            )
+            .add_field(
+                "perf_event_context",
+                "flexible_groups",
+                flexible_offset,
+                "list_head",
+            )
             .add_struct("perf_event", 0x200)
             .add_field("perf_event", "group_entry", 0u64, "list_head")
             .build_json();
@@ -623,7 +633,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_perf_events(&reader).unwrap();
-        assert!(result.is_empty(), "unreadable init_task → early return empty");
+        assert!(
+            result.is_empty(),
+            "unreadable init_task → early return empty"
+        );
     }
 
     // --- walk_perf_events: non-empty tasks list AND event in group list ---
@@ -656,24 +669,24 @@ mod tests {
         //   attr        @ 0x20  (perf_event_attr; type@+0 u32, config@+8 u64, sample_period@+16 u64)
 
         let tasks_offset: u64 = 0x10;
-        let ctxp_offset:  u64 = 0x20;
-        let pid_offset:   u64 = 0x30;
-        let comm_offset:  u64 = 0x38;
+        let ctxp_offset: u64 = 0x20;
+        let pid_offset: u64 = 0x30;
+        let comm_offset: u64 = 0x38;
 
-        let pinned_offset:   u64 = 0x00;
+        let pinned_offset: u64 = 0x00;
         let flexible_offset: u64 = 0x08;
 
         let group_entry_offset: u64 = 0x00;
-        let attr_offset:        u64 = 0x20;
+        let attr_offset: u64 = 0x20;
 
         let init_vaddr: u64 = 0xFFFF_8800_0080_0000;
         let init_paddr: u64 = 0x0080_0000;
-        let t2_vaddr:   u64 = 0xFFFF_8800_0081_0000;
-        let t2_paddr:   u64 = 0x0081_0000;
-        let ctx_vaddr:  u64 = 0xFFFF_8800_0082_0000;
-        let ctx_paddr:  u64 = 0x0082_0000;
-        let ev_vaddr:   u64 = 0xFFFF_8800_0083_0000;
-        let ev_paddr:   u64 = 0x0083_0000;
+        let t2_vaddr: u64 = 0xFFFF_8800_0081_0000;
+        let t2_paddr: u64 = 0x0081_0000;
+        let ctx_vaddr: u64 = 0xFFFF_8800_0082_0000;
+        let ctx_paddr: u64 = 0x0082_0000;
+        let ev_vaddr: u64 = 0xFFFF_8800_0083_0000;
+        let ev_paddr: u64 = 0x0083_0000;
 
         // init_task page:
         //   tasks.next @ tasks_offset → t2_vaddr + tasks_offset  (points to task2's list node)
@@ -696,8 +709,7 @@ mod tests {
             .copy_from_slice(&init_list_node.to_le_bytes());
         t2_page[ctxp_offset as usize..ctxp_offset as usize + 8]
             .copy_from_slice(&ctx_vaddr.to_le_bytes());
-        t2_page[pid_offset as usize..pid_offset as usize + 4]
-            .copy_from_slice(&42u32.to_le_bytes());
+        t2_page[pid_offset as usize..pid_offset as usize + 4].copy_from_slice(&42u32.to_le_bytes());
         t2_page[comm_offset as usize..comm_offset as usize + 3].copy_from_slice(b"spy");
 
         // perf_event_context page:
@@ -746,8 +758,18 @@ mod tests {
             .add_field("task_struct", "pid", pid_offset, "unsigned int")
             .add_field("task_struct", "comm", comm_offset, "char")
             .add_struct("perf_event_context", 0x200)
-            .add_field("perf_event_context", "pinned_groups", pinned_offset, "list_head")
-            .add_field("perf_event_context", "flexible_groups", flexible_offset, "list_head")
+            .add_field(
+                "perf_event_context",
+                "pinned_groups",
+                pinned_offset,
+                "list_head",
+            )
+            .add_field(
+                "perf_event_context",
+                "flexible_groups",
+                flexible_offset,
+                "list_head",
+            )
             .add_struct("perf_event", 0x200)
             .add_field("perf_event", "group_entry", group_entry_offset, "list_head")
             .add_field("perf_event", "attr", attr_offset, "pointer")
@@ -770,13 +792,20 @@ mod tests {
 
         let result = walk_perf_events(&reader).unwrap();
         // Must find exactly one event (RAW PMU on task2/pid=42/"spy")
-        assert_eq!(result.len(), 1, "expected one perf_event from task2's pinned_groups");
+        assert_eq!(
+            result.len(),
+            1,
+            "expected one perf_event from task2's pinned_groups"
+        );
         assert_eq!(result[0].pid, 42);
         assert_eq!(result[0].comm, "spy");
         assert_eq!(result[0].event_type, 4); // PERF_TYPE_RAW
         assert_eq!(result[0].config, 0xDEAD);
         assert_eq!(result[0].sample_period, 1000);
-        assert!(result[0].is_suspicious, "RAW PMU event must be flagged suspicious");
+        assert!(
+            result[0].is_suspicious,
+            "RAW PMU event must be flagged suspicious"
+        );
     }
 
     // --- walk_perf_events: PerfEventInfo serialization ---

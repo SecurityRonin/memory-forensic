@@ -907,7 +907,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let mods = walk_ldr_modules(&reader, peb_vaddr).unwrap();
-        assert!(mods.is_empty(), "all-zero DllBase entries should be skipped");
+        assert!(
+            mods.is_empty(),
+            "all-zero DllBase entries should be skipped"
+        );
     }
 
     #[test]

@@ -319,21 +319,33 @@ mod tests {
         // Region ends at exactly KERNEL_TEXT_START → no overlap (end > start check: end == start fails >)
         const KERNEL_TEXT_START: u64 = 0xffff_ffff_8100_0000;
         // end == KERNEL_TEXT_START means end is NOT > KERNEL_TEXT_START
-        assert!(!classify_iomem("Anything", 0xffff_ffff_8000_0000, KERNEL_TEXT_START));
+        assert!(!classify_iomem(
+            "Anything",
+            0xffff_ffff_8000_0000,
+            KERNEL_TEXT_START
+        ));
     }
 
     #[test]
     fn classify_region_just_after_kernel_text_benign() {
         // Region starts at exactly KERNEL_TEXT_END → start < KERNEL_TEXT_END fails (== not <)
         const KERNEL_TEXT_END: u64 = 0xffff_ffff_8200_0000;
-        assert!(!classify_iomem("Anything", KERNEL_TEXT_END, KERNEL_TEXT_END + 0x1000));
+        assert!(!classify_iomem(
+            "Anything",
+            KERNEL_TEXT_END,
+            KERNEL_TEXT_END + 0x1000
+        ));
     }
 
     #[test]
     fn classify_kernel_code_partial_overlap_benign() {
         // Legitimately named "Kernel code" overlapping kernel text range is benign
         const KERNEL_TEXT_START: u64 = 0xffff_ffff_8100_0000;
-        assert!(!classify_iomem("Kernel code", KERNEL_TEXT_START, KERNEL_TEXT_START + 0x1000));
+        assert!(!classify_iomem(
+            "Kernel code",
+            KERNEL_TEXT_START,
+            KERNEL_TEXT_START + 0x1000
+        ));
     }
 
     #[test]
@@ -374,12 +386,12 @@ mod tests {
         let isf = IsfBuilder::new()
             .add_symbol("iomem_resource", root_vaddr)
             .add_struct("resource", 0x60)
-            .add_field("resource", "start",   0x00, "unsigned long")
-            .add_field("resource", "end",     0x08, "unsigned long")
-            .add_field("resource", "flags",   0x10, "unsigned long")
-            .add_field("resource", "name",    0x18, "pointer")
+            .add_field("resource", "start", 0x00, "unsigned long")
+            .add_field("resource", "end", 0x08, "unsigned long")
+            .add_field("resource", "flags", 0x10, "unsigned long")
+            .add_field("resource", "name", 0x18, "pointer")
             .add_field("resource", "sibling", 0x20, "pointer")
-            .add_field("resource", "child",   0x28, "pointer")
+            .add_field("resource", "child", 0x28, "pointer")
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
@@ -430,19 +442,19 @@ mod tests {
         child_page[0x00..0x08].copy_from_slice(&0x1000u64.to_le_bytes()); // start
         child_page[0x08..0x10].copy_from_slice(&0x2000u64.to_le_bytes()); // end
         child_page[0x10..0x18].copy_from_slice(&0x0200u64.to_le_bytes()); // flags
-        // name_ptr at 0x18 = 0 (null → name = "")
-        // sibling at 0x20 = 0
-        // child at 0x28 = 0
+                                                                          // name_ptr at 0x18 = 0 (null → name = "")
+                                                                          // sibling at 0x20 = 0
+                                                                          // child at 0x28 = 0
 
         let isf = IsfBuilder::new()
             .add_symbol("iomem_resource", root_vaddr)
             .add_struct("resource", 0x60)
-            .add_field("resource", "start",   0x00u64, "unsigned long")
-            .add_field("resource", "end",     0x08u64, "unsigned long")
-            .add_field("resource", "flags",   0x10u64, "unsigned long")
-            .add_field("resource", "name",    0x18u64, "pointer")
+            .add_field("resource", "start", 0x00u64, "unsigned long")
+            .add_field("resource", "end", 0x08u64, "unsigned long")
+            .add_field("resource", "flags", 0x10u64, "unsigned long")
+            .add_field("resource", "name", 0x18u64, "pointer")
             .add_field("resource", "sibling", 0x20u64, "pointer")
-            .add_field("resource", "child",   0x28u64, "pointer")
+            .add_field("resource", "child", 0x28u64, "pointer")
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
@@ -502,12 +514,12 @@ mod tests {
         let isf = IsfBuilder::new()
             .add_symbol("iomem_resource", root_vaddr)
             .add_struct("resource", 0x60)
-            .add_field("resource", "start",   0x00u64, "unsigned long")
-            .add_field("resource", "end",     0x08u64, "unsigned long")
-            .add_field("resource", "flags",   0x10u64, "unsigned long")
-            .add_field("resource", "name",    0x18u64, "pointer")
+            .add_field("resource", "start", 0x00u64, "unsigned long")
+            .add_field("resource", "end", 0x08u64, "unsigned long")
+            .add_field("resource", "flags", 0x10u64, "unsigned long")
+            .add_field("resource", "name", 0x18u64, "pointer")
             .add_field("resource", "sibling", 0x20u64, "pointer")
-            .add_field("resource", "child",   0x28u64, "pointer")
+            .add_field("resource", "child", 0x28u64, "pointer")
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
@@ -561,12 +573,12 @@ mod tests {
         let isf = IsfBuilder::new()
             .add_symbol("iomem_resource", root_vaddr)
             .add_struct("resource", 0x60)
-            .add_field("resource", "start",   0x00u64, "unsigned long")
-            .add_field("resource", "end",     0x08u64, "unsigned long")
-            .add_field("resource", "flags",   0x10u64, "unsigned long")
-            .add_field("resource", "name",    0x18u64, "pointer")
+            .add_field("resource", "start", 0x00u64, "unsigned long")
+            .add_field("resource", "end", 0x08u64, "unsigned long")
+            .add_field("resource", "flags", 0x10u64, "unsigned long")
+            .add_field("resource", "name", 0x18u64, "pointer")
             .add_field("resource", "sibling", 0x20u64, "pointer")
-            .add_field("resource", "child",   0x28u64, "pointer")
+            .add_field("resource", "child", 0x28u64, "pointer")
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
@@ -584,7 +596,10 @@ mod tests {
         let result = walk_iomem_regions(&reader).unwrap_or_default();
         assert_eq!(result.len(), 2, "child + grandchild = 2 entries");
         // grandchild should be at depth 1
-        let gc = result.iter().find(|r| r.start == 0x5000).expect("grandchild entry");
+        let gc = result
+            .iter()
+            .find(|r| r.start == 0x5000)
+            .expect("grandchild entry");
         assert_eq!(gc.depth, 1);
     }
 

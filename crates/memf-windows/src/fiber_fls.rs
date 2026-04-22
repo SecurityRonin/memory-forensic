@@ -6,7 +6,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::FiberInfo};
+use crate::{types::FiberInfo, Result};
 
 /// Scan all threads for fiber conversion and suspicious FLS callbacks.
 ///

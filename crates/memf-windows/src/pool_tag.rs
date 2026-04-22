@@ -435,12 +435,42 @@ mod tests {
             .add_struct("_POOL_TRACKER_TABLE", 40)
             .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
             .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
-            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedBytes",
+                24,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedBytes",
+                24,
+                "unsigned long long",
+            )
             .add_symbol("PoolTrackTable", NX_TABLE_PTR_VADDR)
             .add_symbol("PoolTrackTableSize", NX_SIZE_VADDR)
             .build_json();
@@ -491,12 +521,42 @@ mod tests {
             .add_struct("_POOL_TRACKER_TABLE", 40)
             .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
             .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
-            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedBytes",
+                24,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedBytes",
+                24,
+                "unsigned long long",
+            )
             .add_symbol("PoolTrackTable", ZPTR_VADDR)
             .add_symbol("PoolTrackTableSize", ZSIZE_VADDR)
             .build_json();
@@ -530,12 +590,42 @@ mod tests {
             .add_struct("_POOL_TRACKER_TABLE", 40)
             .add_field("_POOL_TRACKER_TABLE", "Key", 0, "unsigned int")
             .add_field("_POOL_TRACKER_TABLE", "PoolType", 4, "unsigned int")
-            .add_field("_POOL_TRACKER_TABLE", "PagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "PagedBytes", 24, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedAllocs", 8, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedFrees", 16, "unsigned long long")
-            .add_field("_POOL_TRACKER_TABLE", "NonPagedBytes", 24, "unsigned long long")
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "PagedBytes",
+                24,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedAllocs",
+                8,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedFrees",
+                16,
+                "unsigned long long",
+            )
+            .add_field(
+                "_POOL_TRACKER_TABLE",
+                "NonPagedBytes",
+                24,
+                "unsigned long long",
+            )
             .add_symbol("PoolTrackTable", NPTR_VADDR)
             // intentionally no PoolTrackTableSize symbol
             .build_json();
@@ -553,7 +643,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let entries = walk_pool_tags(&reader).unwrap();
-        assert!(entries.is_empty(), "absent PoolTrackTableSize symbol → empty");
+        assert!(
+            entries.is_empty(),
+            "absent PoolTrackTableSize symbol → empty"
+        );
     }
 
     /// Two synthetic pool tag entries are correctly parsed.

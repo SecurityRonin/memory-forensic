@@ -114,9 +114,7 @@ pub fn walk_handles<P: PhysicalMemoryProvider>(
             // Look up type name via ObTypeIndexTable[TypeIndex]
             let object_type = resolve_type_name(reader, ob_type_table_addr, type_index);
 
-            let handle_value = u32::try_from(idx)
-                .unwrap_or(u32::MAX)
-                .saturating_mul(4);
+            let handle_value = u32::try_from(idx).unwrap_or(u32::MAX).saturating_mul(4);
 
             results.push(WinHandleInfo {
                 pid: proc.pid,

@@ -411,7 +411,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_direct_syscalls(&reader).unwrap_or_default();
-        assert!(results.is_empty(), "empty process list should yield no syscall entries");
+        assert!(
+            results.is_empty(),
+            "empty process list should yield no syscall entries"
+        );
     }
 
     /// DirectSyscallInfo can be constructed and its fields are accessible.
@@ -496,7 +499,10 @@ mod tests {
         let (addr, num, technique) = result;
         assert_eq!(addr, win32_start);
         assert_eq!(num, syscall_number);
-        assert_eq!(technique, "heavens_gate", "low address should classify as heavens_gate");
+        assert_eq!(
+            technique, "heavens_gate",
+            "low address should classify as heavens_gate"
+        );
         // heavens_gate is always suspicious regardless of in_ntdll
         assert!(classify_syscall_technique(true, &technique));
         assert!(classify_syscall_technique(false, &technique));
@@ -536,7 +542,10 @@ mod tests {
         let (addr, num, technique) = result;
         assert_eq!(addr, win32_start);
         assert_eq!(num, syscall_number);
-        assert_eq!(technique, "direct_syscall", "high address should classify as direct_syscall");
+        assert_eq!(
+            technique, "direct_syscall",
+            "high address should classify as direct_syscall"
+        );
     }
 
     // -- find_ntdll_range tests ------------------------------------------
@@ -573,7 +582,10 @@ mod tests {
 
         // peb_addr is unmapped → read_field("_PEB", "Ldr") fails → None
         let result = find_ntdll_range(&reader, &proc);
-        assert!(result.is_none(), "unmapped peb → find_ntdll_range returns None");
+        assert!(
+            result.is_none(),
+            "unmapped peb → find_ntdll_range returns None"
+        );
     }
 
     /// find_ntdll_range: PEB readable, Ldr = 0 → returns None.
@@ -661,7 +673,10 @@ mod tests {
         };
 
         let result = find_ntdll_range(&reader, &proc);
-        assert!(result.is_none(), "unmapped ldr → find_ntdll_range returns None");
+        assert!(
+            result.is_none(),
+            "unmapped ldr → find_ntdll_range returns None"
+        );
     }
 
     /// classify_syscall_technique: exhaustive boundary table.
@@ -734,10 +749,10 @@ mod tests {
     const EPROCESS_PEB: u64 = 0x550;
     const EPROCESS_PID: u64 = 0x440;
     const EPROCESS_PPID: u64 = 0x540;
-    const EPROCESS_DTB: u64 = 0x28;  // within _KPROCESS (= eproc + Pcb=0)
+    const EPROCESS_DTB: u64 = 0x28; // within _KPROCESS (= eproc + Pcb=0)
     const EPROCESS_IMAGE: u64 = 0x5A8;
-    const KPROCESS_TLH: u64 = 0x30;  // _KPROCESS.ThreadListHead within _EPROCESS
-    const KTHREAD_TLE: u64 = 0x2F8;  // _KTHREAD.ThreadListEntry
+    const KPROCESS_TLH: u64 = 0x30; // _KPROCESS.ThreadListHead within _EPROCESS
+    const KTHREAD_TLE: u64 = 0x2F8; // _KTHREAD.ThreadListEntry
 
     /// Walker with a process having peb_addr != 0 but empty thread list:
     /// - exercises lines 70-86 (skip-kernel guard passes, thread walk returns empty)
@@ -810,7 +825,10 @@ mod tests {
 
         // Process with peb_addr != 0 but empty thread list → no results
         let results = walk_direct_syscalls(&reader).unwrap_or_default();
-        assert!(results.is_empty(), "process with empty thread list → no syscall entries");
+        assert!(
+            results.is_empty(),
+            "process with empty thread list → no syscall entries"
+        );
     }
 
     /// Walker with a process (peb_addr != 0) and one thread whose Win32StartAddress
@@ -875,9 +893,9 @@ mod tests {
         // Cid.UniqueThread at 0x620 + 8 = 0x628
         kthread_page[0x628..0x630].copy_from_slice(&12u64.to_le_bytes()); // tid=12
         kthread_page[0x620..0x628].copy_from_slice(&1001u64.to_le_bytes()); // pid=1001
-        // Win32StartAddress: the ISF preset defines _KTHREAD.Win32StartAddress @ 0x680.
-        // read_thread_syscall_info uses field_offset() which resolves to 0x680 from the preset.
-        // Use a 64-bit kernel address → direct_syscall technique
+                                                                            // Win32StartAddress: the ISF preset defines _KTHREAD.Win32StartAddress @ 0x680.
+                                                                            // read_thread_syscall_info uses field_offset() which resolves to 0x680 from the preset.
+                                                                            // Use a 64-bit kernel address → direct_syscall technique
         let win32_start: u64 = 0xFFFF_8080_DEAD_1234; // > 0xFFFF_FFFF → direct_syscall
         kthread_page[0x680..0x688].copy_from_slice(&win32_start.to_le_bytes());
         // SystemCallNumber at default offset 0x80
@@ -903,7 +921,11 @@ mod tests {
         let results = walk_direct_syscalls(&reader).unwrap_or_default();
         // Process with peb_addr!=0 + one thread with non-zero Win32StartAddress
         // → one DirectSyscallInfo pushed.
-        assert_eq!(results.len(), 1, "one thread with non-zero syscall_addr → one result");
+        assert_eq!(
+            results.len(),
+            1,
+            "one thread with non-zero syscall_addr → one result"
+        );
         let r = &results[0];
         assert_eq!(r.pid, 1001);
         assert_eq!(r.thread_id, 12);
@@ -940,12 +962,11 @@ mod tests {
         eproc_page[off + 8..off + 16].copy_from_slice(&head_vaddr.to_le_bytes());
         eproc_page[EPROCESS_PID as usize..EPROCESS_PID as usize + 8]
             .copy_from_slice(&4u64.to_le_bytes()); // System pid=4
-        // Peb = 0 → kernel process → skip
-        // (zero-initialized by default)
+                                                   // Peb = 0 → kernel process → skip
+                                                   // (zero-initialized by default)
         eproc_page[EPROCESS_DTB as usize..EPROCESS_DTB as usize + 8]
             .copy_from_slice(&0x2000u64.to_le_bytes());
-        eproc_page[EPROCESS_IMAGE as usize..EPROCESS_IMAGE as usize + 6]
-            .copy_from_slice(b"System");
+        eproc_page[EPROCESS_IMAGE as usize..EPROCESS_IMAGE as usize + 6].copy_from_slice(b"System");
         eproc_page[EPROCESS_IMAGE as usize + 6] = 0;
         // ThreadListHead self-referential (empty)
         let tlh_off = KPROCESS_TLH as usize;
@@ -970,7 +991,10 @@ mod tests {
 
         // peb_addr == 0 → skipped → empty
         let results = walk_direct_syscalls(&reader).unwrap_or_default();
-        assert!(results.is_empty(), "kernel process (peb=0) should be skipped");
+        assert!(
+            results.is_empty(),
+            "kernel process (peb=0) should be skipped"
+        );
     }
 
     /// find_ntdll_range: module list has one entry that is NOT ntdll.dll → returns None.
@@ -1023,14 +1047,14 @@ mod tests {
         let mut mod_page = vec![0u8; 4096];
         mod_page[0x00..0x08].copy_from_slice(&list_head_vaddr.to_le_bytes()); // Flink→sentinel
         mod_page[0x08..0x10].copy_from_slice(&list_head_vaddr.to_le_bytes()); // Blink→sentinel
-        // BaseDllName UNICODE_STRING at offset 0x58: Length, MaximumLength, Buffer
+                                                                              // BaseDllName UNICODE_STRING at offset 0x58: Length, MaximumLength, Buffer
         let dll_name = "kernel32.dll";
         let name_bytes: Vec<u16> = dll_name.encode_utf16().collect();
         let name_byte_len = (name_bytes.len() * 2) as u16;
         mod_page[0x58..0x5A].copy_from_slice(&name_byte_len.to_le_bytes()); // Length
         mod_page[0x5A..0x5C].copy_from_slice(&name_byte_len.to_le_bytes()); // MaximumLength
         mod_page[0x60..0x68].copy_from_slice(&name_vaddr.to_le_bytes()); // Buffer ptr
-        // DllBase at 0x30 = 0, SizeOfImage at 0x40 = 0 (already zero)
+                                                                         // DllBase at 0x30 = 0, SizeOfImage at 0x40 = 0 (already zero)
 
         // Name page: UTF-16LE "kernel32.dll"
         let mut name_page = vec![0u8; 4096];
@@ -1071,6 +1095,9 @@ mod tests {
 
         // Module list has "kernel32.dll" — not ntdll.dll → returns None
         let result = find_ntdll_range(&reader, &proc);
-        assert!(result.is_none(), "non-ntdll module → find_ntdll_range returns None");
+        assert!(
+            result.is_none(),
+            "non-ntdll module → find_ntdll_range returns None"
+        );
     }
 }

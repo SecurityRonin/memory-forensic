@@ -304,14 +304,21 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(idt_vaddr, idt_paddr, memf_core::test_builders::flags::WRITABLE)
+            .map_4k(
+                idt_vaddr,
+                idt_paddr,
+                memf_core::test_builders::flags::WRITABLE,
+            )
             .write_phys(idt_paddr, &page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_check_idt(&reader).unwrap_or_default();
-        assert!(results.is_empty(), "all-zero IDT entries (handler==0) should all be skipped");
+        assert!(
+            results.is_empty(),
+            "all-zero IDT entries (handler==0) should all be skipped"
+        );
     }
 
     #[test]
@@ -347,7 +354,7 @@ mod tests {
         use memf_core::test_builders::flags as ptf;
 
         let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end: u64   = 0xFFFF_8000_00FF_FFFF;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
 
         // IDT table: 256 entries × 16 bytes = 4096 bytes.
         let idt_vaddr: u64 = 0xFFFF_8800_0072_0000;
@@ -359,27 +366,27 @@ mod tests {
 
         // Entry 0: handler = kernel_start + 0x1000 (benign), Interrupt Gate (0x8E).
         let h0: u64 = kernel_start + 0x1000;
-        let h0_low  = (h0 & 0xFFFF) as u16;
-        let h0_mid  = ((h0 >> 16) & 0xFFFF) as u16;
+        let h0_low = (h0 & 0xFFFF) as u16;
+        let h0_mid = ((h0 >> 16) & 0xFFFF) as u16;
         let h0_high = ((h0 >> 32) & 0xFFFF_FFFF) as u32;
         let off0 = 0usize;
-        idt_page[off0..off0+2].copy_from_slice(&h0_low.to_le_bytes());
-        idt_page[off0+2..off0+4].copy_from_slice(&0x0010u16.to_le_bytes()); // segment
-        idt_page[off0+5] = 0x8E; // type_attr: Interrupt Gate
-        idt_page[off0+6..off0+8].copy_from_slice(&h0_mid.to_le_bytes());
-        idt_page[off0+8..off0+12].copy_from_slice(&h0_high.to_le_bytes());
+        idt_page[off0..off0 + 2].copy_from_slice(&h0_low.to_le_bytes());
+        idt_page[off0 + 2..off0 + 4].copy_from_slice(&0x0010u16.to_le_bytes()); // segment
+        idt_page[off0 + 5] = 0x8E; // type_attr: Interrupt Gate
+        idt_page[off0 + 6..off0 + 8].copy_from_slice(&h0_mid.to_le_bytes());
+        idt_page[off0 + 8..off0 + 12].copy_from_slice(&h0_high.to_le_bytes());
 
         // Entry 1: handler = 0xFFFF_C000_DEAD_0000 (outside kernel text = hooked), Trap Gate (0x8F).
         let h1: u64 = 0xFFFF_C000_DEAD_0000;
-        let h1_low  = (h1 & 0xFFFF) as u16;
-        let h1_mid  = ((h1 >> 16) & 0xFFFF) as u16;
+        let h1_low = (h1 & 0xFFFF) as u16;
+        let h1_mid = ((h1 >> 16) & 0xFFFF) as u16;
         let h1_high = ((h1 >> 32) & 0xFFFF_FFFF) as u32;
         let off1 = 16usize;
-        idt_page[off1..off1+2].copy_from_slice(&h1_low.to_le_bytes());
-        idt_page[off1+2..off1+4].copy_from_slice(&0x0010u16.to_le_bytes());
-        idt_page[off1+5] = 0x8F; // type_attr: Trap Gate
-        idt_page[off1+6..off1+8].copy_from_slice(&h1_mid.to_le_bytes());
-        idt_page[off1+8..off1+12].copy_from_slice(&h1_high.to_le_bytes());
+        idt_page[off1..off1 + 2].copy_from_slice(&h1_low.to_le_bytes());
+        idt_page[off1 + 2..off1 + 4].copy_from_slice(&0x0010u16.to_le_bytes());
+        idt_page[off1 + 5] = 0x8F; // type_attr: Trap Gate
+        idt_page[off1 + 6..off1 + 8].copy_from_slice(&h1_mid.to_le_bytes());
+        idt_page[off1 + 8..off1 + 12].copy_from_slice(&h1_high.to_le_bytes());
 
         let isf = IsfBuilder::new()
             .add_symbol("_stext", kernel_start)
@@ -402,13 +409,19 @@ mod tests {
         assert_eq!(results[0].vector, 0);
         assert_eq!(results[0].handler_addr, h0);
         assert_eq!(results[0].gate_type, "Interrupt Gate");
-        assert!(!results[0].is_hooked, "entry 0 is inside kernel text → not hooked");
+        assert!(
+            !results[0].is_hooked,
+            "entry 0 is inside kernel text → not hooked"
+        );
 
         // Entry 1: hooked
         assert_eq!(results[1].vector, 1);
         assert_eq!(results[1].handler_addr, h1);
         assert_eq!(results[1].gate_type, "Trap Gate");
-        assert!(results[1].is_hooked, "entry 1 is outside kernel text → hooked");
+        assert!(
+            results[1].is_hooked,
+            "entry 1 is outside kernel text → hooked"
+        );
     }
 
     // IdtEntryInfo struct coverage: Debug, Clone, Serialize.

@@ -320,7 +320,10 @@ mod tests {
         // "apt2" is NOT in the benign list → suspicious
         assert!(classify_deleted_exe("/usr/bin/apt2 (deleted)", "apt2"));
         // "dpkg-query" is not in the list → suspicious
-        assert!(classify_deleted_exe("/usr/bin/dpkg-query (deleted)", "dpkg-query"));
+        assert!(classify_deleted_exe(
+            "/usr/bin/dpkg-query (deleted)",
+            "dpkg-query"
+        ));
     }
 
     #[test]
@@ -391,11 +394,11 @@ mod tests {
     #[test]
     fn walk_deleted_exe_mm_non_null_exe_file_null_returns_empty() {
         let tasks_offset: u64 = 0x10;
-        let mm_offset: u64    = 0x30;
-        let sym_vaddr: u64    = 0xFFFF_8800_0090_0000;
-        let sym_paddr: u64    = 0x0090_0000; // < 16 MB
-        let mm_vaddr: u64     = 0xFFFF_8800_0091_0000;
-        let mm_paddr: u64     = 0x0091_0000;
+        let mm_offset: u64 = 0x30;
+        let sym_vaddr: u64 = 0xFFFF_8800_0090_0000;
+        let sym_paddr: u64 = 0x0090_0000; // < 16 MB
+        let mm_vaddr: u64 = 0xFFFF_8800_0091_0000;
+        let mm_paddr: u64 = 0x0091_0000;
 
         // task page
         let mut task_page = [0u8; 4096];
@@ -459,23 +462,23 @@ mod tests {
         //   file_vaddr = struct file              f_path embedded (f_path_offset=0x10)
         //   dentry_vaddr = dentry struct          d_name embedded (d_name_offset=0x08)
         //   name_vaddr   = actual name string     "/usr/bin/bash\0"
-        let sym_vaddr: u64    = 0xFFFF_8800_00A0_0000;
-        let sym_paddr: u64    = 0x00A0_0000;
-        let mm_vaddr: u64     = 0xFFFF_8800_00A1_0000;
-        let mm_paddr: u64     = 0x00A1_0000;
-        let file_vaddr: u64   = 0xFFFF_8800_00A2_0000;
-        let file_paddr: u64   = 0x00A2_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_00A0_0000;
+        let sym_paddr: u64 = 0x00A0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00A1_0000;
+        let mm_paddr: u64 = 0x00A1_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00A2_0000;
+        let file_paddr: u64 = 0x00A2_0000;
         let dentry_vaddr: u64 = 0xFFFF_8800_00A3_0000;
         let dentry_paddr: u64 = 0x00A3_0000;
-        let name_vaddr: u64   = 0xFFFF_8800_00A4_0000;
-        let name_paddr: u64   = 0x00A4_0000;
+        let name_vaddr: u64 = 0xFFFF_8800_00A4_0000;
+        let name_paddr: u64 = 0x00A4_0000;
 
-        let tasks_offset: u64   = 0x10;
-        let mm_offset: u64      = 0x30;
-        let f_path_offset: u64  = 0x10; // offset of embedded path inside file
+        let tasks_offset: u64 = 0x10;
+        let mm_offset: u64 = 0x30;
+        let f_path_offset: u64 = 0x10; // offset of embedded path inside file
         let dentry_in_path: u64 = 0x00; // offset of dentry* inside path
-        let d_name_offset: u64  = 0x08; // offset of embedded qstr inside dentry
-        let name_in_qstr: u64   = 0x00; // offset of name* inside qstr
+        let d_name_offset: u64 = 0x08; // offset of embedded qstr inside dentry
+        let name_in_qstr: u64 = 0x00; // offset of name* inside qstr
 
         // init_task page
         let mut task_page = [0u8; 4096];
@@ -544,9 +547,16 @@ mod tests {
 
         let result = walk_deleted_exe(&reader).unwrap();
         // init_task (pid=7, comm="bash") has a fully readable exe path that is NOT deleted.
-        assert_eq!(result.len(), 1, "init_task with full dentry chain should produce one entry");
+        assert_eq!(
+            result.len(),
+            1,
+            "init_task with full dentry chain should produce one entry"
+        );
         assert_eq!(result[0].pid, 7);
-        assert!(!result[0].is_deleted, "path without (deleted) must not be flagged");
+        assert!(
+            !result[0].is_deleted,
+            "path without (deleted) must not be flagged"
+        );
         assert!(!result[0].is_suspicious);
     }
 
@@ -602,7 +612,7 @@ mod tests {
         use memf_core::test_builders::flags;
 
         let tasks_offset: u64 = 0x10;
-        let mm_offset: u64    = 0x30;
+        let mm_offset: u64 = 0x30;
 
         // init_task (kernel thread, mm=0)
         let init_vaddr: u64 = 0xFFFF_8800_00B0_0000;
@@ -630,7 +640,7 @@ mod tests {
         let init_tasks_vaddr = init_vaddr + tasks_offset;
         task2_page[tasks_offset as usize..tasks_offset as usize + 8]
             .copy_from_slice(&init_tasks_vaddr.to_le_bytes()); // tasks.next → head
-        // pid at 0x00 = 8
+                                                               // pid at 0x00 = 8
         task2_page[0x00..0x04].copy_from_slice(&8u32.to_le_bytes());
         // comm at 0x20 = "proc2"
         task2_page[0x20..0x25].copy_from_slice(b"proc2");
@@ -683,23 +693,23 @@ mod tests {
     fn walk_deleted_exe_full_chain_with_deleted_marker() {
         use memf_core::test_builders::flags as ptf;
 
-        let sym_vaddr: u64    = 0xFFFF_8800_00C0_0000;
-        let sym_paddr: u64    = 0x00C0_0000;
-        let mm_vaddr: u64     = 0xFFFF_8800_00C1_0000;
-        let mm_paddr: u64     = 0x00C1_0000;
-        let file_vaddr: u64   = 0xFFFF_8800_00C2_0000;
-        let file_paddr: u64   = 0x00C2_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_00C0_0000;
+        let sym_paddr: u64 = 0x00C0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00C1_0000;
+        let mm_paddr: u64 = 0x00C1_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00C2_0000;
+        let file_paddr: u64 = 0x00C2_0000;
         let dentry_vaddr: u64 = 0xFFFF_8800_00C3_0000;
         let dentry_paddr: u64 = 0x00C3_0000;
-        let name_vaddr: u64   = 0xFFFF_8800_00C4_0000;
-        let name_paddr: u64   = 0x00C4_0000;
+        let name_vaddr: u64 = 0xFFFF_8800_00C4_0000;
+        let name_paddr: u64 = 0x00C4_0000;
 
-        let tasks_offset: u64   = 0x10;
-        let mm_offset: u64      = 0x30;
-        let f_path_offset: u64  = 0x10;
+        let tasks_offset: u64 = 0x10;
+        let mm_offset: u64 = 0x30;
+        let f_path_offset: u64 = 0x10;
         let dentry_in_path: u64 = 0x00;
-        let d_name_offset: u64  = 0x08;
-        let name_in_qstr: u64   = 0x00;
+        let d_name_offset: u64 = 0x08;
+        let name_in_qstr: u64 = 0x00;
 
         let mut task_page = [0u8; 4096];
         task_page[0..4].copy_from_slice(&3u32.to_le_bytes()); // pid=3
@@ -765,7 +775,13 @@ mod tests {
         let result = walk_deleted_exe(&reader).unwrap();
         assert_eq!(result.len(), 1, "init_task with deleted exe → one entry");
         assert_eq!(result[0].pid, 3);
-        assert!(result[0].is_deleted, "exe_path contains (deleted) → is_deleted=true");
-        assert!(result[0].is_suspicious, "payload with deleted exe → suspicious");
+        assert!(
+            result[0].is_deleted,
+            "exe_path contains (deleted) → is_deleted=true"
+        );
+        assert!(
+            result[0].is_suspicious,
+            "payload with deleted exe → suspicious"
+        );
     }
 }

@@ -224,7 +224,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_io_uring(&reader);
-        assert!(result.is_ok(), "walk_io_uring must not error when symbol is present");
+        assert!(
+            result.is_ok(),
+            "walk_io_uring must not error when symbol is present"
+        );
     }
 
     // IoUringEntry struct: Debug, Clone, Serialize coverage.

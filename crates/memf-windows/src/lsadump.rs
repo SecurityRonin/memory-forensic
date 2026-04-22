@@ -553,7 +553,10 @@ mod tests {
         assert_eq!(name.len(), 30);
         let (t, s) = classify_lsa_secret(&name);
         assert_eq!(t, "unknown");
-        assert!(!s, "Exactly 30 chars should not be suspicious (> 30 required)");
+        assert!(
+            !s,
+            "Exactly 30 chars should not be suspicious (> 30 required)"
+        );
     }
 
     /// LsaSecretInfo serializes correctly.
@@ -677,7 +680,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_lsa_secrets(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "u32::MAX root_cell_off should be treated as sentinel");
+        assert!(
+            result.is_empty(),
+            "u32::MAX root_cell_off should be treated as sentinel"
+        );
     }
 
     /// Hive where base_block_addr reads back as 0 → early return.
@@ -699,14 +705,21 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_lsa_secrets(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "null base_block_addr should return empty Vec");
+        assert!(
+            result.is_empty(),
+            "null base_block_addr should return empty Vec"
+        );
     }
 
     // ── read_cell_addr unit tests ─────────────────────────────────────
 
     use memf_core::test_builders::SyntheticPhysMem;
 
-    fn make_lsa_reader_with_page(vaddr: u64, paddr: u64, page: &[u8]) -> ObjectReader<SyntheticPhysMem> {
+    fn make_lsa_reader_with_page(
+        vaddr: u64,
+        paddr: u64,
+        page: &[u8],
+    ) -> ObjectReader<SyntheticPhysMem> {
         let isf = make_lsa_isf();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
@@ -747,7 +760,10 @@ mod tests {
 
         let reader = make_lsa_reader_with_page(flat_base, flat_base, &page);
         let result = read_cell_addr(&reader, flat_base, cell_off);
-        assert_eq!(result, cell_data_addr, "should return computed addr when readable");
+        assert_eq!(
+            result, cell_data_addr,
+            "should return computed addr when readable"
+        );
     }
 
     // ── find_subkey_by_name: subkey_count == 0 → returns 0 ──────────
@@ -802,7 +818,7 @@ mod tests {
         flat_page[li_off + 1] = b'i';
         flat_page[li_off + 2] = 1u8; // count lo
         flat_page[li_off + 3] = 0u8; // count hi
-        // entry_off at +4 (li entries are 4 bytes each)
+                                     // entry_off at +4 (li entries are 4 bytes each)
         let entry_off: u32 = 0x200;
         flat_page[li_off + 4..li_off + 8].copy_from_slice(&entry_off.to_le_bytes());
 
@@ -828,7 +844,10 @@ mod tests {
 
         // Looking for "Policy", but key is "foo" → should return 0
         let result = find_subkey_by_name(&reader, flat_base, parent_addr, "Policy");
-        assert_eq!(result, 0, "li-sig list with non-matching key should return 0");
+        assert_eq!(
+            result, 0,
+            "li-sig list with non-matching key should return 0"
+        );
     }
 
     // ── find_subkey_by_name: lf/lh match and read_currval_length coverage
@@ -838,7 +857,7 @@ mod tests {
     #[test]
     fn find_subkey_by_name_lf_signature_matching_child() {
         let parent_addr: u64 = 0x00A0_0000;
-        let flat_base: u64   = 0x00A1_0000;
+        let flat_base: u64 = 0x00A1_0000;
 
         // Layout (all on the same flat_base page):
         //   parent_addr + 0x18: subkey_count = 1
@@ -846,7 +865,7 @@ mod tests {
         //   flat_base + 0x100 + 4: lf sig, count=1, entry_off=0x200, hash=0
         //   flat_base + 0x200 + 4: key name_len=6, name="Policy"
         let list_cell_off: u32 = 0x100;
-        let entry_off: u32     = 0x200;
+        let entry_off: u32 = 0x200;
 
         // parent page
         let mut parent_page = vec![0u8; 0x1000];
@@ -858,7 +877,7 @@ mod tests {
 
         // lf list cell data at flat_base + list_cell_off + 4
         let lf_off = (list_cell_off as usize) + 4;
-        flat_page[lf_off]     = b'l';
+        flat_page[lf_off] = b'l';
         flat_page[lf_off + 1] = b'f';
         flat_page[lf_off + 2] = 1u8; // count = 1
         flat_page[lf_off + 3] = 0u8;
@@ -887,7 +906,10 @@ mod tests {
 
         let expected_key_addr = flat_base + entry_off as u64 + 4;
         let result = find_subkey_by_name(&reader, flat_base, parent_addr, "Policy");
-        assert_eq!(result, expected_key_addr, "lf list should find 'Policy' child");
+        assert_eq!(
+            result, expected_key_addr,
+            "lf list should find 'Policy' child"
+        );
     }
 
     /// read_currval_length: covers the CurrVal navigation path.
@@ -904,24 +926,26 @@ mod tests {
 
         // CurrVal child setup (list_cell_off=0x200, entry_off=0x300, val_list_off=0x400, val_off=0x500):
         let currval_list_cell_off: u32 = 0x200;
-        let currval_entry_off: u32     = 0x300;
-        let val_list_cell_off: u32     = 0x400;
-        let val_entry_off: u32         = 0x500;
+        let currval_entry_off: u32 = 0x300;
+        let val_list_cell_off: u32 = 0x400;
+        let val_entry_off: u32 = 0x500;
 
         let mut flat_page = vec![0u8; 0x2000];
 
         // secret_key_addr (at flat_base + 0x100 + 4): subkey_count=1 at +0x18, list_off at +0x20
         let sk_off = 0x100usize + 4;
         flat_page[sk_off + 0x18..sk_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
-        flat_page[sk_off + 0x20..sk_off + 0x24].copy_from_slice(&currval_list_cell_off.to_le_bytes());
+        flat_page[sk_off + 0x20..sk_off + 0x24]
+            .copy_from_slice(&currval_list_cell_off.to_le_bytes());
 
         // CurrVal list cell at flat_base + 0x200 + 4: lf, count=1, entry=currval_entry_off
         let cv_list_off = 0x200usize + 4;
-        flat_page[cv_list_off]     = b'l';
+        flat_page[cv_list_off] = b'l';
         flat_page[cv_list_off + 1] = b'f';
         flat_page[cv_list_off + 2] = 1u8;
         flat_page[cv_list_off + 3] = 0u8;
-        flat_page[cv_list_off + 4..cv_list_off + 8].copy_from_slice(&currval_entry_off.to_le_bytes());
+        flat_page[cv_list_off + 4..cv_list_off + 8]
+            .copy_from_slice(&currval_entry_off.to_le_bytes());
         flat_page[cv_list_off + 8..cv_list_off + 12].copy_from_slice(&0u32.to_le_bytes()); // hash
 
         // CurrVal key node at flat_base + 0x300 + 4: name_len=7, name="CurrVal"
@@ -932,7 +956,8 @@ mod tests {
         // val_count at +0x28: 1
         flat_page[cv_nk_off + 0x28..cv_nk_off + 0x2C].copy_from_slice(&1u32.to_le_bytes());
         // val_list_off at +0x2C: val_list_cell_off
-        flat_page[cv_nk_off + 0x2C..cv_nk_off + 0x30].copy_from_slice(&val_list_cell_off.to_le_bytes());
+        flat_page[cv_nk_off + 0x2C..cv_nk_off + 0x30]
+            .copy_from_slice(&val_list_cell_off.to_le_bytes());
 
         // Value list cell at flat_base + 0x400 + 4: single entry val_entry_off
         let vl_off = 0x400usize + 4;
@@ -965,37 +990,47 @@ mod tests {
     fn classify_lsa_secret_all_branches() {
         // Confirm all branches of classify_lsa_secret are hit:
         let (t, s) = classify_lsa_secret("_SC_svchost");
-        assert_eq!(t, "service_password"); assert!(!s);
+        assert_eq!(t, "service_password");
+        assert!(!s);
 
         let (t, s) = classify_lsa_secret("NL$KM");
-        assert_eq!(t, "cached_domain_key"); assert!(!s);
+        assert_eq!(t, "cached_domain_key");
+        assert!(!s);
 
         let (t, s) = classify_lsa_secret("DPAPI_SYSTEM");
-        assert_eq!(t, "dpapi_key"); assert!(!s);
+        assert_eq!(t, "dpapi_key");
+        assert!(!s);
 
         let (t, s) = classify_lsa_secret("DefaultPassword");
-        assert_eq!(t, "default_password"); assert!(s);
+        assert_eq!(t, "default_password");
+        assert!(s);
 
         let (t, s) = classify_lsa_secret("$MACHINE.ACC");
-        assert_eq!(t, "machine_password"); assert!(!s);
+        assert_eq!(t, "machine_password");
+        assert!(!s);
 
         let (t, s) = classify_lsa_secret("L$_RasConn");
-        assert_eq!(t, "vpn_credential"); assert!(s);
+        assert_eq!(t, "vpn_credential");
+        assert!(s);
 
         let (t, s) = classify_lsa_secret("L$_RasDial_Extra");
-        assert_eq!(t, "vpn_credential"); assert!(s);
+        assert_eq!(t, "vpn_credential");
+        assert!(s);
 
         let (t, s) = classify_lsa_secret("L$Anything");
-        assert_eq!(t, "lsa_data"); assert!(!s);
+        assert_eq!(t, "lsa_data");
+        assert!(!s);
 
         // Unknown, short (<=30): not suspicious
         let (t, s) = classify_lsa_secret("Short");
-        assert_eq!(t, "unknown"); assert!(!s);
+        assert_eq!(t, "unknown");
+        assert!(!s);
 
         // Unknown, long (>30): suspicious
         let long = "x".repeat(31);
         let (t, s) = classify_lsa_secret(&long);
-        assert_eq!(t, "unknown"); assert!(s);
+        assert_eq!(t, "unknown");
+        assert!(s);
     }
 
     /// walk_lsa_secrets with subkey_count=0 under Secrets returns empty.
@@ -1026,8 +1061,8 @@ mod tests {
     fn walk_lsa_secrets_full_traversal_finds_service_password() {
         let hive_vaddr: u64 = 0x0074_0000;
         let hive_paddr: u64 = 0x0074_0000;
-        let bb_vaddr: u64   = 0x0075_0000;
-        let bb_paddr: u64   = 0x0075_0000;
+        let bb_vaddr: u64 = 0x0075_0000;
+        let bb_paddr: u64 = 0x0075_0000;
         let flat_vaddr: u64 = 0x0076_0000; // explicit Storage pointer target
         let flat_paddr: u64 = 0x0076_0000;
 
@@ -1052,15 +1087,16 @@ mod tests {
 
         // root nk data at flat_page offset 0x104 (cell_off=0x100, +4 skip header)
         let ro = 0x104usize;
-        w32(&mut flat_page, ro + 0x18, 1);     // subkey_count=1
+        w32(&mut flat_page, ro + 0x18, 1); // subkey_count=1
         w32(&mut flat_page, ro + 0x20, 0x200); // list_cell_off=0x200
 
         // lf1 list at 0x204
         let l1 = 0x204usize;
-        flat_page[l1] = b'l'; flat_page[l1 + 1] = b'f';
-        w16(&mut flat_page, l1 + 2, 1);     // count=1
+        flat_page[l1] = b'l';
+        flat_page[l1 + 1] = b'f';
+        w16(&mut flat_page, l1 + 2, 1); // count=1
         w32(&mut flat_page, l1 + 4, 0x300); // entry for Policy nk
-        w32(&mut flat_page, l1 + 8, 0);     // hash
+        w32(&mut flat_page, l1 + 8, 0); // hash
 
         // Policy nk at 0x304
         let po = 0x304usize;
@@ -1071,7 +1107,8 @@ mod tests {
 
         // lf2 list at 0x404
         let l2 = 0x404usize;
-        flat_page[l2] = b'l'; flat_page[l2 + 1] = b'f';
+        flat_page[l2] = b'l';
+        flat_page[l2 + 1] = b'f';
         w16(&mut flat_page, l2 + 2, 1);
         w32(&mut flat_page, l2 + 4, 0x500);
         w32(&mut flat_page, l2 + 8, 0);
@@ -1085,7 +1122,8 @@ mod tests {
 
         // lf3 list at 0x604
         let l3 = 0x604usize;
-        flat_page[l3] = b'l'; flat_page[l3 + 1] = b'f';
+        flat_page[l3] = b'l';
+        flat_page[l3 + 1] = b'f';
         w16(&mut flat_page, l3 + 2, 1);
         w32(&mut flat_page, l3 + 4, 0x700);
         w32(&mut flat_page, l3 + 8, 0);

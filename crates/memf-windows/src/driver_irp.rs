@@ -187,11 +187,11 @@ pub fn walk_driver_irp<P: PhysicalMemoryProvider>(
     let limit = entries.len().min(MAX_DRIVERS);
 
     for entry_addr in entries.into_iter().take(limit) {
-        let dll_base: u64 =
-            match reader.read_field(entry_addr, "_KLDR_DATA_TABLE_ENTRY", "DllBase") {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+        let dll_base: u64 = match reader.read_field(entry_addr, "_KLDR_DATA_TABLE_ENTRY", "DllBase")
+        {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         // Find the matching driver object by base address and check its IRP table.
         if let Some(drv) = modules.iter().find(|m| m.base_addr == dll_base) {
             if drv.vaddr != 0 {
@@ -493,15 +493,15 @@ mod tests {
     #[test]
     fn irp_name_all_known_values() {
         let named: &[(u8, &str)] = &[
-            (1,  "IRP_MJ_CREATE_NAMED_PIPE"),
-            (2,  "IRP_MJ_CLOSE"),
-            (3,  "IRP_MJ_READ"),
-            (4,  "IRP_MJ_WRITE"),
-            (5,  "IRP_MJ_QUERY_INFORMATION"),
-            (6,  "IRP_MJ_SET_INFORMATION"),
-            (7,  "IRP_MJ_QUERY_EA"),
-            (8,  "IRP_MJ_SET_EA"),
-            (9,  "IRP_MJ_FLUSH_BUFFERS"),
+            (1, "IRP_MJ_CREATE_NAMED_PIPE"),
+            (2, "IRP_MJ_CLOSE"),
+            (3, "IRP_MJ_READ"),
+            (4, "IRP_MJ_WRITE"),
+            (5, "IRP_MJ_QUERY_INFORMATION"),
+            (6, "IRP_MJ_SET_INFORMATION"),
+            (7, "IRP_MJ_QUERY_EA"),
+            (8, "IRP_MJ_SET_EA"),
+            (9, "IRP_MJ_FLUSH_BUFFERS"),
             (10, "IRP_MJ_QUERY_VOLUME_INFORMATION"),
             (11, "IRP_MJ_SET_VOLUME_INFORMATION"),
             (12, "IRP_MJ_DIRECTORY_CONTROL"),
@@ -542,7 +542,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_driver_irp_hooks(&reader, &[0xFFFF_8000_DEAD_0000], &[]).unwrap();
-        assert!(result.is_empty(), "unmapped driver object should be skipped");
+        assert!(
+            result.is_empty(),
+            "unmapped driver object should be skipped"
+        );
     }
 
     // ── serialization test ─────────────────────────────────────────

@@ -213,10 +213,7 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
                     .symbols()
                     .field_offset("sock_common", "skc_peer_pid")
                     .unwrap_or(0);
-                let pid_nr_off = reader
-                    .symbols()
-                    .field_offset("pid", "nr")
-                    .unwrap_or(0);
+                let pid_nr_off = reader.symbols().field_offset("pid", "nr").unwrap_or(0);
                 if skc_peer_pid_off == 0 || pid_nr_off == 0 {
                     0
                 } else {
@@ -430,7 +427,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_unix_sockets(&reader).unwrap();
-        assert!(result.is_empty(), "missing unix_socket_table symbol must yield empty vec");
+        assert!(
+            result.is_empty(),
+            "missing unix_socket_table symbol must yield empty vec"
+        );
     }
 
     // --- walk_unix_sockets: symbol present, all 256 buckets are zero → exercises loop body ---
@@ -541,12 +541,19 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_unix_sockets(&reader).unwrap();
-        assert_eq!(result.len(), 1, "one hlist node → exactly one unix socket entry");
+        assert_eq!(
+            result.len(),
+            1,
+            "one hlist node → exactly one unix socket entry"
+        );
         assert_eq!(result[0].socket_type, "STREAM");
         assert_eq!(result[0].state, "CONNECTED");
         assert_eq!(result[0].inode, 0);
         assert!(result[0].path.is_empty());
-        assert!(!result[0].is_suspicious, "empty path + pid=0 must not be suspicious");
+        assert!(
+            !result[0].is_suspicious,
+            "empty path + pid=0 must not be suspicious"
+        );
     }
 
     // --- walk_unix_sockets: node with abstract path (@name) is classified correctly ---
@@ -613,11 +620,17 @@ mod tests {
 
         let result = walk_unix_sockets(&reader).unwrap();
         assert_eq!(result.len(), 1, "one node → one entry");
-        assert_eq!(result[0].path, "@hidden", "abstract path must be decoded as @<name>");
+        assert_eq!(
+            result[0].path, "@hidden",
+            "abstract path must be decoded as @<name>"
+        );
         assert_eq!(result[0].socket_type, "DGRAM");
         assert_eq!(result[0].state, "UNCONNECTED");
         // classify_unix_socket("@hidden", 0) → is_abstract=true, owner_pid=0 < 1000 → false
-        assert!(!result[0].is_suspicious, "abstract path with pid=0 is not suspicious");
+        assert!(
+            !result[0].is_suspicious,
+            "abstract path with pid=0 is not suspicious"
+        );
     }
 
     // --- walk_unix_sockets: cycle detection via seen set ---
@@ -673,7 +686,11 @@ mod tests {
 
         let result = walk_unix_sockets(&reader).unwrap();
         // Should get exactly 2 entries (nodeA + nodeB), then cycle detected → stop
-        assert_eq!(result.len(), 2, "cycle detected after 2 unique nodes → exactly 2 entries");
+        assert_eq!(
+            result.len(),
+            2,
+            "cycle detected after 2 unique nodes → exactly 2 entries"
+        );
     }
 
     // --- walk_unix_sockets: sk_state unknown value → state = "UNKNOWN" ---
@@ -729,8 +746,8 @@ mod tests {
 
         let table_vaddr: u64 = 0xFFFF_8800_007B_0000;
         let table_paddr: u64 = 0x007B_0000;
-        let node_vaddr: u64  = 0xFFFF_8800_007C_0000;
-        let node_paddr: u64  = 0x007C_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_007C_0000;
+        let node_paddr: u64 = 0x007C_0000;
 
         let mut table_page = [0u8; 4096];
         table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
@@ -770,8 +787,8 @@ mod tests {
 
         let table_vaddr: u64 = 0xFFFF_8800_007D_0000;
         let table_paddr: u64 = 0x007D_0000;
-        let node_vaddr: u64  = 0xFFFF_8800_007E_0000;
-        let node_paddr: u64  = 0x007E_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_007E_0000;
+        let node_paddr: u64 = 0x007E_0000;
 
         let mut table_page = [0u8; 4096];
         table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
@@ -812,10 +829,10 @@ mod tests {
         // Like abstract test but sun_path first byte is '/' (non-abstract → filesystem path).
         let table_vaddr: u64 = 0xFFFF_8800_0080_0000;
         let table_paddr: u64 = 0x0080_1000; // offset within page to avoid collision
-        let node_vaddr: u64  = 0xFFFF_8800_0081_0000;
-        let node_paddr: u64  = 0x0081_0000;
-        let addr_vaddr: u64  = 0xFFFF_8800_0082_0000;
-        let addr_paddr: u64  = 0x0082_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_0081_0000;
+        let node_paddr: u64 = 0x0081_0000;
+        let addr_vaddr: u64 = 0xFFFF_8800_0082_0000;
+        let addr_paddr: u64 = 0x0082_0000;
 
         let unix_addr_off: usize = 0x288;
 
@@ -855,7 +872,10 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, "/var/run/test.sock");
         assert_eq!(result[0].state, "CONNECTED");
-        assert!(!result[0].is_suspicious, "/var/run/ path should not be suspicious");
+        assert!(
+            !result[0].is_suspicious,
+            "/var/run/ path should not be suspicious"
+        );
     }
 
     // --- walk_unix_sockets: abstract socket with empty inner name → path="" ---
@@ -868,10 +888,10 @@ mod tests {
 
         let table_vaddr: u64 = 0xFFFF_8800_0083_0000;
         let table_paddr: u64 = 0x0083_1000;
-        let node_vaddr: u64  = 0xFFFF_8800_0084_0000;
-        let node_paddr: u64  = 0x0084_0000;
-        let addr_vaddr: u64  = 0xFFFF_8800_0085_0000;
-        let addr_paddr: u64  = 0x0085_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_0084_0000;
+        let node_paddr: u64 = 0x0084_0000;
+        let addr_vaddr: u64 = 0xFFFF_8800_0085_0000;
+        let addr_paddr: u64 = 0x0085_0000;
 
         let unix_addr_off: usize = 0x288;
 
@@ -909,7 +929,10 @@ mod tests {
         let result = walk_unix_sockets(&reader).unwrap();
         assert_eq!(result.len(), 1);
         // Abstract with empty inner → path=""
-        assert!(result[0].path.is_empty(), "abstract with empty inner name must produce empty path");
+        assert!(
+            result[0].path.is_empty(),
+            "abstract with empty inner name must produce empty path"
+        );
     }
 
     // --- walk_unix_sockets: owner_pid resolved from sk_peer_pid chain ---
@@ -933,14 +956,14 @@ mod tests {
 
         let table_vaddr: u64 = 0xFFFF_8800_0090_0000;
         let table_paddr: u64 = 0x0090_0000;
-        let node_vaddr:  u64 = 0xFFFF_8800_0091_0000;
-        let node_paddr:  u64 = 0x0091_0000;
-        let pid_vaddr:   u64 = 0xFFFF_8800_0092_0000;
-        let pid_paddr:   u64 = 0x0092_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_0091_0000;
+        let node_paddr: u64 = 0x0091_0000;
+        let pid_vaddr: u64 = 0xFFFF_8800_0092_0000;
+        let pid_paddr: u64 = 0x0092_0000;
 
         // Chosen ISF-driven offsets (will be returned by field_offset calls):
         let skc_peer_pid_off: usize = 0x40; // sock_common.skc_peer_pid
-        let pid_nr_off:       usize = 0x20; // pid.numbers[0].nr
+        let pid_nr_off: usize = 0x20; // pid.numbers[0].nr
 
         let mut table_page = [0u8; 4096];
         table_page[0..8].copy_from_slice(&node_vaddr.to_le_bytes());
@@ -953,8 +976,7 @@ mod tests {
         // sk_state = 3 (CONNECTED) at default 0x14
         node_page[0x14] = 3u8;
         // sock_common.skc_peer_pid pointer at skc_peer_pid_off → pid_vaddr
-        node_page[skc_peer_pid_off..skc_peer_pid_off + 8]
-            .copy_from_slice(&pid_vaddr.to_le_bytes());
+        node_page[skc_peer_pid_off..skc_peer_pid_off + 8].copy_from_slice(&pid_vaddr.to_le_bytes());
 
         let mut pid_page = [0u8; 4096];
         // pid.numbers[0].nr = 1234 at pid_nr_off
@@ -964,7 +986,12 @@ mod tests {
             .add_symbol("unix_socket_table", table_vaddr)
             // sock_common struct with skc_peer_pid field
             .add_struct("sock_common", 0x80)
-            .add_field("sock_common", "skc_peer_pid", skc_peer_pid_off as u64, "pointer")
+            .add_field(
+                "sock_common",
+                "skc_peer_pid",
+                skc_peer_pid_off as u64,
+                "pointer",
+            )
             // pid struct with nr field (represents numbers[0].nr)
             .add_struct("pid", 0x60)
             .add_field("pid", "nr", pid_nr_off as u64, "unsigned int")
@@ -1004,8 +1031,8 @@ mod tests {
 
         let table_vaddr: u64 = 0xFFFF_8800_0093_0000;
         let table_paddr: u64 = 0x0093_0000;
-        let node_vaddr:  u64 = 0xFFFF_8800_0094_0000;
-        let node_paddr:  u64 = 0x0094_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_0094_0000;
+        let node_paddr: u64 = 0x0094_0000;
 
         let skc_peer_pid_off: usize = 0x40;
 
@@ -1016,14 +1043,18 @@ mod tests {
         node_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // hlist next = 0
         node_page[0x12..0x14].copy_from_slice(&1u16.to_le_bytes()); // STREAM
         node_page[0x14] = 1u8; // UNCONNECTED
-        // skc_peer_pid at skc_peer_pid_off = 0 (null pointer)
-        node_page[skc_peer_pid_off..skc_peer_pid_off + 8]
-            .copy_from_slice(&0u64.to_le_bytes());
+                               // skc_peer_pid at skc_peer_pid_off = 0 (null pointer)
+        node_page[skc_peer_pid_off..skc_peer_pid_off + 8].copy_from_slice(&0u64.to_le_bytes());
 
         let isf = IsfBuilder::new()
             .add_symbol("unix_socket_table", table_vaddr)
             .add_struct("sock_common", 0x80)
-            .add_field("sock_common", "skc_peer_pid", skc_peer_pid_off as u64, "pointer")
+            .add_field(
+                "sock_common",
+                "skc_peer_pid",
+                skc_peer_pid_off as u64,
+                "pointer",
+            )
             .add_struct("pid", 0x60)
             .add_field("pid", "nr", 0x20u64, "unsigned int")
             .build_json();
@@ -1055,10 +1086,10 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        let table_vaddr: u64  = 0xFFFF_8800_0086_0000;
-        let table_paddr: u64  = 0x0086_0000;
-        let node_vaddr: u64   = 0xFFFF_8800_0087_0000;
-        let node_paddr: u64   = 0x0087_0000;
+        let table_vaddr: u64 = 0xFFFF_8800_0086_0000;
+        let table_paddr: u64 = 0x0086_0000;
+        let node_vaddr: u64 = 0xFFFF_8800_0087_0000;
+        let node_paddr: u64 = 0x0087_0000;
         let socket_vaddr: u64 = 0xFFFF_8800_0088_0000;
         let socket_paddr: u64 = 0x0088_0000;
 
@@ -1071,7 +1102,7 @@ mod tests {
         node_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // next = 0
         node_page[0x12..0x14].copy_from_slice(&1u16.to_le_bytes()); // STREAM
         node_page[0x14] = 3u8; // CONNECTED
-        // sk_socket at 0x30 → socket_vaddr
+                               // sk_socket at 0x30 → socket_vaddr
         node_page[sk_socket_off..sk_socket_off + 8].copy_from_slice(&socket_vaddr.to_le_bytes());
 
         // socket page: inode at +0x18 = 99999
@@ -1097,6 +1128,9 @@ mod tests {
 
         let result = walk_unix_sockets(&reader).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].inode, 99999, "inode must be read from socket+0x18");
+        assert_eq!(
+            result[0].inode, 99999,
+            "inode must be read from socket+0x18"
+        );
     }
 }

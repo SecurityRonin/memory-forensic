@@ -705,7 +705,10 @@ mod tests {
 
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0].thread_count, 7, "thread_count should be 7");
-        assert!(!procs[0].is_wow64, "is_wow64 should be false when Wow64Process == 0");
+        assert!(
+            !procs[0].is_wow64,
+            "is_wow64 should be false when Wow64Process == 0"
+        );
     }
 
     #[test]
@@ -746,7 +749,10 @@ mod tests {
 
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0].thread_count, 3, "thread_count should be 3");
-        assert!(procs[0].is_wow64, "is_wow64 should be true when Wow64Process != 0");
+        assert!(
+            procs[0].is_wow64,
+            "is_wow64 should be true when Wow64Process != 0"
+        );
     }
 
     #[test]
@@ -787,7 +793,10 @@ mod tests {
 
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0].thread_count, 1, "thread_count should be 1");
-        assert!(!procs[0].is_wow64, "is_wow64 should be false when Wow64Process == 0");
+        assert!(
+            !procs[0].is_wow64,
+            "is_wow64 should be false when Wow64Process == 0"
+        );
     }
 
     #[test]

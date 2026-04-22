@@ -392,11 +392,21 @@ mod tests {
             .add_field("_WMI_LOGGER_CONTEXT", "BufferCount", 0x30, "unsigned int")
             .add_field("_WMI_LOGGER_CONTEXT", "BufferSize", 0x34, "unsigned int")
             .add_field("_WMI_LOGGER_CONTEXT", "EventsLost", 0x38, "unsigned int")
-            .add_field("_WMI_LOGGER_CONTEXT", "BuffersWritten", 0x3C, "unsigned int")
+            .add_field(
+                "_WMI_LOGGER_CONTEXT",
+                "BuffersWritten",
+                0x3C,
+                "unsigned int",
+            )
             .add_field("_WMI_LOGGER_CONTEXT", "FlushTimer", 0x40, "unsigned int")
             .add_field("_WMI_LOGGER_CONTEXT", "LogMode", 0x44, "unsigned int")
             // BufferListHead is a _LIST_ENTRY embedded at offset 0x100
-            .add_field("_WMI_LOGGER_CONTEXT", "BufferListHead", 0x100, "_LIST_ENTRY")
+            .add_field(
+                "_WMI_LOGGER_CONTEXT",
+                "BufferListHead",
+                0x100,
+                "_LIST_ENTRY",
+            )
             // Buffer header struct
             .add_struct("_WMI_BUFFER_HEADER", 0x80)
             // ListEntry at offset 0 (Flink/Blink)

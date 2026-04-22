@@ -174,8 +174,8 @@ mod tests {
     #[test]
     fn classify_all_known_tags_not_suspicious() {
         let known = [
-            "Proc", "Thre", "Driv", "File", "Muta", "Even", "Sema",
-            "Sect", "Port", "Vad\x20", "CM10", "CM31", "ObNm", "ObHd",
+            "Proc", "Thre", "Driv", "File", "Muta", "Even", "Sema", "Sect", "Port", "Vad\x20",
+            "CM10", "CM31", "ObNm", "ObHd",
         ];
         for tag in &known {
             assert!(

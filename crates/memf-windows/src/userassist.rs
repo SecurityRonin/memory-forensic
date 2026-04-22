@@ -802,10 +802,28 @@ mod tests {
     #[test]
     fn classify_userassist_all_suspicious_tools() {
         let tools = [
-            "mimikatz", "psexec", "procdump", "beacon", "cobalt", "rubeus",
-            "seatbelt", "sharpup", "sharphound", "bloodhound", "lazagne",
-            "safetykatz", "winpeas", "linpeas", "chisel", "plink", "ncat",
-            "netcat", "nc.exe", "nc64.exe", "whoami", "certutil",
+            "mimikatz",
+            "psexec",
+            "procdump",
+            "beacon",
+            "cobalt",
+            "rubeus",
+            "seatbelt",
+            "sharpup",
+            "sharphound",
+            "bloodhound",
+            "lazagne",
+            "safetykatz",
+            "winpeas",
+            "linpeas",
+            "chisel",
+            "plink",
+            "ncat",
+            "netcat",
+            "nc.exe",
+            "nc64.exe",
+            "whoami",
+            "certutil",
         ];
         for tool in &tools {
             assert!(
@@ -831,8 +849,14 @@ mod tests {
     #[test]
     fn classify_userassist_all_lolbins_suspicious() {
         let lolbins = [
-            "mshta.exe", "wscript.exe", "cscript.exe", "regsvr32.exe",
-            "rundll32.exe", "msiexec.exe", "certutil.exe", "bitsadmin.exe",
+            "mshta.exe",
+            "wscript.exe",
+            "cscript.exe",
+            "regsvr32.exe",
+            "rundll32.exe",
+            "msiexec.exe",
+            "certutil.exe",
+            "bitsadmin.exe",
         ];
         for bin in &lolbins {
             assert!(
@@ -853,9 +877,7 @@ mod tests {
     /// cmd.exe from system32 is NOT suspicious.
     #[test]
     fn classify_userassist_cmd_system32_benign() {
-        assert!(!classify_userassist(
-            "C:\\Windows\\System32\\cmd.exe"
-        ));
+        assert!(!classify_userassist("C:\\Windows\\System32\\cmd.exe"));
     }
 
     /// cmd.exe from outside system32 IS suspicious.
@@ -1109,9 +1131,11 @@ mod tests {
         // cell_address = hive_addr + HBIN_START_OFFSET + 0x100 = 0x1000_0000 + 0x1000 + 0x100
         // This address is not mapped in the reader, so read_cell_data will return Err,
         // which find_subkey propagates. The caller should treat Err as None.
-        let result = find_subkey(&reader, hive_addr, &nk_data, "Software")
-            .unwrap_or(None);
-        assert!(result.is_none(), "unmapped list cell should return None or Err");
+        let result = find_subkey(&reader, hive_addr, &nk_data, "Software").unwrap_or(None);
+        assert!(
+            result.is_none(),
+            "unmapped list cell should return None or Err"
+        );
     }
 
     // ── list_subkeys unit tests ──────────────────────────────────────
@@ -1165,10 +1189,7 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = read_cell_data(&reader, cell_vaddr).unwrap();
-        assert!(
-            result.is_empty(),
-            "abs_size == 4 should return empty Vec"
-        );
+        assert!(result.is_empty(), "abs_size == 4 should return empty Vec");
     }
 
     /// read_cell_data with a negative size (allocated cell) returns data bytes.
@@ -1512,17 +1533,17 @@ mod tests {
         //   ri_cell   = 0x0000 → vaddr = hive_addr + 0x1000
         //   lf_cell   = 0x1000 → vaddr = hive_addr + 0x2000
         //   nk_cell   = 0x2000 → vaddr = hive_addr + 0x3000
-        let ri_cell: u32   = 0x0000;
-        let lf_cell: u32   = 0x1000;
-        let nk_cell: u32   = 0x2000;
+        let ri_cell: u32 = 0x0000;
+        let lf_cell: u32 = 0x1000;
+        let nk_cell: u32 = 0x2000;
 
-        let ri_vaddr  = hive_addr + 0x1000 + ri_cell as u64;   // 0x0561_0000
-        let lf_vaddr  = hive_addr + 0x1000 + lf_cell as u64;   // 0x0562_0000
-        let nk_vaddr  = hive_addr + 0x1000 + nk_cell as u64;   // 0x0563_0000
+        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64; // 0x0561_0000
+        let lf_vaddr = hive_addr + 0x1000 + lf_cell as u64; // 0x0562_0000
+        let nk_vaddr = hive_addr + 0x1000 + nk_cell as u64; // 0x0563_0000
 
-        let ri_paddr: u64  = 0x0068_0000;
-        let lf_paddr: u64  = 0x0069_0000;
-        let nk_paddr: u64  = 0x006A_0000;
+        let ri_paddr: u64 = 0x0068_0000;
+        let lf_paddr: u64 = 0x0069_0000;
+        let nk_paddr: u64 = 0x006A_0000;
 
         // nk_data for the parent key: subkey_count=1, subkeys_list_cell=ri_cell.
         let mut parent_nk = vec![0u8; 0x60];
@@ -1534,14 +1555,14 @@ mod tests {
         // ri list page: cell_size=-16, sig=0x6972, count=1, entry[0]=lf_cell.
         let mut ri_page = vec![0u8; 4096];
         ri_page[0..4].copy_from_slice(&(-16i32).to_le_bytes());
-        ri_page[4..6].copy_from_slice(&[0x72, 0x69]);  // "ri" = 0x6972
+        ri_page[4..6].copy_from_slice(&[0x72, 0x69]); // "ri" = 0x6972
         ri_page[6..8].copy_from_slice(&1u16.to_le_bytes());
         ri_page[8..12].copy_from_slice(&lf_cell.to_le_bytes());
 
         // lf sub-list page: cell_size=-24, sig=0x666C, count=1, entry[0]=(nk_cell,hash=0).
         let mut lf_page = vec![0u8; 4096];
         lf_page[0..4].copy_from_slice(&(-24i32).to_le_bytes());
-        lf_page[4..6].copy_from_slice(&[0x6C, 0x66]);  // "lf"
+        lf_page[4..6].copy_from_slice(&[0x6C, 0x66]); // "lf"
         lf_page[6..8].copy_from_slice(&1u16.to_le_bytes());
         lf_page[8..12].copy_from_slice(&nk_cell.to_le_bytes());
         lf_page[12..16].copy_from_slice(&0u32.to_le_bytes()); // hash
@@ -1552,16 +1573,15 @@ mod tests {
         let nk_abs_size: usize = 4 + NK_NAME_OFFSET + name.len() + 4; // margin
         let mut nk_page = vec![0u8; 4096];
         nk_page[0..4].copy_from_slice(&(-(nk_abs_size as i32)).to_le_bytes());
-        nk_page[4..6].copy_from_slice(&[0x6E, 0x6B]);  // "nk" = 0x6B6E
+        nk_page[4..6].copy_from_slice(&[0x6E, 0x6B]); // "nk" = 0x6B6E
         nk_page[4 + NK_NAME_LENGTH_OFFSET..4 + NK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(name.len() as u16).to_le_bytes());
-        nk_page[4 + NK_NAME_OFFSET..4 + NK_NAME_OFFSET + name.len()]
-            .copy_from_slice(name);
+        nk_page[4 + NK_NAME_OFFSET..4 + NK_NAME_OFFSET + name.len()].copy_from_slice(name);
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(ri_vaddr,  ri_paddr,  flags::WRITABLE)
-            .map_4k(lf_vaddr,  lf_paddr,  flags::WRITABLE)
-            .map_4k(nk_vaddr,  nk_paddr,  flags::WRITABLE)
+            .map_4k(ri_vaddr, ri_paddr, flags::WRITABLE)
+            .map_4k(lf_vaddr, lf_paddr, flags::WRITABLE)
+            .map_4k(nk_vaddr, nk_paddr, flags::WRITABLE)
             .write_phys(ri_paddr, &ri_page)
             .write_phys(lf_paddr, &lf_page)
             .write_phys(nk_paddr, &nk_page)
@@ -1583,13 +1603,13 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let hive_addr: u64 = 0x0570_0000;
-        let ri_cell: u32   = 0x0000;
-        let sub_cell: u32  = 0x1000;
+        let ri_cell: u32 = 0x0000;
+        let sub_cell: u32 = 0x1000;
 
-        let ri_vaddr  = hive_addr + 0x1000 + ri_cell as u64;
+        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64;
         let sub_vaddr = hive_addr + 0x1000 + sub_cell as u64;
 
-        let ri_paddr: u64  = 0x006B_0000;
+        let ri_paddr: u64 = 0x006B_0000;
         let sub_paddr: u64 = 0x006C_0000;
 
         let mut parent_nk = vec![0u8; 0x60];
@@ -1611,7 +1631,7 @@ mod tests {
         sub_page[6..8].copy_from_slice(&1u16.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(ri_vaddr,  ri_paddr,  flags::WRITABLE)
+            .map_4k(ri_vaddr, ri_paddr, flags::WRITABLE)
             .map_4k(sub_vaddr, sub_paddr, flags::WRITABLE)
             .write_phys(ri_paddr, &ri_page)
             .write_phys(sub_paddr, &sub_page)
@@ -1635,14 +1655,14 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let hive_addr: u64 = 0x0580_0000;
-        let ri_cell: u32   = 0x0000;
-        let li_cell: u32   = 0x1000;
+        let ri_cell: u32 = 0x0000;
+        let li_cell: u32 = 0x1000;
 
-        let ri_vaddr  = hive_addr + 0x1000 + ri_cell as u64;
-        let li_vaddr  = hive_addr + 0x1000 + li_cell as u64;
+        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64;
+        let li_vaddr = hive_addr + 0x1000 + li_cell as u64;
 
-        let ri_paddr: u64  = 0x006D_0000;
-        let li_paddr: u64  = 0x006E_0000;
+        let ri_paddr: u64 = 0x006D_0000;
+        let li_paddr: u64 = 0x006E_0000;
 
         let mut parent_nk = vec![0u8; 0x60];
         parent_nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
@@ -1690,14 +1710,14 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let hive_addr: u64 = 0x0590_0000;
-        let ri_cell: u32   = 0x0000;
-        let bad_cell: u32  = 0x1000;
+        let ri_cell: u32 = 0x0000;
+        let bad_cell: u32 = 0x1000;
 
-        let ri_vaddr   = hive_addr + 0x1000 + ri_cell as u64;
-        let bad_vaddr  = hive_addr + 0x1000 + bad_cell as u64;
+        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64;
+        let bad_vaddr = hive_addr + 0x1000 + bad_cell as u64;
 
-        let ri_paddr: u64   = 0x006F_0000;
-        let bad_paddr: u64  = 0x0070_0000;
+        let ri_paddr: u64 = 0x006F_0000;
+        let bad_paddr: u64 = 0x0070_0000;
 
         let mut parent_nk = vec![0u8; 0x60];
         parent_nk[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
@@ -1717,7 +1737,7 @@ mod tests {
         bad_page[6..8].copy_from_slice(&3u16.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(ri_vaddr,  ri_paddr,  flags::WRITABLE)
+            .map_4k(ri_vaddr, ri_paddr, flags::WRITABLE)
             .map_4k(bad_vaddr, bad_paddr, flags::WRITABLE)
             .write_phys(ri_paddr, &ri_page)
             .write_phys(bad_paddr, &bad_page)
@@ -1741,7 +1761,7 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let hive_addr: u64 = 0x05A0_0000;
-        let val_cell: u32  = 0x0000; // cell at hive_addr + 0x1000
+        let val_cell: u32 = 0x0000; // cell at hive_addr + 0x1000
 
         let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
         let cell_paddr: u64 = 0x0071_0000;
@@ -1771,7 +1791,7 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let hive_addr: u64 = 0x05B0_0000;
-        let val_cell: u32  = 0x0000;
+        let val_cell: u32 = 0x0000;
         let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
         let cell_paddr: u64 = 0x0072_0000;
 
@@ -1801,15 +1821,15 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let hive_addr: u64 = 0x05C0_0000;
-        let val_cell: u32  = 0x0000;
+        let val_cell: u32 = 0x0000;
         let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
         let cell_paddr: u64 = 0x0073_0000;
 
         // Large vk cell but data_length field = 10 (< 72 = USERASSIST_DATA_SIZE).
         let mut page = vec![0u8; 4096];
         page[0..4].copy_from_slice(&(-100i32).to_le_bytes()); // abs_size=100
-        page[4..6].copy_from_slice(&[0x76, 0x6B]);            // "vk" = 0x6B76, LE
-        // VK_DATA_LENGTH_OFFSET = 0x04 (relative to data start = page offset 8)
+        page[4..6].copy_from_slice(&[0x76, 0x6B]); // "vk" = 0x6B76, LE
+                                                   // VK_DATA_LENGTH_OFFSET = 0x04 (relative to data start = page offset 8)
         page[4 + VK_DATA_LENGTH_OFFSET..4 + VK_DATA_LENGTH_OFFSET + 4]
             .copy_from_slice(&10u32.to_le_bytes()); // data_length = 10 < 72
 
@@ -1821,7 +1841,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = parse_userassist_value(&reader, hive_addr, val_cell).unwrap();
-        assert!(result.is_none(), "data_length < USERASSIST_DATA_SIZE should return None");
+        assert!(
+            result.is_none(),
+            "data_length < USERASSIST_DATA_SIZE should return None"
+        );
     }
 
     /// parse_userassist_value: fully valid vk cell with 72-byte data → Ok(Some(entry)).
@@ -1837,11 +1860,11 @@ mod tests {
 
         let hive_addr: u64 = 0x05D0_0000;
         // vk cell at cell index 0 → vaddr = hive_addr + 0x1000
-        let val_cell: u32  = 0x0000;
+        let val_cell: u32 = 0x0000;
         // data cell at cell index 0x400 → vaddr = hive_addr + 0x1000 + 0x400
         let data_cell: u32 = 0x0400;
 
-        let vk_vaddr   = hive_addr + 0x1000 + val_cell as u64;
+        let vk_vaddr = hive_addr + 0x1000 + val_cell as u64;
         let data_vaddr = hive_addr + 0x1000 + data_cell as u64;
         // Both fit on the same 4K page (0x400 bytes apart, data offset < 4096).
         let page_paddr: u64 = 0x0074_0000;
@@ -1857,7 +1880,7 @@ mod tests {
         page[0..4].copy_from_slice(&vk_cell_size.to_le_bytes());
         // vk data starts at offset 4:
         page[4..6].copy_from_slice(&[0x76, 0x6B]); // "vk" LE = 0x6B76
-        // VK_NAME_LENGTH_OFFSET = 0x02 (within vk_data → page offset 4+2=6)
+                                                   // VK_NAME_LENGTH_OFFSET = 0x02 (within vk_data → page offset 4+2=6)
         page[4 + VK_NAME_LENGTH_OFFSET..4 + VK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(rot13_name.len() as u16).to_le_bytes());
         // VK_DATA_LENGTH_OFFSET = 0x04 (→ page offset 4+4=8)
@@ -1867,8 +1890,7 @@ mod tests {
         page[4 + VK_DATA_OFFSET_OFFSET..4 + VK_DATA_OFFSET_OFFSET + 4]
             .copy_from_slice(&data_cell.to_le_bytes());
         // VK_NAME_OFFSET = 0x14 (→ page offset 4+0x14=24)
-        page[4 + VK_NAME_OFFSET..4 + VK_NAME_OFFSET + rot13_name.len()]
-            .copy_from_slice(rot13_name);
+        page[4 + VK_NAME_OFFSET..4 + VK_NAME_OFFSET + rot13_name.len()].copy_from_slice(rot13_name);
 
         // data cell at offset 0x400: size=-(72+4)=-76, then 72 bytes of UA data.
         let data_off = data_cell as usize; // offset within page
@@ -1883,8 +1905,7 @@ mod tests {
         // offset 12: focus_time_ms = 5000
         page[ua_start + 12..ua_start + 16].copy_from_slice(&5000u32.to_le_bytes());
         // offset 60: last_run_time = 132_000_000_000
-        page[ua_start + 60..ua_start + 68]
-            .copy_from_slice(&132_000_000_000u64.to_le_bytes());
+        page[ua_start + 60..ua_start + 68].copy_from_slice(&132_000_000_000u64.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(vk_vaddr, page_paddr, flags::WRITABLE)
@@ -1903,7 +1924,10 @@ mod tests {
         assert_eq!(entry.focus_count, 3);
         assert_eq!(entry.focus_time_ms, 5000);
         assert_eq!(entry.last_run_time, 132_000_000_000);
-        assert!(entry.is_suspicious, "mimikatz.exe should be classified suspicious");
+        assert!(
+            entry.is_suspicious,
+            "mimikatz.exe should be classified suspicious"
+        );
     }
 
     /// classify_userassist: lolbin ends_with variant coverage (path ends with lolbin name).
@@ -2008,25 +2032,25 @@ mod tests {
         // data_vaddr = hive_vaddr + 0x1000 + 0x1000 = hive_vaddr + 0x2000
 
         // NK_ROOT must be non-zero (walk_userassist returns early if root_cell == 0).
-        const NK_ROOT:  u32 = 0x020;
-        const NK_SW:    u32 = 0x0A0;
-        const NK_MS:    u32 = 0x120;
-        const NK_WIN:   u32 = 0x1A0;
-        const NK_CV:    u32 = 0x220;
-        const NK_EXP:   u32 = 0x2A0;
-        const NK_UA:    u32 = 0x320;
-        const NK_GUID:  u32 = 0x3A0;
+        const NK_ROOT: u32 = 0x020;
+        const NK_SW: u32 = 0x0A0;
+        const NK_MS: u32 = 0x120;
+        const NK_WIN: u32 = 0x1A0;
+        const NK_CV: u32 = 0x220;
+        const NK_EXP: u32 = 0x2A0;
+        const NK_UA: u32 = 0x320;
+        const NK_GUID: u32 = 0x3A0;
         const NK_COUNT: u32 = 0x420;
-        const LF_ROOT:  u32 = 0x4A0;
-        const LF_SW:    u32 = 0x4C0;
-        const LF_MS:    u32 = 0x4E0;
-        const LF_WIN:   u32 = 0x500;
-        const LF_CV:    u32 = 0x520;
-        const LF_EXP:   u32 = 0x540;
-        const LF_UA:    u32 = 0x560;
-        const LF_GUID:  u32 = 0x580;
-        const VLIST:    u32 = 0x5A0;
-        const VK_IDX:   u32 = 0x5C0;
+        const LF_ROOT: u32 = 0x4A0;
+        const LF_SW: u32 = 0x4C0;
+        const LF_MS: u32 = 0x4E0;
+        const LF_WIN: u32 = 0x500;
+        const LF_CV: u32 = 0x520;
+        const LF_EXP: u32 = 0x540;
+        const LF_UA: u32 = 0x560;
+        const LF_GUID: u32 = 0x580;
+        const VLIST: u32 = 0x5A0;
+        const VK_IDX: u32 = 0x5C0;
         const DATA_IDX: u32 = 0x1000; // on second HBIN page
 
         let data_vaddr = hive_vaddr + HBIN_START_OFFSET + DATA_IDX as u64;
@@ -2042,8 +2066,12 @@ mod tests {
         // Helper: build a minimal nk cell data (payload, no size header).
         // name is ASCII, subkey_count=1 (unless is_leaf), lf_cell is the subkeys list.
         // For Count node: subkey_count=0, value_count=1, values_list_cell=VLIST.
-        let make_nk = |name: &[u8], subkey_count: u32, lf_cell: u32,
-                        value_count: u32, vlist_cell: u32| -> Vec<u8> {
+        let make_nk = |name: &[u8],
+                       subkey_count: u32,
+                       lf_cell: u32,
+                       value_count: u32,
+                       vlist_cell: u32|
+         -> Vec<u8> {
             let needed = NK_NAME_OFFSET + name.len();
             let mut nk = vec![0u8; needed];
             nk[0..2].copy_from_slice(&NK_SIGNATURE.to_le_bytes());
@@ -2075,26 +2103,62 @@ mod tests {
         let mut hbin = vec![0u8; 0x1000];
 
         // nk cells
-        write_cell(&mut hbin, NK_ROOT as usize,  &make_nk(b"$$$PROTO.HIV", 1, LF_ROOT,  0, 0));
-        write_cell(&mut hbin, NK_SW as usize,    &make_nk(b"Software",     1, LF_SW,    0, 0));
-        write_cell(&mut hbin, NK_MS as usize,    &make_nk(b"Microsoft",    1, LF_MS,    0, 0));
-        write_cell(&mut hbin, NK_WIN as usize,   &make_nk(b"Windows",      1, LF_WIN,   0, 0));
-        write_cell(&mut hbin, NK_CV as usize,    &make_nk(b"CurrentVersion", 1, LF_CV,  0, 0));
-        write_cell(&mut hbin, NK_EXP as usize,   &make_nk(b"Explorer",     1, LF_EXP,  0, 0));
-        write_cell(&mut hbin, NK_UA as usize,    &make_nk(b"UserAssist",   1, LF_UA,   0, 0));
-        write_cell(&mut hbin, NK_GUID as usize,  &make_nk(b"{GUIDTEST}",   1, LF_GUID, 0, 0));
+        write_cell(
+            &mut hbin,
+            NK_ROOT as usize,
+            &make_nk(b"$$$PROTO.HIV", 1, LF_ROOT, 0, 0),
+        );
+        write_cell(
+            &mut hbin,
+            NK_SW as usize,
+            &make_nk(b"Software", 1, LF_SW, 0, 0),
+        );
+        write_cell(
+            &mut hbin,
+            NK_MS as usize,
+            &make_nk(b"Microsoft", 1, LF_MS, 0, 0),
+        );
+        write_cell(
+            &mut hbin,
+            NK_WIN as usize,
+            &make_nk(b"Windows", 1, LF_WIN, 0, 0),
+        );
+        write_cell(
+            &mut hbin,
+            NK_CV as usize,
+            &make_nk(b"CurrentVersion", 1, LF_CV, 0, 0),
+        );
+        write_cell(
+            &mut hbin,
+            NK_EXP as usize,
+            &make_nk(b"Explorer", 1, LF_EXP, 0, 0),
+        );
+        write_cell(
+            &mut hbin,
+            NK_UA as usize,
+            &make_nk(b"UserAssist", 1, LF_UA, 0, 0),
+        );
+        write_cell(
+            &mut hbin,
+            NK_GUID as usize,
+            &make_nk(b"{GUIDTEST}", 1, LF_GUID, 0, 0),
+        );
         // Count nk: subkey_count=0, value_count=1, values_list=VLIST
-        write_cell(&mut hbin, NK_COUNT as usize, &make_nk(b"Count",        0, 0,       1, VLIST));
+        write_cell(
+            &mut hbin,
+            NK_COUNT as usize,
+            &make_nk(b"Count", 0, 0, 1, VLIST),
+        );
 
         // lf lists
-        write_cell(&mut hbin, LF_ROOT as usize,  &make_lf(NK_SW));
-        write_cell(&mut hbin, LF_SW as usize,    &make_lf(NK_MS));
-        write_cell(&mut hbin, LF_MS as usize,    &make_lf(NK_WIN));
-        write_cell(&mut hbin, LF_WIN as usize,   &make_lf(NK_CV));
-        write_cell(&mut hbin, LF_CV as usize,    &make_lf(NK_EXP));
-        write_cell(&mut hbin, LF_EXP as usize,   &make_lf(NK_UA));
-        write_cell(&mut hbin, LF_UA as usize,    &make_lf(NK_GUID));
-        write_cell(&mut hbin, LF_GUID as usize,  &make_lf(NK_COUNT));
+        write_cell(&mut hbin, LF_ROOT as usize, &make_lf(NK_SW));
+        write_cell(&mut hbin, LF_SW as usize, &make_lf(NK_MS));
+        write_cell(&mut hbin, LF_MS as usize, &make_lf(NK_WIN));
+        write_cell(&mut hbin, LF_WIN as usize, &make_lf(NK_CV));
+        write_cell(&mut hbin, LF_CV as usize, &make_lf(NK_EXP));
+        write_cell(&mut hbin, LF_EXP as usize, &make_lf(NK_UA));
+        write_cell(&mut hbin, LF_UA as usize, &make_lf(NK_GUID));
+        write_cell(&mut hbin, LF_GUID as usize, &make_lf(NK_COUNT));
 
         // values_list: one entry pointing to VK_IDX
         {
@@ -2132,8 +2196,8 @@ mod tests {
         let mut data_page = vec![0u8; 0x1000];
         let data_abs = (USERASSIST_DATA_SIZE as i32 + 4) as i32;
         data_page[0..4].copy_from_slice(&(-data_abs).to_le_bytes());
-        data_page[4 + 4..4 + 8].copy_from_slice(&5u32.to_le_bytes());   // run_count
-        data_page[4 + 8..4 + 12].copy_from_slice(&2u32.to_le_bytes());  // focus_count
+        data_page[4 + 4..4 + 8].copy_from_slice(&5u32.to_le_bytes()); // run_count
+        data_page[4 + 8..4 + 12].copy_from_slice(&2u32.to_le_bytes()); // focus_count
         data_page[4 + 12..4 + 16].copy_from_slice(&3000u32.to_le_bytes()); // focus_time_ms
         data_page[4 + 60..4 + 68].copy_from_slice(&132_111_000_000u64.to_le_bytes()); // last_run
 
@@ -2151,7 +2215,10 @@ mod tests {
 
         let entries = walk_userassist(&reader, hive_vaddr).unwrap();
 
-        assert!(!entries.is_empty(), "should find at least one UserAssist entry");
+        assert!(
+            !entries.is_empty(),
+            "should find at least one UserAssist entry"
+        );
         let e = &entries[0];
         assert_eq!(e.name, "mimikatz.exe", "ROT13 name should decode correctly");
         assert_eq!(e.run_count, 5);

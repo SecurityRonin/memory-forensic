@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::DkomDiscrepancy};
+use crate::{types::DkomDiscrepancy, Result};
 
 /// Cross-reference kernel process/driver/thread lists to detect DKOM hiding.
 ///

@@ -292,7 +292,7 @@ mod tests {
         header[6] = 1; // EV_CURRENT
         header[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
         header[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
-        // e_phoff = 64 (right after ELF header), e_phnum = 0
+                                                             // e_phoff = 64 (right after ELF header), e_phnum = 0
         header[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
         header[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
         header[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize

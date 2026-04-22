@@ -1049,8 +1049,7 @@ mod tests {
         // count = 1
         hbin_page[list_off + 6..list_off + 8].copy_from_slice(&1u16.to_le_bytes());
         // entry[0]: child_cell_index (4 bytes, no hash)
-        hbin_page[list_off + 8..list_off + 12]
-            .copy_from_slice(&child_cell_index.to_le_bytes());
+        hbin_page[list_off + 8..list_off + 12].copy_from_slice(&child_cell_index.to_le_bytes());
 
         let child_off = child_cell_index as usize;
         hbin_page[child_off..child_off + 4].copy_from_slice(&(-0x80i32).to_le_bytes());
@@ -1058,11 +1057,10 @@ mod tests {
         hbin_page[child_off + 4] = 0x6E;
         hbin_page[child_off + 5] = 0x6B;
         let child_name = b"InventoryApplicationFile";
-        hbin_page[child_off + 4 + NK_NAME_LENGTH_OFFSET
-            ..child_off + 4 + NK_NAME_LENGTH_OFFSET + 2]
+        hbin_page[child_off + 4 + NK_NAME_LENGTH_OFFSET..child_off + 4 + NK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(child_name.len() as u16).to_le_bytes());
-        hbin_page[child_off + 4 + NK_NAME_OFFSET
-            ..child_off + 4 + NK_NAME_OFFSET + child_name.len()]
+        hbin_page
+            [child_off + 4 + NK_NAME_OFFSET..child_off + 4 + NK_NAME_OFFSET + child_name.len()]
             .copy_from_slice(child_name);
 
         let isf = make_amcache_isf();
@@ -1074,8 +1072,7 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let found =
-            find_subkey(&reader, hive_base, &parent_data, "InventoryApplicationFile");
+        let found = find_subkey(&reader, hive_base, &parent_data, "InventoryApplicationFile");
         assert_eq!(
             found,
             Some(child_cell_index),
@@ -1084,7 +1081,10 @@ mod tests {
 
         // Also verify a missing name returns None (no false positives)
         let not_found = find_subkey(&reader, hive_base, &parent_data, "NoSuchKey");
-        assert!(not_found.is_none(), "find_subkey should return None for absent name");
+        assert!(
+            not_found.is_none(),
+            "find_subkey should return None for absent name"
+        );
     }
 
     // ── read_cell_data unit tests ─────────────────────────────────────
@@ -1195,7 +1195,8 @@ mod tests {
         vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&(REG_DWORD as u32).to_le_bytes());
         // data_length = 0x8000_0004 (inline, 4 bytes) at VK_DATA_LENGTH_OFFSET (0x04)
         let inline_len: u32 = 0x8000_0004;
-        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&inline_len.to_le_bytes());
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+            .copy_from_slice(&inline_len.to_le_bytes());
         // Inline data at VK_DATA_OFFSET (0x08): value = 0x0000_0042
         let value: u32 = 0x42;
         vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4].copy_from_slice(&value.to_le_bytes());
@@ -1212,7 +1213,8 @@ mod tests {
         vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&99u32.to_le_bytes());
         // data_length inline = 4 bytes
         let inline_len: u32 = 0x8000_0004;
-        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&inline_len.to_le_bytes());
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+            .copy_from_slice(&inline_len.to_le_bytes());
 
         assert_eq!(read_value_u64(&reader, 0, &vk), 0);
     }
@@ -1244,7 +1246,8 @@ mod tests {
         // 'A' in UTF-16LE = [0x41, 0x00]
         // data_length = 0x8000_0002 (inline, 2 bytes)
         let inline_len: u32 = 0x8000_0002;
-        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].copy_from_slice(&inline_len.to_le_bytes());
+        vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+            .copy_from_slice(&inline_len.to_le_bytes());
         // Inline data at VK_DATA_OFFSET (0x08)
         vk[VK_DATA_OFFSET] = 0x41;
         vk[VK_DATA_OFFSET + 1] = 0x00;
@@ -1328,8 +1331,7 @@ mod tests {
         // count = 1
         hbin_page[list_off + 6..list_off + 8].copy_from_slice(&1u16.to_le_bytes());
         // entry[0]: child_cell_index
-        hbin_page[list_off + 8..list_off + 12]
-            .copy_from_slice(&child_cell_index.to_le_bytes());
+        hbin_page[list_off + 8..list_off + 12].copy_from_slice(&child_cell_index.to_le_bytes());
         // hash (ignored)
         hbin_page[list_off + 12..list_off + 16].copy_from_slice(&0u32.to_le_bytes());
 
@@ -1343,7 +1345,8 @@ mod tests {
         // NK_NAME_LENGTH_OFFSET = 0x48 within nk_data → page offset = child_off + 4 + 0x48
         hbin_page[child_off + 4 + NK_NAME_LENGTH_OFFSET..child_off + 4 + NK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(child_name.len() as u16).to_le_bytes());
-        hbin_page[child_off + 4 + NK_NAME_OFFSET..child_off + 4 + NK_NAME_OFFSET + child_name.len()]
+        hbin_page
+            [child_off + 4 + NK_NAME_OFFSET..child_off + 4 + NK_NAME_OFFSET + child_name.len()]
             .copy_from_slice(child_name);
 
         let isf = make_amcache_isf();
@@ -1357,11 +1360,18 @@ mod tests {
 
         // Should find "Root"
         let result = find_subkey(&reader, hive_base, &parent_data, "Root");
-        assert_eq!(result, Some(child_cell_index), "find_subkey should return child_cell_index for 'Root'");
+        assert_eq!(
+            result,
+            Some(child_cell_index),
+            "find_subkey should return child_cell_index for 'Root'"
+        );
 
         // Should not find a name that isn't there
         let result2 = find_subkey(&reader, hive_base, &parent_data, "NoSuchKey");
-        assert!(result2.is_none(), "find_subkey should return None for missing name");
+        assert!(
+            result2.is_none(),
+            "find_subkey should return None for missing name"
+        );
     }
 
     /// read_value_string non-inline path: data is stored in a separate cell.
@@ -1384,8 +1394,7 @@ mod tests {
         vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
             .copy_from_slice(&(real_len as u32).to_le_bytes());
         // data_cell_index at VK_DATA_OFFSET
-        vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4]
-            .copy_from_slice(&data_cell_index.to_le_bytes());
+        vk[VK_DATA_OFFSET..VK_DATA_OFFSET + 4].copy_from_slice(&data_cell_index.to_le_bytes());
 
         // data cell on hbin page at offset data_cell_index:
         // [i32 size = -(4 + real_len)][utf16 bytes]
@@ -1497,7 +1506,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = read_value_u64(&reader, hive_base, &vk);
-        assert_eq!(result, qword_val, "REG_QWORD non-inline should return correct u64");
+        assert_eq!(
+            result, qword_val,
+            "REG_QWORD non-inline should return correct u64"
+        );
     }
 
     // ── find_value: VK_SIGNATURE mismatch skipped ───────────────────
@@ -1628,7 +1640,8 @@ mod tests {
         let child_name = b"Root";
         root_child_nk[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(child_name.len() as u16).to_le_bytes());
-        root_child_nk[NK_NAME_OFFSET..NK_NAME_OFFSET + child_name.len()].copy_from_slice(child_name);
+        root_child_nk[NK_NAME_OFFSET..NK_NAME_OFFSET + child_name.len()]
+            .copy_from_slice(child_name);
         write_cell(&mut cell_page, root_child_idx as usize, &root_child_nk);
 
         let isf = make_amcache_isf();
@@ -1746,8 +1759,7 @@ mod tests {
         // Root list: lf, count=1, entry[0]=iaf_cell_off
         flat_page[a(root_list_off)] = 0x6C; // 'l'
         flat_page[a(root_list_off) + 1] = 0x66; // 'f'
-        flat_page[a(root_list_off) + 2..a(root_list_off) + 4]
-            .copy_from_slice(&1u16.to_le_bytes());
+        flat_page[a(root_list_off) + 2..a(root_list_off) + 4].copy_from_slice(&1u16.to_le_bytes());
         flat_page[a(root_list_off) + 4..a(root_list_off) + 8]
             .copy_from_slice(&iaf_cell_off.to_le_bytes());
 
@@ -1761,18 +1773,17 @@ mod tests {
             ..a(iaf_cell_off) + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
             .copy_from_slice(&iaf_list_off.to_le_bytes());
         let iaf_name = b"InventoryApplicationFile";
-        flat_page[a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET
-            ..a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET + 2]
+        flat_page
+            [a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET..a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(iaf_name.len() as u16).to_le_bytes());
-        flat_page[a(iaf_cell_off) + NK_NAME_OFFSET
-            ..a(iaf_cell_off) + NK_NAME_OFFSET + iaf_name.len()]
+        flat_page
+            [a(iaf_cell_off) + NK_NAME_OFFSET..a(iaf_cell_off) + NK_NAME_OFFSET + iaf_name.len()]
             .copy_from_slice(iaf_name);
 
         // IAF list: lf, count=1, entry[0]=child_cell_off
         flat_page[a(iaf_list_off)] = 0x6C;
         flat_page[a(iaf_list_off) + 1] = 0x66;
-        flat_page[a(iaf_list_off) + 2..a(iaf_list_off) + 4]
-            .copy_from_slice(&1u16.to_le_bytes());
+        flat_page[a(iaf_list_off) + 2..a(iaf_list_off) + 4].copy_from_slice(&1u16.to_le_bytes());
         flat_page[a(iaf_list_off) + 4..a(iaf_list_off) + 8]
             .copy_from_slice(&child_cell_off.to_le_bytes());
 
@@ -1984,8 +1995,7 @@ mod tests {
         // Root list → IAF
         cell_page[a(root_list_off)] = 0x6C;
         cell_page[a(root_list_off) + 1] = 0x66;
-        cell_page[a(root_list_off) + 2..a(root_list_off) + 4]
-            .copy_from_slice(&1u16.to_le_bytes());
+        cell_page[a(root_list_off) + 2..a(root_list_off) + 4].copy_from_slice(&1u16.to_le_bytes());
         cell_page[a(root_list_off) + 4..a(root_list_off) + 8]
             .copy_from_slice(&iaf_cell_off.to_le_bytes());
 
@@ -1994,11 +2004,11 @@ mod tests {
             .copy_from_slice(&NK_SIGNATURE.to_le_bytes());
         // subkey_count=0 already (zeros)
         let iaf_name = b"InventoryApplicationFile";
-        cell_page[a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET
-            ..a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET + 2]
+        cell_page
+            [a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET..a(iaf_cell_off) + NK_NAME_LENGTH_OFFSET + 2]
             .copy_from_slice(&(iaf_name.len() as u16).to_le_bytes());
-        cell_page[a(iaf_cell_off) + NK_NAME_OFFSET
-            ..a(iaf_cell_off) + NK_NAME_OFFSET + iaf_name.len()]
+        cell_page
+            [a(iaf_cell_off) + NK_NAME_OFFSET..a(iaf_cell_off) + NK_NAME_OFFSET + iaf_name.len()]
             .copy_from_slice(iaf_name);
 
         // Size headers

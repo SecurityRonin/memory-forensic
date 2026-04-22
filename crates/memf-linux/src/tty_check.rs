@@ -233,7 +233,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_tty_hooks(&reader);
-        assert!(result.is_err(), "missing tty_driver.tty_drivers field should error");
+        assert!(
+            result.is_err(),
+            "missing tty_driver.tty_drivers field should error"
+        );
     }
 
     // --- check_tty_hooks: list with a real driver entry, ops non-zero, handler in text range ---
@@ -307,9 +310,15 @@ mod tests {
         let results = check_tty_hooks(&reader).expect("should not error");
 
         // 4 ops checked, all within text region → hooked=false for all.
-        assert!(!results.is_empty(), "expected at least one ops entry from the driver");
+        assert!(
+            !results.is_empty(),
+            "expected at least one ops entry from the driver"
+        );
         for r in &results {
-            assert!(!r.hooked, "clean handler inside text region must not be flagged");
+            assert!(
+                !r.hooked,
+                "clean handler inside text region must not be flagged"
+            );
         }
     }
 
@@ -325,10 +334,10 @@ mod tests {
         // A handler value OUTSIDE the text region (suspicious).
         let hooked_handler: u64 = 0xFFFF_CAFE_DEAD_0001;
 
-        let drivers_head: u64   = vaddr + 0x800;
+        let drivers_head: u64 = vaddr + 0x800;
         let driver_list_entry: u64 = vaddr + 0x018;
-        let ops_ptr: u64        = vaddr + 0xC00;
-        let name_ptr: u64       = vaddr + 0xE00;
+        let ops_ptr: u64 = vaddr + 0xC00;
+        let name_ptr: u64 = vaddr + 0xE00;
 
         let mut data = vec![0u8; 4096];
 
@@ -353,7 +362,10 @@ mod tests {
 
         assert!(!results.is_empty(), "hooked ops must produce entries");
         for r in &results {
-            assert!(r.hooked, "handler outside text region must be flagged as hooked");
+            assert!(
+                r.hooked,
+                "handler outside text region must be flagged as hooked"
+            );
         }
     }
 
@@ -366,9 +378,9 @@ mod tests {
         let stext: u64 = 0xFFFF_8000_0000_0000;
         let etext: u64 = 0xFFFF_8000_00FF_FFFF;
 
-        let drivers_head: u64      = vaddr + 0x800;
+        let drivers_head: u64 = vaddr + 0x800;
         let driver_list_entry: u64 = vaddr + 0x018;
-        let name_ptr: u64          = vaddr + 0xE00;
+        let name_ptr: u64 = vaddr + 0xE00;
 
         let mut data = vec![0u8; 4096];
 
@@ -386,6 +398,9 @@ mod tests {
         let reader = make_test_reader(&data, vaddr, paddr, stext, etext);
         let results = check_tty_hooks(&reader).expect("should not error");
 
-        assert!(results.is_empty(), "null ops_ptr → driver skipped → no results");
+        assert!(
+            results.is_empty(),
+            "null ops_ptr → driver skipped → no results"
+        );
     }
 }

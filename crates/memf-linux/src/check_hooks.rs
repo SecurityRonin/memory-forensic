@@ -204,7 +204,10 @@ mod tests {
         assert_eq!(results[0].hook_type, "jmp_rel32");
         assert!(results[0].target.is_some());
         // Hook detected but target inside kernel text → not suspicious
-        assert!(!results[0].suspicious, "jmp into kernel text should not be suspicious");
+        assert!(
+            !results[0].suspicious,
+            "jmp into kernel text should not be suspicious"
+        );
     }
 
     #[test]
@@ -279,7 +282,10 @@ mod tests {
         // target = func_addr + 6 + 0 (offset) = 0xFFFF_8000_0002_0006 (inside kernel text)
         assert_eq!(results[0].target, Some(func_vaddr + 6));
         // Hook detected but target is inside kernel text → not suspicious
-        assert!(!results[0].suspicious, "jmp_indirect targeting kernel text must not be suspicious");
+        assert!(
+            !results[0].suspicious,
+            "jmp_indirect targeting kernel text must not be suspicious"
+        );
     }
 
     #[test]
@@ -330,7 +336,10 @@ mod tests {
         let results = check_inline_hooks(&reader).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].hook_type, "jmp_rel32");
-        assert!(results[0].suspicious, "JMP to outside text region must be suspicious");
+        assert!(
+            results[0].suspicious,
+            "JMP to outside text region must be suspicious"
+        );
     }
 
     #[test]

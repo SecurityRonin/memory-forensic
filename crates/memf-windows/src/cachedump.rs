@@ -529,14 +529,18 @@ mod tests {
     #[test]
     fn is_nl_entry_valid() {
         for i in 1..=10 {
-            assert!(is_nl_entry(&format!("NL${}", i)), "NL${} should be valid", i);
+            assert!(
+                is_nl_entry(&format!("NL${}", i)),
+                "NL${} should be valid",
+                i
+            );
         }
     }
 
     #[test]
     fn is_nl_entry_invalid_prefix() {
         assert!(!is_nl_entry("NL$0"));
-        assert!(!is_nl_entry("NL$51"));  // above 50-entry upper bound
+        assert!(!is_nl_entry("NL$51")); // above 50-entry upper bound
         assert!(!is_nl_entry("NL$100")); // well above limit
         assert!(!is_nl_entry("nl$1")); // case-sensitive
         assert!(!is_nl_entry("CachedLogons"));
@@ -759,7 +763,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "u32::MAX root_cell → sentinel, empty Vec");
+        assert!(
+            result.is_empty(),
+            "u32::MAX root_cell → sentinel, empty Vec"
+        );
     }
 
     /// Hive mapped; base_block and root_cell valid; flat_base derived via
@@ -792,7 +799,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "hbin not mapped → Cache key not found → empty Vec");
+        assert!(
+            result.is_empty(),
+            "hbin not mapped → Cache key not found → empty Vec"
+        );
     }
 
     // ── Additional coverage: classify + helpers ──────────────────────
@@ -869,7 +879,10 @@ mod tests {
 
         // Should reach root_cell = 0 → early return → empty (exercises fallback flat_base path)
         let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "zero storage ptr → fallback flat_base → root_cell=0 → empty");
+        assert!(
+            result.is_empty(),
+            "zero storage ptr → fallback flat_base → root_cell=0 → empty"
+        );
     }
 
     // ── Additional coverage: li-list in find_subkey_by_name ─────────
@@ -937,7 +950,8 @@ mod tests {
 
         // Cache NK: name = "Cache", val_count = 0
         let name = b"Cache";
-        flat_page[child_off + 0x4A..child_off + 0x4C].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        flat_page[child_off + 0x4A..child_off + 0x4C]
+            .copy_from_slice(&(name.len() as u16).to_le_bytes());
         flat_page[child_off + 0x4C..child_off + 0x4C + name.len()].copy_from_slice(name);
         // val_count at child_off + 0x28 = 0 (zero-init)
 
@@ -958,7 +972,10 @@ mod tests {
 
         // find_subkey_by_name uses li list, finds Cache, but val_count=0 → empty Vec.
         let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "li list Cache found but val_count=0 → empty");
+        assert!(
+            result.is_empty(),
+            "li list Cache found but val_count=0 → empty"
+        );
     }
 
     /// Hive with lf list finding Cache key, Cache has val_count=1 but
@@ -1003,10 +1020,11 @@ mod tests {
 
         // Cache NK with val_count = 1, val_list_off = 0xFF00 (unreadable)
         let name = b"Cache";
-        flat_page[child_off + 0x4A..child_off + 0x4C].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        flat_page[child_off + 0x4A..child_off + 0x4C]
+            .copy_from_slice(&(name.len() as u16).to_le_bytes());
         flat_page[child_off + 0x4C..child_off + 0x4C + name.len()].copy_from_slice(name);
         flat_page[child_off + 0x28..child_off + 0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count = 1
-        // val_list_off at child_off + 0x2C = 0xFF00 → flat_base + 0xFF00 + 4 = not mapped → 0
+                                                                                            // val_list_off at child_off + 0x2C = 0xFF00 → flat_base + 0xFF00 + 4 = not mapped → 0
         flat_page[child_off + 0x2C..child_off + 0x30].copy_from_slice(&0xFF00u32.to_le_bytes());
 
         let isf = make_cachedump_isf();
@@ -1044,8 +1062,8 @@ mod tests {
     fn walk_cached_credentials_full_traversal_finds_nl1_entry() {
         let hive_vaddr: u64 = 0x0090_0000;
         let hive_paddr: u64 = 0x0090_0000;
-        let bb_vaddr: u64   = 0x0091_0000;
-        let bb_paddr: u64   = 0x0091_0000;
+        let bb_vaddr: u64 = 0x0091_0000;
+        let bb_paddr: u64 = 0x0091_0000;
         let flat_vaddr: u64 = 0x0092_0000; // explicit Storage pointer
         let flat_paddr: u64 = 0x0092_0000;
 
@@ -1072,7 +1090,8 @@ mod tests {
 
         // lf list at flat_page[0x204]: count=1, entry=0x300
         let l1 = 0x204usize;
-        flat_page[l1] = b'l'; flat_page[l1 + 1] = b'f';
+        flat_page[l1] = b'l';
+        flat_page[l1 + 1] = b'f';
         w16(&mut flat_page, l1 + 2, 1);
         w32(&mut flat_page, l1 + 4, 0x300);
         w32(&mut flat_page, l1 + 8, 0);
@@ -1080,10 +1099,10 @@ mod tests {
         // Cache nk at flat_page[0x304]: name="Cache", val_count=1, val_list_off=0x400
         let ca = 0x304usize;
         // name_len at +0x4A, name at +0x4C (but subkey_count=0 since no subkeys here)
-        w32(&mut flat_page, ca + 0x18, 0);     // subkey_count=0 for Cache (only values)
-        w32(&mut flat_page, ca + 0x28, 1);     // val_count=1
+        w32(&mut flat_page, ca + 0x18, 0); // subkey_count=0 for Cache (only values)
+        w32(&mut flat_page, ca + 0x28, 1); // val_count=1
         w32(&mut flat_page, ca + 0x2C, 0x400); // val_list_off
-        w16(&mut flat_page, ca + 0x4A, 5);     // name_len=5
+        w16(&mut flat_page, ca + 0x4A, 5); // name_len=5
         flat_page[ca + 0x4C..ca + 0x51].copy_from_slice(b"Cache");
 
         // Value list cell at flat_page[0x404]: one entry (4 bytes) → val_off=0x500
@@ -1096,8 +1115,8 @@ mod tests {
         //   [+0x0C]: data_off=0x600
         //   [+0x18]: vname="NL$1"
         let vk = 0x504usize;
-        w16(&mut flat_page, vk + 0x02, 4);    // vname_len=4
-        w32(&mut flat_page, vk + 0x08, 200);  // data_len=200
+        w16(&mut flat_page, vk + 0x02, 4); // vname_len=4
+        w32(&mut flat_page, vk + 0x08, 200); // data_len=200
         w32(&mut flat_page, vk + 0x0C, 0x600); // data_off=0x600
         flat_page[vk + 0x18..vk + 0x1C].copy_from_slice(b"NL$1");
 
@@ -1109,11 +1128,11 @@ mod tests {
         //   [0x6A..0x72]: domain "CORP" UTF-16LE (8 bytes)
         let dc = 0x604usize;
         let username_utf16: Vec<u8> = "alice".encode_utf16().flat_map(u16::to_le_bytes).collect(); // 10 bytes
-        let domain_utf16: Vec<u8> = "CORP".encode_utf16().flat_map(u16::to_le_bytes).collect();   // 8 bytes
+        let domain_utf16: Vec<u8> = "CORP".encode_utf16().flat_map(u16::to_le_bytes).collect(); // 8 bytes
         w16(&mut flat_page, dc + 0x00, username_utf16.len() as u16); // username_len
-        w16(&mut flat_page, dc + 0x04, domain_utf16.len() as u16);   // domain_len
+        w16(&mut flat_page, dc + 0x04, domain_utf16.len() as u16); // domain_len
         w32(&mut flat_page, dc + 0x28, 10240); // iteration_count=10240
-        // Username at data_addr + 96 = dc + 96 = dc + 0x60
+                                               // Username at data_addr + 96 = dc + 96 = dc + 0x60
         flat_page[dc + 96..dc + 96 + username_utf16.len()].copy_from_slice(&username_utf16);
         // Domain at data_addr + 96 + username_len
         let dom_off = dc + 96 + username_utf16.len();
@@ -1144,7 +1163,10 @@ mod tests {
         assert_eq!(cred.username, "alice");
         assert_eq!(cred.domain, "CORP");
         assert_eq!(cred.iteration_count, 10240);
-        assert!(!cred.is_suspicious, "alice/CORP with 10240 iterations should not be suspicious");
+        assert!(
+            !cred.is_suspicious,
+            "alice/CORP with 10240 iterations should not be suspicious"
+        );
     }
 
     /// walk_cached_credentials with root_cell_off = u32::MAX → early return.
@@ -1175,6 +1197,9 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "root_cell = u32::MAX sentinel → early return");
+        assert!(
+            result.is_empty(),
+            "root_cell = u32::MAX sentinel → early return"
+        );
     }
 }

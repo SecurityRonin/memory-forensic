@@ -6,7 +6,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::ApcInfo};
+use crate::{types::ApcInfo, Result};
 
 /// Scan all thread APC queues in the memory image for queued APCs.
 ///

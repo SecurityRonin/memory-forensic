@@ -634,7 +634,8 @@ mod tests {
         ];
         for &(dt, expected) in cases {
             assert_eq!(
-                device_type_name(dt), expected,
+                device_type_name(dt),
+                expected,
                 "device_type_name(0x{dt:02X}) should be {expected}"
             );
         }

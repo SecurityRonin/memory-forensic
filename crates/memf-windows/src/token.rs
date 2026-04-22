@@ -474,7 +474,10 @@ mod tests {
             .write_phys_u64(tok1_paddr + TOKEN_PRIVILEGES + SEP_PRESENT, 1u64 << 20)
             .write_phys_u64(tok1_paddr + TOKEN_PRIVILEGES + SEP_ENABLED, 1u64 << 20)
             // tok2: present bits 23+29, enabled bit 23 only
-            .write_phys_u64(tok2_paddr + TOKEN_PRIVILEGES + SEP_PRESENT, (1u64 << 23) | (1u64 << 29))
+            .write_phys_u64(
+                tok2_paddr + TOKEN_PRIVILEGES + SEP_PRESENT,
+                (1u64 << 23) | (1u64 << 29),
+            )
             .write_phys_u64(tok2_paddr + TOKEN_PRIVILEGES + SEP_ENABLED, 1u64 << 23);
 
         let reader = make_win_reader(ptb);
@@ -487,8 +490,12 @@ mod tests {
 
         let p2 = results.iter().find(|r| r.pid == 200).unwrap();
         assert_eq!(p2.image_name, "proc2.exe");
-        assert!(p2.privilege_names.contains(&"SeChangeNotifyPrivilege".to_string()));
-        assert!(!p2.privilege_names.contains(&"SeImpersonatePrivilege".to_string()));
+        assert!(p2
+            .privilege_names
+            .contains(&"SeChangeNotifyPrivilege".to_string()));
+        assert!(!p2
+            .privilege_names
+            .contains(&"SeImpersonatePrivilege".to_string()));
     }
 
     #[test]

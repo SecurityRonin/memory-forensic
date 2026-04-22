@@ -834,7 +834,10 @@ mod tests {
         // REG_BINARY (3): hex dump
         let data = vec![0xDEu8, 0xAD, 0xBE, 0xEF];
         let preview = format_data_preview(3, &data);
-        assert!(preview.contains("DE"), "binary preview should hex-dump: {preview}");
+        assert!(
+            preview.contains("DE"),
+            "binary preview should hex-dump: {preview}"
+        );
     }
 
     #[test]
@@ -852,7 +855,10 @@ mod tests {
     fn format_data_preview_reg_sz_empty_data() {
         // REG_SZ with less than 2 bytes → empty string
         let preview = format_data_preview(1, &[0x41u8]);
-        assert!(preview.is_empty(), "single-byte REG_SZ should be empty: {preview}");
+        assert!(
+            preview.is_empty(),
+            "single-byte REG_SZ should be empty: {preview}"
+        );
     }
 
     // ── Inline value (MSB set in DataLength) ────────────────────────
@@ -883,9 +889,9 @@ mod tests {
         // DataOffset = 0x0000_002A (decimal 42) stored inline
         let vk_data = build_vk_cell_data(
             "InlineVal",
-            4,                   // REG_DWORD
-            0x8000_0004,         // MSB set → 4 inline bytes
-            42u32,               // inline value = 42
+            4,           // REG_DWORD
+            0x8000_0004, // MSB set → 4 inline bytes
+            42u32,       // inline value = 42
         );
         let vk_cell = build_cell(&vk_data);
 
@@ -1092,8 +1098,8 @@ mod tests {
         let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
 
         // Offsets within the HBIN page:
-        let root_cell_index: u32 = 0x20;   // root nk cell
-        let list_cell_index: u32 = 0x100;  // li list cell
+        let root_cell_index: u32 = 0x20; // root nk cell
+        let list_cell_index: u32 = 0x100; // li list cell
         let child_cell_index: u32 = 0x200; // child nk cell
 
         // Build root nk: 1 subkey, points to list cell
@@ -1103,7 +1109,7 @@ mod tests {
         // Build li list: sig=0x696C (li), count=1, [child_cell_index]
         let mut li_data = vec![0u8; 8];
         li_data[0..2].copy_from_slice(&0x696Cu16.to_le_bytes()); // "li"
-        li_data[2..4].copy_from_slice(&1u16.to_le_bytes());       // count=1
+        li_data[2..4].copy_from_slice(&1u16.to_le_bytes()); // count=1
         li_data[4..8].copy_from_slice(&child_cell_index.to_le_bytes());
         let li_cell = build_cell(&li_data);
 
@@ -1132,10 +1138,17 @@ mod tests {
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
 
         // Should get both root and child
-        assert!(keys.len() >= 2, "expected at least 2 keys, got {}", keys.len());
+        assert!(
+            keys.len() >= 2,
+            "expected at least 2 keys, got {}",
+            keys.len()
+        );
         let paths: Vec<&str> = keys.iter().map(|k| k.path.as_str()).collect();
         assert!(paths.iter().any(|p| *p == "ROOT"), "expected ROOT");
-        assert!(paths.iter().any(|p| p.ends_with("ChildKey")), "expected ChildKey");
+        assert!(
+            paths.iter().any(|p| p.ends_with("ChildKey")),
+            "expected ChildKey"
+        );
     }
 
     // ── walk_registry_keys: ri-format subkey list ───────────────────
@@ -1150,8 +1163,8 @@ mod tests {
         let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
 
         let root_cell_index: u32 = 0x20;
-        let ri_cell_index: u32 = 0x100;   // ri index of indices
-        let lf_cell_index: u32 = 0x180;   // lf cell pointed to by ri
+        let ri_cell_index: u32 = 0x100; // ri index of indices
+        let lf_cell_index: u32 = 0x180; // lf cell pointed to by ri
         let child_cell_index: u32 = 0x200;
 
         // Root nk: 1 subkey pointing at ri cell
@@ -1201,7 +1214,10 @@ mod tests {
 
         assert!(keys.len() >= 2, "expected root+child, got {}", keys.len());
         let paths: Vec<&str> = keys.iter().map(|k| k.path.as_str()).collect();
-        assert!(paths.iter().any(|p| p.ends_with("RIChild")), "expected RIChild");
+        assert!(
+            paths.iter().any(|p| p.ends_with("RIChild")),
+            "expected RIChild"
+        );
     }
 
     // ── walk_registry_keys: unknown list type silently skipped ──────
@@ -1357,7 +1373,8 @@ mod tests {
         let mut hbin = vec![0u8; 4096];
         hbin[nk_offset as usize..nk_offset as usize + nk_cell.len()].copy_from_slice(&nk_cell);
         hbin[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
-        hbin[vk_offset as usize..vk_offset as usize + bad_vk_cell.len()].copy_from_slice(&bad_vk_cell);
+        hbin[vk_offset as usize..vk_offset as usize + bad_vk_cell.len()]
+            .copy_from_slice(&bad_vk_cell);
 
         let ptb = PageTableBuilder::new()
             .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
@@ -1376,10 +1393,7 @@ mod tests {
     #[test]
     fn format_data_preview_reg_link() {
         // REG_LINK (6) uses same UTF-16LE decode as REG_SZ
-        let s: Vec<u8> = "Link"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let s: Vec<u8> = "Link".encode_utf16().flat_map(u16::to_le_bytes).collect();
         let preview = format_data_preview(6, &s);
         assert_eq!(preview, "Link");
     }
@@ -1390,13 +1404,16 @@ mod tests {
     fn format_data_preview_reg_sz_long_string_truncated() {
         // Build a UTF-16LE string longer than 80 chars
         let long_str: String = "A".repeat(100);
-        let s: Vec<u8> = long_str
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let s: Vec<u8> = long_str.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let preview = format_data_preview(1, &s);
-        assert!(preview.ends_with("..."), "long string should end with ...: {preview}");
-        assert!(preview.len() <= 83, "preview should be at most 83 chars: {preview}");
+        assert!(
+            preview.ends_with("..."),
+            "long string should end with ...: {preview}"
+        );
+        assert!(
+            preview.len() <= 83,
+            "preview should be at most 83 chars: {preview}"
+        );
     }
 
     // ── read_cell_data: zero abs_size (positive raw size = free cell) ──
@@ -1434,7 +1451,10 @@ mod tests {
         let cell_vaddr_computed = cell_address(hive_vaddr, cell_index);
         assert_eq!(cell_vaddr_computed, cell_vaddr);
         let data = read_cell_data(&reader, cell_vaddr_computed).unwrap();
-        assert!(!data.is_empty(), "positive size cell should still have readable data");
+        assert!(
+            !data.is_empty(),
+            "positive size cell should still have readable data"
+        );
     }
 
     // ── walk_registry_keys: depth = 0 stops recursion ───────────────
@@ -1468,9 +1488,12 @@ mod tests {
         hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
 
         let mut hbin = vec![0u8; 4096];
-        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()].copy_from_slice(&root_cell);
-        hbin[list_cell_index as usize..list_cell_index as usize + lf_cell.len()].copy_from_slice(&lf_cell);
-        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()].copy_from_slice(&child_cell);
+        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
+            .copy_from_slice(&root_cell);
+        hbin[list_cell_index as usize..list_cell_index as usize + lf_cell.len()]
+            .copy_from_slice(&lf_cell);
+        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
+            .copy_from_slice(&child_cell);
 
         let ptb = PageTableBuilder::new()
             .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
@@ -1509,7 +1532,8 @@ mod tests {
         let mut vk_raw = vec![0u8; VK_NAME_OFFSET + 2]; // barely long enough for offsets
         vk_raw[0..2].copy_from_slice(&VK_SIGNATURE.to_le_bytes());
         // NameLength = 200 (beyond vk_raw.len() - VK_NAME_OFFSET)
-        vk_raw[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2].copy_from_slice(&200u16.to_le_bytes());
+        vk_raw[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
+            .copy_from_slice(&200u16.to_le_bytes());
         // DataLength = 0 (inline, avoid extra reads)
         let vk_cell = build_cell(&vk_raw);
 
@@ -1603,10 +1627,14 @@ mod tests {
         hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
 
         let mut hbin = vec![0u8; 4096];
-        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()].copy_from_slice(&root_cell);
-        hbin[ri_cell_index as usize..ri_cell_index as usize + ri_cell.len()].copy_from_slice(&ri_cell);
-        hbin[li_cell_index as usize..li_cell_index as usize + li_cell.len()].copy_from_slice(&li_cell);
-        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()].copy_from_slice(&child_cell);
+        hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
+            .copy_from_slice(&root_cell);
+        hbin[ri_cell_index as usize..ri_cell_index as usize + ri_cell.len()]
+            .copy_from_slice(&ri_cell);
+        hbin[li_cell_index as usize..li_cell_index as usize + li_cell.len()]
+            .copy_from_slice(&li_cell);
+        hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
+            .copy_from_slice(&child_cell);
 
         let ptb = PageTableBuilder::new()
             .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
@@ -1616,8 +1644,15 @@ mod tests {
 
         let reader = make_reader(ptb);
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
-        assert!(keys.len() >= 2, "expected root+child via ri→li, got {}", keys.len());
+        assert!(
+            keys.len() >= 2,
+            "expected root+child via ri→li, got {}",
+            keys.len()
+        );
         let paths: Vec<&str> = keys.iter().map(|k| k.path.as_str()).collect();
-        assert!(paths.iter().any(|p| p.ends_with("RILIChild")), "expected RILIChild");
+        assert!(
+            paths.iter().any(|p| p.ends_with("RILIChild")),
+            "expected RILIChild"
+        );
     }
 }

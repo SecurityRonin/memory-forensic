@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::HeapSprayInfo};
+use crate::{types::HeapSprayInfo, Result};
 
 /// Scan process heaps for heap spray indicators.
 ///

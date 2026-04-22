@@ -587,13 +587,13 @@ mod tests {
         //   token_vaddr: _TOKEN with UserAndGroups at +0x80 → ug_vaddr
         //   ug_vaddr: _SID_AND_ATTRIBUTES with Sid at +0x00 → sid_vaddr
         //   sid_vaddr: S-1-5-18 (SYSTEM)
-        let token_vaddr: u64  = 0xFFFF_8000_00C1_0000;
-        let ug_vaddr: u64     = 0xFFFF_8000_00C2_0000;
-        let sid_vaddr: u64    = 0xFFFF_8000_00C3_0000;
+        let token_vaddr: u64 = 0xFFFF_8000_00C1_0000;
+        let ug_vaddr: u64 = 0xFFFF_8000_00C2_0000;
+        let sid_vaddr: u64 = 0xFFFF_8000_00C3_0000;
 
-        let token_paddr: u64  = 0x00C1_0000;
-        let ug_paddr: u64     = 0x00C2_0000;
-        let sid_paddr: u64    = 0x00C3_0000;
+        let token_paddr: u64 = 0x00C1_0000;
+        let ug_paddr: u64 = 0x00C2_0000;
+        let sid_paddr: u64 = 0x00C3_0000;
 
         let mut token_page = vec![0u8; 0x1000];
         token_page[0x80..0x88].copy_from_slice(&ug_vaddr.to_le_bytes());
@@ -617,11 +617,11 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
-            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
-            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .map_4k(ug_vaddr, ug_paddr, flags::WRITABLE)
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
             .write_phys(token_paddr, &token_page)
-            .write_phys(ug_paddr,    &ug_page)
-            .write_phys(sid_paddr,   &sid_page)
+            .write_phys(ug_paddr, &ug_page)
+            .write_phys(sid_paddr, &sid_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
@@ -644,13 +644,13 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        let token_vaddr: u64  = 0xFFFF_8000_00D0_0000;
-        let ug_vaddr: u64     = 0xFFFF_8000_00D1_0000;
-        let sid_vaddr: u64    = 0xFFFF_8000_00D2_0000;
+        let token_vaddr: u64 = 0xFFFF_8000_00D0_0000;
+        let ug_vaddr: u64 = 0xFFFF_8000_00D1_0000;
+        let sid_vaddr: u64 = 0xFFFF_8000_00D2_0000;
 
-        let token_paddr: u64  = 0x00D0_0000;
-        let ug_paddr: u64     = 0x00D1_0000;
-        let sid_paddr: u64    = 0x00D2_0000;
+        let token_paddr: u64 = 0x00D0_0000;
+        let ug_paddr: u64 = 0x00D1_0000;
+        let sid_paddr: u64 = 0x00D2_0000;
 
         // _TOKEN:
         //   IntegrityLevelIndex at +0x90 = 0 (u32)
@@ -680,11 +680,11 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
-            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
-            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .map_4k(ug_vaddr, ug_paddr, flags::WRITABLE)
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
             .write_phys(token_paddr, &token_page)
-            .write_phys(ug_paddr,    &ug_page)
-            .write_phys(sid_paddr,   &sid_page)
+            .write_phys(ug_paddr, &ug_page)
+            .write_phys(sid_paddr, &sid_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
@@ -705,13 +705,13 @@ mod tests {
         // No IntegrityLevelIndex field → fall back to UserAndGroupCount - 1.
         // UserAndGroupCount = 2, so integrity_index = 1.
         // Entry at ug_vaddr + 1 * sa_size (0x10) has Sid → sid_vaddr.
-        let token_vaddr: u64  = 0xFFFF_8000_00E0_0000;
-        let ug_vaddr: u64     = 0xFFFF_8000_00E1_0000;
-        let sid_vaddr: u64    = 0xFFFF_8000_00E2_0000;
+        let token_vaddr: u64 = 0xFFFF_8000_00E0_0000;
+        let ug_vaddr: u64 = 0xFFFF_8000_00E1_0000;
+        let sid_vaddr: u64 = 0xFFFF_8000_00E2_0000;
 
-        let token_paddr: u64  = 0x00E0_0000;
-        let ug_paddr: u64     = 0x00E1_0000;
-        let sid_paddr: u64    = 0x00E2_0000;
+        let token_paddr: u64 = 0x00E0_0000;
+        let ug_paddr: u64 = 0x00E1_0000;
+        let sid_paddr: u64 = 0x00E2_0000;
 
         let mut token_page = vec![0u8; 0x1000];
         // UserAndGroupCount at +0x88 = 2
@@ -741,24 +741,28 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
-            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
-            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .map_4k(ug_vaddr, ug_paddr, flags::WRITABLE)
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
             .write_phys(token_paddr, &token_page)
-            .write_phys(ug_paddr,    &ug_page)
-            .write_phys(sid_paddr,   &sid_page)
+            .write_phys(ug_paddr, &ug_page)
+            .write_phys(sid_paddr, &sid_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = read_integrity_level(&reader, token_vaddr);
-        assert_eq!(result, "S-1-16-8192", "fallback path should yield Medium integrity SID");
+        assert_eq!(
+            result, "S-1-16-8192",
+            "fallback path should yield Medium integrity SID"
+        );
     }
 
     // ---------------------------------------------------------------
     // read_sid_at tests via mapped memory
     // ---------------------------------------------------------------
 
-    fn make_base_reader() -> memf_core::object_reader::ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+    fn make_base_reader(
+    ) -> memf_core::object_reader::ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         use memf_core::object_reader::ObjectReader;
         use memf_core::test_builders::PageTableBuilder;
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
@@ -806,7 +810,7 @@ mod tests {
         page[0] = 1; // Revision
         page[1] = 1; // SubAuthorityCount
         page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 5]); // NT Authority
-        // SubAuthority[0] = 18 at offset 8
+                                                         // SubAuthority[0] = 18 at offset 8
         page[8..12].copy_from_slice(&18u32.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
@@ -868,7 +872,7 @@ mod tests {
         let sid_paddr: u64 = 0x0092_0000;
 
         let mut page = [0u8; 4096];
-        page[0] = 1;  // Revision
+        page[0] = 1; // Revision
         page[1] = 16; // SubAuthorityCount = 16 > 15 → invalid
 
         let (cr3, mem) = PageTableBuilder::new()
@@ -882,7 +886,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = read_sid_at(&reader, sid_vaddr);
-        assert_eq!(result, "", "excessive SubAuthorityCount should return empty");
+        assert_eq!(
+            result, "",
+            "excessive SubAuthorityCount should return empty"
+        );
     }
 
     /// read_sid_at with a high-authority SID (top 2 bytes of authority non-zero)
@@ -901,7 +908,7 @@ mod tests {
         let mut page = [0u8; 4096];
         page[0] = 1; // Revision
         page[1] = 0; // SubAuthorityCount = 0
-        // High authority: first byte non-zero (authority >= 0x1_0000_0000)
+                     // High authority: first byte non-zero (authority >= 0x1_0000_0000)
         page[2] = 0x00;
         page[3] = 0x01; // authority[1] = 1 → auth_value = 0x0001_0000_0000
         page[4..8].copy_from_slice(&[0, 0, 0, 0]);
@@ -918,7 +925,10 @@ mod tests {
 
         let result = read_sid_at(&reader, sid_vaddr);
         // auth_value = 0x000100000000 >= 0x1_0000_0000 → hex format
-        assert!(result.starts_with("S-1-0x"), "expected hex authority format, got: {result}");
+        assert!(
+            result.starts_with("S-1-0x"),
+            "expected hex authority format, got: {result}"
+        );
     }
 
     /// read_sid_at for S-1-5-21-... (domain SID with 4 sub-authorities).
@@ -937,7 +947,7 @@ mod tests {
         page[0] = 1; // Revision
         page[1] = 4; // 4 sub-authorities
         page[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 5]); // NT Authority
-        // Sub-authorities: 21, 100, 200, 500
+                                                         // Sub-authorities: 21, 100, 200, 500
         page[8..12].copy_from_slice(&21u32.to_le_bytes());
         page[12..16].copy_from_slice(&100u32.to_le_bytes());
         page[16..20].copy_from_slice(&200u32.to_le_bytes());
@@ -1058,16 +1068,16 @@ mod tests {
         use memf_symbols::test_builders::IsfBuilder;
 
         // All paddrs < 0x00FF_FFFF (SyntheticPhysMem limit)
-        let head_vaddr:  u64 = 0xFFFF_8000_00F0_0000;
-        let head_paddr:  u64 = 0x00F0_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_00F0_0000;
+        let head_paddr: u64 = 0x00F0_0000;
         let eproc_vaddr: u64 = 0xFFFF_8000_00F1_0000;
         let eproc_paddr: u64 = 0x00F2_0000; // Use a different paddr for CR3
         let token_vaddr: u64 = 0xFFFF_8000_00F3_0000;
         let token_paddr: u64 = 0x00F3_0000;
-        let ug_vaddr:    u64 = 0xFFFF_8000_00F4_0000;
-        let ug_paddr:    u64 = 0x00F4_0000;
-        let sid_vaddr:   u64 = 0xFFFF_8000_00F5_0000;
-        let sid_paddr:   u64 = 0x00F5_0000;
+        let ug_vaddr: u64 = 0xFFFF_8000_00F4_0000;
+        let ug_paddr: u64 = 0x00F4_0000;
+        let sid_vaddr: u64 = 0xFFFF_8000_00F5_0000;
+        let sid_paddr: u64 = 0x00F5_0000;
 
         // _EPROCESS.ActiveProcessLinks is at 0x448 (Flink at +0, Blink at +8).
         // head.Flink → eproc+0x448 = eproc_vaddr + 0x448
@@ -1115,15 +1125,15 @@ mod tests {
         sid_page[8..12].copy_from_slice(&18u32.to_le_bytes()); // SubAuthority[0] = 18
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(head_vaddr,  head_paddr,  flags::WRITABLE)
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .write_phys(head_paddr, &head_page)
             .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
             .write_phys(eproc_paddr, &eproc_page)
             .map_4k(token_vaddr, token_paddr, flags::WRITABLE)
             .write_phys(token_paddr, &token_page)
-            .map_4k(ug_vaddr,    ug_paddr,    flags::WRITABLE)
+            .map_4k(ug_vaddr, ug_paddr, flags::WRITABLE)
             .write_phys(ug_paddr, &ug_page)
-            .map_4k(sid_vaddr,   sid_paddr,   flags::WRITABLE)
+            .map_4k(sid_vaddr, sid_paddr, flags::WRITABLE)
             .write_phys(sid_paddr, &sid_page)
             .build();
 
@@ -1140,6 +1150,9 @@ mod tests {
         assert_eq!(proc.process_name, "malware.exe");
         assert_eq!(proc.user_sid, "S-1-5-18");
         assert_eq!(proc.sid_name, "SYSTEM");
-        assert!(proc.is_suspicious, "non-system process as SYSTEM should be suspicious");
+        assert!(
+            proc.is_suspicious,
+            "non-system process as SYSTEM should be suspicious"
+        );
     }
 }

@@ -434,10 +434,10 @@ mod tests {
 
         let isf = IsfBuilder::new()
             .add_struct("module", 256)
-            .add_field("module", "list",        0x00u64, "list_head")
-            .add_field("module", "name",        0x10u64, "char")
+            .add_field("module", "list", 0x00u64, "list_head")
+            .add_field("module", "name", 0x10u64, "char")
             .add_field("module", "module_core", 0x48u64, "pointer")
-            .add_field("module", "core_size",   0x50u64, "unsigned int")
+            .add_field("module", "core_size", 0x50u64, "unsigned int")
             .add_struct("list_head", 16)
             .add_field("list_head", "next", 0x00u64, "pointer")
             .add_field("list_head", "prev", 0x08u64, "pointer")

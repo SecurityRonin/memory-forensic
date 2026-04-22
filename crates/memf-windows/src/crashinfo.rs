@@ -74,7 +74,8 @@ pub fn walk_crashinfo<P: PhysicalMemoryProvider>(
     let param3 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
     let param4 = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
 
-    let system_time = if let Some(kd_addr) = reader.symbols().symbol_address("KdDebuggerDataBlock") {
+    let system_time = if let Some(kd_addr) = reader.symbols().symbol_address("KdDebuggerDataBlock")
+    {
         reader
             .read_bytes(kd_addr.wrapping_add(0x14), 8)
             .ok()

@@ -123,15 +123,39 @@ mod tests {
     fn classify_mount_tmpfs_benign_variants() {
         // Cover the remaining benign branches of the tmpfs/ramfs match arm:
         // /run/lock, /run/user, /, and starts_with("/run/"), "/tmp/", "/dev/"
-        assert!(!classify_mount("tmpfs", "tmpfs", "/run/lock"), "tmpfs at /run/lock must be benign");
-        assert!(!classify_mount("tmpfs", "tmpfs", "/run/user"), "tmpfs at /run/user must be benign");
-        assert!(!classify_mount("tmpfs", "tmpfs", "/"), "tmpfs at / must be benign (container rootfs)");
-        assert!(!classify_mount("tmpfs", "tmpfs", "/run/some/sub"), "tmpfs under /run/ must be benign");
-        assert!(!classify_mount("tmpfs", "tmpfs", "/tmp/sub"), "tmpfs under /tmp/ must be benign");
-        assert!(!classify_mount("tmpfs", "tmpfs", "/dev/pts"), "tmpfs under /dev/ must be benign");
+        assert!(
+            !classify_mount("tmpfs", "tmpfs", "/run/lock"),
+            "tmpfs at /run/lock must be benign"
+        );
+        assert!(
+            !classify_mount("tmpfs", "tmpfs", "/run/user"),
+            "tmpfs at /run/user must be benign"
+        );
+        assert!(
+            !classify_mount("tmpfs", "tmpfs", "/"),
+            "tmpfs at / must be benign (container rootfs)"
+        );
+        assert!(
+            !classify_mount("tmpfs", "tmpfs", "/run/some/sub"),
+            "tmpfs under /run/ must be benign"
+        );
+        assert!(
+            !classify_mount("tmpfs", "tmpfs", "/tmp/sub"),
+            "tmpfs under /tmp/ must be benign"
+        );
+        assert!(
+            !classify_mount("tmpfs", "tmpfs", "/dev/pts"),
+            "tmpfs under /dev/ must be benign"
+        );
         // ramfs follows same logic
-        assert!(!classify_mount("ramfs", "ramfs", "/tmp"), "ramfs at /tmp must be benign");
-        assert!(classify_mount("ramfs", "ramfs", "/hidden"), "ramfs at /hidden must be suspicious");
+        assert!(
+            !classify_mount("ramfs", "ramfs", "/tmp"),
+            "ramfs at /tmp must be benign"
+        );
+        assert!(
+            classify_mount("ramfs", "ramfs", "/hidden"),
+            "ramfs at /hidden must be suspicious"
+        );
     }
 
     #[test]
@@ -150,9 +174,18 @@ mod tests {
     #[test]
     fn classify_mount_other_fs_type_not_suspicious() {
         // _ branch: any other fs type → false
-        assert!(!classify_mount("ext4", "ext4", "/"), "ext4 must not be suspicious");
-        assert!(!classify_mount("nfs", "nfs", "/mnt/nfs"), "nfs must not be suspicious");
-        assert!(!classify_mount("sysfs", "sysfs", "/sys"), "sysfs must not be suspicious");
+        assert!(
+            !classify_mount("ext4", "ext4", "/"),
+            "ext4 must not be suspicious"
+        );
+        assert!(
+            !classify_mount("nfs", "nfs", "/mnt/nfs"),
+            "nfs must not be suspicious"
+        );
+        assert!(
+            !classify_mount("sysfs", "sysfs", "/sys"),
+            "sysfs must not be suspicious"
+        );
     }
 
     // MountEntry struct: instantiation, Clone, Debug, Serialize coverage.

@@ -50,7 +50,8 @@ pub fn walk_named_pipes<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    let named_pipe_dir = match find_subdir_by_path(reader, root_dir_addr, &["Device", "NamedPipe"]) {
+    let named_pipe_dir = match find_subdir_by_path(reader, root_dir_addr, &["Device", "NamedPipe"])
+    {
         Some(addr) => addr,
         None => return Ok(Vec::new()),
     };
@@ -84,7 +85,9 @@ fn find_subdir_by_path<P: PhysicalMemoryProvider>(
 ) -> Option<u64> {
     for (_depth, segment) in segments.iter().enumerate().take(MAX_DIR_DEPTH) {
         let entries = walk_directory(reader, dir_addr).unwrap_or_default();
-        let found = entries.into_iter().find(|(name, _)| name.eq_ignore_ascii_case(segment));
+        let found = entries
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(segment));
         match found {
             Some((_name, body_addr)) => dir_addr = body_addr,
             None => return None,
@@ -307,8 +310,8 @@ mod tests {
     #[test]
     fn walk_named_pipes_non_null_root_empty_directory_returns_empty() {
         // Symbol addr holds a pointer to root_dir_addr (mapped page)
-        const SYM_VADDR:  u64 = OBP_ROOT_DIR_OBJ_VADDR;
-        const SYM_PADDR:  u64 = 0x00A0_0000;
+        const SYM_VADDR: u64 = OBP_ROOT_DIR_OBJ_VADDR;
+        const SYM_PADDR: u64 = 0x00A0_0000;
         const ROOT_VADDR: u64 = 0xFFFF_8000_0030_0000;
         const ROOT_PADDR: u64 = 0x0030_0000;
 
@@ -335,8 +338,8 @@ mod tests {
     /// find_subdir_by_path: Device not found after exhausting directory → None.
     #[test]
     fn find_subdir_by_path_device_not_found_returns_none() {
-        const SYM_VADDR:  u64 = OBP_ROOT_DIR_OBJ_VADDR;
-        const SYM_PADDR:  u64 = 0x00A1_0000;
+        const SYM_VADDR: u64 = OBP_ROOT_DIR_OBJ_VADDR;
+        const SYM_PADDR: u64 = 0x00A1_0000;
         const ROOT_VADDR: u64 = 0xFFFF_8000_0031_0000;
         const ROOT_PADDR: u64 = 0x0031_0000;
 
@@ -393,33 +396,33 @@ mod tests {
         // Each object takes two consecutive 4K pages (header page + body/dir page).
         // Naming: DEV_H = Device header page, DEV_B = Device body/dir page, etc.
 
-        const SYM_VADDR:   u64 = OBP_ROOT_DIR_OBJ_VADDR;
-        const SYM_PADDR:   u64 = 0x00A2_0000;
+        const SYM_VADDR: u64 = OBP_ROOT_DIR_OBJ_VADDR;
+        const SYM_PADDR: u64 = 0x00A2_0000;
         // Root directory page
-        const ROOT_VADDR:  u64 = 0xFFFF_8000_0040_0000;
-        const ROOT_PADDR:  u64 = 0x0040_0000;
+        const ROOT_VADDR: u64 = 0xFFFF_8000_0040_0000;
+        const ROOT_PADDR: u64 = 0x0040_0000;
         // Root entry (points to Device object body)
         const ROOT_E_VADDR: u64 = 0xFFFF_8000_0041_0000;
         const ROOT_E_PADDR: u64 = 0x0041_0000;
         // Device object: header at DEV_H, body at DEV_B (= DEV_H + 0x1000)
         // Header page base addresses. Body = hdr_vaddr + 0x1000 (next 4K page).
         // HDR_OFF=0xFB0, body = hdr_vaddr + 0xFB0 + 0x50 = hdr_vaddr + 0x1000.
-        const DEV_H_VADDR:  u64 = 0xFFFF_8000_0042_0000;
-        const DEV_H_PADDR:  u64 = 0x0042_0000;
-        const DEV_B_VADDR:  u64 = 0xFFFF_8000_0042_1000; // = DEV_H_VADDR + 0x1000 ✓
-        const DEV_B_PADDR:  u64 = 0x0042_1000;
-        const DEV_E_VADDR:  u64 = 0xFFFF_8000_0043_0000;
-        const DEV_E_PADDR:  u64 = 0x0043_0000;
+        const DEV_H_VADDR: u64 = 0xFFFF_8000_0042_0000;
+        const DEV_H_PADDR: u64 = 0x0042_0000;
+        const DEV_B_VADDR: u64 = 0xFFFF_8000_0042_1000; // = DEV_H_VADDR + 0x1000 ✓
+        const DEV_B_PADDR: u64 = 0x0042_1000;
+        const DEV_E_VADDR: u64 = 0xFFFF_8000_0043_0000;
+        const DEV_E_PADDR: u64 = 0x0043_0000;
         const PIPE_H_VADDR: u64 = 0xFFFF_8000_0044_0000;
         const PIPE_H_PADDR: u64 = 0x0044_0000;
         const PIPE_B_VADDR: u64 = 0xFFFF_8000_0044_1000; // = PIPE_H_VADDR + 0x1000 ✓
         const PIPE_B_PADDR: u64 = 0x0044_1000;
         const PIPE_E_VADDR: u64 = 0xFFFF_8000_0045_0000;
         const PIPE_E_PADDR: u64 = 0x0045_0000;
-        const MS_H_VADDR:   u64 = 0xFFFF_8000_0046_0000;
-        const MS_H_PADDR:   u64 = 0x0046_0000;
-        const MS_B_VADDR:   u64 = 0xFFFF_8000_0046_1000; // = MS_H_VADDR + 0x1000 ✓
-        const MS_B_PADDR:   u64 = 0x0046_1000;
+        const MS_H_VADDR: u64 = 0xFFFF_8000_0046_0000;
+        const MS_H_PADDR: u64 = 0x0046_0000;
+        const MS_B_VADDR: u64 = 0xFFFF_8000_0046_1000; // = MS_H_VADDR + 0x1000 ✓
+        const MS_B_PADDR: u64 = 0x0046_1000;
         // Entry inside NamedPipe dir pointing to msagent is stored at PIPE_E_VADDR.
 
         let isf = make_isf_with_obp_root(SYM_VADDR);
@@ -446,8 +449,11 @@ mod tests {
             // Inline string at 0x800
             page[0x800..0x800 + encoded.len()].copy_from_slice(&encoded);
             // Verify body vaddr = hdr_page_vaddr + HDR_OFF + 0x50 = hdr_page_vaddr + 0x1000
-            assert_eq!(hdr_page_vaddr + HDR_OFF as u64 + 0x50, body_page_vaddr,
-                "body must be at start of next page");
+            assert_eq!(
+                hdr_page_vaddr + HDR_OFF as u64 + 0x50,
+                body_page_vaddr,
+                "body must be at start of next page"
+            );
             page
         };
 
@@ -466,37 +472,48 @@ mod tests {
         };
 
         // Object body vaddrs (= start of body page)
-        let dev_body  = DEV_B_VADDR;
+        let dev_body = DEV_B_VADDR;
         let pipe_body = PIPE_B_VADDR;
-        let ms_body   = MS_B_VADDR;
+        let ms_body = MS_B_VADDR;
 
         // Build pages
         let mut sym_page = vec![0u8; 4096];
         sym_page[0..8].copy_from_slice(&ROOT_VADDR.to_le_bytes());
 
-        let root_page      = make_dir_page(ROOT_E_VADDR);
-        let root_e_page    = make_entry_page(dev_body);
-        let dev_hdr_page   = make_hdr_page(DEV_H_VADDR, DEV_B_VADDR, "Device");
-        let dev_dir_page   = make_dir_page(DEV_E_VADDR);
-        let dev_e_page     = make_entry_page(pipe_body);
-        let pipe_hdr_page  = make_hdr_page(PIPE_H_VADDR, PIPE_B_VADDR, "NamedPipe");
-        let pipe_dir_page  = make_dir_page(PIPE_E_VADDR);
-        let pipe_e_page    = make_entry_page(ms_body);
-        let ms_hdr_page    = make_hdr_page(MS_H_VADDR, MS_B_VADDR, "msagent_test");
-        let ms_body_page   = vec![0u8; 4096]; // leaf — not used as directory
+        let root_page = make_dir_page(ROOT_E_VADDR);
+        let root_e_page = make_entry_page(dev_body);
+        let dev_hdr_page = make_hdr_page(DEV_H_VADDR, DEV_B_VADDR, "Device");
+        let dev_dir_page = make_dir_page(DEV_E_VADDR);
+        let dev_e_page = make_entry_page(pipe_body);
+        let pipe_hdr_page = make_hdr_page(PIPE_H_VADDR, PIPE_B_VADDR, "NamedPipe");
+        let pipe_dir_page = make_dir_page(PIPE_E_VADDR);
+        let pipe_e_page = make_entry_page(ms_body);
+        let ms_hdr_page = make_hdr_page(MS_H_VADDR, MS_B_VADDR, "msagent_test");
+        let ms_body_page = vec![0u8; 4096]; // leaf — not used as directory
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(SYM_VADDR,   SYM_PADDR,   flags::WRITABLE).write_phys(SYM_PADDR,   &sym_page)
-            .map_4k(ROOT_VADDR,  ROOT_PADDR,  flags::WRITABLE).write_phys(ROOT_PADDR,  &root_page)
-            .map_4k(ROOT_E_VADDR,ROOT_E_PADDR,flags::WRITABLE).write_phys(ROOT_E_PADDR,&root_e_page)
-            .map_4k(DEV_H_VADDR, DEV_H_PADDR, flags::WRITABLE).write_phys(DEV_H_PADDR, &dev_hdr_page)
-            .map_4k(DEV_B_VADDR, DEV_B_PADDR, flags::WRITABLE).write_phys(DEV_B_PADDR, &dev_dir_page)
-            .map_4k(DEV_E_VADDR, DEV_E_PADDR, flags::WRITABLE).write_phys(DEV_E_PADDR, &dev_e_page)
-            .map_4k(PIPE_H_VADDR,PIPE_H_PADDR,flags::WRITABLE).write_phys(PIPE_H_PADDR,&pipe_hdr_page)
-            .map_4k(PIPE_B_VADDR,PIPE_B_PADDR,flags::WRITABLE).write_phys(PIPE_B_PADDR,&pipe_dir_page)
-            .map_4k(PIPE_E_VADDR,PIPE_E_PADDR,flags::WRITABLE).write_phys(PIPE_E_PADDR,&pipe_e_page)
-            .map_4k(MS_H_VADDR,  MS_H_PADDR,  flags::WRITABLE).write_phys(MS_H_PADDR,  &ms_hdr_page)
-            .map_4k(MS_B_VADDR,  MS_B_PADDR,  flags::WRITABLE).write_phys(MS_B_PADDR,  &ms_body_page)
+            .map_4k(SYM_VADDR, SYM_PADDR, flags::WRITABLE)
+            .write_phys(SYM_PADDR, &sym_page)
+            .map_4k(ROOT_VADDR, ROOT_PADDR, flags::WRITABLE)
+            .write_phys(ROOT_PADDR, &root_page)
+            .map_4k(ROOT_E_VADDR, ROOT_E_PADDR, flags::WRITABLE)
+            .write_phys(ROOT_E_PADDR, &root_e_page)
+            .map_4k(DEV_H_VADDR, DEV_H_PADDR, flags::WRITABLE)
+            .write_phys(DEV_H_PADDR, &dev_hdr_page)
+            .map_4k(DEV_B_VADDR, DEV_B_PADDR, flags::WRITABLE)
+            .write_phys(DEV_B_PADDR, &dev_dir_page)
+            .map_4k(DEV_E_VADDR, DEV_E_PADDR, flags::WRITABLE)
+            .write_phys(DEV_E_PADDR, &dev_e_page)
+            .map_4k(PIPE_H_VADDR, PIPE_H_PADDR, flags::WRITABLE)
+            .write_phys(PIPE_H_PADDR, &pipe_hdr_page)
+            .map_4k(PIPE_B_VADDR, PIPE_B_PADDR, flags::WRITABLE)
+            .write_phys(PIPE_B_PADDR, &pipe_dir_page)
+            .map_4k(PIPE_E_VADDR, PIPE_E_PADDR, flags::WRITABLE)
+            .write_phys(PIPE_E_PADDR, &pipe_e_page)
+            .map_4k(MS_H_VADDR, MS_H_PADDR, flags::WRITABLE)
+            .write_phys(MS_H_PADDR, &ms_hdr_page)
+            .map_4k(MS_B_VADDR, MS_B_PADDR, flags::WRITABLE)
+            .write_phys(MS_B_PADDR, &ms_body_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
@@ -552,7 +569,10 @@ mod tests {
     #[test]
     fn classify_pipe_postex_ssh_beats_postex() {
         let reason = classify_pipe("postex_ssh_abc").unwrap();
-        assert!(reason.contains("postex_ssh"), "expected ssh-specific reason, got: {reason}");
+        assert!(
+            reason.contains("postex_ssh"),
+            "expected ssh-specific reason, got: {reason}"
+        );
     }
 
     /// is_guid_like: string of correct length but hyphen in wrong position.

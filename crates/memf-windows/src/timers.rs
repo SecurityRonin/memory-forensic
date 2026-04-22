@@ -151,12 +151,18 @@ pub fn walk_timers<P: PhysicalMemoryProvider>(
             };
 
             let (dpc_routine, dpc_context) = if dpc_address != 0 {
-                let routine = match reader.read_bytes(dpc_address.wrapping_add(dpc_routine_off), 8) {
-                    Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                let routine = match reader.read_bytes(dpc_address.wrapping_add(dpc_routine_off), 8)
+                {
+                    Ok(bytes) if bytes.len() == 8 => {
+                        u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                    }
                     _ => 0,
                 };
-                let context = match reader.read_bytes(dpc_address.wrapping_add(dpc_context_off), 8) {
-                    Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                let context = match reader.read_bytes(dpc_address.wrapping_add(dpc_context_off), 8)
+                {
+                    Ok(bytes) if bytes.len() == 8 => {
+                        u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                    }
                     _ => 0,
                 };
                 (routine, context)
@@ -272,12 +278,12 @@ mod tests {
     fn walk_timers_with_one_timer_in_bucket() {
         let table_vaddr: u64 = 0xFFFF_8000_00A0_0000;
         let timer_vaddr: u64 = table_vaddr.wrapping_add(0x2000);
-        let dpc_vaddr: u64   = table_vaddr.wrapping_add(0x3000);
+        let dpc_vaddr: u64 = table_vaddr.wrapping_add(0x3000);
 
         let table_paddr0: u64 = 0x00A0_0000;
         let table_paddr1: u64 = 0x00A1_0000;
-        let timer_paddr: u64  = 0x00A2_0000;
-        let dpc_paddr: u64    = 0x00A3_0000;
+        let timer_paddr: u64 = 0x00A2_0000;
+        let dpc_paddr: u64 = 0x00A3_0000;
 
         let kernel_base: u64 = 0xFFFF_8001_0000_0000u64;
         let dpc_routine: u64 = kernel_base + 0x1000;
@@ -318,14 +324,14 @@ mod tests {
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(table_vaddr,          table_paddr0, flags::WRITABLE)
+            .map_4k(table_vaddr, table_paddr0, flags::WRITABLE)
             .map_4k(table_vaddr + 0x1000, table_paddr1, flags::WRITABLE)
-            .map_4k(timer_vaddr,          timer_paddr,  flags::WRITABLE)
-            .map_4k(dpc_vaddr,            dpc_paddr,    flags::WRITABLE)
+            .map_4k(timer_vaddr, timer_paddr, flags::WRITABLE)
+            .map_4k(dpc_vaddr, dpc_paddr, flags::WRITABLE)
             .write_phys(table_paddr0, &page0)
             .write_phys(table_paddr1, &page1)
-            .write_phys(timer_paddr,  &timer_page)
-            .write_phys(dpc_paddr,    &dpc_page)
+            .write_phys(timer_paddr, &timer_page)
+            .write_phys(dpc_paddr, &dpc_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
@@ -339,7 +345,10 @@ mod tests {
         assert_eq!(t.dpc_address, dpc_vaddr);
         assert_eq!(t.dpc_routine, dpc_routine);
         assert_eq!(t.dpc_context, 0xABCD);
-        assert!(!t.is_suspicious, "routine inside kernel range should not be suspicious");
+        assert!(
+            !t.is_suspicious,
+            "routine inside kernel range should not be suspicious"
+        );
     }
 
     #[test]
@@ -422,6 +431,9 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_timers(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "all empty timer buckets should yield no timers");
+        assert!(
+            result.is_empty(),
+            "all empty timer buckets should yield no timers"
+        );
     }
 }

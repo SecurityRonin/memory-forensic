@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::ClrAssemblyInfo};
+use crate::{types::ClrAssemblyInfo, Result};
 
 /// Scan CLR `AppDomain` heaps for dynamically loaded (fileless) assemblies.
 ///

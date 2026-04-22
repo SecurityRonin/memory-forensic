@@ -12,25 +12,31 @@ use crate::types::{
 
 impl IntoForensicEvents for VmaInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        let (severity, finding, mitre, confidence) = if self.flags.exec && self.flags.write && !self.file_backed {
-            // RWX anonymous mapping — classic shellcode/injection pattern (T1055)
-            (
-                Severity::High,
-                Finding::ProcessHollowing,
-                vec![MitreAttackId::new("T1055").expect("valid id")],
-                0.9f64,
-            )
-        } else if self.flags.exec && !self.file_backed {
-            // Executable anonymous mapping — JIT or shellcode, less certain (T1055)
-            (
-                Severity::Medium,
-                Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1055").expect("valid id")],
-                0.6f64,
-            )
-        } else {
-            (Severity::Info, Finding::Other("vma_enumerated".into()), vec![], 0.3f64)
-        };
+        let (severity, finding, mitre, confidence) =
+            if self.flags.exec && self.flags.write && !self.file_backed {
+                // RWX anonymous mapping — classic shellcode/injection pattern (T1055)
+                (
+                    Severity::High,
+                    Finding::ProcessHollowing,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.9f64,
+                )
+            } else if self.flags.exec && !self.file_backed {
+                // Executable anonymous mapping — JIT or shellcode, less certain (T1055)
+                (
+                    Severity::Medium,
+                    Finding::DefenseEvasion,
+                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    0.6f64,
+                )
+            } else {
+                (
+                    Severity::Info,
+                    Finding::Other("vma_enumerated".into()),
+                    vec![],
+                    0.3f64,
+                )
+            };
 
         vec![ForensicEvent::builder()
             .source_walker("linux_vma")
@@ -74,7 +80,12 @@ impl IntoForensicEvents for ProcessInfo {
                 0.6f64,
             )
         } else {
-            (Severity::Info, Finding::Other("process_enumerated".into()), vec![], 0.4f64)
+            (
+                Severity::Info,
+                Finding::Other("process_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -124,7 +135,12 @@ impl IntoForensicEvents for ConnectionInfo {
                     0.6f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("connection_enumerated".into()), vec![], 0.4f64)
+                (
+                    Severity::Info,
+                    Finding::Other("connection_enumerated".into()),
+                    vec![],
+                    0.4f64,
+                )
             };
 
         let src = format!("{}:{}", self.local_addr, self.local_port)
@@ -168,12 +184,21 @@ impl IntoForensicEvents for ModuleInfo {
                 0.6f64,
             )
         } else {
-            (Severity::Info, Finding::Other("module_enumerated".into()), vec![], 0.3f64)
+            (
+                Severity::Info,
+                Finding::Other("module_enumerated".into()),
+                vec![],
+                0.3f64,
+            )
         };
 
         vec![ForensicEvent::builder()
             .source_walker("linux_module")
-            .entity(Entity::Module { name: self.name.clone(), base: self.base_addr, size: self.size })
+            .entity(Entity::Module {
+                name: self.name.clone(),
+                base: self.base_addr,
+                size: self.size,
+            })
             .finding(finding)
             .severity(severity)
             .confidence(confidence)
@@ -214,7 +239,12 @@ impl IntoForensicEvents for HiddenProcessInfo {
                     0.8f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("process_enumerated".into()), vec![], 0.3f64)
+                (
+                    Severity::Info,
+                    Finding::Other("process_enumerated".into()),
+                    vec![],
+                    0.3f64,
+                )
             };
 
         vec![ForensicEvent::builder()
@@ -252,7 +282,12 @@ impl IntoForensicEvents for VdsoTamperInfo {
                     0.8f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("vdso_clean".into()), vec![], 0.3f64)
+                (
+                    Severity::Info,
+                    Finding::Other("vdso_clean".into()),
+                    vec![],
+                    0.3f64,
+                )
             };
 
         vec![ForensicEvent::builder()
@@ -298,7 +333,12 @@ impl IntoForensicEvents for UserNsEscalationInfo {
                     0.6f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("user_ns_enumerated".into()), vec![], 0.3f64)
+                (
+                    Severity::Info,
+                    Finding::Other("user_ns_enumerated".into()),
+                    vec![],
+                    0.3f64,
+                )
             };
 
         vec![ForensicEvent::builder()
@@ -343,12 +383,19 @@ impl IntoForensicEvents for AuditTamperInfo {
                 0.6f64,
             )
         } else {
-            (Severity::Info, Finding::Other("audit_enumerated".into()), vec![], 0.3f64)
+            (
+                Severity::Info,
+                Finding::Other("audit_enumerated".into()),
+                vec![],
+                0.3f64,
+            )
         };
 
         vec![ForensicEvent::builder()
             .source_walker("linux_netlink_audit")
-            .entity(Entity::File { path: "kernel:audit".into() })
+            .entity(Entity::File {
+                path: "kernel:audit".into(),
+            })
             .finding(finding)
             .severity(severity)
             .confidence(confidence)
@@ -377,7 +424,12 @@ impl IntoForensicEvents for CpuPinningInfo {
                     0.5f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("cpu_pinning_enumerated".into()), vec![], 0.3f64)
+                (
+                    Severity::Info,
+                    Finding::Other("cpu_pinning_enumerated".into()),
+                    vec![],
+                    0.3f64,
+                )
             };
 
         vec![ForensicEvent::builder()
@@ -427,7 +479,12 @@ impl IntoForensicEvents for ContainerEscapeCorrelateInfo {
                     0.75f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("container_enumerated".into()), vec![], 0.3f64)
+                (
+                    Severity::Info,
+                    Finding::Other("container_enumerated".into()),
+                    vec![],
+                    0.3f64,
+                )
             };
 
         vec![ForensicEvent::builder()
@@ -473,7 +530,12 @@ impl IntoForensicEvents for FdAbuseInfo {
                     0.6f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("fd_enumerated".into()), vec![], 0.3f64)
+                (
+                    Severity::Info,
+                    Finding::Other("fd_enumerated".into()),
+                    vec![],
+                    0.3f64,
+                )
             };
 
         vec![ForensicEvent::builder()
@@ -493,34 +555,38 @@ impl IntoForensicEvents for FdAbuseInfo {
 
 impl IntoForensicEvents for SharedMemAnomalyInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        let (severity, finding, mitre, confidence) =
-            if self.is_memfd && self.is_executable {
-                // Executable memfd — in-memory code execution (T1027)
-                (
-                    Severity::Critical,
-                    Finding::ProcessHollowing,
-                    vec![MitreAttackId::new("T1027").expect("valid id")],
-                    0.9f64,
-                )
-            } else if self.has_elf_header && self.is_executable {
-                // Executable shared region with ELF header — process injection (T1055)
-                (
-                    Severity::High,
-                    Finding::ProcessHollowing,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
-                    0.85f64,
-                )
-            } else if self.is_cross_uid {
-                // Cross-UID shared memory — possible privilege escalation vector (T1055)
-                (
-                    Severity::Medium,
-                    Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
-                    0.6f64,
-                )
-            } else {
-                (Severity::Info, Finding::Other("shared_mem_enumerated".into()), vec![], 0.3f64)
-            };
+        let (severity, finding, mitre, confidence) = if self.is_memfd && self.is_executable {
+            // Executable memfd — in-memory code execution (T1027)
+            (
+                Severity::Critical,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1027").expect("valid id")],
+                0.9f64,
+            )
+        } else if self.has_elf_header && self.is_executable {
+            // Executable shared region with ELF header — process injection (T1055)
+            (
+                Severity::High,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.85f64,
+            )
+        } else if self.is_cross_uid {
+            // Cross-UID shared memory — possible privilege escalation vector (T1055)
+            (
+                Severity::Medium,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.6f64,
+            )
+        } else {
+            (
+                Severity::Info,
+                Finding::Other("shared_mem_enumerated".into()),
+                vec![],
+                0.3f64,
+            )
+        };
 
         vec![ForensicEvent::builder()
             .source_walker("linux_shared_mem")
@@ -556,7 +622,12 @@ impl IntoForensicEvents for FuseAbuseInfo {
                 0.6f64,
             )
         } else {
-            (Severity::Info, Finding::Other("fuse_mount_enumerated".into()), vec![], 0.3f64)
+            (
+                Severity::Info,
+                Finding::Other("fuse_mount_enumerated".into()),
+                vec![],
+                0.3f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -585,7 +656,12 @@ mod tests {
             comm: comm.to_string(),
             start: 0x7f00_0000_0000,
             end: 0x7f00_0001_0000,
-            flags: VmaFlags { read: true, write, exec, shared: false },
+            flags: VmaFlags {
+                read: true,
+                write,
+                exec,
+                shared: false,
+            },
             pgoff: 0,
             file_backed,
         }
@@ -597,7 +673,10 @@ mod tests {
         let events = vma.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        assert!(matches!(events[0].finding, Finding::ProcessHollowing | Finding::DefenseEvasion));
+        assert!(matches!(
+            events[0].finding,
+            Finding::ProcessHollowing | Finding::DefenseEvasion
+        ));
         assert!(!events[0].mitre_attack.is_empty());
     }
 
@@ -622,7 +701,10 @@ mod tests {
         let vma = make_vma(999, "evil", true, true, false);
         let events = vma.into_forensic_events();
         let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
-        assert!(ids.contains(&"T1055"), "expected T1055 (Process Injection), got {ids:?}");
+        assert!(
+            ids.contains(&"T1055"),
+            "expected T1055 (Process Injection), got {ids:?}"
+        );
     }
 
     #[test]
@@ -663,7 +745,13 @@ mod tests {
     // ProcessInfo tests
     // -----------------------------------------------------------------------
 
-    fn make_process(pid: u64, ppid: u64, comm: &str, state: ProcessState, cr3: Option<u64>) -> ProcessInfo {
+    fn make_process(
+        pid: u64,
+        ppid: u64,
+        comm: &str,
+        state: ProcessState,
+        cr3: Option<u64>,
+    ) -> ProcessInfo {
         ProcessInfo {
             pid,
             ppid,
@@ -752,9 +840,15 @@ mod tests {
             let events = c.into_forensic_events();
             assert_eq!(events.len(), 1, "port {port}");
             assert_eq!(events[0].severity, Severity::High, "port {port}");
-            assert!(matches!(events[0].finding, Finding::NetworkBeaconing), "port {port}");
+            assert!(
+                matches!(events[0].finding, Finding::NetworkBeaconing),
+                "port {port}"
+            );
             let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
-            assert!(ids.contains(&"T1071"), "expected T1071 for port {port}, got {ids:?}");
+            assert!(
+                ids.contains(&"T1071"),
+                "expected T1071 for port {port}, got {ids:?}"
+            );
             assert!((events[0].confidence - 0.8).abs() < 1e-9, "port {port}");
         }
     }
@@ -924,12 +1018,7 @@ mod tests {
     // VdsoTamperInfo tests
     // -----------------------------------------------------------------------
 
-    fn make_vdso(
-        pid: u64,
-        comm: &str,
-        differs: bool,
-        diff_byte_count: usize,
-    ) -> VdsoTamperInfo {
+    fn make_vdso(pid: u64, comm: &str, differs: bool, diff_byte_count: usize) -> VdsoTamperInfo {
         VdsoTamperInfo {
             pid,
             comm: comm.to_string(),
@@ -977,7 +1066,10 @@ mod tests {
         let v = make_vdso(77, "sshd", true, 100);
         let events = v.into_forensic_events();
         let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
-        assert!(ids.contains(&"T1055"), "expected T1055 for tampered vDSO, got {ids:?}");
+        assert!(
+            ids.contains(&"T1055"),
+            "expected T1055 for tampered vDSO, got {ids:?}"
+        );
     }
 
     #[test]

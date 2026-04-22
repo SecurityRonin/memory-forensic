@@ -332,7 +332,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_ldrmodules(&reader, eproc_vaddr, 4, "test.exe").unwrap_or_default();
-        assert!(results.is_empty(), "null Ldr pointer should return empty vec");
+        assert!(
+            results.is_empty(),
+            "null Ldr pointer should return empty vec"
+        );
     }
 
     #[test]
@@ -486,7 +489,10 @@ mod tests {
 
         // Missing _PEB_LDR_DATA fields → returns Err (Walker error).
         let result = walk_ldrmodules(&reader, eproc_vaddr, 1234, "test.exe");
-        assert!(result.is_err(), "expected Err when _PEB_LDR_DATA is absent from ISF");
+        assert!(
+            result.is_err(),
+            "expected Err when _PEB_LDR_DATA is absent from ISF"
+        );
     }
 
     /// MAX_MODULES constant is sensible.
@@ -616,7 +622,10 @@ mod tests {
         assert!(m.in_load, "should be in InLoad list");
         assert!(m.in_mem, "should be in InMem list");
         assert!(m.in_init, "should be in InInit list");
-        assert!(!m.is_suspicious, "module in all 3 lists should not be suspicious");
+        assert!(
+            !m.is_suspicious,
+            "module in all 3 lists should not be suspicious"
+        );
         assert_eq!(m.pid, 1234);
         assert_eq!(m.process_name, "notepad.exe");
     }

@@ -319,8 +319,7 @@ mod tests {
     fn scan_prefetch_region_too_small() {
         let reader = build_empty_reader();
         // MIN_PARSE_SIZE is 0xD4 = 212 bytes; region of 100 bytes is too small.
-        let result =
-            scan_prefetch(&reader, &[(0xFFFF_8000_0000_0000, 100)]).unwrap();
+        let result = scan_prefetch(&reader, &[(0xFFFF_8000_0000_0000, 100)]).unwrap();
         assert!(result.is_empty());
     }
 
@@ -352,7 +351,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = scan_prefetch(&reader, &[(PF_VADDR, REGION_SIZE)]).unwrap();
-        assert!(result.is_empty(), "empty exe name should not produce an entry");
+        assert!(
+            result.is_empty(),
+            "empty exe name should not produce an entry"
+        );
     }
 
     /// scan_prefetch: two adjacent prefetch headers at different page boundaries are both found.

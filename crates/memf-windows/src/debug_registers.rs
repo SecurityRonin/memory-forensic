@@ -359,7 +359,10 @@ mod tests {
 
         // walk_processes will walk the empty list and return 0 processes → empty debug info.
         let results = walk_debug_registers(&reader, list_vaddr).unwrap_or_default();
-        assert!(results.is_empty(), "empty process list should yield no debug register entries");
+        assert!(
+            results.is_empty(),
+            "empty process list should yield no debug register entries"
+        );
     }
 
     #[test]
@@ -465,7 +468,10 @@ mod tests {
 
         // TrapFrame = 0 → None
         let result = read_thread_debug_regs(&reader, kthread_vaddr);
-        assert!(result.is_none(), "null TrapFrame pointer should return None");
+        assert!(
+            result.is_none(),
+            "null TrapFrame pointer should return None"
+        );
     }
 
     /// read_thread_debug_regs returns None when TrapFrame points to unmapped memory.
@@ -483,8 +489,7 @@ mod tests {
         let trap_ptr: u64 = 0xFFFF_8000_DEAD_0000; // unmapped
 
         let mut page = [0u8; 4096];
-        page[DEFAULT_KTHREAD_TRAP_FRAME as usize
-            ..DEFAULT_KTHREAD_TRAP_FRAME as usize + 8]
+        page[DEFAULT_KTHREAD_TRAP_FRAME as usize..DEFAULT_KTHREAD_TRAP_FRAME as usize + 8]
             .copy_from_slice(&trap_ptr.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
@@ -525,8 +530,7 @@ mod tests {
 
         // Write TrapFrame pointer into kthread at DEFAULT_KTHREAD_TRAP_FRAME.
         let mut kthread_page = [0u8; 4096];
-        kthread_page[DEFAULT_KTHREAD_TRAP_FRAME as usize
-            ..DEFAULT_KTHREAD_TRAP_FRAME as usize + 8]
+        kthread_page[DEFAULT_KTHREAD_TRAP_FRAME as usize..DEFAULT_KTHREAD_TRAP_FRAME as usize + 8]
             .copy_from_slice(&trap_vaddr.to_le_bytes());
 
         // Write known DR values into the trap frame page at default offsets.
@@ -593,14 +597,14 @@ mod tests {
         use memf_symbols::test_builders::IsfBuilder;
 
         // Addresses (paddr < 0x00FF_FFFF)
-        let head_vaddr:   u64 = 0xFFFF_8000_0100_0000;
-        let head_paddr:   u64 = 0x0010_0000;
-        let eproc_vaddr:  u64 = 0xFFFF_8000_0110_0000;
-        let eproc_paddr:  u64 = 0x0011_0000;
-        let kthread_vaddr:u64 = 0xFFFF_8000_0120_0000;
-        let kthread_paddr:u64 = 0x0012_0000;
-        let trap_vaddr:   u64 = 0xFFFF_8000_0130_0000;
-        let trap_paddr:   u64 = 0x0013_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0100_0000;
+        let head_paddr: u64 = 0x0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0110_0000;
+        let eproc_paddr: u64 = 0x0011_0000;
+        let kthread_vaddr: u64 = 0xFFFF_8000_0120_0000;
+        let kthread_paddr: u64 = 0x0012_0000;
+        let trap_vaddr: u64 = 0xFFFF_8000_0130_0000;
+        let trap_paddr: u64 = 0x0013_0000;
 
         // process list head: Flink → eproc+0x448
         let eproc_links_vaddr = eproc_vaddr + 0x448;
@@ -645,7 +649,7 @@ mod tests {
         // Cid.UniqueThread at +0x620+8 = +0x628 = TID 200
         kthread_page[0x620..0x628].copy_from_slice(&100u64.to_le_bytes()); // UniqueProcess
         kthread_page[0x628..0x630].copy_from_slice(&200u64.to_le_bytes()); // UniqueThread
-        // Win32StartAddress at +0x680
+                                                                           // Win32StartAddress at +0x680
         kthread_page[0x680..0x688].copy_from_slice(&0xDEAD_0000u64.to_le_bytes());
         // CreateTime at +0x688 = 0
 
@@ -657,13 +661,13 @@ mod tests {
         trap_page[0x28..0x30].copy_from_slice(&0x01u64.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(head_vaddr,    head_paddr,    flags::WRITABLE)
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .write_phys(head_paddr, &head_page)
-            .map_4k(eproc_vaddr,   eproc_paddr,   flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
             .write_phys(eproc_paddr, &eproc_page)
             .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
             .write_phys(kthread_paddr, &kthread_page)
-            .map_4k(trap_vaddr,    trap_paddr,    flags::WRITABLE)
+            .map_4k(trap_vaddr, trap_paddr, flags::WRITABLE)
             .write_phys(trap_paddr, &trap_page)
             .build();
 
@@ -680,7 +684,10 @@ mod tests {
         assert_eq!(info.process_name, "hook.exe");
         assert_eq!(info.dr0, 0xDEAD_0001);
         assert_eq!(info.dr7, 0x01);
-        assert!(info.is_suspicious, "DR0 active with L0 enable bit set → suspicious");
+        assert!(
+            info.is_suspicious,
+            "DR0 active with L0 enable bit set → suspicious"
+        );
     }
 
     /// walk_debug_registers with unreadable process list head returns empty (graceful degradation).

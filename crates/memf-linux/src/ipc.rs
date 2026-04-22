@@ -462,7 +462,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_semaphores(&reader).unwrap();
-        assert!(result.is_empty(), "in_use == 0 should yield empty vec for semaphores");
+        assert!(
+            result.is_empty(),
+            "in_use == 0 should yield empty vec for semaphores"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -511,7 +514,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_semaphores(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "xa_head==0 with in_use>0 should yield empty semaphore list");
+        assert!(
+            result.is_empty(),
+            "xa_head==0 with in_use>0 should yield empty semaphore list"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -559,7 +565,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_shm_segments(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "xa_head==0 with in_use>0 should yield empty shm list");
+        assert!(
+            result.is_empty(),
+            "xa_head==0 with in_use>0 should yield empty shm list"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -797,7 +806,11 @@ mod tests {
 
         let result = walk_shm_segments(&reader).unwrap();
         // Must return exactly 1 — XArray radix tree is not walked contiguously.
-        assert_eq!(result.len(), 1, "in_use=5 but only first xa_head entry is recoverable");
+        assert_eq!(
+            result.len(),
+            1,
+            "in_use=5 but only first xa_head entry is recoverable"
+        );
         assert_eq!(result[0].key, 0x1234);
     }
 
@@ -849,7 +862,11 @@ mod tests {
 
         let result = walk_semaphores(&reader).unwrap();
         // Must return exactly 1 — XArray radix tree is not walked contiguously.
-        assert_eq!(result.len(), 1, "in_use=3 but only first xa_head entry is recoverable");
+        assert_eq!(
+            result.len(),
+            1,
+            "in_use=3 but only first xa_head entry is recoverable"
+        );
         assert_eq!(result[0].key, 0xABCD);
         assert_eq!(result[0].semid, 55);
     }
@@ -985,7 +1002,11 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_semaphores(&reader).unwrap();
-        assert_eq!(result.len(), 3, "XArray node with 3 slots must yield 3 semaphore sets");
+        assert_eq!(
+            result.len(),
+            3,
+            "XArray node with 3 slots must yield 3 semaphore sets"
+        );
 
         // Collect keys for order-independent comparison
         let mut keys: Vec<u32> = result.iter().map(|s| s.key).collect();
@@ -1061,7 +1082,11 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_semaphores(&reader).unwrap();
-        assert_eq!(result.len(), 3, "second XArray node with 3 slots must yield 3 entries");
+        assert_eq!(
+            result.len(),
+            3,
+            "second XArray node with 3 slots must yield 3 entries"
+        );
 
         let mut keys: Vec<u32> = result.iter().map(|s| s.key).collect();
         keys.sort();

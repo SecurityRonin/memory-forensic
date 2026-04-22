@@ -333,7 +333,10 @@ mod tests {
     fn extract_ld_preload_empty_value_returns_none() {
         // LD_PRELOAD= with empty value (whitespace only) → None
         let env = b"LD_PRELOAD=   \0OTHER=val\0";
-        assert!(extract_ld_preload(env).is_none(), "whitespace-only value must return None");
+        assert!(
+            extract_ld_preload(env).is_none(),
+            "whitespace-only value must return None"
+        );
     }
 
     #[test]
@@ -350,19 +353,28 @@ mod tests {
     #[test]
     fn is_suspicious_path_tmp_exact_is_suspicious() {
         const SAFE: &[&str] = &["/usr/lib/"];
-        assert!(is_suspicious_path("/tmp", SAFE), "/tmp itself must be suspicious");
+        assert!(
+            is_suspicious_path("/tmp", SAFE),
+            "/tmp itself must be suspicious"
+        );
     }
 
     #[test]
     fn is_suspicious_path_devshm_exact_is_suspicious() {
         const SAFE: &[&str] = &["/usr/lib/"];
-        assert!(is_suspicious_path("/dev/shm", SAFE), "/dev/shm itself must be suspicious");
+        assert!(
+            is_suspicious_path("/dev/shm", SAFE),
+            "/dev/shm itself must be suspicious"
+        );
     }
 
     #[test]
     fn is_suspicious_path_hidden_dotfile_is_suspicious() {
         const SAFE: &[&str] = &["/usr/lib/"];
-        assert!(is_suspicious_path("/home/user/.hidden.so", SAFE), "dotfile must be suspicious");
+        assert!(
+            is_suspicious_path("/home/user/.hidden.so", SAFE),
+            "dotfile must be suspicious"
+        );
     }
 
     #[test]
@@ -449,7 +461,10 @@ mod tests {
         };
 
         let result = scan_ld_preload(&reader, &[proc]).unwrap();
-        assert!(result.is_empty(), "unreadable process must be silently skipped");
+        assert!(
+            result.is_empty(),
+            "unreadable process must be silently skipped"
+        );
     }
 
     #[test]
@@ -510,7 +525,7 @@ mod tests {
         // task page: mm at 0x08 = 0 (kernel thread)
         let mut task_page = [0u8; 4096];
         task_page[0..4].copy_from_slice(&77u32.to_le_bytes()); // pid=77
-        // mm stays 0
+                                                               // mm stays 0
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(task_vaddr, task_paddr, ptf::WRITABLE)
@@ -551,10 +566,10 @@ mod tests {
 
         let task_vaddr: u64 = 0xFFFF_8800_00D1_0000;
         let task_paddr: u64 = 0x00D1_0000;
-        let mm_vaddr: u64   = 0xFFFF_8800_00D2_0000;
-        let mm_paddr: u64   = 0x00D2_0000;
-        let env_vaddr: u64  = 0xFFFF_8800_00D3_0000;
-        let env_paddr: u64  = 0x00D3_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00D2_0000;
+        let mm_paddr: u64 = 0x00D2_0000;
+        let env_vaddr: u64 = 0xFFFF_8800_00D3_0000;
+        let env_paddr: u64 = 0x00D3_0000;
 
         let env_data: &[u8] = b"PATH=/usr/bin\0LD_PRELOAD=/tmp/evil.so\0HOME=/root\0";
         let env_end_vaddr = env_vaddr + env_data.len() as u64;
@@ -625,8 +640,8 @@ mod tests {
 
         let task_vaddr: u64 = 0xFFFF_8800_00D4_0000;
         let task_paddr: u64 = 0x00D4_0000;
-        let mm_vaddr: u64   = 0xFFFF_8800_00D5_0000;
-        let mm_paddr: u64   = 0x00D5_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00D5_0000;
+        let mm_paddr: u64 = 0x00D5_0000;
 
         let isf = IsfBuilder::new()
             .add_struct("task_struct", 0x200)
@@ -667,6 +682,9 @@ mod tests {
         };
 
         let result = scan_ld_preload(&reader, &[proc]).unwrap();
-        assert!(result.is_empty(), "env_start == env_end → empty env region → no entry");
+        assert!(
+            result.is_empty(),
+            "env_start == env_end → empty env region → no entry"
+        );
     }
 }

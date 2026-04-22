@@ -330,7 +330,8 @@ mod tests {
         }
 
         let mut ip_data = vec![0u8; 4096];
-        ip_data[..data_bytes.len().min(4096)].copy_from_slice(&data_bytes[..data_bytes.len().min(4096)]);
+        ip_data[..data_bytes.len().min(4096)]
+            .copy_from_slice(&data_bytes[..data_bytes.len().min(4096)]);
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(HASHTABLE_VADDR, HASHTABLE_PADDR, flags::WRITABLE)
@@ -350,8 +351,8 @@ mod tests {
     #[test]
     fn walk_dns_cache_aaaa_record() {
         let ipv6_bytes = [
-            0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x00, 0x00,
-            0x00, 0x00, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x34,
+            0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x2e, 0x03, 0x70,
+            0x73, 0x34,
         ];
         let data_vaddr: u64 = 0xFFFF_8000_0020_4000;
         let data_paddr: u64 = 0x0080_4000;
@@ -447,7 +448,10 @@ mod tests {
         entry_data[32..40].copy_from_slice(&DATA_VADDR.to_le_bytes());
 
         let mut ip_data = vec![0u8; 4096];
-        ip_data[0] = 1; ip_data[1] = 2; ip_data[2] = 3; ip_data[3] = 4;
+        ip_data[0] = 1;
+        ip_data[1] = 2;
+        ip_data[2] = 3;
+        ip_data[3] = 4;
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(HASHTABLE_VADDR, HASHTABLE_PADDR, flags::WRITABLE)

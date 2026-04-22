@@ -571,15 +571,15 @@ mod tests {
 
         // bpf_prog field offsets
         let prog_type_off: u64 = 0x00; // u32
-        let prog_len_off: u64 = 0x04;  // u32
+        let prog_len_off: u64 = 0x04; // u32
         let prog_jited_len_off: u64 = 0x08; // u32
-        let prog_tag_off: u64 = 0x10;  // [u8; 8]
-        let prog_aux_off: u64 = 0x20;  // *bpf_prog_aux
+        let prog_tag_off: u64 = 0x10; // [u8; 8]
+        let prog_aux_off: u64 = 0x20; // *bpf_prog_aux
 
         // bpf_prog_aux field offsets
-        let aux_id_off: u64 = 0x00;   // u32
+        let aux_id_off: u64 = 0x00; // u32
         let aux_name_off: u64 = 0x08; // [u8; 16]
-        let aux_uid_off: u64 = 0x18;  // u32
+        let aux_uid_off: u64 = 0x18; // u32
 
         let isf = IsfBuilder::new()
             .add_symbol("bpf_prog_idr", idr_vaddr)
@@ -668,8 +668,8 @@ mod tests {
     fn walk_bpf_programs_xa_node_retry_slot_skipped() {
         use memf_core::test_builders::{flags as ptf, SyntheticPhysMem};
 
-        let idr_vaddr: u64     = 0xFFFF_8800_0063_0000;
-        let idr_paddr: u64     = 0x0063_0000;
+        let idr_vaddr: u64 = 0xFFFF_8800_0063_0000;
+        let idr_paddr: u64 = 0x0063_0000;
         let xa_node_paddr: u64 = 0x0064_0000;
         let xa_node_vaddr: u64 = 0xFFFF_8800_0064_0000;
 
@@ -691,7 +691,7 @@ mod tests {
         // xa_node: slot 0 = 0x1 (retry/reserved, low bits 0x1 → skipped), rest = 0
         let mut xa_node_page = [0u8; 4096];
         let retry_val: u64 = 0x0001u64; // low bits 0x1 → skipped
-        // slots at offset 0x10
+                                        // slots at offset 0x10
         xa_node_page[0x10..0x18].copy_from_slice(&retry_val.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()

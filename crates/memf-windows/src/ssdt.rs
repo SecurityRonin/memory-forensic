@@ -136,7 +136,10 @@ mod tests {
 
         let ptb = build_ssdt(
             &[clean_entry, hooked_entry],
-            ssdt_vaddr, ssdt_paddr, table_vaddr, table_paddr,
+            ssdt_vaddr,
+            ssdt_paddr,
+            table_vaddr,
+            table_paddr,
         );
 
         let reader = make_win_reader(ptb);
@@ -167,7 +170,10 @@ mod tests {
 
         let ptb = build_ssdt(
             &[entry0, entry1, entry2],
-            ssdt_vaddr, ssdt_paddr, table_vaddr, table_paddr,
+            ssdt_vaddr,
+            ssdt_paddr,
+            table_vaddr,
+            table_paddr,
         );
 
         let reader = make_win_reader(ptb);

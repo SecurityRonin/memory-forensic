@@ -53,7 +53,9 @@ pub fn classify_atom(name: &str) -> bool {
     }
     // >16 chars consisting only of hex digits, dashes, and underscores
     if name.len() > 16 {
-        let all_hex_dash = name.chars().all(|c| c.is_ascii_hexdigit() || c == '-' || c == '_');
+        let all_hex_dash = name
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-' || c == '_');
         if all_hex_dash {
             return true;
         }
@@ -174,7 +176,8 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
             // Read inline UTF-16LE name
             let name = if name_len > 0 {
                 let byte_count = usize::from(name_len) * 2;
-                reader.read_bytes(entry_ptr + entry_name_off, byte_count)
+                reader
+                    .read_bytes(entry_ptr + entry_name_off, byte_count)
                     .map(|bytes| {
                         let u16s: Vec<u16> = bytes
                             .chunks_exact(2)
@@ -188,7 +191,12 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
             };
 
             let is_suspicious = classify_atom(&name);
-            results.push(AtomInfo { atom, name, reference_count, is_suspicious });
+            results.push(AtomInfo {
+                atom,
+                name,
+                reference_count,
+                is_suspicious,
+            });
             atom_count += 1;
 
             // Follow HashLink
@@ -268,8 +276,8 @@ mod tests {
         //       Name @ 0x10 = "Hello" as UTF-16LE
         //   }
 
-        const SYM_VADDR:   u64 = 0xFFFF_8000_0070_0000;
-        const SYM_PADDR:   u64 = 0x0070_0000;
+        const SYM_VADDR: u64 = 0xFFFF_8000_0070_0000;
+        const SYM_PADDR: u64 = 0x0070_0000;
         const TABLE_VADDR: u64 = 0xFFFF_8000_0071_0000;
         const TABLE_PADDR: u64 = 0x0071_0000;
         const ENTRY_VADDR: u64 = 0xFFFF_8000_0072_0000;

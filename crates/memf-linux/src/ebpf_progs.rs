@@ -198,9 +198,7 @@ fn read_bpf_map<P: PhysicalMemoryProvider>(
         .unwrap_or_default();
 
     // bpf_map.id — stored in the map's aux or directly; try direct first.
-    let id: u32 = reader
-        .read_field(map_addr, "bpf_map", "id")
-        .unwrap_or(0);
+    let id: u32 = reader.read_field(map_addr, "bpf_map", "id").unwrap_or(0);
 
     let is_suspicious = classify_ebpf_map(map_type, &name, value_size);
 
@@ -359,20 +357,20 @@ mod tests {
         let key_size_off: u64 = 0x04; // u32
         let value_size_off: u64 = 0x08; // u32
         let max_entries_off: u64 = 0x0C; // u32
-        let name_off: u64 = 0x10;     // char[16]
-        let id_off: u64 = 0x20;       // u32
+        let name_off: u64 = 0x10; // char[16]
+        let id_off: u64 = 0x20; // u32
 
         let isf = IsfBuilder::new()
             .add_symbol("map_idr", idr_vaddr)
             .add_struct("idr", 0x20)
             .add_field("idr", "idr_rt", 0x00u64, "pointer")
             .add_struct("bpf_map", 0x100)
-            .add_field("bpf_map", "map_type",    map_type_off,    "unsigned int")
-            .add_field("bpf_map", "key_size",    key_size_off,    "unsigned int")
-            .add_field("bpf_map", "value_size",  value_size_off,  "unsigned int")
+            .add_field("bpf_map", "map_type", map_type_off, "unsigned int")
+            .add_field("bpf_map", "key_size", key_size_off, "unsigned int")
+            .add_field("bpf_map", "value_size", value_size_off, "unsigned int")
             .add_field("bpf_map", "max_entries", max_entries_off, "unsigned int")
-            .add_field("bpf_map", "name",        name_off,        "char")
-            .add_field("bpf_map", "id",          id_off,          "unsigned int")
+            .add_field("bpf_map", "name", name_off, "char")
+            .add_field("bpf_map", "id", id_off, "unsigned int")
             .build_json();
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -391,10 +389,8 @@ mod tests {
             .copy_from_slice(&8u32.to_le_bytes());
         map_page[max_entries_off as usize..max_entries_off as usize + 4]
             .copy_from_slice(&1024u32.to_le_bytes());
-        map_page[name_off as usize..name_off as usize + 8]
-            .copy_from_slice(b"test_map");
-        map_page[id_off as usize..id_off as usize + 4]
-            .copy_from_slice(&7u32.to_le_bytes());
+        map_page[name_off as usize..name_off as usize + 8].copy_from_slice(b"test_map");
+        map_page[id_off as usize..id_off as usize + 4].copy_from_slice(&7u32.to_le_bytes());
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(idr_vaddr, idr_paddr, flags::PRESENT | flags::WRITABLE)
@@ -417,7 +413,14 @@ mod tests {
         assert_eq!(m.key_size, 4);
         assert_eq!(m.value_size, 8);
         assert_eq!(m.max_entries, 1024);
-        assert!(m.name.contains("test_map"), "name should be test_map: {}", m.name);
-        assert!(!m.is_suspicious, "benign array map should not be suspicious");
+        assert!(
+            m.name.contains("test_map"),
+            "name should be test_map: {}",
+            m.name
+        );
+        assert!(
+            !m.is_suspicious,
+            "benign array map should not be suspicious"
+        );
     }
 }

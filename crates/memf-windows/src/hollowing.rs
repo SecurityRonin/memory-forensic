@@ -642,8 +642,14 @@ mod tests {
         let results = check_hollowing(&reader, head_vaddr).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].has_mz, "MZ should be detected");
-        assert!(results[0].has_pe, "PE signature beyond 512 bytes should be read via extended path");
-        assert!(!results[0].suspicious, "matching sizes should not be flagged");
+        assert!(
+            results[0].has_pe,
+            "PE signature beyond 512 bytes should be read via extended path"
+        );
+        assert!(
+            !results[0].suspicious,
+            "matching sizes should not be flagged"
+        );
     }
 
     /// ldr_first_image_size: InLoadOrderModuleList.Flink == list head (empty list) → returns 0.
@@ -681,7 +687,10 @@ mod tests {
         let results = check_hollowing(&reader, head_vaddr).unwrap();
         assert_eq!(results.len(), 1);
         // ldr_size==0 means the mismatch branch `ldr_size > 0` is skipped → not suspicious.
-        assert!(!results[0].suspicious, "ldr_size=0 should skip size mismatch check");
+        assert!(
+            !results[0].suspicious,
+            "ldr_size=0 should skip size mismatch check"
+        );
     }
 
     /// WinHollowingInfo serializes correctly.

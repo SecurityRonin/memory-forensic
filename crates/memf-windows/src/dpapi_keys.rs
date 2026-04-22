@@ -99,7 +99,10 @@ mod tests {
         let valid_guid = "{12345678-1234-1234-1234-123456789abc}";
         assert!(classify_dpapi_master_key(valid_guid, "backdoor key"));
         assert!(classify_dpapi_master_key(valid_guid, "BACKDOOR_KEY"));
-        assert!(classify_dpapi_master_key(valid_guid, "My Backdoor Master Key"));
+        assert!(classify_dpapi_master_key(
+            valid_guid,
+            "My Backdoor Master Key"
+        ));
     }
 
     /// Normal valid GUID with clean description → benign.

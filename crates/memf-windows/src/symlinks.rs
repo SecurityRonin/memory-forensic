@@ -286,10 +286,7 @@ mod tests {
 
     #[test]
     fn classify_tcp_target_is_suspicious() {
-        assert!(classify_symlink(
-            "SomeLink",
-            "\\Device\\Tcp"
-        ));
+        assert!(classify_symlink("SomeLink", "\\Device\\Tcp"));
         assert!(classify_symlink(
             "\\DosDevices\\Backdoor",
             "\\Device\\Tcp\\SomeEndpoint"
@@ -298,26 +295,14 @@ mod tests {
 
     #[test]
     fn classify_rawip_target_is_suspicious() {
-        assert!(classify_symlink(
-            "AnyName",
-            "\\Device\\RawIp"
-        ));
-        assert!(classify_symlink(
-            "AnyName",
-            "\\Device\\RawIp6\\Something"
-        ));
+        assert!(classify_symlink("AnyName", "\\Device\\RawIp"));
+        assert!(classify_symlink("AnyName", "\\Device\\RawIp6\\Something"));
     }
 
     #[test]
     fn classify_standard_volume_is_benign() {
-        assert!(!classify_symlink(
-            "C:",
-            "\\Device\\HarddiskVolume1"
-        ));
-        assert!(!classify_symlink(
-            "D:",
-            "\\Device\\HarddiskVolume3"
-        ));
+        assert!(!classify_symlink("C:", "\\Device\\HarddiskVolume1"));
+        assert!(!classify_symlink("D:", "\\Device\\HarddiskVolume3"));
     }
 
     #[test]
@@ -327,10 +312,7 @@ mod tests {
             "\\DosDevices\\Z:",
             "\\Device\\SomeRogueDriver"
         ));
-        assert!(classify_symlink(
-            "\\DosDevices\\PIPE",
-            "\\SomeWeirdPath"
-        ));
+        assert!(classify_symlink("\\DosDevices\\PIPE", "\\SomeWeirdPath"));
     }
 
     #[test]
@@ -343,14 +325,8 @@ mod tests {
             "\\DosDevices\\MAILSLOT",
             "\\Device\\Mailslot"
         ));
-        assert!(!classify_symlink(
-            "\\DosDevices\\A:",
-            "\\Device\\Floppy0"
-        ));
-        assert!(!classify_symlink(
-            "\\DosDevices\\E:",
-            "\\Device\\CdRom0"
-        ));
+        assert!(!classify_symlink("\\DosDevices\\A:", "\\Device\\Floppy0"));
+        assert!(!classify_symlink("\\DosDevices\\E:", "\\Device\\CdRom0"));
     }
 
     #[test]
@@ -435,7 +411,13 @@ mod tests {
         type_name: &str,
     ) -> PageTableBuilder {
         let ptb = ptb.map_4k(type_vaddr, type_paddr, flags::WRITABLE);
-        write_unicode_string(ptb, type_paddr + OBJ_TYPE_NAME, str_vaddr, str_paddr, type_name)
+        write_unicode_string(
+            ptb,
+            type_paddr + OBJ_TYPE_NAME,
+            str_vaddr,
+            str_paddr,
+            type_name,
+        )
     }
 
     fn write_named_object(
@@ -448,8 +430,7 @@ mod tests {
         type_index: u8,
     ) -> (u64, PageTableBuilder) {
         let ni_paddr = base_paddr;
-        let ptb =
-            write_unicode_string(ptb, ni_paddr + NAME_INFO_NAME, str_vaddr, str_paddr, name);
+        let ptb = write_unicode_string(ptb, ni_paddr + NAME_INFO_NAME, str_vaddr, str_paddr, name);
         let hdr_paddr = base_paddr + NAME_INFO_SIZE;
         let ptb = ptb
             .write_phys(hdr_paddr + OBJ_HEADER_INFO_MASK, &[0x02])

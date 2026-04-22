@@ -424,7 +424,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = scan_proc_fops(&reader).unwrap_or_default();
-        assert!(results.is_empty(), "empty proc tree should produce no fops hook entries");
+        assert!(
+            results.is_empty(),
+            "empty proc tree should produce no fops hook entries"
+        );
     }
 
     #[test]
@@ -440,7 +443,7 @@ mod tests {
         // proc_root page: subdir at offset 0 → entry_vaddr
         let mut root_page = [0u8; 4096];
         root_page[0..8].copy_from_slice(&entry_vaddr.to_le_bytes()); // subdir
-        // next at 8 = 0, proc_fops at 16 = 0
+                                                                     // next at 8 = 0, proc_fops at 16 = 0
 
         // entry page: subdir=0, next=0, proc_fops=0, name="modules"
         let mut entry_page = [0u8; 4096];
@@ -449,10 +452,10 @@ mod tests {
 
         let isf = IsfBuilder::new()
             .add_struct("proc_dir_entry", 256)
-            .add_field("proc_dir_entry", "subdir",    0x00u64, "pointer")
-            .add_field("proc_dir_entry", "next",      0x08u64, "pointer")
+            .add_field("proc_dir_entry", "subdir", 0x00u64, "pointer")
+            .add_field("proc_dir_entry", "next", 0x08u64, "pointer")
             .add_field("proc_dir_entry", "proc_fops", 0x10u64, "pointer")
-            .add_field("proc_dir_entry", "name",      0x18u64, "char")
+            .add_field("proc_dir_entry", "name", 0x18u64, "char")
             .add_struct("file_operations", 256)
             .add_field("file_operations", "read", 0x00u64, "pointer")
             .add_symbol("proc_root", proc_root_vaddr)
@@ -472,7 +475,10 @@ mod tests {
 
         let results = scan_proc_fops(&reader).unwrap_or_default();
         // proc_fops == 0 → no FopsHookInfo pushed
-        assert!(results.is_empty(), "entry with proc_fops==0 should produce no hook entries");
+        assert!(
+            results.is_empty(),
+            "entry with proc_fops==0 should produce no hook entries"
+        );
     }
 
     #[test]
@@ -506,21 +512,21 @@ mod tests {
 
         let isf = IsfBuilder::new()
             .add_struct("proc_dir_entry", 256)
-            .add_field("proc_dir_entry", "subdir",    0x00u64, "pointer")
-            .add_field("proc_dir_entry", "next",      0x08u64, "pointer")
+            .add_field("proc_dir_entry", "subdir", 0x00u64, "pointer")
+            .add_field("proc_dir_entry", "next", 0x08u64, "pointer")
             .add_field("proc_dir_entry", "proc_fops", 0x10u64, "pointer")
-            .add_field("proc_dir_entry", "name",      0x18u64, "char")
+            .add_field("proc_dir_entry", "name", 0x18u64, "char")
             .add_struct("file_operations", 256)
-            .add_field("file_operations", "read",         0x00u64, "pointer")
-            .add_field("file_operations", "write",        0x08u64, "pointer")
-            .add_field("file_operations", "open",         0x10u64, "pointer")
-            .add_field("file_operations", "release",      0x18u64, "pointer")
+            .add_field("file_operations", "read", 0x00u64, "pointer")
+            .add_field("file_operations", "write", 0x08u64, "pointer")
+            .add_field("file_operations", "open", 0x10u64, "pointer")
+            .add_field("file_operations", "release", 0x18u64, "pointer")
             .add_field("file_operations", "unlocked_ioctl", 0x20u64, "pointer")
-            .add_field("file_operations", "llseek",       0x28u64, "pointer")
-            .add_field("file_operations", "mmap",         0x30u64, "pointer")
-            .add_field("file_operations", "poll",         0x38u64, "pointer")
-            .add_field("file_operations", "read_iter",    0x40u64, "pointer")
-            .add_field("file_operations", "write_iter",   0x48u64, "pointer")
+            .add_field("file_operations", "llseek", 0x28u64, "pointer")
+            .add_field("file_operations", "mmap", 0x30u64, "pointer")
+            .add_field("file_operations", "poll", 0x38u64, "pointer")
+            .add_field("file_operations", "read_iter", 0x40u64, "pointer")
+            .add_field("file_operations", "write_iter", 0x48u64, "pointer")
             .add_symbol("proc_root", proc_root_vaddr)
             .add_symbol("_stext", kernel_start)
             .add_symbol("_etext", kernel_end)
@@ -539,10 +545,20 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = scan_proc_fops(&reader).unwrap_or_default();
-        assert_eq!(results.len(), 1, "should find exactly one entry with proc_fops");
+        assert_eq!(
+            results.len(),
+            1,
+            "should find exactly one entry with proc_fops"
+        );
         let entry = &results[0];
-        assert!(!entry.is_suspicious, "kernel-text pointer should not be suspicious");
-        assert!(entry.path.contains("net") || entry.path.contains("/proc"), "path should contain entry name");
+        assert!(
+            !entry.is_suspicious,
+            "kernel-text pointer should not be suspicious"
+        );
+        assert!(
+            entry.path.contains("net") || entry.path.contains("/proc"),
+            "path should contain entry name"
+        );
     }
 
     #[test]

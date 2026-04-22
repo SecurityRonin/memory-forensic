@@ -209,7 +209,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_amsi_bypass(&reader).unwrap();
-        assert!(results.is_empty(), "stub walker should return empty even with symbol");
+        assert!(
+            results.is_empty(),
+            "stub walker should return empty even with symbol"
+        );
     }
 
     /// Normal function prologue bytes must not be flagged.

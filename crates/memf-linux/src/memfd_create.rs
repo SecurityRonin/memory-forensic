@@ -398,7 +398,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "missing tasks offset must yield empty result");
+        assert!(
+            result.is_empty(),
+            "missing tasks offset must yield empty result"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -407,59 +410,92 @@ mod tests {
 
     #[test]
     fn classify_memfd_shm_prefix_benign() {
-        assert!(!classify_memfd("shm_region", false), "shm prefix must be benign");
+        assert!(
+            !classify_memfd("shm_region", false),
+            "shm prefix must be benign"
+        );
     }
 
     #[test]
     fn classify_memfd_chrome_prefix_benign() {
-        assert!(!classify_memfd("chrome_shared", false), "chrome prefix must be benign");
+        assert!(
+            !classify_memfd("chrome_shared", false),
+            "chrome prefix must be benign"
+        );
     }
 
     #[test]
     fn classify_memfd_firefox_prefix_benign() {
-        assert!(!classify_memfd("firefox-ipc", false), "firefox prefix must be benign");
+        assert!(
+            !classify_memfd("firefox-ipc", false),
+            "firefox prefix must be benign"
+        );
     }
 
     #[test]
     fn classify_memfd_v8_prefix_benign() {
-        assert!(!classify_memfd("v8-heap", false), "v8 prefix must be benign");
+        assert!(
+            !classify_memfd("v8-heap", false),
+            "v8 prefix must be benign"
+        );
     }
 
     #[test]
     fn classify_memfd_dbus_prefix_benign() {
-        assert!(!classify_memfd("dbus-shm", false), "dbus prefix must be benign");
+        assert!(
+            !classify_memfd("dbus-shm", false),
+            "dbus prefix must be benign"
+        );
     }
 
     #[test]
     fn classify_memfd_stage_name_suspicious() {
-        assert!(classify_memfd("stage2", false), "stage substring must be suspicious");
+        assert!(
+            classify_memfd("stage2", false),
+            "stage substring must be suspicious"
+        );
     }
 
     #[test]
     fn classify_memfd_loader_name_suspicious() {
-        assert!(classify_memfd("loader", false), "loader substring must be suspicious");
+        assert!(
+            classify_memfd("loader", false),
+            "loader substring must be suspicious"
+        );
     }
 
     #[test]
     fn classify_memfd_inject_name_suspicious() {
-        assert!(classify_memfd("inject_hook", false), "inject substring must be suspicious");
+        assert!(
+            classify_memfd("inject_hook", false),
+            "inject substring must be suspicious"
+        );
     }
 
     #[test]
     fn classify_memfd_hack_name_suspicious() {
-        assert!(classify_memfd("hack_tool", false), "hack substring must be suspicious");
+        assert!(
+            classify_memfd("hack_tool", false),
+            "hack substring must be suspicious"
+        );
     }
 
     #[test]
     fn classify_memfd_benign_non_prefix_non_suspicious_name() {
         // Name does not match any prefix or suspicious substring, not executable
-        assert!(!classify_memfd("my_normal_buffer", false), "innocuous name must be benign");
+        assert!(
+            !classify_memfd("my_normal_buffer", false),
+            "innocuous name must be benign"
+        );
     }
 
     #[test]
     fn classify_memfd_case_insensitive_suspicious() {
         // Suspicious substring matching should be case-insensitive
-        assert!(classify_memfd("PAYLOAD_EXEC", false), "case-insensitive suspicious match");
+        assert!(
+            classify_memfd("PAYLOAD_EXEC", false),
+            "case-insensitive suspicious match"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -506,7 +542,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "no memfd mappings expected for a kernel thread");
+        assert!(
+            result.is_empty(),
+            "no memfd mappings expected for a kernel thread"
+        );
     }
 
     #[test]
@@ -547,8 +586,7 @@ mod tests {
         // comm = "proc\0"
         page[32..36].copy_from_slice(b"proc");
         // mm = mm_vaddr (non-zero but unmapped → mmap read fails)
-        page[mm_offset as usize..mm_offset as usize + 8]
-            .copy_from_slice(&mm_vaddr.to_le_bytes());
+        page[mm_offset as usize..mm_offset as usize + 8].copy_from_slice(&mm_vaddr.to_le_bytes());
 
         let isf = IsfBuilder::new()
             .add_struct("list_head", 16)
@@ -572,7 +610,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "unreadable mm_struct → mmap unreadable → no memfd results");
+        assert!(
+            result.is_empty(),
+            "unreadable mm_struct → mmap unreadable → no memfd results"
+        );
     }
 
     // --- collect_memfd_for_task: mm != 0, mmap readable, mmap_ptr == 0 → no VMAs ---
@@ -623,7 +664,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "mmap_ptr == 0 → no VMAs → no memfd results");
+        assert!(
+            result.is_empty(),
+            "mmap_ptr == 0 → no VMAs → no memfd results"
+        );
     }
 
     // --- collect_memfd_for_task: VMA chain with vm_file = 0 → skipped ---
@@ -691,7 +735,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "vm_file = 0 → try_read_memfd_vma returns None → no entries");
+        assert!(
+            result.is_empty(),
+            "vm_file = 0 → try_read_memfd_vma returns None → no entries"
+        );
     }
 
     // Helper to write a u32 into a page slice.
@@ -718,9 +765,17 @@ mod tests {
 
         let mut init_page = [0u8; 4096];
         page_write_u32(&mut init_page, 0, 1); // pid=1
-        // tasks.next → task2 (unmapped), tasks.prev → init itself
-        page_write_u64(&mut init_page, tasks_offset as usize, task2_vaddr + tasks_offset);
-        page_write_u64(&mut init_page, tasks_offset as usize + 8, task2_vaddr + tasks_offset);
+                                              // tasks.next → task2 (unmapped), tasks.prev → init itself
+        page_write_u64(
+            &mut init_page,
+            tasks_offset as usize,
+            task2_vaddr + tasks_offset,
+        );
+        page_write_u64(
+            &mut init_page,
+            tasks_offset as usize + 8,
+            task2_vaddr + tasks_offset,
+        );
         init_page[32..36].copy_from_slice(b"init");
         page_write_u64(&mut init_page, 48, 0); // mm = 0
 
@@ -759,28 +814,28 @@ mod tests {
         //   init_task has mm → mm_struct → VMA → file → dentry → name "memfd:payload"
         // This exercises the deepest branches: try_read_memfd_vma success, MemfdInfo push.
 
-        let init_vaddr: u64   = 0xFFFF_8800_00A0_0000;
-        let init_paddr: u64   = 0x00A0_0000;
-        let mm_vaddr: u64     = 0xFFFF_8800_00A1_0000;
-        let mm_paddr: u64     = 0x00A1_0000;
-        let vma_vaddr: u64    = 0xFFFF_8800_00A2_0000;
-        let vma_paddr: u64    = 0x00A2_0000;
-        let file_vaddr: u64   = 0xFFFF_8800_00A3_0000;
-        let file_paddr: u64   = 0x00A3_0000;
+        let init_vaddr: u64 = 0xFFFF_8800_00A0_0000;
+        let init_paddr: u64 = 0x00A0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00A1_0000;
+        let mm_paddr: u64 = 0x00A1_0000;
+        let vma_vaddr: u64 = 0xFFFF_8800_00A2_0000;
+        let vma_paddr: u64 = 0x00A2_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00A3_0000;
+        let file_paddr: u64 = 0x00A3_0000;
         let dentry_vaddr: u64 = 0xFFFF_8800_00A4_0000;
         let dentry_paddr: u64 = 0x00A4_0000;
-        let name_vaddr: u64   = 0xFFFF_8800_00A5_0000;
-        let name_paddr: u64   = 0x00A5_0000;
+        let name_vaddr: u64 = 0xFFFF_8800_00A5_0000;
+        let name_paddr: u64 = 0x00A5_0000;
 
         let tasks_offset: u64 = 16;
-        let mm_offset: u64    = 48;
-        let mmap_offset: u64  = 0;  // mmap at mm_struct offset 0
+        let mm_offset: u64 = 48;
+        let mmap_offset: u64 = 0; // mmap at mm_struct offset 0
 
         // file struct layout
-        let f_path_off: u64      = 0x10;
-        let dentry_in_path: u64  = 0x00; // dentry* at path+0
-        let d_name_off: u64      = 0x08; // qstr at dentry+8
-        let name_in_qstr: u64    = 0x00; // name* at qstr+0
+        let f_path_off: u64 = 0x10;
+        let dentry_in_path: u64 = 0x00; // dentry* at path+0
+        let d_name_off: u64 = 0x08; // qstr at dentry+8
+        let name_in_qstr: u64 = 0x00; // name* at qstr+0
 
         // init_task page
         let mut init_page = [0u8; 4096];
@@ -802,11 +857,11 @@ mod tests {
         //   vm_end    at 0x18 = 0x2000
         //   vm_flags  at 0x20 = VM_EXEC (0x4) → executable → suspicious
         let mut vma_page = [0u8; 4096];
-        page_write_u64(&mut vma_page, 0x00, 0u64);         // vm_next = NULL
-        page_write_u64(&mut vma_page, 0x08, file_vaddr);   // vm_file
-        page_write_u64(&mut vma_page, 0x10, 0x1000u64);    // vm_start
-        page_write_u64(&mut vma_page, 0x18, 0x2000u64);    // vm_end
-        page_write_u64(&mut vma_page, 0x20, 4u64);         // vm_flags = VM_EXEC
+        page_write_u64(&mut vma_page, 0x00, 0u64); // vm_next = NULL
+        page_write_u64(&mut vma_page, 0x08, file_vaddr); // vm_file
+        page_write_u64(&mut vma_page, 0x10, 0x1000u64); // vm_start
+        page_write_u64(&mut vma_page, 0x18, 0x2000u64); // vm_end
+        page_write_u64(&mut vma_page, 0x20, 4u64); // vm_flags = VM_EXEC
 
         // file page: dentry ptr at f_path_off + dentry_in_path = 0x10
         let mut file_page = [0u8; 4096];
@@ -880,16 +935,16 @@ mod tests {
     #[test]
     fn walk_memfd_dentry_missing_isf_fields_no_entry() {
         // vm_file != 0 but ISF has no "file.f_path" field → read_file_dentry_name returns None.
-        let init_vaddr: u64  = 0xFFFF_8800_00B0_0000;
-        let init_paddr: u64  = 0x00B0_0000;
-        let mm_vaddr: u64    = 0xFFFF_8800_00B1_0000;
-        let mm_paddr: u64    = 0x00B1_0000;
-        let vma_vaddr: u64   = 0xFFFF_8800_00B2_0000;
-        let vma_paddr: u64   = 0x00B2_0000;
-        let file_vaddr: u64  = 0xFFFF_8800_00B3_0000;
+        let init_vaddr: u64 = 0xFFFF_8800_00B0_0000;
+        let init_paddr: u64 = 0x00B0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00B1_0000;
+        let mm_paddr: u64 = 0x00B1_0000;
+        let vma_vaddr: u64 = 0xFFFF_8800_00B2_0000;
+        let vma_paddr: u64 = 0x00B2_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00B3_0000;
 
         let tasks_offset: u64 = 16;
-        let mm_offset: u64    = 48;
+        let mm_offset: u64 = 48;
 
         let mut init_page = [0u8; 4096];
         page_write_u32(&mut init_page, 0, 8u32);
@@ -903,11 +958,11 @@ mod tests {
         page_write_u64(&mut mm_page, 0, vma_vaddr); // mmap = vma_vaddr
 
         let mut vma_page = [0u8; 4096];
-        page_write_u64(&mut vma_page, 0x00, 0u64);       // vm_next = NULL
+        page_write_u64(&mut vma_page, 0x00, 0u64); // vm_next = NULL
         page_write_u64(&mut vma_page, 0x08, file_vaddr); // vm_file != 0
-        page_write_u64(&mut vma_page, 0x10, 0x1000u64);  // vm_start
-        page_write_u64(&mut vma_page, 0x18, 0x2000u64);  // vm_end
-        page_write_u64(&mut vma_page, 0x20, 0u64);        // vm_flags
+        page_write_u64(&mut vma_page, 0x10, 0x1000u64); // vm_start
+        page_write_u64(&mut vma_page, 0x18, 0x2000u64); // vm_end
+        page_write_u64(&mut vma_page, 0x20, 0u64); // vm_flags
 
         let isf = IsfBuilder::new()
             .add_struct("list_head", 16)
@@ -943,32 +998,35 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "missing dentry ISF fields → read_file_dentry_name None → no entries");
+        assert!(
+            result.is_empty(),
+            "missing dentry ISF fields → read_file_dentry_name None → no entries"
+        );
     }
 
     // --- merge logic: two VMAs for the same memfd name → merged into one entry (line 159-162) ---
     #[test]
     fn walk_memfd_two_vmas_same_name_merged() {
         // Two VMAs for "memfd:payload" → merged into one MemfdInfo entry.
-        let init_vaddr: u64   = 0xFFFF_8800_00C0_0000;
-        let init_paddr: u64   = 0x00C0_0000;
-        let mm_vaddr: u64     = 0xFFFF_8800_00C1_0000;
-        let mm_paddr: u64     = 0x00C1_0000;
-        let vma1_vaddr: u64   = 0xFFFF_8800_00C2_0000;
-        let vma1_paddr: u64   = 0x00C2_0000;
-        let vma2_vaddr: u64   = 0xFFFF_8800_00C3_0000;
-        let vma2_paddr: u64   = 0x00C3_0000;
-        let file_vaddr: u64   = 0xFFFF_8800_00C4_0000;
-        let file_paddr: u64   = 0x00C4_0000;
+        let init_vaddr: u64 = 0xFFFF_8800_00C0_0000;
+        let init_paddr: u64 = 0x00C0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00C1_0000;
+        let mm_paddr: u64 = 0x00C1_0000;
+        let vma1_vaddr: u64 = 0xFFFF_8800_00C2_0000;
+        let vma1_paddr: u64 = 0x00C2_0000;
+        let vma2_vaddr: u64 = 0xFFFF_8800_00C3_0000;
+        let vma2_paddr: u64 = 0x00C3_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00C4_0000;
+        let file_paddr: u64 = 0x00C4_0000;
         let dentry_vaddr: u64 = 0xFFFF_8800_00C5_0000;
         let dentry_paddr: u64 = 0x00C5_0000;
-        let name_vaddr: u64   = 0xFFFF_8800_00C6_0000;
-        let name_paddr: u64   = 0x00C6_0000;
+        let name_vaddr: u64 = 0xFFFF_8800_00C6_0000;
+        let name_paddr: u64 = 0x00C6_0000;
 
         let tasks_offset: u64 = 16;
-        let mm_offset: u64    = 48;
-        let f_path_off: u64   = 0x10;
-        let d_name_off: u64   = 0x08;
+        let mm_offset: u64 = 48;
+        let f_path_off: u64 = 0x10;
+        let d_name_off: u64 = 0x08;
 
         let mut init_page = [0u8; 4096];
         page_write_u32(&mut init_page, 0, 9u32);
@@ -984,19 +1042,19 @@ mod tests {
 
         // vma1: vm_next = vma2, vm_file = file_vaddr, non-executable
         let mut vma1_page = [0u8; 4096];
-        page_write_u64(&mut vma1_page, 0x00, vma2_vaddr);   // vm_next
-        page_write_u64(&mut vma1_page, 0x08, file_vaddr);   // vm_file
-        page_write_u64(&mut vma1_page, 0x10, 0x1000u64);    // vm_start
-        page_write_u64(&mut vma1_page, 0x18, 0x2000u64);    // vm_end
-        page_write_u64(&mut vma1_page, 0x20, 0u64);          // vm_flags (non-exec)
+        page_write_u64(&mut vma1_page, 0x00, vma2_vaddr); // vm_next
+        page_write_u64(&mut vma1_page, 0x08, file_vaddr); // vm_file
+        page_write_u64(&mut vma1_page, 0x10, 0x1000u64); // vm_start
+        page_write_u64(&mut vma1_page, 0x18, 0x2000u64); // vm_end
+        page_write_u64(&mut vma1_page, 0x20, 0u64); // vm_flags (non-exec)
 
         // vma2: vm_next = NULL, same vm_file, VM_EXEC set
         let mut vma2_page = [0u8; 4096];
-        page_write_u64(&mut vma2_page, 0x00, 0u64);          // vm_next = NULL
-        page_write_u64(&mut vma2_page, 0x08, file_vaddr);    // vm_file (same)
-        page_write_u64(&mut vma2_page, 0x10, 0x2000u64);     // vm_start
-        page_write_u64(&mut vma2_page, 0x18, 0x3000u64);     // vm_end
-        page_write_u64(&mut vma2_page, 0x20, 4u64);           // vm_flags = VM_EXEC
+        page_write_u64(&mut vma2_page, 0x00, 0u64); // vm_next = NULL
+        page_write_u64(&mut vma2_page, 0x08, file_vaddr); // vm_file (same)
+        page_write_u64(&mut vma2_page, 0x10, 0x2000u64); // vm_start
+        page_write_u64(&mut vma2_page, 0x18, 0x3000u64); // vm_end
+        page_write_u64(&mut vma2_page, 0x20, 4u64); // vm_flags = VM_EXEC
 
         // file: dentry ptr at 0x10
         let mut file_page = [0u8; 4096];
@@ -1059,32 +1117,42 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert_eq!(result.len(), 1, "two VMAs for same memfd → merged to 1 entry");
+        assert_eq!(
+            result.len(),
+            1,
+            "two VMAs for same memfd → merged to 1 entry"
+        );
         assert_eq!(result[0].memfd_name, "payload");
         // size_bytes = 0x1000 (vma1) + 0x1000 (vma2) = 0x2000
         assert_eq!(result[0].size_bytes, 0x2000);
         // vma2 has VM_EXEC → after merge is_executable = true
-        assert!(result[0].is_executable, "merged entry must be executable after vma2");
-        assert!(result[0].is_suspicious, "executable memfd:payload must be suspicious");
+        assert!(
+            result[0].is_executable,
+            "merged entry must be executable after vma2"
+        );
+        assert!(
+            result[0].is_suspicious,
+            "executable memfd:payload must be suspicious"
+        );
     }
 
     // --- try_read_memfd_vma: dentry_ptr == 0 → None (line 237) ---
     #[test]
     fn walk_memfd_dentry_ptr_null_returns_none() {
         // vm_file != 0, dentry chain readable, but dentry pointer == 0 → None.
-        let init_vaddr: u64  = 0xFFFF_8800_00D0_0000;
-        let init_paddr: u64  = 0x00D0_0000;
-        let mm_vaddr: u64    = 0xFFFF_8800_00D1_0000;
-        let mm_paddr: u64    = 0x00D1_0000;
-        let vma_vaddr: u64   = 0xFFFF_8800_00D2_0000;
-        let vma_paddr: u64   = 0x00D2_0000;
-        let file_vaddr: u64  = 0xFFFF_8800_00D3_0000;
-        let file_paddr: u64  = 0x00D3_0000;
+        let init_vaddr: u64 = 0xFFFF_8800_00D0_0000;
+        let init_paddr: u64 = 0x00D0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00D1_0000;
+        let mm_paddr: u64 = 0x00D1_0000;
+        let vma_vaddr: u64 = 0xFFFF_8800_00D2_0000;
+        let vma_paddr: u64 = 0x00D2_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00D3_0000;
+        let file_paddr: u64 = 0x00D3_0000;
 
         let tasks_offset: u64 = 16;
-        let mm_offset: u64    = 48;
-        let f_path_off: u64   = 0x10;
-        let d_name_off: u64   = 0x08;
+        let mm_offset: u64 = 48;
+        let f_path_off: u64 = 0x10;
+        let d_name_off: u64 = 0x08;
 
         let mut init_page = [0u8; 4096];
         page_write_u32(&mut init_page, 0, 11u32);
@@ -1098,7 +1166,7 @@ mod tests {
         page_write_u64(&mut mm_page, 0, vma_vaddr);
 
         let mut vma_page = [0u8; 4096];
-        page_write_u64(&mut vma_page, 0x00, 0u64);       // vm_next = NULL
+        page_write_u64(&mut vma_page, 0x00, 0u64); // vm_next = NULL
         page_write_u64(&mut vma_page, 0x08, file_vaddr); // vm_file != 0
         page_write_u64(&mut vma_page, 0x10, 0x1000u64);
         page_write_u64(&mut vma_page, 0x18, 0x2000u64);
@@ -1151,28 +1219,31 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "dentry_ptr == 0 → read_file_dentry_name None → no entries");
+        assert!(
+            result.is_empty(),
+            "dentry_ptr == 0 → read_file_dentry_name None → no entries"
+        );
     }
 
     // --- try_read_memfd_vma: name_ptr == 0 → None (line 244) ---
     #[test]
     fn walk_memfd_name_ptr_null_returns_none() {
         // dentry_ptr != 0 but name_ptr == 0 → None.
-        let init_vaddr: u64   = 0xFFFF_8800_00E0_0000;
-        let init_paddr: u64   = 0x00E0_0000;
-        let mm_vaddr: u64     = 0xFFFF_8800_00E1_0000;
-        let mm_paddr: u64     = 0x00E1_0000;
-        let vma_vaddr: u64    = 0xFFFF_8800_00E2_0000;
-        let vma_paddr: u64    = 0x00E2_0000;
-        let file_vaddr: u64   = 0xFFFF_8800_00E3_0000;
-        let file_paddr: u64   = 0x00E3_0000;
+        let init_vaddr: u64 = 0xFFFF_8800_00E0_0000;
+        let init_paddr: u64 = 0x00E0_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_00E1_0000;
+        let mm_paddr: u64 = 0x00E1_0000;
+        let vma_vaddr: u64 = 0xFFFF_8800_00E2_0000;
+        let vma_paddr: u64 = 0x00E2_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_00E3_0000;
+        let file_paddr: u64 = 0x00E3_0000;
         let dentry_vaddr: u64 = 0xFFFF_8800_00E4_0000;
         let dentry_paddr: u64 = 0x00E4_0000;
 
         let tasks_offset: u64 = 16;
-        let mm_offset: u64    = 48;
-        let f_path_off: u64   = 0x10;
-        let d_name_off: u64   = 0x08;
+        let mm_offset: u64 = 48;
+        let f_path_off: u64 = 0x10;
+        let d_name_off: u64 = 0x08;
 
         let mut init_page = [0u8; 4096];
         page_write_u32(&mut init_page, 0, 12u32);
@@ -1244,7 +1315,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "name_ptr == 0 → read_file_dentry_name None → no entries");
+        assert!(
+            result.is_empty(),
+            "name_ptr == 0 → read_file_dentry_name None → no entries"
+        );
     }
 
     // --- try_read_memfd_vma: dentry chain readable, name NOT "memfd:" → None ---
@@ -1257,25 +1331,25 @@ mod tests {
         let tasks_offset: u64 = 16;
         let mm_offset: u64 = 48;
 
-        let mm_vaddr: u64  = 0xFFFF_8800_0071_0000;
-        let mm_paddr: u64  = 0x0071_0000;
+        let mm_vaddr: u64 = 0xFFFF_8800_0071_0000;
+        let mm_paddr: u64 = 0x0071_0000;
 
         let vma_vaddr: u64 = 0xFFFF_8800_0072_0000;
         let vma_paddr: u64 = 0x0072_0000;
 
         // file, dentry, name chain
-        let file_vaddr: u64   = 0xFFFF_8800_0073_0000;
-        let file_paddr: u64   = 0x0073_0000;
+        let file_vaddr: u64 = 0xFFFF_8800_0073_0000;
+        let file_paddr: u64 = 0x0073_0000;
         let dentry_vaddr: u64 = 0xFFFF_8800_0074_0000;
         let dentry_paddr: u64 = 0x0074_0000;
-        let name_vaddr: u64   = 0xFFFF_8800_0075_0000;
-        let name_paddr: u64   = 0x0075_0000;
+        let name_vaddr: u64 = 0xFFFF_8800_0075_0000;
+        let name_paddr: u64 = 0x0075_0000;
 
         // Field offsets
-        let f_path_off: u64    = 0x10; // f_path embedded at file+0x10
+        let f_path_off: u64 = 0x10; // f_path embedded at file+0x10
         let dentry_in_path: u64 = 0x00; // dentry* at path+0x00
-        let d_name_off: u64    = 0x08; // qstr embedded at dentry+0x08
-        let name_in_qstr: u64  = 0x00; // name* at qstr+0x00
+        let d_name_off: u64 = 0x08; // qstr embedded at dentry+0x08
+        let name_in_qstr: u64 = 0x00; // name* at qstr+0x00
 
         let mut task_page = [0u8; 4096];
         page_write_u32(&mut task_page, 0, 5u32); // pid=5
@@ -1296,7 +1370,7 @@ mod tests {
         vma_page[8..16].copy_from_slice(&file_vaddr.to_le_bytes()); // vm_file != 0
         vma_page[0x10..0x18].copy_from_slice(&0x1000u64.to_le_bytes()); // vm_start
         vma_page[0x18..0x20].copy_from_slice(&0x2000u64.to_le_bytes()); // vm_end
-        vma_page[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());       // vm_flags
+        vma_page[0x20..0x28].copy_from_slice(&0u64.to_le_bytes()); // vm_flags
 
         // file: dentry ptr at f_path_off + dentry_in_path = 0x10
         let mut file_page = [0u8; 4096];
@@ -1357,6 +1431,9 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_memfd_create(&reader).expect("should not error");
-        assert!(result.is_empty(), "non-memfd dentry name → strip_prefix fails → no entries");
+        assert!(
+            result.is_empty(),
+            "non-memfd dentry name → strip_prefix fails → no entries"
+        );
     }
 }

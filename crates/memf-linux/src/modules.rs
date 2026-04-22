@@ -178,18 +178,18 @@ mod tests {
         mod_page[16..23].copy_from_slice(b"virtio\0");
         // state at offset 72
         mod_page[72..76].copy_from_slice(&0u32.to_le_bytes()); // MODULE_STATE_LIVE
-        // module_core at offset 80
+                                                               // module_core at offset 80
         mod_page[80..88].copy_from_slice(&0xFFFF_C000_0000u64.to_le_bytes());
         // core_size at offset 88
         mod_page[88..92].copy_from_slice(&0x8000u32.to_le_bytes());
 
         let isf = IsfBuilder::new()
             .add_struct("module", 256)
-            .add_field("module", "list",        0x00u64, "list_head")
-            .add_field("module", "name",        0x10u64, "char")
-            .add_field("module", "state",       0x48u64, "unsigned int")
+            .add_field("module", "list", 0x00u64, "list_head")
+            .add_field("module", "name", 0x10u64, "char")
+            .add_field("module", "state", 0x48u64, "unsigned int")
             .add_field("module", "module_core", 0x50u64, "pointer")
-            .add_field("module", "core_size",   0x58u64, "unsigned int")
+            .add_field("module", "core_size", 0x58u64, "unsigned int")
             // core_layout intentionally absent → fallback to module_core/core_size
             .add_struct("list_head", 16)
             .add_field("list_head", "next", 0x00u64, "pointer")
@@ -235,8 +235,8 @@ mod tests {
 
         let isf = IsfBuilder::new()
             .add_struct("module", 256)
-            .add_field("module", "list",  0x00u64, "list_head")
-            .add_field("module", "name",  0x10u64, "char")
+            .add_field("module", "list", 0x00u64, "list_head")
+            .add_field("module", "name", 0x10u64, "char")
             .add_field("module", "state", 0x48u64, "unsigned int")
             // No core_layout field and no module_core/core_size fields
             .add_struct("list_head", 16)
@@ -257,7 +257,10 @@ mod tests {
 
         let mods = walk_modules(&reader).unwrap();
         // Module skipped because read_core_layout returns Err
-        assert!(mods.is_empty(), "module with no layout fields must be skipped");
+        assert!(
+            mods.is_empty(),
+            "module with no layout fields must be skipped"
+        );
     }
 
     #[test]

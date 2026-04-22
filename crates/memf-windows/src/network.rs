@@ -212,24 +212,54 @@ mod tests {
             .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
             // _TCP_ENDPOINT
             .add_struct("_TCP_ENDPOINT", 128)
-            .add_field("_TCP_ENDPOINT", "AddrInfo",   EP_ADDR_INFO   as u64, "pointer")
-            .add_field("_TCP_ENDPOINT", "Owner",      EP_OWNER       as u64, "pointer")
-            .add_field("_TCP_ENDPOINT", "CreateTime", EP_CREATE_TIME as u64, "unsigned long long")
-            .add_field("_TCP_ENDPOINT", "HashEntry",  EP_HASH_ENTRY  as u64, "_LIST_ENTRY")
-            .add_field("_TCP_ENDPOINT", "State",      EP_STATE       as u64, "unsigned long")
-            .add_field("_TCP_ENDPOINT", "LocalPort",  EP_LOCAL_PORT  as u64, "unsigned short")
-            .add_field("_TCP_ENDPOINT", "RemotePort", EP_REMOTE_PORT as u64, "unsigned short")
+            .add_field("_TCP_ENDPOINT", "AddrInfo", EP_ADDR_INFO as u64, "pointer")
+            .add_field("_TCP_ENDPOINT", "Owner", EP_OWNER as u64, "pointer")
+            .add_field(
+                "_TCP_ENDPOINT",
+                "CreateTime",
+                EP_CREATE_TIME as u64,
+                "unsigned long long",
+            )
+            .add_field(
+                "_TCP_ENDPOINT",
+                "HashEntry",
+                EP_HASH_ENTRY as u64,
+                "_LIST_ENTRY",
+            )
+            .add_field("_TCP_ENDPOINT", "State", EP_STATE as u64, "unsigned long")
+            .add_field(
+                "_TCP_ENDPOINT",
+                "LocalPort",
+                EP_LOCAL_PORT as u64,
+                "unsigned short",
+            )
+            .add_field(
+                "_TCP_ENDPOINT",
+                "RemotePort",
+                EP_REMOTE_PORT as u64,
+                "unsigned short",
+            )
             // _ADDR_INFO
             .add_struct("_ADDR_INFO", 32)
-            .add_field("_ADDR_INFO", "Local",  AI_LOCAL  as u64, "pointer")
+            .add_field("_ADDR_INFO", "Local", AI_LOCAL as u64, "pointer")
             .add_field("_ADDR_INFO", "Remote", AI_REMOTE as u64, "unsigned long")
             // _LOCAL_ADDRESS
             .add_struct("_LOCAL_ADDRESS", 32)
             .add_field("_LOCAL_ADDRESS", "pData", LA_PDATA as u64, "pointer")
             // _EPROCESS
             .add_struct("_EPROCESS", 1536)
-            .add_field("_EPROCESS", "UniqueProcessId", EPROC_PID        as u64, "unsigned long long")
-            .add_field("_EPROCESS", "ImageFileName",   EPROC_IMAGE_NAME as u64, "array")
+            .add_field(
+                "_EPROCESS",
+                "UniqueProcessId",
+                EPROC_PID as u64,
+                "unsigned long long",
+            )
+            .add_field(
+                "_EPROCESS",
+                "ImageFileName",
+                EPROC_IMAGE_NAME as u64,
+                "array",
+            )
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = ptb.build();
@@ -254,8 +284,7 @@ mod tests {
         buf[off + EP_ADDR_INFO..off + EP_ADDR_INFO + 8]
             .copy_from_slice(&addr_info_vaddr.to_le_bytes());
         // Owner
-        buf[off + EP_OWNER..off + EP_OWNER + 8]
-            .copy_from_slice(&owner_vaddr.to_le_bytes());
+        buf[off + EP_OWNER..off + EP_OWNER + 8].copy_from_slice(&owner_vaddr.to_le_bytes());
         // CreateTime
         buf[off + EP_CREATE_TIME..off + EP_CREATE_TIME + 8]
             .copy_from_slice(&create_time.to_le_bytes());
@@ -265,8 +294,7 @@ mod tests {
         buf[off + EP_HASH_ENTRY + 8..off + EP_HASH_ENTRY + 16]
             .copy_from_slice(&hash_blink.to_le_bytes());
         // State
-        buf[off + EP_STATE..off + EP_STATE + 4]
-            .copy_from_slice(&state.to_le_bytes());
+        buf[off + EP_STATE..off + EP_STATE + 4].copy_from_slice(&state.to_le_bytes());
         // LocalPort (big-endian on wire, stored as BE u16)
         buf[off + EP_LOCAL_PORT..off + EP_LOCAL_PORT + 2]
             .copy_from_slice(&local_port.to_be_bytes());
@@ -313,18 +341,18 @@ mod tests {
         //   IPV4_PAGE_VADDR: raw 4 bytes of 10.0.0.1
         //   EPROC_PAGE_VADDR: _EPROCESS { pid=1234, name="svchost.exe" }
 
-        const TABLE_VADDR:   u64 = 0xFFFF_8000_0001_0000;
-        const TABLE_PADDR:   u64 = 0x0001_0000;
+        const TABLE_VADDR: u64 = 0xFFFF_8000_0001_0000;
+        const TABLE_PADDR: u64 = 0x0001_0000;
         const EP_PAGE_VADDR: u64 = 0xFFFF_8000_0002_0000;
         const EP_PAGE_PADDR: u64 = 0x0002_0000;
         const AI_PAGE_VADDR: u64 = 0xFFFF_8000_0003_0000;
         const AI_PAGE_PADDR: u64 = 0x0003_0000;
         const LA_PAGE_VADDR: u64 = 0xFFFF_8000_0004_0000;
         const LA_PAGE_PADDR: u64 = 0x0004_0000;
-        const IPV4_VADDR:    u64 = 0xFFFF_8000_0005_0000;
-        const IPV4_PADDR:    u64 = 0x0005_0000;
-        const EPROC_VADDR:   u64 = 0xFFFF_8000_0006_0000;
-        const EPROC_PADDR:   u64 = 0x0006_0000;
+        const IPV4_VADDR: u64 = 0xFFFF_8000_0005_0000;
+        const IPV4_PADDR: u64 = 0x0005_0000;
+        const EPROC_VADDR: u64 = 0xFFFF_8000_0006_0000;
+        const EPROC_PADDR: u64 = 0x0006_0000;
 
         // The endpoint's HashEntry lives at EP_PAGE_VADDR + EP_HASH_ENTRY.
         // The bucket Flink points to that HashEntry address.
@@ -338,27 +366,28 @@ mod tests {
         let mut ep_page = vec![0u8; 4096];
         // HashEntry.Flink = TABLE_VADDR (terminates), Blink = TABLE_VADDR
         write_endpoint(
-            &mut ep_page, 0,
-            TABLE_VADDR,       // hash_flink  (points back to bucket head → terminates)
-            TABLE_VADDR,       // hash_blink
-            2,                 // state = ESTABLISHED
-            80,                // local_port
-            54321,             // remote_port
-            AI_PAGE_VADDR,     // addr_info
-            EPROC_VADDR,       // owner
-            0xABCD_1234,       // create_time
+            &mut ep_page,
+            0,
+            TABLE_VADDR,   // hash_flink  (points back to bucket head → terminates)
+            TABLE_VADDR,   // hash_blink
+            2,             // state = ESTABLISHED
+            80,            // local_port
+            54321,         // remote_port
+            AI_PAGE_VADDR, // addr_info
+            EPROC_VADDR,   // owner
+            0xABCD_1234,   // create_time
         );
 
         let mut ai_page = vec![0u8; 4096];
         write_addr_info(
             &mut ai_page,
-            0,                  // ai_off
-            LA_PAGE_VADDR,      // local_addr_vaddr
-            [10, 0, 0, 2],      // remote IPv4
-            0,                  // la_off (same page, offset 0 is repurposed — use LA_PAGE)
-            IPV4_VADDR,         // ipv4_data_vaddr
-            0,                  // ipv4_off (relative to IPV4_VADDR page)
-            [10, 0, 0, 1],      // local IPv4
+            0,             // ai_off
+            LA_PAGE_VADDR, // local_addr_vaddr
+            [10, 0, 0, 2], // remote IPv4
+            0,             // la_off (same page, offset 0 is repurposed — use LA_PAGE)
+            IPV4_VADDR,    // ipv4_data_vaddr
+            0,             // ipv4_off (relative to IPV4_VADDR page)
+            [10, 0, 0, 1], // local IPv4
         );
         // Fix la_off: _LOCAL_ADDRESS is in LA_PAGE, write pData there
         // write_addr_info already writes to la_off=0 within ai_page, which is wrong for LA.
@@ -379,15 +408,22 @@ mod tests {
         let mut ai_page2 = vec![0u8; 4096];
         ai_page2[AI_LOCAL..AI_LOCAL + 8].copy_from_slice(&LA_PAGE_VADDR.to_le_bytes());
         // AI_REMOTE=0x10: remote IPv4 as u32 LE
-        ai_page2[AI_REMOTE..AI_REMOTE + 4].copy_from_slice(&u32::from_le_bytes([10, 0, 0, 2]).to_le_bytes());
+        ai_page2[AI_REMOTE..AI_REMOTE + 4]
+            .copy_from_slice(&u32::from_le_bytes([10, 0, 0, 2]).to_le_bytes());
 
         let ptb = PageTableBuilder::new()
-            .map_4k(TABLE_VADDR,   TABLE_PADDR,   flags::WRITABLE).write_phys(TABLE_PADDR,   &table_page)
-            .map_4k(EP_PAGE_VADDR, EP_PAGE_PADDR, flags::WRITABLE).write_phys(EP_PAGE_PADDR, &ep_page)
-            .map_4k(AI_PAGE_VADDR, AI_PAGE_PADDR, flags::WRITABLE).write_phys(AI_PAGE_PADDR, &ai_page2)
-            .map_4k(LA_PAGE_VADDR, LA_PAGE_PADDR, flags::WRITABLE).write_phys(LA_PAGE_PADDR, &la_page)
-            .map_4k(IPV4_VADDR,    IPV4_PADDR,    flags::WRITABLE).write_phys(IPV4_PADDR,    &ipv4_page)
-            .map_4k(EPROC_VADDR,   EPROC_PADDR,   flags::WRITABLE).write_phys(EPROC_PADDR,   &eproc_page);
+            .map_4k(TABLE_VADDR, TABLE_PADDR, flags::WRITABLE)
+            .write_phys(TABLE_PADDR, &table_page)
+            .map_4k(EP_PAGE_VADDR, EP_PAGE_PADDR, flags::WRITABLE)
+            .write_phys(EP_PAGE_PADDR, &ep_page)
+            .map_4k(AI_PAGE_VADDR, AI_PAGE_PADDR, flags::WRITABLE)
+            .write_phys(AI_PAGE_PADDR, &ai_page2)
+            .map_4k(LA_PAGE_VADDR, LA_PAGE_PADDR, flags::WRITABLE)
+            .write_phys(LA_PAGE_PADDR, &la_page)
+            .map_4k(IPV4_VADDR, IPV4_PADDR, flags::WRITABLE)
+            .write_phys(IPV4_PADDR, &ipv4_page)
+            .map_4k(EPROC_VADDR, EPROC_PADDR, flags::WRITABLE)
+            .write_phys(EPROC_PADDR, &eproc_page);
 
         let reader = make_net_reader(ptb);
         let conns = walk_tcp_endpoints(&reader, TABLE_VADDR, 1).unwrap();
@@ -422,12 +458,12 @@ mod tests {
     /// Two endpoints chained in the same bucket — verifies chain walking.
     #[test]
     fn walk_chain_within_bucket() {
-        const TABLE_VADDR:    u64 = 0xFFFF_8000_0020_0000;
-        const TABLE_PADDR:    u64 = 0x0020_0000;
-        const EP1_VADDR:      u64 = 0xFFFF_8000_0021_0000;
-        const EP1_PADDR:      u64 = 0x0021_0000;
-        const EP2_VADDR:      u64 = 0xFFFF_8000_0022_0000;
-        const EP2_PADDR:      u64 = 0x0022_0000;
+        const TABLE_VADDR: u64 = 0xFFFF_8000_0020_0000;
+        const TABLE_PADDR: u64 = 0x0020_0000;
+        const EP1_VADDR: u64 = 0xFFFF_8000_0021_0000;
+        const EP1_PADDR: u64 = 0x0021_0000;
+        const EP2_VADDR: u64 = 0xFFFF_8000_0022_0000;
+        const EP2_PADDR: u64 = 0x0022_0000;
 
         let ep1_hash = EP1_VADDR + EP_HASH_ENTRY as u64;
         let ep2_hash = EP2_VADDR + EP_HASH_ENTRY as u64;
@@ -439,16 +475,41 @@ mod tests {
 
         let mut ep1_page = vec![0u8; 4096];
         // HashEntry.Flink = ep2_hash (points to ep2), Blink = TABLE_VADDR
-        write_endpoint(&mut ep1_page, 0, ep2_hash, TABLE_VADDR, 2, 443, 12345, 0, 0, 0);
+        write_endpoint(
+            &mut ep1_page,
+            0,
+            ep2_hash,
+            TABLE_VADDR,
+            2,
+            443,
+            12345,
+            0,
+            0,
+            0,
+        );
 
         let mut ep2_page = vec![0u8; 4096];
         // HashEntry.Flink = TABLE_VADDR (terminates), Blink = ep1_hash
-        write_endpoint(&mut ep2_page, 0, TABLE_VADDR, ep1_hash, 2, 80, 54321, 0, 0, 0);
+        write_endpoint(
+            &mut ep2_page,
+            0,
+            TABLE_VADDR,
+            ep1_hash,
+            2,
+            80,
+            54321,
+            0,
+            0,
+            0,
+        );
 
         let ptb = PageTableBuilder::new()
-            .map_4k(TABLE_VADDR, TABLE_PADDR, flags::WRITABLE).write_phys(TABLE_PADDR, &table_page)
-            .map_4k(EP1_VADDR,   EP1_PADDR,   flags::WRITABLE).write_phys(EP1_PADDR,   &ep1_page)
-            .map_4k(EP2_VADDR,   EP2_PADDR,   flags::WRITABLE).write_phys(EP2_PADDR,   &ep2_page);
+            .map_4k(TABLE_VADDR, TABLE_PADDR, flags::WRITABLE)
+            .write_phys(TABLE_PADDR, &table_page)
+            .map_4k(EP1_VADDR, EP1_PADDR, flags::WRITABLE)
+            .write_phys(EP1_PADDR, &ep1_page)
+            .map_4k(EP2_VADDR, EP2_PADDR, flags::WRITABLE)
+            .write_phys(EP2_PADDR, &ep2_page);
         let reader = make_net_reader(ptb);
         let conns = walk_tcp_endpoints(&reader, TABLE_VADDR, 1).unwrap();
         assert_eq!(conns.len(), 2);
@@ -463,10 +524,10 @@ mod tests {
     fn walk_multiple_buckets() {
         const TABLE_VADDR: u64 = 0xFFFF_8000_0030_0000;
         const TABLE_PADDR: u64 = 0x0030_0000;
-        const EP1_VADDR:   u64 = 0xFFFF_8000_0031_0000;
-        const EP1_PADDR:   u64 = 0x0031_0000;
-        const EP2_VADDR:   u64 = 0xFFFF_8000_0032_0000;
-        const EP2_PADDR:   u64 = 0x0032_0000;
+        const EP1_VADDR: u64 = 0xFFFF_8000_0031_0000;
+        const EP1_PADDR: u64 = 0x0031_0000;
+        const EP2_VADDR: u64 = 0xFFFF_8000_0032_0000;
+        const EP2_PADDR: u64 = 0x0032_0000;
 
         let ep1_hash = EP1_VADDR + EP_HASH_ENTRY as u64;
         let ep2_hash = EP2_VADDR + EP_HASH_ENTRY as u64;
@@ -483,15 +544,40 @@ mod tests {
         table_page[24..32].copy_from_slice(&ep2_hash.to_le_bytes());
 
         let mut ep1_page = vec![0u8; 4096];
-        write_endpoint(&mut ep1_page, 0, bucket0_addr, bucket0_addr, 2, 8080, 0, 0, 0, 0);
+        write_endpoint(
+            &mut ep1_page,
+            0,
+            bucket0_addr,
+            bucket0_addr,
+            2,
+            8080,
+            0,
+            0,
+            0,
+            0,
+        );
 
         let mut ep2_page = vec![0u8; 4096];
-        write_endpoint(&mut ep2_page, 0, bucket1_addr, bucket1_addr, 2, 443, 0, 0, 0, 0);
+        write_endpoint(
+            &mut ep2_page,
+            0,
+            bucket1_addr,
+            bucket1_addr,
+            2,
+            443,
+            0,
+            0,
+            0,
+            0,
+        );
 
         let ptb = PageTableBuilder::new()
-            .map_4k(TABLE_VADDR, TABLE_PADDR, flags::WRITABLE).write_phys(TABLE_PADDR, &table_page)
-            .map_4k(EP1_VADDR,   EP1_PADDR,   flags::WRITABLE).write_phys(EP1_PADDR,   &ep1_page)
-            .map_4k(EP2_VADDR,   EP2_PADDR,   flags::WRITABLE).write_phys(EP2_PADDR,   &ep2_page);
+            .map_4k(TABLE_VADDR, TABLE_PADDR, flags::WRITABLE)
+            .write_phys(TABLE_PADDR, &table_page)
+            .map_4k(EP1_VADDR, EP1_PADDR, flags::WRITABLE)
+            .write_phys(EP1_PADDR, &ep1_page)
+            .map_4k(EP2_VADDR, EP2_PADDR, flags::WRITABLE)
+            .write_phys(EP2_PADDR, &ep2_page);
         let reader = make_net_reader(ptb);
         let conns = walk_tcp_endpoints(&reader, TABLE_VADDR, 2).unwrap();
         assert_eq!(conns.len(), 2);

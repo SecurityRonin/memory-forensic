@@ -128,8 +128,7 @@ fn walk_station_desktops<P: PhysicalMemoryProvider>(
     while desk_addr != 0 && count < MAX_DESKTOPS_PER_STATION {
         count += 1;
 
-        let name = read_unicode_string(reader, desk_addr + desk_name_off)
-            .unwrap_or_default();
+        let name = read_unicode_string(reader, desk_addr + desk_name_off).unwrap_or_default();
         let heap_size = read_ptr(reader, desk_addr + desk_heap_off);
         let thread_count = read_u32(reader, desk_addr + desk_thread_count_off);
         let is_suspicious = classify_desktop(&name, ws_name);
@@ -442,7 +441,13 @@ mod tests {
     /// Helper: write a _UNICODE_STRING block into a page buffer.
     /// Layout: Length(u16) at off, MaxLength(u16) at off+2, Buffer(u64) at off+8.
     /// The UTF-16LE string data is placed at str_off within the same page.
-    fn write_unistr_in_page(page: &mut Vec<u8>, off: usize, text: &str, str_off: usize, base_vaddr: u64) {
+    fn write_unistr_in_page(
+        page: &mut Vec<u8>,
+        off: usize,
+        text: &str,
+        str_off: usize,
+        base_vaddr: u64,
+    ) {
         let utf16: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
         let byte_len = utf16.len() as u16;
         let buf_vaddr = base_vaddr + str_off as u64;
@@ -456,10 +461,10 @@ mod tests {
     /// Exercises walk_station_desktops and the desktop-info push path.
     #[test]
     fn walk_desktops_station_with_one_desktop() {
-        const SYM_VADDR:  u64 = 0xFFFF_8000_0079_0000;
-        const SYM_PADDR:  u64 = 0x0079_0000;
-        const WS_VADDR:   u64 = 0xFFFF_8000_0078_0000;
-        const WS_PADDR:   u64 = 0x0078_0000;
+        const SYM_VADDR: u64 = 0xFFFF_8000_0079_0000;
+        const SYM_PADDR: u64 = 0x0079_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0078_0000;
+        const WS_PADDR: u64 = 0x0078_0000;
         const DESK_VADDR: u64 = 0xFFFF_8000_0077_0000;
         const DESK_PADDR: u64 = 0x0077_0000;
 
@@ -524,10 +529,10 @@ mod tests {
     /// walk_desktops: suspicious desktop (non-standard name on WinSta0).
     #[test]
     fn walk_desktops_suspicious_desktop_flagged() {
-        const SYM_VADDR:  u64 = 0xFFFF_8000_0075_0000;
-        const SYM_PADDR:  u64 = 0x0075_0000;
-        const WS_VADDR:   u64 = 0xFFFF_8000_0074_0000;
-        const WS_PADDR:   u64 = 0x0074_0000;
+        const SYM_VADDR: u64 = 0xFFFF_8000_0075_0000;
+        const SYM_PADDR: u64 = 0x0075_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0074_0000;
+        const WS_PADDR: u64 = 0x0074_0000;
         const DESK_VADDR: u64 = 0xFFFF_8000_0073_0000;
         const DESK_PADDR: u64 = 0x0073_0000;
 
@@ -584,8 +589,8 @@ mod tests {
     fn walk_desktops_symbol_with_mapped_ws_zero_fields() {
         const SYM_VADDR: u64 = 0xFFFF_8000_0071_0000;
         const SYM_PADDR: u64 = 0x0071_0000;
-        const WS_VADDR:  u64 = 0xFFFF_8000_0070_0000;
-        const WS_PADDR:  u64 = 0x0070_0000;
+        const WS_VADDR: u64 = 0xFFFF_8000_0070_0000;
+        const WS_PADDR: u64 = 0x0070_0000;
 
         let isf = IsfBuilder::new()
             .add_struct("_WINSTATION_OBJECT", 64)

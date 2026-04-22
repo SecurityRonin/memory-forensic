@@ -306,12 +306,8 @@ mod tests {
 
         // Add vectors.0 .. vectors.8 fields on timer_base (all at offset 0)
         for i in 0..TIMER_WHEEL_GROUPS {
-            isf_builder = isf_builder.add_field(
-                "timer_base",
-                &format!("vectors.{i}"),
-                0,
-                "pointer",
-            );
+            isf_builder =
+                isf_builder.add_field("timer_base", &format!("vectors.{i}"), 0, "pointer");
         }
         let isf = isf_builder.build_json();
 
@@ -324,7 +320,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_kernel_timers(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "all-zero vector heads should produce no timer entries");
+        assert!(
+            result.is_empty(),
+            "all-zero vector heads should produce no timer entries"
+        );
     }
 
     #[test]
@@ -350,7 +349,10 @@ mod tests {
 
         // Should not panic; all Err paths → continue → empty result
         let results = walk_kernel_timers(&reader).unwrap_or_default();
-        assert!(results.is_empty(), "tvec_bases fallback with no vectors → empty");
+        assert!(
+            results.is_empty(),
+            "tvec_bases fallback with no vectors → empty"
+        );
     }
 
     #[test]
@@ -377,12 +379,8 @@ mod tests {
 
         // vectors.0 at offset 0; rest at same offset (all read the same fake addr)
         for i in 0..TIMER_WHEEL_GROUPS {
-            isf_builder = isf_builder.add_field(
-                "timer_base",
-                &format!("vectors.{i}"),
-                0u64,
-                "pointer",
-            );
+            isf_builder =
+                isf_builder.add_field("timer_base", &format!("vectors.{i}"), 0u64, "pointer");
         }
         // No list_head struct → walk_list will fail → Err → continue
         let isf = isf_builder.build_json();
@@ -397,7 +395,10 @@ mod tests {
 
         let result = walk_kernel_timers(&reader).unwrap_or_default();
         // walk_list fails for unmapped fake_list_addr → continue → empty
-        assert!(result.is_empty(), "failed walk_list → Err → continue → empty result");
+        assert!(
+            result.is_empty(),
+            "failed walk_list → Err → continue → empty result"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -425,19 +426,19 @@ mod tests {
         //     expires @ expires_offset = 9999
         //     function @ function_offset = some addr OUTSIDE kernel text → suspicious
 
-        let bases_vaddr: u64     = 0xFFFF_8800_00D0_0000;
-        let bases_paddr: u64     = 0x00D0_0000;
-        let listhead_vaddr: u64  = 0xFFFF_8800_00D1_0000;
-        let listhead_paddr: u64  = 0x00D1_0000;
-        let timer_vaddr: u64     = 0xFFFF_8800_00D2_0000;
-        let timer_paddr: u64     = 0x00D2_0000;
+        let bases_vaddr: u64 = 0xFFFF_8800_00D0_0000;
+        let bases_paddr: u64 = 0x00D0_0000;
+        let listhead_vaddr: u64 = 0xFFFF_8800_00D1_0000;
+        let listhead_paddr: u64 = 0x00D1_0000;
+        let timer_vaddr: u64 = 0xFFFF_8800_00D2_0000;
+        let timer_paddr: u64 = 0x00D2_0000;
 
-        let entry_offset:    u64 = 0x00; // timer_list.entry (list_head embedded at start)
-        let expires_offset:  u64 = 0x10;
+        let entry_offset: u64 = 0x00; // timer_list.entry (list_head embedded at start)
+        let expires_offset: u64 = 0x10;
         let function_offset: u64 = 0x18;
 
         let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end:   u64 = 0xFFFF_8000_00FF_FFFF;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
         // A function outside kernel text (module space) → suspicious
         let suspicious_fn: u64 = 0xFFFF_C900_DEAD_BEEFu64;
 
@@ -495,12 +496,12 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(bases_vaddr,    bases_paddr,    flags::WRITABLE)
-            .write_phys(bases_paddr,    &bases_page)
+            .map_4k(bases_vaddr, bases_paddr, flags::WRITABLE)
+            .write_phys(bases_paddr, &bases_page)
             .map_4k(listhead_vaddr, listhead_paddr, flags::WRITABLE)
             .write_phys(listhead_paddr, &listhead_page)
-            .map_4k(timer_vaddr,    timer_paddr,    flags::WRITABLE)
-            .write_phys(timer_paddr,    &timer_page)
+            .map_4k(timer_vaddr, timer_paddr, flags::WRITABLE)
+            .write_phys(timer_paddr, &timer_page)
             .build();
 
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -512,7 +513,10 @@ mod tests {
         let timer = &result[0];
         assert_eq!(timer.expires, 9999);
         assert_eq!(timer.function, suspicious_fn);
-        assert!(timer.is_suspicious, "function outside kernel text must be suspicious");
+        assert!(
+            timer.is_suspicious,
+            "function outside kernel text must be suspicious"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -524,21 +528,21 @@ mod tests {
     /// `flags_value` is written into the timer_list.flags field.
     /// The ISF includes a `flags` field on `timer_list` at `flags_offset`.
     fn walk_one_timer_with_flags(flags_value: u32) -> KernelTimerInfo {
-        let bases_vaddr: u64    = 0xFFFF_8800_00E0_0000;
-        let bases_paddr: u64    = 0x00E0_0000;
+        let bases_vaddr: u64 = 0xFFFF_8800_00E0_0000;
+        let bases_paddr: u64 = 0x00E0_0000;
         let listhead_vaddr: u64 = 0xFFFF_8800_00E1_0000;
         let listhead_paddr: u64 = 0x00E1_0000;
-        let timer_vaddr: u64    = 0xFFFF_8800_00E2_0000;
-        let timer_paddr: u64    = 0x00E2_0000;
+        let timer_vaddr: u64 = 0xFFFF_8800_00E2_0000;
+        let timer_paddr: u64 = 0x00E2_0000;
 
-        let entry_offset:    u64 = 0x00;
-        let expires_offset:  u64 = 0x10;
+        let entry_offset: u64 = 0x00;
+        let expires_offset: u64 = 0x10;
         let function_offset: u64 = 0x18;
-        let flags_offset:    u64 = 0x20; // u32 field after function pointer
+        let flags_offset: u64 = 0x20; // u32 field after function pointer
 
         let kernel_start: u64 = 0xFFFF_8000_0000_0000;
-        let kernel_end:   u64 = 0xFFFF_8000_00FF_FFFF;
-        let benign_fn:    u64 = kernel_start + 0x1000;
+        let kernel_end: u64 = 0xFFFF_8000_00FF_FFFF;
+        let benign_fn: u64 = kernel_start + 0x1000;
 
         // bases page: vectors.0 at offset 0 = listhead_vaddr
         let mut bases_page = [0u8; 4096];
@@ -566,13 +570,13 @@ mod tests {
             .add_field("list_head", "next", 0x00u64, "pointer")
             .add_struct("timer_base", 512)
             .add_struct("timer_list", 64)
-            .add_field("timer_list", "entry",    entry_offset,    "pointer")
-            .add_field("timer_list", "expires",  expires_offset,  "unsigned long")
+            .add_field("timer_list", "entry", entry_offset, "pointer")
+            .add_field("timer_list", "expires", expires_offset, "unsigned long")
             .add_field("timer_list", "function", function_offset, "pointer")
-            .add_field("timer_list", "flags",    flags_offset,    "unsigned int")
+            .add_field("timer_list", "flags", flags_offset, "unsigned int")
             .add_symbol("timer_bases", bases_vaddr)
-            .add_symbol("_stext",      kernel_start)
-            .add_symbol("_etext",      kernel_end);
+            .add_symbol("_stext", kernel_start)
+            .add_symbol("_etext", kernel_end);
 
         for i in 0..TIMER_WHEEL_GROUPS {
             let field_offset: u64 = if i == 0 { 0 } else { 8 + i as u64 * 8 };
@@ -587,12 +591,12 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(bases_vaddr,    bases_paddr,    flags::WRITABLE)
-            .write_phys(bases_paddr,    &bases_page)
+            .map_4k(bases_vaddr, bases_paddr, flags::WRITABLE)
+            .write_phys(bases_paddr, &bases_page)
             .map_4k(listhead_vaddr, listhead_paddr, flags::WRITABLE)
             .write_phys(listhead_paddr, &listhead_page)
-            .map_4k(timer_vaddr,    timer_paddr,    flags::WRITABLE)
-            .write_phys(timer_paddr,    &timer_page)
+            .map_4k(timer_vaddr, timer_paddr, flags::WRITABLE)
+            .write_phys(timer_paddr, &timer_page)
             .build();
 
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);

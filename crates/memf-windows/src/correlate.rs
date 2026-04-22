@@ -71,7 +71,11 @@ impl IntoForensicEvents for WinDriverInfo {
         let (severity, finding, confidence) = if suspicious_path {
             (Severity::High, Finding::DefenseEvasion, 0.85f64)
         } else {
-            (Severity::Info, Finding::Other("driver_loaded".into()), 0.5f64)
+            (
+                Severity::Info,
+                Finding::Other("driver_loaded".into()),
+                0.5f64,
+            )
         };
 
         let mitre = if suspicious_path {
@@ -135,7 +139,11 @@ impl IntoForensicEvents for WinHollowingInfo {
         } else if !self.has_mz || !self.has_pe {
             (Severity::Medium, Finding::DefenseEvasion, 0.65f64)
         } else {
-            (Severity::Info, Finding::Other("process_checked".into()), 0.5f64)
+            (
+                Severity::Info,
+                Finding::Other("process_checked".into()),
+                0.5f64,
+            )
         };
 
         let mitre = if self.suspicious || !self.has_mz || !self.has_pe {
@@ -191,7 +199,12 @@ impl IntoForensicEvents for WinConnectionInfo {
                     0.6f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("connection_enumerated".into()), vec![], 0.4f64)
+                (
+                    Severity::Info,
+                    Finding::Other("connection_enumerated".into()),
+                    vec![],
+                    0.4f64,
+                )
             };
 
         let src = format!("{}:{}", self.local_addr, self.local_port)
@@ -238,7 +251,12 @@ impl IntoForensicEvents for WinTokenInfo {
                     0.9f64,
                 )
             } else {
-                (Severity::Info, Finding::Other("token_enumerated".into()), vec![], 0.4f64)
+                (
+                    Severity::Info,
+                    Finding::Other("token_enumerated".into()),
+                    vec![],
+                    0.4f64,
+                )
             };
 
         vec![ForensicEvent::builder()
@@ -263,7 +281,12 @@ impl IntoForensicEvents for ApcInfo {
         let mitre_t1055 = vec![MitreAttackId::new("T1055").expect("valid id")];
 
         let (severity, finding, mitre, confidence) = if self.is_unbacked {
-            (Severity::High, Finding::ProcessHollowing, mitre_t1055, 0.9f64)
+            (
+                Severity::High,
+                Finding::ProcessHollowing,
+                mitre_t1055,
+                0.9f64,
+            )
         } else if self.apc_type == ApcType::KernelMode {
             (
                 Severity::Medium,
@@ -272,7 +295,12 @@ impl IntoForensicEvents for ApcInfo {
                 0.6f64,
             )
         } else {
-            (Severity::Info, Finding::Other("apc_enumerated".into()), vec![], 0.4f64)
+            (
+                Severity::Info,
+                Finding::Other("apc_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -309,7 +337,12 @@ impl IntoForensicEvents for FiberInfo {
                 0.5f64,
             )
         } else {
-            (Severity::Info, Finding::Other("fiber_enumerated".into()), vec![], 0.4f64)
+            (
+                Severity::Info,
+                Finding::Other("fiber_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -373,7 +406,12 @@ impl IntoForensicEvents for TlsCallbackInfo {
                 0.6f64,
             )
         } else {
-            (Severity::Info, Finding::Other("tls_enumerated".into()), vec![], 0.4f64)
+            (
+                Severity::Info,
+                Finding::Other("tls_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -410,7 +448,12 @@ impl IntoForensicEvents for ClrAssemblyInfo {
                 0.75f64,
             )
         } else {
-            (Severity::Info, Finding::Other("clr_assembly_enumerated".into()), vec![], 0.4f64)
+            (
+                Severity::Info,
+                Finding::Other("clr_assembly_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -447,7 +490,12 @@ impl IntoForensicEvents for Wow64AnomalyInfo {
                 0.85f64,
             )
         } else {
-            (Severity::Info, Finding::Other("wow64_enumerated".into()), vec![], 0.4f64)
+            (
+                Severity::Info,
+                Finding::Other("wow64_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -472,31 +520,36 @@ const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 
 impl IntoForensicEvents for SectionObjectInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
-        let (severity, finding, mitre, confidence) =
-            if self.is_image_section && !self.file_on_disk {
-                (
-                    Severity::Critical,
-                    Finding::ProcessHollowing,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
-                    0.9f64,
-                )
-            } else if self.protection == PAGE_EXECUTE_READWRITE {
-                (
-                    Severity::High,
-                    Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
-                    0.85f64,
-                )
-            } else if self.mapped_process_count > 2 && !self.file_on_disk {
-                (
-                    Severity::High,
-                    Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
-                    0.8f64,
-                )
-            } else {
-                (Severity::Info, Finding::Other("section_enumerated".into()), vec![], 0.4f64)
-            };
+        let (severity, finding, mitre, confidence) = if self.is_image_section && !self.file_on_disk
+        {
+            (
+                Severity::Critical,
+                Finding::ProcessHollowing,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.9f64,
+            )
+        } else if self.protection == PAGE_EXECUTE_READWRITE {
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.85f64,
+            )
+        } else if self.mapped_process_count > 2 && !self.file_on_disk {
+            (
+                Severity::High,
+                Finding::DefenseEvasion,
+                vec![MitreAttackId::new("T1055").expect("valid id")],
+                0.8f64,
+            )
+        } else {
+            (
+                Severity::Info,
+                Finding::Other("section_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
+        };
 
         vec![ForensicEvent::builder()
             .source_walker("windows_section")
@@ -532,7 +585,12 @@ impl IntoForensicEvents for HeapSprayInfo {
                 0.6f64,
             )
         } else {
-            (Severity::Info, Finding::Other("heap_enumerated".into()), vec![], 0.4f64)
+            (
+                Severity::Info,
+                Finding::Other("heap_enumerated".into()),
+                vec![],
+                0.4f64,
+            )
         };
 
         vec![ForensicEvent::builder()
@@ -656,7 +714,11 @@ mod tests {
 
     #[test]
     fn unknown_path_driver_produces_high_severity() {
-        let driver = make_driver("evil.sys", "\\Device\\HarddiskVolume3\\evil.sys", 0xFFFF_8001_0000);
+        let driver = make_driver(
+            "evil.sys",
+            "\\Device\\HarddiskVolume3\\evil.sys",
+            0xFFFF_8001_0000,
+        );
         let events = driver.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
@@ -690,7 +752,11 @@ mod tests {
 
     #[test]
     fn driver_entity_has_correct_name_and_base() {
-        let driver = make_driver("ntfs.sys", "\\SystemRoot\\system32\\DRIVERS\\ntfs.sys", 0xFFFF_8003_0000);
+        let driver = make_driver(
+            "ntfs.sys",
+            "\\SystemRoot\\system32\\DRIVERS\\ntfs.sys",
+            0xFFFF_8003_0000,
+        );
         let events = driver.into_forensic_events();
         match &events[0].entity {
             Entity::Driver { name, base } => {
@@ -728,7 +794,12 @@ mod tests {
 
     #[test]
     fn execute_only_without_mz_is_high() {
-        let info = make_malfind(1234, "svchost.exe", "PAGE_EXECUTE_READ", vec![0x00, 0x01, 0x02]);
+        let info = make_malfind(
+            1234,
+            "svchost.exe",
+            "PAGE_EXECUTE_READ",
+            vec![0x00, 0x01, 0x02],
+        );
         let events = info.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
@@ -756,7 +827,12 @@ mod tests {
 
     #[test]
     fn malfind_entity_has_pid_and_name() {
-        let info = make_malfind(9999, "lsass.exe", "PAGE_EXECUTE_READWRITE", vec![0x4D, 0x5A]);
+        let info = make_malfind(
+            9999,
+            "lsass.exe",
+            "PAGE_EXECUTE_READWRITE",
+            vec![0x4D, 0x5A],
+        );
         let events = info.into_forensic_events();
         match &events[0].entity {
             Entity::Process { pid, name, .. } => {
@@ -853,7 +929,10 @@ mod tests {
             let events = c.into_forensic_events();
             assert_eq!(events.len(), 1, "port {port}");
             assert_eq!(events[0].severity, Severity::High, "port {port}");
-            assert!(matches!(events[0].finding, Finding::NetworkBeaconing), "port {port}");
+            assert!(
+                matches!(events[0].finding, Finding::NetworkBeaconing),
+                "port {port}"
+            );
             let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
             assert!(ids.contains(&"T1071"), "expected T1071 for port {port}");
         }
@@ -888,7 +967,12 @@ mod tests {
     // WinTokenInfo tests
     // -----------------------------------------------------------------------
 
-    fn make_token(pid: u64, image_name: &str, privileges_enabled: u64, user_sid: &str) -> WinTokenInfo {
+    fn make_token(
+        pid: u64,
+        image_name: &str,
+        privileges_enabled: u64,
+        user_sid: &str,
+    ) -> WinTokenInfo {
         WinTokenInfo {
             pid,
             image_name: image_name.to_string(),
@@ -997,7 +1081,12 @@ mod tests {
     // FiberInfo tests (Walker 2)
     // -----------------------------------------------------------------------
 
-    fn make_fiber(pid: u64, tid: u64, is_converted: bool, fls_callback_unbacked: bool) -> FiberInfo {
+    fn make_fiber(
+        pid: u64,
+        tid: u64,
+        is_converted: bool,
+        fls_callback_unbacked: bool,
+    ) -> FiberInfo {
         FiberInfo {
             pid,
             tid,
@@ -1098,7 +1187,11 @@ mod tests {
 
     #[test]
     fn all_types_have_t1014() {
-        for dtype in [DkomType::ProcessUnlinked, DkomType::DriverUnlinked, DkomType::ThreadUnlinked] {
+        for dtype in [
+            DkomType::ProcessUnlinked,
+            DkomType::DriverUnlinked,
+            DkomType::ThreadUnlinked,
+        ] {
             let d = make_dkom(100, dtype);
             let events = d.into_forensic_events();
             let ids: Vec<&str> = events[0].mitre_attack.iter().map(|m| m.as_str()).collect();
@@ -1182,7 +1275,11 @@ mod tests {
             assembly_name: "ReflectivePayload".to_string(),
             is_dynamic,
             has_pe_header,
-            module_path: if is_dynamic { String::new() } else { "C:\\Windows\\assembly\\legit.dll".to_string() },
+            module_path: if is_dynamic {
+                String::new()
+            } else {
+                "C:\\Windows\\assembly\\legit.dll".to_string()
+            },
         }
     }
 
@@ -1239,7 +1336,11 @@ mod tests {
             image_name: "malware32.exe".to_string(),
             has_peb32,
             heavens_gate_detected: heavens_gate,
-            wow64_dll_path: if has_peb32 { "C:\\Windows\\SysWOW64\\wow64.dll".to_string() } else { String::new() },
+            wow64_dll_path: if has_peb32 {
+                "C:\\Windows\\SysWOW64\\wow64.dll".to_string()
+            } else {
+                String::new()
+            },
             syscall_stub_tampered: syscall_tampered,
         }
     }

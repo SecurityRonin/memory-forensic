@@ -13,8 +13,20 @@ use memf_format::PhysicalMemoryProvider;
 use crate::{ProcessState, Result};
 
 const SUSPICIOUS_DAEMON_NAMES: &[&str] = &[
-    "sshd", "httpd", "nginx", "apache", "mysqld", "postgres", "redis",
-    "memcached", "mongod", "named", "bind", "cupsd", "cron", "atd",
+    "sshd",
+    "httpd",
+    "nginx",
+    "apache",
+    "mysqld",
+    "postgres",
+    "redis",
+    "memcached",
+    "mongod",
+    "named",
+    "bind",
+    "cupsd",
+    "cron",
+    "atd",
 ];
 
 /// Information about a zombie or orphan process found in memory.
@@ -274,13 +286,16 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_zombie_orphan(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "running init task is neither zombie nor orphan");
+        assert!(
+            result.is_empty(),
+            "running init task is neither zombie nor orphan"
+        );
     }
 
     #[test]
     fn walk_zombie_orphan_zombie_task_detected() {
-        let sym_vaddr: u64   = 0xFFFF_8800_0050_0000;
-        let sym_paddr: u64   = 0x0050_0000;
+        let sym_vaddr: u64 = 0xFFFF_8800_0050_0000;
+        let sym_paddr: u64 = 0x0050_0000;
         let tasks_offset: u64 = 24;
 
         let mut page = [0u8; 4096];
@@ -323,7 +338,10 @@ mod tests {
         let result = walk_zombie_orphan(&reader).unwrap();
         assert_eq!(result.len(), 1, "zombie task should appear in results");
         assert!(result[0].is_zombie, "state=0x20 → zombie");
-        assert!(result[0].is_suspicious, "zombie with non-zero exit_code → suspicious");
+        assert!(
+            result[0].is_suspicious,
+            "zombie with non-zero exit_code → suspicious"
+        );
         assert_eq!(result[0].exit_code, 139);
         assert_eq!(result[0].comm, "crashed");
     }

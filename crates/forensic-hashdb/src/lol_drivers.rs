@@ -61,8 +61,7 @@ fn lol_drivers() -> &'static [DriverInfo] {
                     "b64ef01bc68f63a06b9c7da4a7ef7df1f1ccc36e5c0a07f0a5c1fcbfb6e2f4e1",
                 ),
                 cves: &["CVE-2020-15368"],
-                description:
-                    "ASRock driver — arbitrary kernel memory R/W, BYOVD attack surface",
+                description: "ASRock driver — arbitrary kernel memory R/W, BYOVD attack surface",
             },
         ]
     })
@@ -134,7 +133,11 @@ mod tests {
     #[test]
     fn driver_info_has_description() {
         for driver in all_drivers() {
-            assert!(!driver.description.is_empty(), "{} has no description", driver.name);
+            assert!(
+                !driver.description.is_empty(),
+                "{} has no description",
+                driver.name
+            );
         }
     }
 }

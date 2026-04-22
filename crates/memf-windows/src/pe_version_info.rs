@@ -43,10 +43,7 @@ pub fn classify_version_mismatch(module_name: &str, original_filename: &str) -> 
 pub fn walk_pe_version_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<PeVersionInfo>> {
-    let list_head_addr = match reader
-        .symbols()
-        .symbol_address("PsLoadedModuleList")
-    {
+    let list_head_addr = match reader.symbols().symbol_address("PsLoadedModuleList") {
         Some(addr) => addr,
         None => return Ok(Vec::new()),
     };

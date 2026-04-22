@@ -8,7 +8,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, types::TlsCallbackInfo};
+use crate::{types::TlsCallbackInfo, Result};
 
 /// Walk TLS directories of all loaded modules in all processes and validate
 /// callback addresses.

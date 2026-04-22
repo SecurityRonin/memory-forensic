@@ -286,7 +286,8 @@ mod tests {
     #[test]
     fn parse_oom_line_with_mem_cgroup_prefix() {
         // Line uses "Kill" variant (also matches "Killed")
-        let line = "Out of memory: Kill process 100 (victim) score 0 total-vm:1024kB, anon-rss:512kB";
+        let line =
+            "Out of memory: Kill process 100 (victim) score 0 total-vm:1024kB, anon-rss:512kB";
         let result = parse_oom_line(line);
         assert!(result.is_some(), "Kill (without -ed) should also match");
         let (pid, comm, _, total_vm, rss) = result.unwrap();
@@ -345,7 +346,10 @@ mod tests {
 
     #[test]
     fn extract_kb_label_present_parses_value() {
-        assert_eq!(extract_kb("total-vm:8192kB, anon-rss:4096kB", "total-vm:"), 8192);
+        assert_eq!(
+            extract_kb("total-vm:8192kB, anon-rss:4096kB", "total-vm:"),
+            8192
+        );
     }
 
     #[test]
@@ -501,7 +505,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_oom_events(&reader).expect("should not error");
-        assert!(result.is_empty(), "unreadable log buffer must yield empty result");
+        assert!(
+            result.is_empty(),
+            "unreadable log buffer must yield empty result"
+        );
     }
 
     #[test]
@@ -549,13 +556,14 @@ mod tests {
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
 
-        let log_text = b"Out of memory: Killed process 5000 (bash) score 300 total-vm:8192kB, anon-rss:4096kB";
+        let log_text =
+            b"Out of memory: Killed process 5000 (bash) score 300 total-vm:8192kB, anon-rss:4096kB";
         let record = build_printk_record(777, log_text);
 
-        let buf_vaddr: u64     = 0xFFFF_8800_0003_0000;
-        let buf_paddr: u64     = 0x0030_0000;
-        let buflen_vaddr: u64  = 0xFFFF_8800_0003_1000;
-        let buflen_paddr: u64  = 0x0031_0000;
+        let buf_vaddr: u64 = 0xFFFF_8800_0003_0000;
+        let buf_paddr: u64 = 0x0030_0000;
+        let buflen_vaddr: u64 = 0xFFFF_8800_0003_1000;
+        let buflen_paddr: u64 = 0x0031_0000;
 
         // log_buf_len = 4096 (as a u32 LE at buflen_vaddr)
         let buf_len_val: u32 = 4096;
@@ -580,7 +588,11 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_oom_events(&reader).expect("should not error");
-        assert_eq!(result.len(), 1, "should parse OOM event from buf with explicit log_buf_len");
+        assert_eq!(
+            result.len(),
+            1,
+            "should parse OOM event from buf with explicit log_buf_len"
+        );
         assert_eq!(result[0].victim_pid, 5000);
         assert_eq!(result[0].victim_comm, "bash");
         // bash PID=5000 ≥ 100 and not in suspicious list → benign
@@ -607,7 +619,7 @@ mod tests {
         // Build a 4096-byte buffer: header with ts_nsec=1, len=0 → break on first record.
         let mut buf = vec![0u8; 4096];
         buf[0..8].copy_from_slice(&1u64.to_le_bytes()); // ts_nsec
-        // len at [8..10] = 0 → loop should break
+                                                        // len at [8..10] = 0 → loop should break
 
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(buf_vaddr, buf_paddr, ptf::WRITABLE)
@@ -618,7 +630,10 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_oom_events(&reader).expect("should not error");
-        assert!(result.is_empty(), "zero-len record should stop parsing → empty result");
+        assert!(
+            result.is_empty(),
+            "zero-len record should stop parsing → empty result"
+        );
     }
 
     // --- walk_oom_events: record with len > remaining buffer → break ---
@@ -651,14 +666,23 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_oom_events(&reader).expect("should not error");
-        assert!(result.is_empty(), "over-length record must stop parsing → empty result");
+        assert!(
+            result.is_empty(),
+            "over-length record must stop parsing → empty result"
+        );
     }
 
     // --- classify_oom_victim: case-insensitive containerd detection ---
     #[test]
     fn classify_oom_victim_case_insensitive() {
         // The check uses to_ascii_lowercase() + contains()
-        assert!(classify_oom_victim("DOCKERD", 5000), "DOCKERD in uppercase must be detected");
-        assert!(classify_oom_victim("Containerd-shim", 9999), "containerd substring case-insensitive");
+        assert!(
+            classify_oom_victim("DOCKERD", 5000),
+            "DOCKERD in uppercase must be detected"
+        );
+        assert!(
+            classify_oom_victim("Containerd-shim", 9999),
+            "containerd substring case-insensitive"
+        );
     }
 }

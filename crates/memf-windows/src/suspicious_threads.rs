@@ -487,7 +487,10 @@ mod tests {
         // Both system process + rwx; rule 1 (system process orphan) fires first
         let (suspicious, reason) = classify_suspicious_thread("unknown", true, true, "lsass.exe");
         assert!(suspicious);
-        assert!(reason.contains("system process"), "rule 1 should fire: {reason}");
+        assert!(
+            reason.contains("system process"),
+            "rule 1 should fire: {reason}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -621,7 +624,10 @@ mod tests {
     fn classify_rwx_non_orphan_system_process() {
         let (suspicious, reason) =
             classify_suspicious_thread("kernel32.dll", false, true, "lsass.exe");
-        assert!(suspicious, "RWX in system process thread should be suspicious");
+        assert!(
+            suspicious,
+            "RWX in system process thread should be suspicious"
+        );
         assert!(reason.contains("read-write-execute"), "reason: {reason}");
     }
 
@@ -629,8 +635,7 @@ mod tests {
     #[test]
     fn classify_orphan_in_all_system_processes() {
         for proc in SYSTEM_PROCESSES {
-            let (suspicious, reason) =
-                classify_suspicious_thread("unknown", true, false, proc);
+            let (suspicious, reason) = classify_suspicious_thread("unknown", true, false, proc);
             assert!(suspicious, "orphan in {proc} should be suspicious");
             assert!(reason.contains("system process"), "{proc}: {reason}");
         }
@@ -798,8 +803,8 @@ mod tests {
         // Virtual addresses (kernel space) → physical addresses (< 16 MB)
         let ps_head_vaddr: u64 = 0xFFFF_8004_0000_0000;
         let ps_head_paddr: u64 = 0x0030_0000;
-        let eproc_vaddr: u64   = 0xFFFF_8004_0100_0000;
-        let eproc_paddr: u64   = 0x0031_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8004_0100_0000;
+        let eproc_paddr: u64 = 0x0031_0000;
         let kthread_vaddr: u64 = 0xFFFF_8004_0300_0000;
         let kthread_paddr: u64 = 0x0033_0000;
 

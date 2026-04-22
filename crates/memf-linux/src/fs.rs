@@ -351,7 +351,7 @@ mod tests {
         // mount1: mnt_list.next → ns_head, mnt_list.prev → ns_head (single-entry loop)
         data[0x200..0x208].copy_from_slice(&ns_list_addr.to_le_bytes()); // mnt_list.next
         data[0x208..0x210].copy_from_slice(&ns_list_addr.to_le_bytes()); // mnt_list.prev
-        // mnt_devname at offset 16 = 0 (null)
+                                                                         // mnt_devname at offset 16 = 0 (null)
         data[0x210..0x218].copy_from_slice(&0u64.to_le_bytes());
         // mnt_mountpoint at offset 24 = 0 (null)
         data[0x218..0x220].copy_from_slice(&0u64.to_le_bytes());
@@ -363,7 +363,10 @@ mod tests {
 
         assert_eq!(mounts.len(), 1, "one mount entry expected");
         assert_eq!(mounts[0].dev_name, "", "null devname_ptr → empty string");
-        assert_eq!(mounts[0].mount_point, "", "null mountpoint_ptr → empty string");
+        assert_eq!(
+            mounts[0].mount_point, "",
+            "null mountpoint_ptr → empty string"
+        );
         assert_eq!(mounts[0].fs_type, "", "null sb_ptr → empty string");
     }
 
@@ -425,19 +428,22 @@ mod tests {
         data[0x208..0x210].copy_from_slice(&ns_list_addr.to_le_bytes());
         data[0x210..0x218].copy_from_slice(&0u64.to_le_bytes()); // devname = null
         data[0x218..0x220].copy_from_slice(&0u64.to_le_bytes()); // mountpoint = null
-        // sb at +0x380 with valid s_type ptr → file_system_type at +0x3C0 with name_ptr = 0
+                                                                 // sb at +0x380 with valid s_type ptr → file_system_type at +0x3C0 with name_ptr = 0
         let sb_addr = vaddr + 0x380;
         data[0x220..0x228].copy_from_slice(&sb_addr.to_le_bytes());
         let fstype_addr = vaddr + 0x3C0;
         data[0x380..0x388].copy_from_slice(&fstype_addr.to_le_bytes()); // s_type
-        // file_system_type.name at offset 0 = 0 (null)
+                                                                        // file_system_type.name at offset 0 = 0 (null)
         data[0x3C0..0x3C8].copy_from_slice(&0u64.to_le_bytes());
 
         let reader = make_test_reader(&data, vaddr, paddr);
         let mounts = walk_filesystems(&reader).unwrap();
 
         assert_eq!(mounts.len(), 1);
-        assert_eq!(mounts[0].fs_type, "", "null name_ptr in file_system_type → empty fs_type");
+        assert_eq!(
+            mounts[0].fs_type, "",
+            "null name_ptr in file_system_type → empty fs_type"
+        );
     }
 
     // MountInfo struct: Debug + Clone.

@@ -5,21 +5,21 @@
 //! Provides process, thread, driver, and DLL enumeration
 //! by walking Windows NT kernel data structures in physical memory dumps.
 
-pub mod correlate;
-pub mod apc_injection;
 pub mod alpc;
 pub mod amcache;
 pub mod amsi_bypass;
+pub mod apc_injection;
 pub mod atom_table;
 pub mod bigpools;
 pub mod bitlocker_keys;
 pub mod cachedump;
 pub mod callbacks;
 pub mod clipboard;
-pub mod cmdline;
 pub mod clr_heap;
+pub mod cmdline;
 pub mod com_hijacking;
 pub mod consoles;
+pub mod correlate;
 pub mod crashinfo;
 pub mod debug_registers;
 pub mod desktops;
@@ -58,8 +58,6 @@ pub mod peb_masquerade;
 pub mod pipes;
 pub mod pool_scan;
 pub mod pool_tag;
-pub mod symlinks;
-pub mod tls_callbacks;
 pub mod prefetch;
 pub mod process;
 pub mod psxview;
@@ -78,9 +76,11 @@ pub mod skeleton_key;
 pub mod ssdt;
 pub mod suspicious_threads;
 pub mod svc_diff;
+pub mod symlinks;
 pub mod sysinfo;
 pub mod thread;
 pub mod timers;
+pub mod tls_callbacks;
 pub mod token;
 pub mod token_impersonation;
 pub mod typed_urls;

@@ -2053,7 +2053,10 @@ mod tests {
         let f_data = vec![0u8; 0xA0];
         // Boot key not 16 bytes.
         let result = decrypt_hashed_boot_key(&f_data, &[0u8; 8]);
-        assert!(result.is_empty(), "Wrong boot_key length should return empty");
+        assert!(
+            result.is_empty(),
+            "Wrong boot_key length should return empty"
+        );
     }
 
     /// decrypt_hashed_boot_key with revision 2 marker and all-zero data
@@ -2180,8 +2183,8 @@ mod tests {
         let result = md5_hash(b"");
         // MD5("") = d41d8cd98f00b204e9800998ecf8427e
         let expected = [
-            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04,
-            0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e,
+            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8,
+            0x42, 0x7e,
         ];
         assert_eq!(result, expected, "MD5(\"\") mismatch");
     }
@@ -2428,8 +2431,8 @@ mod tests {
     #[test]
     fn inv_sub_bytes_round_trip() {
         let original: [u8; 16] = [
-            0x00, 0x01, 0x10, 0xFF, 0xAB, 0xCD, 0x63, 0x7C,
-            0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01,
+            0x00, 0x01, 0x10, 0xFF, 0xAB, 0xCD, 0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5,
+            0x30, 0x01,
         ];
         // Apply forward S-box manually
         let mut sboxed = original;
@@ -2445,8 +2448,8 @@ mod tests {
     #[test]
     fn inv_shift_rows_twice_returns_original() {
         let original: [u8; 16] = [
-            0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13,
-            0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
+            0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31,
+            0x32, 0x33,
         ];
         let mut state = original;
         inv_shift_rows(&mut state);
@@ -2461,7 +2464,10 @@ mod tests {
         for _ in 0..4 {
             inv_shift_rows(&mut state2);
         }
-        assert_eq!(state2, original, "4x inv_shift_rows should restore original");
+        assert_eq!(
+            state2, original,
+            "4x inv_shift_rows should restore original"
+        );
     }
 
     /// hex_encode with multi-byte input.
@@ -2475,9 +2481,15 @@ mod tests {
     #[test]
     fn classify_hashdump_case_insensitive_hashes() {
         // "password" NT hash in uppercase should still be suspicious.
-        assert!(classify_hashdump("user", "A4F49C406510BDCAB6824EE7C30FD852"));
+        assert!(classify_hashdump(
+            "user",
+            "A4F49C406510BDCAB6824EE7C30FD852"
+        ));
         // "admin" NT hash in mixed case should be suspicious.
-        assert!(classify_hashdump("user", "209C6174DA490CAEB422F3FA5A7AE634"));
+        assert!(classify_hashdump(
+            "user",
+            "209C6174DA490CAEB422F3FA5A7AE634"
+        ));
     }
 
     /// extract_hashes_from_v with nt_length == 4 returns EMPTY_NT_HASH.
@@ -2529,9 +2541,7 @@ mod tests {
     /// read_value_data returns empty when key_addr is unmapped.
     #[test]
     fn read_value_data_unmapped_returns_empty() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .build_json();
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -2544,9 +2554,7 @@ mod tests {
     /// read_key_class_name returns empty when key_addr is unmapped.
     #[test]
     fn read_key_class_name_unmapped_returns_empty() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .build_json();
+        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -2567,7 +2575,10 @@ mod tests {
         f_data[0x69] = 0x00;
         let boot_key = vec![0u8; 16];
         let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        assert!(result.is_empty(), "rev2 with f_data.len()=0x80 (< 0xA0) → empty");
+        assert!(
+            result.is_empty(),
+            "rev2 with f_data.len()=0x80 (< 0xA0) → empty"
+        );
     }
 
     /// decrypt_hashed_boot_key rev3 with F data exactly 0x9B bytes (< 0x9C) → empty.
@@ -2578,7 +2589,10 @@ mod tests {
         f_data[0x69] = 0x00;
         let boot_key = vec![0u8; 16];
         let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        assert!(result.is_empty(), "rev3 with f_data.len()=0x9B (< 0x9C) → empty");
+        assert!(
+            result.is_empty(),
+            "rev3 with f_data.len()=0x9B (< 0x9C) → empty"
+        );
     }
 
     /// extract_hashes_from_v with nt_length >= 20 but offset out of bounds.
@@ -2622,8 +2636,10 @@ mod tests {
     /// rc4_crypt with non-trivial key produces different output than input.
     #[test]
     fn rc4_crypt_transforms_data() {
-        let key = vec![0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                       0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+        let key = vec![
+            0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10,
+        ];
         let plaintext = vec![0x00u8; 32];
         let ciphertext = rc4_crypt(&key, &plaintext);
         // RC4 of all-zeros with a non-trivial key should produce non-zero output.
@@ -2711,10 +2727,18 @@ mod tests {
         // RID 500 = 0x000001F4: bytes [0xF4, 0x01, 0x00, 0x00]
         // Both keys should have odd parity on all bytes.
         for &b in &k1 {
-            assert_eq!(b.count_ones() % 2, 1, "k1 byte {b:#04x} should have odd parity");
+            assert_eq!(
+                b.count_ones() % 2,
+                1,
+                "k1 byte {b:#04x} should have odd parity"
+            );
         }
         for &b in &k2 {
-            assert_eq!(b.count_ones() % 2, 1, "k2 byte {b:#04x} should have odd parity");
+            assert_eq!(
+                b.count_ones() % 2,
+                1,
+                "k2 byte {b:#04x} should have odd parity"
+            );
         }
     }
 
@@ -2753,7 +2777,11 @@ mod tests {
     fn gf_mul_commutative() {
         for a in 0u8..=15 {
             for b in 0u8..=15 {
-                assert_eq!(gf_mul(a, b), gf_mul(b, a), "gf_mul({a},{b}) should be commutative");
+                assert_eq!(
+                    gf_mul(a, b),
+                    gf_mul(b, a),
+                    "gf_mul({a},{b}) should be commutative"
+                );
             }
         }
     }
@@ -2772,7 +2800,7 @@ mod tests {
         // nt_offset = 0x10 → nt_offset_abs = 0xDC; enc_start = 0xE0; 0xE0 + 16 = 0xF0 > 0xEC → fails.
         v[0xA8..0xAC].copy_from_slice(&0x10u32.to_le_bytes()); // nt_offset = 0x10
         v[0xAC..0xB0].copy_from_slice(&24u32.to_le_bytes()); // nt_length = 24
-        // lm_length = 0 → empty lm
+                                                             // lm_length = 0 → empty lm
         let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
         assert_eq!(nt, EMPTY_NT_HASH, "enc_start+16 > data len → EMPTY_NT_HASH");
         assert_eq!(lm, EMPTY_LM_HASH);
@@ -2835,7 +2863,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = resolve_flat_base(&reader, hive_vaddr);
-        assert_eq!(result, storage_ptr, "non-zero storage ptr → resolve_flat_base returns storage_ptr");
+        assert_eq!(
+            result, storage_ptr,
+            "non-zero storage ptr → resolve_flat_base returns storage_ptr"
+        );
     }
 
     // ── read_key_class_name: class_len == 0 returns empty ───────────
@@ -2964,7 +2995,8 @@ mod tests {
         // ControlSet001 NK: name="ControlSet001", subkey_count=0 (no Control subkey)
         let ccs_name = b"ControlSet001";
         let ccs_name_len: u16 = ccs_name.len() as u16;
-        flat_page[ccs001_off + 0x4A..ccs001_off + 0x4C].copy_from_slice(&ccs_name_len.to_le_bytes());
+        flat_page[ccs001_off + 0x4A..ccs001_off + 0x4C]
+            .copy_from_slice(&ccs_name_len.to_le_bytes());
         flat_page[ccs001_off + 0x4C..ccs001_off + 0x4C + ccs_name.len()].copy_from_slice(ccs_name);
         // subkey_count = 0 → find_subkey_by_name("Control") → 0 → boot_key empty
 
@@ -2992,7 +3024,10 @@ mod tests {
 
         // ControlSet001 found but has no Control subkey → boot_key empty → walk returns empty
         let result = walk_hashdump(&reader, sam_vaddr, sys_vaddr).unwrap();
-        assert!(result.is_empty(), "missing Control subkey → boot_key empty → empty result");
+        assert!(
+            result.is_empty(),
+            "missing Control subkey → boot_key empty → empty result"
+        );
     }
 
     // ── find_subkey_by_name: unknown list sig returns 0 ─────────────
@@ -3012,7 +3047,17 @@ mod tests {
     // Physical addresses stay well below 16 MB.
 
     // Write a NK cell at `off` within `page` (page offsets = virt).
-    fn write_nk(page: &mut Vec<u8>, off: usize, name: &[u8], subkey_count: u32, list_off: u32, val_count: u32, val_list_off: u32, class_len: u16, class_off: u32) {
+    fn write_nk(
+        page: &mut Vec<u8>,
+        off: usize,
+        name: &[u8],
+        subkey_count: u32,
+        list_off: u32,
+        val_count: u32,
+        val_list_off: u32,
+        class_len: u16,
+        class_off: u32,
+    ) {
         page[off + 0x18..off + 0x1C].copy_from_slice(&subkey_count.to_le_bytes());
         page[off + 0x20..off + 0x24].copy_from_slice(&list_off.to_le_bytes());
         page[off + 0x28..off + 0x2C].copy_from_slice(&val_count.to_le_bytes());
@@ -3046,7 +3091,8 @@ mod tests {
     // Write a VK cell at `off` within `page`.
     // VK: sig at 0=vk, NameLength at 0x02, DataLength at 0x08, DataOffset at 0x0C, Name at 0x18.
     fn write_vk(page: &mut Vec<u8>, off: usize, name: &[u8], data_len: u32, data_off: u32) {
-        page[off] = b'v'; page[off + 1] = b'k';
+        page[off] = b'v';
+        page[off + 1] = b'k';
         page[off + 0x02..off + 0x04].copy_from_slice(&(name.len() as u16).to_le_bytes());
         page[off + 0x08..off + 0x0C].copy_from_slice(&data_len.to_le_bytes());
         page[off + 0x0C..off + 0x10].copy_from_slice(&data_off.to_le_bytes());
@@ -3056,7 +3102,9 @@ mod tests {
     }
 
     /// Helper: addr = cell_off + 4 within the flat page.
-    fn ao(cell_off: u32) -> usize { (cell_off + 4) as usize }
+    fn ao(cell_off: u32) -> usize {
+        (cell_off + 4) as usize
+    }
 
     /// Build a minimal SYSTEM hive flat page for walk_hashdump.
     /// Navigation: root → CurrentControlSet → Control → Lsa → {JD, Skew1, GBG, Data}
@@ -3087,22 +3135,22 @@ mod tests {
         //   sk_cl   0x3D0 → ao 0x3D4  (16 bytes; 0x3D4..0x3E4)
         //   gbg_cl  0x3E0 → ao 0x3E4  (16 bytes; 0x3E4..0x3F4)
         //   dat_cl  0x3F0 → ao 0x3F4  (16 bytes; 0x3F4..0x404) — within 0x1000
-        let root_off: u32       = 0x010;
-        let root_list_off: u32  = 0x070;
-        let ccs_off: u32        = 0x090;
-        let ccs_list_off: u32   = 0x100;
-        let ctrl_off: u32       = 0x120;
-        let ctrl_list_off: u32  = 0x180;
-        let lsa_off: u32        = 0x1A0;
-        let lsa_list_off: u32   = 0x200;
-        let jd_off: u32         = 0x240;
-        let skew1_off: u32      = 0x2A0;
-        let gbg_off: u32        = 0x300;
-        let data_off: u32       = 0x360;
-        let jd_cl_off: u32      = 0x3C0;
-        let skew1_cl_off: u32   = 0x3D0;
-        let gbg_cl_off: u32     = 0x3E0;
-        let data_cl_off: u32    = 0x3F0;
+        let root_off: u32 = 0x010;
+        let root_list_off: u32 = 0x070;
+        let ccs_off: u32 = 0x090;
+        let ccs_list_off: u32 = 0x100;
+        let ctrl_off: u32 = 0x120;
+        let ctrl_list_off: u32 = 0x180;
+        let lsa_off: u32 = 0x1A0;
+        let lsa_list_off: u32 = 0x200;
+        let jd_off: u32 = 0x240;
+        let skew1_off: u32 = 0x2A0;
+        let gbg_off: u32 = 0x300;
+        let data_off: u32 = 0x360;
+        let jd_cl_off: u32 = 0x3C0;
+        let skew1_cl_off: u32 = 0x3D0;
+        let gbg_cl_off: u32 = 0x3E0;
+        let data_cl_off: u32 = 0x3F0;
 
         // Class name "00000000" as UTF-16LE = 8 × [0x30, 0x00] = 16 bytes
         let class_utf16: Vec<u8> = "00000000"
@@ -3116,7 +3164,17 @@ mod tests {
         write_lf1(flat, ao(root_list_off), ccs_off);
 
         // CurrentControlSet NK: 1 subkey (Control)
-        write_nk(flat, ao(ccs_off), b"CurrentControlSet", 1, ccs_list_off, 0, 0, 0, 0);
+        write_nk(
+            flat,
+            ao(ccs_off),
+            b"CurrentControlSet",
+            1,
+            ccs_list_off,
+            0,
+            0,
+            0,
+            0,
+        );
         write_lf1(flat, ao(ccs_list_off), ctrl_off);
 
         // Control NK: 1 subkey (Lsa)
@@ -3125,14 +3183,28 @@ mod tests {
 
         // Lsa NK: 4 subkeys (JD, Skew1, GBG, Data)
         write_nk(flat, ao(lsa_off), b"Lsa", 4, lsa_list_off, 0, 0, 0, 0);
-        write_lf_n(flat, ao(lsa_list_off), &[jd_off, skew1_off, gbg_off, data_off]);
+        write_lf_n(
+            flat,
+            ao(lsa_list_off),
+            &[jd_off, skew1_off, gbg_off, data_off],
+        );
 
         // JD NK with class name pointing to jd_cl_off (≥ 0x3C0, no NK overlap)
         write_nk(flat, ao(jd_off), b"JD", 0, 0, 0, 0, class_len, jd_cl_off);
         flat[ao(jd_cl_off)..ao(jd_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
 
         // Skew1 NK
-        write_nk(flat, ao(skew1_off), b"Skew1", 0, 0, 0, 0, class_len, skew1_cl_off);
+        write_nk(
+            flat,
+            ao(skew1_off),
+            b"Skew1",
+            0,
+            0,
+            0,
+            0,
+            class_len,
+            skew1_cl_off,
+        );
         flat[ao(skew1_cl_off)..ao(skew1_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
 
         // GBG NK
@@ -3140,7 +3212,17 @@ mod tests {
         flat[ao(gbg_cl_off)..ao(gbg_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
 
         // Data NK
-        write_nk(flat, ao(data_off), b"Data", 0, 0, 0, 0, class_len, data_cl_off);
+        write_nk(
+            flat,
+            ao(data_off),
+            b"Data",
+            0,
+            0,
+            0,
+            0,
+            class_len,
+            data_cl_off,
+        );
         flat[ao(data_cl_off)..ao(data_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
     }
 
@@ -3174,20 +3256,40 @@ mod tests {
         write_lf1(flat, ao(doms_list_off), acct_off);
 
         // Account NK: 1 subkey (Users), 1 value (F)
-        write_nk(flat, ao(acct_off), b"Account", 1, users_off, 1, acct_vlist_off, 0, 0);
+        write_nk(
+            flat,
+            ao(acct_off),
+            b"Account",
+            1,
+            users_off,
+            1,
+            acct_vlist_off,
+            0,
+            0,
+        );
         // Correction: Account has Users as a subkey, but we need to put users_off in the list.
         // Use a lf list for Account's subkeys pointing to users_off:
         // Actually write_nk puts list_off at +0x20 (subkey list offset), so let's use acct_list:
         let _acct_list_off: u32 = 0x170 + 0x30; // reuse some space: 0x1A0 but let's use a fresh offset
-        // Recalculate to avoid overlap: set acct's subkey list at a distinct offset
-        // Note: write_nk already wrote acct_off + 0x20 = users_off (wrong, that's the NK cell!)
-        // Let me use a dedicated list cell for Account's subkeys.
+                                                // Recalculate to avoid overlap: set acct's subkey list at a distinct offset
+                                                // Note: write_nk already wrote acct_off + 0x20 = users_off (wrong, that's the NK cell!)
+                                                // Let me use a dedicated list cell for Account's subkeys.
 
         // Fix: The Account NK should point to a subkey list, not directly to users_off.
         // Let's put the account list at acct_list_off = 0x190:
         let acct_sk_list_off: u32 = 0x380;
         // Re-write Account NK with correct subkey list offset:
-        write_nk(flat, ao(acct_off), b"Account", 1, acct_sk_list_off, 1, acct_vlist_off, 0, 0);
+        write_nk(
+            flat,
+            ao(acct_off),
+            b"Account",
+            1,
+            acct_sk_list_off,
+            1,
+            acct_vlist_off,
+            0,
+            0,
+        );
         write_lf1(flat, ao(acct_sk_list_off), users_off);
 
         // Value list for Account: [acct_f_vk_off]
@@ -3206,7 +3308,7 @@ mod tests {
         // The result of decrypt_hashed_boot_key will be 16 bytes.
         let fd = ao(acct_f_data_off);
         flat[fd + 0x68] = 0x02; // revision = 2
-        // salt and encrypted are already 0 from vec initialization
+                                // salt and encrypted are already 0 from vec initialization
 
         // Users NK → RID
         write_nk(flat, ao(users_off), b"Users", 1, users_list_off, 0, 0, 0, 0);
@@ -3287,7 +3389,11 @@ mod tests {
         // entries are decoded — the synthetic hive approximates the structure.
         let result = walk_hashdump(&reader, sam_hive, sys_hive).unwrap();
         // Accept 0 or 1 entries: the important thing is the call didn't panic.
-        assert!(result.len() <= 1, "unexpected number of entries: {}", result.len());
+        assert!(
+            result.len() <= 1,
+            "unexpected number of entries: {}",
+            result.len()
+        );
     }
 
     /// read_value_data: val_count=1, VK found but data_len=0 → empty.
@@ -3325,7 +3431,8 @@ mod tests {
 
         // VK at offset vk_cell_off+4: name="F" (len=1), DataLength=0
         let vko = (vk_cell_off + 4) as usize;
-        flat_page[vko] = b'v'; flat_page[vko + 1] = b'k';
+        flat_page[vko] = b'v';
+        flat_page[vko + 1] = b'k';
         flat_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes()); // NameLength=1
         flat_page[vko + 0x08..vko + 0x0C].copy_from_slice(&0u32.to_le_bytes()); // DataLength=0
         flat_page[vko + 0x18] = b'F'; // Name="F"
@@ -3365,9 +3472,10 @@ mod tests {
         flat_page[vl_off..vl_off + 4].copy_from_slice(&vk_cell_off.to_le_bytes());
 
         let vko = (vk_cell_off + 4) as usize;
-        flat_page[vko] = b'v'; flat_page[vko + 1] = b'k';
+        flat_page[vko] = b'v';
+        flat_page[vko + 1] = b'k';
         flat_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes()); // NameLength=1
-        // DataLength with high bit set = inline data, low bits = actual length
+                                                                                // DataLength with high bit set = inline data, low bits = actual length
         let raw_len: u32 = 0x8000_0004; // inline, 4 bytes
         flat_page[vko + 0x08..vko + 0x0C].copy_from_slice(&raw_len.to_le_bytes());
         // Inline data stored at DataOffset field (0x0C)
@@ -3409,7 +3517,8 @@ mod tests {
         flat_page[vl_off..vl_off + 4].copy_from_slice(&vk_cell_off.to_le_bytes());
 
         let vko = (vk_cell_off + 4) as usize;
-        flat_page[vko] = b'v'; flat_page[vko + 1] = b'k';
+        flat_page[vko] = b'v';
+        flat_page[vko + 1] = b'k';
         flat_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes()); // NameLength=1
         flat_page[vko + 0x08..vko + 0x0C].copy_from_slice(&16u32.to_le_bytes()); // DataLength=16
         flat_page[vko + 0x18] = b'G'; // Name="G" (not "F")
@@ -3451,7 +3560,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = resolve_username_for_rid(&reader, flat_base, key_vaddr, 500);
-        assert_eq!(result, "RID-500", "zero subkey count → fallback 'RID-<rid>'");
+        assert_eq!(
+            result, "RID-500",
+            "zero subkey count → fallback 'RID-<rid>'"
+        );
     }
 
     /// find_subkey_by_name with a list whose signature is unrecognised returns 0.
@@ -3476,7 +3588,7 @@ mod tests {
         page[po + 0x20..po + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
         // Unknown list sig at list_off
         page[list_off..list_off + 2].copy_from_slice(&0xFFFFu16.to_le_bytes()); // unknown sig
-        // count = 1
+                                                                                // count = 1
         page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
 
         let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();

@@ -120,8 +120,7 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
         let port_addr = current.wrapping_sub(port_list_entry_off);
 
         // Read port name (_UNICODE_STRING at port_name_off)
-        let name = read_unicode_string(reader, port_addr + port_name_off)
-            .unwrap_or_default();
+        let name = read_unicode_string(reader, port_addr + port_name_off).unwrap_or_default();
 
         // Read owner PID
         let owner_pid = {
@@ -129,7 +128,9 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
             owner_ptr_bytes
                 .and_then(|b| {
                     let ptr = u64::from_le_bytes(b[..8].try_into().ok()?);
-                    if ptr == 0 { return None; }
+                    if ptr == 0 {
+                        return None;
+                    }
                     reader.read_bytes(ptr + pid_off, 8).ok().map(|pid_bytes| {
                         u64::from_le_bytes(pid_bytes[..8].try_into().expect("8")) as u32
                     })
@@ -139,7 +140,8 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
 
         // is_server_port: ConnectionPort field points back to self
         let is_server_port = {
-            reader.read_bytes(port_addr + connection_port_off, 8)
+            reader
+                .read_bytes(port_addr + connection_port_off, 8)
                 .ok()
                 .map(|b| {
                     let ptr = u64::from_le_bytes(b[..8].try_into().expect("8"));
@@ -149,7 +151,8 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
         };
 
         // Read connection count (u32)
-        let connection_count = reader.read_bytes(port_addr + connection_count_off, 4)
+        let connection_count = reader
+            .read_bytes(port_addr + connection_count_off, 4)
             .ok()
             .map(|b| u32::from_le_bytes(b[..4].try_into().expect("4")))
             .unwrap_or(0);
@@ -355,17 +358,18 @@ mod tests {
         //     +0x440: UniqueProcessId = 888
         //   name string @ 0xFFFF_8000_0012_3000 (NAME_VADDR): "Port1\0" in UTF-16LE
 
-        const LIST_VADDR:  u64 = 0xFFFF_8000_0012_0000;
-        const PORT_VADDR:  u64 = 0xFFFF_8000_0012_1000;
+        const LIST_VADDR: u64 = 0xFFFF_8000_0012_0000;
+        const PORT_VADDR: u64 = 0xFFFF_8000_0012_1000;
         const EPROC_VADDR: u64 = 0xFFFF_8000_0012_2000;
-        const NAME_VADDR:  u64 = 0xFFFF_8000_0012_3000;
-        const LIST_PADDR:  u64 = 0x0012_0000;
-        const PORT_PADDR:  u64 = 0x0012_1000;
+        const NAME_VADDR: u64 = 0xFFFF_8000_0012_3000;
+        const LIST_PADDR: u64 = 0x0012_0000;
+        const PORT_PADDR: u64 = 0x0012_1000;
         const EPROC_PADDR: u64 = 0x0012_2000;
-        const NAME_PADDR:  u64 = 0x0012_3000;
+        const NAME_PADDR: u64 = 0x0012_3000;
 
         let name_str = "Port1";
-        let name_utf16: Vec<u8> = name_str.encode_utf16()
+        let name_utf16: Vec<u8> = name_str
+            .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .collect();
         let name_len = name_utf16.len() as u16;

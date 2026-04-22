@@ -336,7 +336,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_container_escape(&reader).unwrap();
-        assert!(result.is_empty(), "init_nsproxy == 0 → init_mnt_ns = 0 → no findings");
+        assert!(
+            result.is_empty(),
+            "init_nsproxy == 0 → init_mnt_ns = 0 → no findings"
+        );
     }
 
     #[test]
@@ -415,9 +418,18 @@ mod tests {
     #[test]
     fn classify_container_escape_kthread_prefix_not_suspicious() {
         // Covers: kthread prefix in KERNEL_THREAD_COMMS
-        assert!(!classify_container_escape("kthread_worker", "namespace_mismatch"));
-        assert!(!classify_container_escape("ksoftirqd/0", "namespace_mismatch"));
-        assert!(!classify_container_escape("rcu_sched", "namespace_mismatch"));
+        assert!(!classify_container_escape(
+            "kthread_worker",
+            "namespace_mismatch"
+        ));
+        assert!(!classify_container_escape(
+            "ksoftirqd/0",
+            "namespace_mismatch"
+        ));
+        assert!(!classify_container_escape(
+            "rcu_sched",
+            "namespace_mismatch"
+        ));
     }
 
     #[test]

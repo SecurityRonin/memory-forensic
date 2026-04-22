@@ -349,7 +349,10 @@ mod tests {
 
         let result = walk_kernel_threads(&reader, &processes).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].start_fn_addr, start_fn, "start_fn_addr must be read from set_child_tid");
+        assert_eq!(
+            result[0].start_fn_addr, start_fn,
+            "start_fn_addr must be read from set_child_tid"
+        );
         assert!(!result[0].is_suspicious, "kernel-space fn addr → benign");
     }
 

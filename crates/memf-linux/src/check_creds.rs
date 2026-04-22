@@ -399,7 +399,10 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_check_creds(&reader).unwrap_or_default();
-        assert!(result.is_empty(), "single task with unique cred should not be flagged");
+        assert!(
+            result.is_empty(),
+            "single task with unique cred should not be flagged"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -456,7 +459,10 @@ mod tests {
 
         let result = walk_check_creds(&reader).unwrap();
         // Only one task → group.len() < 2 for every cred_addr → no suspicious entries.
-        assert!(result.is_empty(), "single task cannot share creds with another");
+        assert!(
+            result.is_empty(),
+            "single task cannot share creds with another"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -477,16 +483,16 @@ mod tests {
         //     uid=1000  (non-zero, so sharing is suspicious)
 
         let tasks_offset: u64 = 0x10;
-        let pid_offset:   u64 = 0x00;
-        let tgid_offset:  u64 = 0x04;
-        let comm_offset:  u64 = 0x20;
-        let cred_offset:  u64 = 0x60;
+        let pid_offset: u64 = 0x00;
+        let tgid_offset: u64 = 0x04;
+        let comm_offset: u64 = 0x20;
+        let cred_offset: u64 = 0x60;
         let uid_cred_off: u64 = 0x04;
 
         let init_vaddr: u64 = 0xFFFF_8800_0090_0000;
         let init_paddr: u64 = 0x0090_0000;
-        let t2_vaddr:   u64 = 0xFFFF_8800_0091_0000;
-        let t2_paddr:   u64 = 0x0091_0000;
+        let t2_vaddr: u64 = 0xFFFF_8800_0091_0000;
+        let t2_paddr: u64 = 0x0091_0000;
         let cred_vaddr: u64 = 0xFFFF_8800_0092_0000;
         let cred_paddr: u64 = 0x0092_0000;
 
@@ -501,8 +507,7 @@ mod tests {
             .copy_from_slice(&t2_list_node.to_le_bytes());
         init_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
             .copy_from_slice(&t2_list_node.to_le_bytes()); // prev
-        init_page[comm_offset as usize..comm_offset as usize + 5]
-            .copy_from_slice(b"evil1");
+        init_page[comm_offset as usize..comm_offset as usize + 5].copy_from_slice(b"evil1");
         init_page[cred_offset as usize..cred_offset as usize + 8]
             .copy_from_slice(&cred_vaddr.to_le_bytes());
 
@@ -517,8 +522,7 @@ mod tests {
             .copy_from_slice(&init_list_node.to_le_bytes()); // wraps back to init
         t2_page[tasks_offset as usize + 8..tasks_offset as usize + 16]
             .copy_from_slice(&init_list_node.to_le_bytes());
-        t2_page[comm_offset as usize..comm_offset as usize + 5]
-            .copy_from_slice(b"evil2");
+        t2_page[comm_offset as usize..comm_offset as usize + 5].copy_from_slice(b"evil2");
         t2_page[cred_offset as usize..cred_offset as usize + 8]
             .copy_from_slice(&cred_vaddr.to_le_bytes()); // SAME cred pointer
 

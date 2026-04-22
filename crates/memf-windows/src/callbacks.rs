@@ -28,9 +28,27 @@ pub fn walk_kernel_callbacks<P: PhysicalMemoryProvider>(
 ) -> Result<Vec<WinCallbackInfo>> {
     let mut results = Vec::new();
 
-    read_callback_array(reader, process_notify_vaddr, "CreateProcess", known_modules, &mut results)?;
-    read_callback_array(reader, thread_notify_vaddr, "CreateThread", known_modules, &mut results)?;
-    read_callback_array(reader, load_image_notify_vaddr, "LoadImage", known_modules, &mut results)?;
+    read_callback_array(
+        reader,
+        process_notify_vaddr,
+        "CreateProcess",
+        known_modules,
+        &mut results,
+    )?;
+    read_callback_array(
+        reader,
+        thread_notify_vaddr,
+        "CreateThread",
+        known_modules,
+        &mut results,
+    )?;
+    read_callback_array(
+        reader,
+        load_image_notify_vaddr,
+        "LoadImage",
+        known_modules,
+        &mut results,
+    )?;
 
     Ok(results)
 }
@@ -186,14 +204,20 @@ mod tests {
 
         assert_eq!(results.len(), 3);
 
-        let proc_cbs: Vec<_> = results.iter().filter(|c| c.callback_type == "CreateProcess").collect();
+        let proc_cbs: Vec<_> = results
+            .iter()
+            .filter(|c| c.callback_type == "CreateProcess")
+            .collect();
         assert_eq!(proc_cbs.len(), 2);
         assert_eq!(proc_cbs[0].address, ntoskrnl_base + 0x1000);
         assert_eq!(proc_cbs[0].owning_module.as_deref(), Some("ntoskrnl.exe"));
         assert_eq!(proc_cbs[1].address, av_driver_base + 0x500);
         assert_eq!(proc_cbs[1].owning_module.as_deref(), Some("avkrnl.sys"));
 
-        let thread_cbs: Vec<_> = results.iter().filter(|c| c.callback_type == "CreateThread").collect();
+        let thread_cbs: Vec<_> = results
+            .iter()
+            .filter(|c| c.callback_type == "CreateThread")
+            .collect();
         assert_eq!(thread_cbs.len(), 1);
         assert_eq!(thread_cbs[0].address, ntoskrnl_base + 0x2000);
     }

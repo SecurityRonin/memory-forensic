@@ -23,7 +23,10 @@ const MAX_SUBKEYS: usize = 4096;
 const MAX_VALUES: usize = 4096;
 const TYPED_URLS_PATH: &[&str] = &["Software", "Microsoft", "Internet Explorer", "TypedURLs"];
 const TYPED_URLS_TIME_PATH: &[&str] = &[
-    "Software", "Microsoft", "Internet Explorer", "TypedURLsTime",
+    "Software",
+    "Microsoft",
+    "Internet Explorer",
+    "TypedURLsTime",
 ];
 
 /// A URL typed directly into the IE/Edge address bar.
@@ -40,8 +43,13 @@ pub struct TypedUrlEntry {
 }
 
 const SUSPICIOUS_DOMAINS: &[&str] = &[
-    "pastebin.com", "paste.ee", "hastebin.com", "transfer.sh",
-    "file.io", "mega.nz", "anonfiles.com",
+    "pastebin.com",
+    "paste.ee",
+    "hastebin.com",
+    "transfer.sh",
+    "file.io",
+    "mega.nz",
+    "anonfiles.com",
 ];
 
 /// Return `true` when the URL matches a known suspicious domain or pattern.
@@ -160,7 +168,9 @@ fn find_subkey<P: PhysicalMemoryProvider>(
         0x666C | 0x686C => {
             for i in 0..count {
                 let off = 4 + i * 8;
-                if off + 4 > list_data.len() { break; }
+                if off + 4 > list_data.len() {
+                    break;
+                }
                 let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
@@ -179,7 +189,9 @@ fn find_subkey<P: PhysicalMemoryProvider>(
         0x696C => {
             for i in 0..count {
                 let off = 4 + i * 4;
-                if off + 4 > list_data.len() { break; }
+                if off + 4 > list_data.len() {
+                    break;
+                }
                 let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
@@ -198,11 +210,15 @@ fn find_subkey<P: PhysicalMemoryProvider>(
         0x6972 => {
             for i in 0..count {
                 let off = 4 + i * 4;
-                if off + 4 > list_data.len() { break; }
+                if off + 4 > list_data.len() {
+                    break;
+                }
                 let sub_list_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
                 let sub_data = read_cell_data(reader, sub_vaddr)?;
-                if sub_data.len() < 4 { continue; }
+                if sub_data.len() < 4 {
+                    continue;
+                }
                 let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
                 let sub_count = u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
                 let sub_count = sub_count.min(MAX_SUBKEYS);
@@ -213,8 +229,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 };
                 for j in 0..sub_count {
                     let soff = 4 + j * entry_size;
-                    if soff + 4 > sub_data.len() { break; }
-                    let child_cell = u32::from_le_bytes(sub_data[soff..soff + 4].try_into().unwrap());
+                    if soff + 4 > sub_data.len() {
+                        break;
+                    }
+                    let child_cell =
+                        u32::from_le_bytes(sub_data[soff..soff + 4].try_into().unwrap());
                     let child_vaddr = cell_address(hive_addr, child_cell);
                     if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                         if child_nk.len() >= NK_NAME_OFFSET {
@@ -317,10 +336,16 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                             let va = cell_address(hive_addr, cell_idx);
                             match read_cell_data(reader, va) {
                                 Ok(d) => cur = d,
-                                Err(_) => { ok = false; break; }
+                                Err(_) => {
+                                    ok = false;
+                                    break;
+                                }
                             }
                         }
-                        _ => { ok = false; break; }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
                     }
                 }
                 if ok {
@@ -349,8 +374,11 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                     let tc = tc.min(MAX_TYPED_URLS);
                     for i in 0..tc {
                         let off = i * 4;
-                        if off + 4 > tvl_data.len() { break; }
-                        let vk_cell = u32::from_le_bytes(tvl_data[off..off + 4].try_into().unwrap());
+                        if off + 4 > tvl_data.len() {
+                            break;
+                        }
+                        let vk_cell =
+                            u32::from_le_bytes(tvl_data[off..off + 4].try_into().unwrap());
                         let vk_vaddr = cell_address(hive_addr, vk_cell);
                         if let Ok(vk_data) = read_cell_data(reader, vk_vaddr) {
                             if vk_data.len() >= 2 {
@@ -359,12 +387,16 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                                     let vname = read_value_name(&vk_data);
                                     if vk_data.len() >= VK_DATA_OFFSET_OFFSET + 4 {
                                         let data_len = u32::from_le_bytes(
-                                            vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
-                                                .try_into().unwrap(),
+                                            vk_data
+                                                [VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+                                                .try_into()
+                                                .unwrap(),
                                         );
                                         let data_cell = u32::from_le_bytes(
-                                            vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
-                                                .try_into().unwrap(),
+                                            vk_data
+                                                [VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+                                                .try_into()
+                                                .unwrap(),
                                         );
                                         if data_len >= 8 {
                                             let dc_vaddr = cell_address(hive_addr, data_cell);
@@ -391,34 +423,48 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
     let count = value_count.min(MAX_TYPED_URLS);
     for i in 0..count {
         let off = i * 4;
-        if off + 4 > vlist_data.len() { break; }
+        if off + 4 > vlist_data.len() {
+            break;
+        }
         let vk_cell = u32::from_le_bytes(vlist_data[off..off + 4].try_into().unwrap());
         let vk_vaddr = cell_address(hive_addr, vk_cell);
         let vk_data = match read_cell_data(reader, vk_vaddr) {
             Ok(d) => d,
             Err(_) => continue,
         };
-        if vk_data.len() < 2 { continue; }
+        if vk_data.len() < 2 {
+            continue;
+        }
         let vsig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
-        if vsig != VK_SIGNATURE { continue; }
+        if vsig != VK_SIGNATURE {
+            continue;
+        }
         let value_name = read_value_name(&vk_data);
-        if vk_data.len() < VK_DATA_OFFSET_OFFSET + 4 { continue; }
+        if vk_data.len() < VK_DATA_OFFSET_OFFSET + 4 {
+            continue;
+        }
         let data_len_raw = u32::from_le_bytes(
             vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
-                .try_into().unwrap(),
+                .try_into()
+                .unwrap(),
         );
         let data_len = (data_len_raw & 0x7FFF_FFFF) as usize;
-        if data_len < 2 { continue; }
+        if data_len < 2 {
+            continue;
+        }
         let data_cell = u32::from_le_bytes(
             vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
-                .try_into().unwrap(),
+                .try_into()
+                .unwrap(),
         );
         let dc_vaddr = cell_address(hive_addr, data_cell);
         let dc_data = match read_cell_data(reader, dc_vaddr) {
             Ok(d) => d,
             Err(_) => continue,
         };
-        if dc_data.len() < 2 { continue; }
+        if dc_data.len() < 2 {
+            continue;
+        }
         let str_len = data_len.min(dc_data.len()) & !1;
         let utf16_units: Vec<u16> = dc_data[..str_len]
             .chunks_exact(2)
@@ -426,7 +472,9 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
             .take_while(|&c| c != 0)
             .collect();
         let url = String::from_utf16_lossy(&utf16_units);
-        if url.is_empty() { continue; }
+        if url.is_empty() {
+            continue;
+        }
         let timestamp = time_map.get(&value_name).copied().unwrap_or(0);
         let is_suspicious = classify_typed_url(&url);
         results.push(TypedUrlEntry {
@@ -772,8 +820,8 @@ mod tests {
         cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
         cell_page[4] = 0x6E; // 'n'
         cell_page[5] = 0x6B; // 'k'
-        // stable_subkey_count at offset 4+0x14 = 0x18 in cell_page
-        // stays 0
+                             // stable_subkey_count at offset 4+0x14 = 0x18 in cell_page
+                             // stays 0
         builder = builder.write_phys(cell_paddr, &cell_page);
 
         let (cr3, mem) = builder.build();
@@ -808,8 +856,9 @@ mod tests {
         // Root nk cell at offset 0 in cell page
         let raw_size: i32 = -256;
         cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
-        cell_page[4] = 0x6E; cell_page[5] = 0x6B; // nk sig
-        // stable_subkey_count=1 at nk_data[0x14] = cell_page[4+0x14]
+        cell_page[4] = 0x6E;
+        cell_page[5] = 0x6B; // nk sig
+                             // stable_subkey_count=1 at nk_data[0x14] = cell_page[4+0x14]
         cell_page[4 + NK_STABLE_SUBKEY_COUNT_OFFSET] = 1;
         // subkeys_list_cell=0x100 at nk_data[0x1C] = cell_page[4+0x1C]
         cell_page[4 + NK_STABLE_SUBKEYS_LIST_OFFSET..4 + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
@@ -823,7 +872,8 @@ mod tests {
         let list_size: i32 = -64;
         list_page[0..4].copy_from_slice(&list_size.to_le_bytes());
         // unknown sig = 0xFFFF
-        list_page[4] = 0xFF; list_page[5] = 0xFF;
+        list_page[4] = 0xFF;
+        list_page[5] = 0xFF;
         builder = builder.write_phys(list_paddr, &list_page[..]);
 
         let (cr3, mem) = builder.build();
@@ -908,8 +958,9 @@ mod tests {
         let mut cell_page = vec![0u8; 0x1000];
         let raw_size: i32 = -128;
         cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
-        cell_page[4] = 0x6E; cell_page[5] = 0x6B; // nk
-        // subkey_count stays 0
+        cell_page[4] = 0x6E;
+        cell_page[5] = 0x6B; // nk
+                             // subkey_count stays 0
         builder = builder.write_phys(cell_paddr, &cell_page);
 
         let (cr3, mem) = builder.build();
@@ -944,26 +995,30 @@ mod tests {
         // Root nk at offset 0: sig=nk, subkey_count=1, list_cell=0x200
         let rs: i32 = -256;
         pg[0..4].copy_from_slice(&rs.to_le_bytes());
-        pg[4] = 0x6E; pg[5] = 0x6B;
+        pg[4] = 0x6E;
+        pg[5] = 0x6B;
         pg[4 + NK_STABLE_SUBKEY_COUNT_OFFSET] = 1;
         pg[4 + NK_STABLE_SUBKEYS_LIST_OFFSET..4 + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
             .copy_from_slice(&0x200u32.to_le_bytes());
 
         // ri list at 0x200: sig=ri(0x6972), count=1, sub_list_cell=0x300
         pg[0x200..0x204].copy_from_slice(&(-64i32).to_le_bytes());
-        pg[0x204] = 0x72; pg[0x205] = 0x69; // 'ri'
+        pg[0x204] = 0x72;
+        pg[0x205] = 0x69; // 'ri'
         pg[0x206..0x208].copy_from_slice(&1u16.to_le_bytes());
         pg[0x208..0x20C].copy_from_slice(&0x300u32.to_le_bytes());
 
         // sub_list at 0x300: sig=lf(0x666C), count=1, child_cell=0x400
         pg[0x300..0x304].copy_from_slice(&(-64i32).to_le_bytes());
-        pg[0x304] = 0x6C; pg[0x305] = 0x66; // 'lf'
+        pg[0x304] = 0x6C;
+        pg[0x305] = 0x66; // 'lf'
         pg[0x306..0x308].copy_from_slice(&1u16.to_le_bytes());
         pg[0x308..0x30C].copy_from_slice(&0x400u32.to_le_bytes());
 
         // child nk at 0x400: bad sig = 0xDEAD
         pg[0x400..0x404].copy_from_slice(&(-128i32).to_le_bytes());
-        pg[0x404] = 0xAD; pg[0x405] = 0xDE; // bad sig
+        pg[0x404] = 0xAD;
+        pg[0x405] = 0xDE; // bad sig
 
         builder = builder.write_phys(base, &pg[..0x1000]);
         // second page for 0x400 area
@@ -1000,20 +1055,23 @@ mod tests {
 
         // Root nk: sig=nk, subkey_count=1, list_cell=0x200
         pg[0..4].copy_from_slice(&(-256i32).to_le_bytes());
-        pg[4] = 0x6E; pg[5] = 0x6B;
+        pg[4] = 0x6E;
+        pg[5] = 0x6B;
         pg[4 + NK_STABLE_SUBKEY_COUNT_OFFSET] = 1;
         pg[4 + NK_STABLE_SUBKEYS_LIST_OFFSET..4 + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
             .copy_from_slice(&0x200u32.to_le_bytes());
 
         // li list at 0x200: sig=li(0x696C), count=1, child_cell=0x300
         pg[0x200..0x204].copy_from_slice(&(-64i32).to_le_bytes());
-        pg[0x204] = 0x6C; pg[0x205] = 0x69; // 'li'
+        pg[0x204] = 0x6C;
+        pg[0x205] = 0x69; // 'li'
         pg[0x206..0x208].copy_from_slice(&1u16.to_le_bytes());
         pg[0x208..0x20C].copy_from_slice(&0x300u32.to_le_bytes());
 
         // child nk at 0x300: sig=nk, name="WRONG"
         pg[0x300..0x304].copy_from_slice(&(-128i32).to_le_bytes());
-        pg[0x304] = 0x6E; pg[0x305] = 0x6B; // nk
+        pg[0x304] = 0x6E;
+        pg[0x305] = 0x6B; // nk
         let name = b"WRONG";
         pg[0x304 + NK_NAME_LENGTH_OFFSET] = name.len() as u8;
         pg[0x304 + NK_NAME_LENGTH_OFFSET + 1] = 0;
@@ -1134,7 +1192,8 @@ mod tests {
 
         // Root nk: sig=nk, subkey_count=1, list_cell=0x200
         pg[0..4].copy_from_slice(&(-256i32).to_le_bytes());
-        pg[4] = 0x6E; pg[5] = 0x6B;
+        pg[4] = 0x6E;
+        pg[5] = 0x6B;
         pg[4 + NK_STABLE_SUBKEY_COUNT_OFFSET] = 1;
         pg[4 + NK_STABLE_SUBKEYS_LIST_OFFSET..4 + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
             .copy_from_slice(&0x200u32.to_le_bytes());
@@ -1161,9 +1220,9 @@ mod tests {
         child_name: &str,
     ) -> (
         ObjectReader<memf_core::test_builders::SyntheticPhysMem>,
-        u64, // hive_vaddr
+        u64,     // hive_vaddr
         Vec<u8>, // root nk data
-        u32, // child_cell index
+        u32,     // child_cell index
     ) {
         let isf = make_typed_url_isf();
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -1190,7 +1249,8 @@ mod tests {
         let entry_size: usize = if sig == 0x696C { 4 } else { 8 };
         pg[0x100..0x104].copy_from_slice(&(-64i32).to_le_bytes());
         let sig_bytes = sig.to_le_bytes();
-        pg[0x104] = sig_bytes[0]; pg[0x105] = sig_bytes[1];
+        pg[0x104] = sig_bytes[0];
+        pg[0x105] = sig_bytes[1];
         pg[0x106..0x108].copy_from_slice(&1u16.to_le_bytes());
         pg[0x108..0x10C].copy_from_slice(&child_cell.to_le_bytes());
         if entry_size == 8 {
@@ -1201,7 +1261,8 @@ mod tests {
         let nk_name = child_name.as_bytes();
         let nk_size: i32 = -((0x4C + nk_name.len() + 4 + 7) as i32 & !7);
         pg[0x300..0x304].copy_from_slice(&nk_size.to_le_bytes());
-        pg[0x304] = 0x6E; pg[0x305] = 0x6B; // nk sig
+        pg[0x304] = 0x6E;
+        pg[0x305] = 0x6B; // nk sig
         pg[0x304 + NK_NAME_LENGTH_OFFSET] = nk_name.len() as u8;
         for (i, &b) in nk_name.iter().enumerate() {
             pg[0x304 + NK_NAME_OFFSET + i] = b;
@@ -1213,7 +1274,8 @@ mod tests {
         // Build root nk data (for passing to find_subkey)
         // subkey_count=1, list_cell=0x100
         let mut root_nk = vec![0u8; NK_NAME_OFFSET + 4];
-        root_nk[0] = 0x6E; root_nk[1] = 0x6B; // nk sig
+        root_nk[0] = 0x6E;
+        root_nk[1] = 0x6B; // nk sig
         root_nk[NK_STABLE_SUBKEY_COUNT_OFFSET] = 1;
         root_nk[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
             .copy_from_slice(&0x100u32.to_le_bytes());
@@ -1286,28 +1348,38 @@ mod tests {
 
         let mut pg = vec![0u8; 0x8000];
 
-        let write_nk = |pg: &mut Vec<u8>, off: usize, sub_count: u32, list_cell: u32, val_count: u32, val_list: u32, name: &[u8]| {
-            pg[off..off+4].copy_from_slice(&(-256i32).to_le_bytes());
-            pg[off+4] = 0x6E; pg[off+5] = 0x6B;
-            pg[off+4+NK_STABLE_SUBKEY_COUNT_OFFSET..off+4+NK_STABLE_SUBKEY_COUNT_OFFSET+4]
+        let write_nk = |pg: &mut Vec<u8>,
+                        off: usize,
+                        sub_count: u32,
+                        list_cell: u32,
+                        val_count: u32,
+                        val_list: u32,
+                        name: &[u8]| {
+            pg[off..off + 4].copy_from_slice(&(-256i32).to_le_bytes());
+            pg[off + 4] = 0x6E;
+            pg[off + 5] = 0x6B;
+            pg[off + 4 + NK_STABLE_SUBKEY_COUNT_OFFSET
+                ..off + 4 + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
                 .copy_from_slice(&sub_count.to_le_bytes());
-            pg[off+4+NK_STABLE_SUBKEYS_LIST_OFFSET..off+4+NK_STABLE_SUBKEYS_LIST_OFFSET+4]
+            pg[off + 4 + NK_STABLE_SUBKEYS_LIST_OFFSET
+                ..off + 4 + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
                 .copy_from_slice(&list_cell.to_le_bytes());
-            pg[off+4+NK_VALUE_COUNT_OFFSET..off+4+NK_VALUE_COUNT_OFFSET+4]
+            pg[off + 4 + NK_VALUE_COUNT_OFFSET..off + 4 + NK_VALUE_COUNT_OFFSET + 4]
                 .copy_from_slice(&val_count.to_le_bytes());
-            pg[off+4+NK_VALUES_LIST_OFFSET..off+4+NK_VALUES_LIST_OFFSET+4]
+            pg[off + 4 + NK_VALUES_LIST_OFFSET..off + 4 + NK_VALUES_LIST_OFFSET + 4]
                 .copy_from_slice(&val_list.to_le_bytes());
-            pg[off+4+NK_NAME_LENGTH_OFFSET] = name.len() as u8;
+            pg[off + 4 + NK_NAME_LENGTH_OFFSET] = name.len() as u8;
             for (i, &b) in name.iter().enumerate() {
-                pg[off+4+NK_NAME_OFFSET+i] = b;
+                pg[off + 4 + NK_NAME_OFFSET + i] = b;
             }
         };
 
         let write_lf = |pg: &mut Vec<u8>, off: usize, child_cell: u32| {
-            pg[off..off+4].copy_from_slice(&(-64i32).to_le_bytes());
-            pg[off+4] = 0x6C; pg[off+5] = 0x66; // lf
-            pg[off+6..off+8].copy_from_slice(&1u16.to_le_bytes());
-            pg[off+8..off+12].copy_from_slice(&child_cell.to_le_bytes());
+            pg[off..off + 4].copy_from_slice(&(-64i32).to_le_bytes());
+            pg[off + 4] = 0x6C;
+            pg[off + 5] = 0x66; // lf
+            pg[off + 6..off + 8].copy_from_slice(&1u16.to_le_bytes());
+            pg[off + 8..off + 12].copy_from_slice(&child_cell.to_le_bytes());
         };
 
         // root nk: sub=1, list=0x200, val=0, name="\0"
@@ -1328,21 +1400,21 @@ mod tests {
 
         // vk "url1" at 0xF00: name_len=4, data_len=50, data_cell=0x1000
         pg[0xF00..0xF04].copy_from_slice(&(-128i32).to_le_bytes());
-        pg[0xF04] = 0x76; pg[0xF05] = 0x6B; // vk sig
-        pg[0xF04+VK_NAME_LENGTH_OFFSET] = 4; // len("url1")=4
-        pg[0xF04+VK_DATA_LENGTH_OFFSET..0xF04+VK_DATA_LENGTH_OFFSET+4]
+        pg[0xF04] = 0x76;
+        pg[0xF05] = 0x6B; // vk sig
+        pg[0xF04 + VK_NAME_LENGTH_OFFSET] = 4; // len("url1")=4
+        pg[0xF04 + VK_DATA_LENGTH_OFFSET..0xF04 + VK_DATA_LENGTH_OFFSET + 4]
             .copy_from_slice(&50u32.to_le_bytes());
-        pg[0xF04+VK_DATA_OFFSET_OFFSET..0xF04+VK_DATA_OFFSET_OFFSET+4]
+        pg[0xF04 + VK_DATA_OFFSET_OFFSET..0xF04 + VK_DATA_OFFSET_OFFSET + 4]
             .copy_from_slice(&0x1000u32.to_le_bytes());
-        pg[0xF04+VK_NAME_OFFSET] = b'u';
-        pg[0xF04+VK_NAME_OFFSET+1] = b'r';
-        pg[0xF04+VK_NAME_OFFSET+2] = b'l';
-        pg[0xF04+VK_NAME_OFFSET+3] = b'1';
+        pg[0xF04 + VK_NAME_OFFSET] = b'u';
+        pg[0xF04 + VK_NAME_OFFSET + 1] = b'r';
+        pg[0xF04 + VK_NAME_OFFSET + 2] = b'l';
+        pg[0xF04 + VK_NAME_OFFSET + 3] = b'1';
 
         // data cell at 0x1000: size header + UTF-16LE "https://pastebin.com/abc\0"
         let url_str = "https://pastebin.com/abc";
-        let url_utf16: Vec<u8> = url_str.encode_utf16()
-            .flat_map(u16::to_le_bytes).collect();
+        let url_utf16: Vec<u8> = url_str.encode_utf16().flat_map(u16::to_le_bytes).collect();
         pg[0x1000..0x1004].copy_from_slice(&(-128i32).to_le_bytes());
         let data_end = 0x1004 + url_utf16.len();
         pg[0x1004..data_end].copy_from_slice(&url_utf16);
@@ -1351,7 +1423,10 @@ mod tests {
         for chunk_i in 0..8usize {
             let src_start = chunk_i * 0x1000;
             let src_end = src_start + 0x1000;
-            builder = builder.write_phys(hbin_paddr + chunk_i as u64 * 0x1000, &pg[src_start..src_end]);
+            builder = builder.write_phys(
+                hbin_paddr + chunk_i as u64 * 0x1000,
+                &pg[src_start..src_end],
+            );
         }
 
         let (cr3, mem) = builder.build();
@@ -1362,7 +1437,10 @@ mod tests {
         assert_eq!(results.len(), 1, "should find one URL");
         assert_eq!(results[0].url, "https://pastebin.com/abc");
         assert_eq!(results[0].username, "testuser");
-        assert!(results[0].is_suspicious, "pastebin.com should be suspicious");
+        assert!(
+            results[0].is_suspicious,
+            "pastebin.com should be suspicious"
+        );
     }
 
     #[test]
@@ -1409,44 +1487,56 @@ mod tests {
 
         let mut pg = vec![0u8; 0x10000];
 
-        let write_nk = |pg: &mut Vec<u8>, off: usize, sub_count: u32, list_cell: u32, val_count: u32, val_list: u32, name: &[u8]| {
-            pg[off..off+4].copy_from_slice(&(-256i32).to_le_bytes());
-            pg[off+4] = 0x6E; pg[off+5] = 0x6B;
-            pg[off+4+NK_STABLE_SUBKEY_COUNT_OFFSET..off+4+NK_STABLE_SUBKEY_COUNT_OFFSET+4]
+        let write_nk = |pg: &mut Vec<u8>,
+                        off: usize,
+                        sub_count: u32,
+                        list_cell: u32,
+                        val_count: u32,
+                        val_list: u32,
+                        name: &[u8]| {
+            pg[off..off + 4].copy_from_slice(&(-256i32).to_le_bytes());
+            pg[off + 4] = 0x6E;
+            pg[off + 5] = 0x6B;
+            pg[off + 4 + NK_STABLE_SUBKEY_COUNT_OFFSET
+                ..off + 4 + NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
                 .copy_from_slice(&sub_count.to_le_bytes());
-            pg[off+4+NK_STABLE_SUBKEYS_LIST_OFFSET..off+4+NK_STABLE_SUBKEYS_LIST_OFFSET+4]
+            pg[off + 4 + NK_STABLE_SUBKEYS_LIST_OFFSET
+                ..off + 4 + NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
                 .copy_from_slice(&list_cell.to_le_bytes());
-            pg[off+4+NK_VALUE_COUNT_OFFSET..off+4+NK_VALUE_COUNT_OFFSET+4]
+            pg[off + 4 + NK_VALUE_COUNT_OFFSET..off + 4 + NK_VALUE_COUNT_OFFSET + 4]
                 .copy_from_slice(&val_count.to_le_bytes());
-            pg[off+4+NK_VALUES_LIST_OFFSET..off+4+NK_VALUES_LIST_OFFSET+4]
+            pg[off + 4 + NK_VALUES_LIST_OFFSET..off + 4 + NK_VALUES_LIST_OFFSET + 4]
                 .copy_from_slice(&val_list.to_le_bytes());
-            pg[off+4+NK_NAME_LENGTH_OFFSET] = name.len() as u8;
+            pg[off + 4 + NK_NAME_LENGTH_OFFSET] = name.len() as u8;
             for (i, &b) in name.iter().enumerate() {
-                pg[off+4+NK_NAME_OFFSET+i] = b;
+                pg[off + 4 + NK_NAME_OFFSET + i] = b;
             }
         };
 
         let write_lf_n = |pg: &mut Vec<u8>, off: usize, children: &[u32]| {
-            pg[off..off+4].copy_from_slice(&(-128i32).to_le_bytes());
-            pg[off+4] = 0x6C; pg[off+5] = 0x66; // lf
-            pg[off+6..off+8].copy_from_slice(&(children.len() as u16).to_le_bytes());
+            pg[off..off + 4].copy_from_slice(&(-128i32).to_le_bytes());
+            pg[off + 4] = 0x6C;
+            pg[off + 5] = 0x66; // lf
+            pg[off + 6..off + 8].copy_from_slice(&(children.len() as u16).to_le_bytes());
             for (i, &c) in children.iter().enumerate() {
-                pg[off+8+i*8..off+8+i*8+4].copy_from_slice(&c.to_le_bytes());
+                pg[off + 8 + i * 8..off + 8 + i * 8 + 4].copy_from_slice(&c.to_le_bytes());
             }
         };
 
-        let write_vk = |pg: &mut Vec<u8>, off: usize, name: &[u8], data_len: u32, data_cell: u32| {
-            pg[off..off+4].copy_from_slice(&(-128i32).to_le_bytes());
-            pg[off+4] = 0x76; pg[off+5] = 0x6B; // vk
-            pg[off+4+VK_NAME_LENGTH_OFFSET] = name.len() as u8;
-            pg[off+4+VK_DATA_LENGTH_OFFSET..off+4+VK_DATA_LENGTH_OFFSET+4]
-                .copy_from_slice(&data_len.to_le_bytes());
-            pg[off+4+VK_DATA_OFFSET_OFFSET..off+4+VK_DATA_OFFSET_OFFSET+4]
-                .copy_from_slice(&data_cell.to_le_bytes());
-            for (i, &b) in name.iter().enumerate() {
-                pg[off+4+VK_NAME_OFFSET+i] = b;
-            }
-        };
+        let write_vk =
+            |pg: &mut Vec<u8>, off: usize, name: &[u8], data_len: u32, data_cell: u32| {
+                pg[off..off + 4].copy_from_slice(&(-128i32).to_le_bytes());
+                pg[off + 4] = 0x76;
+                pg[off + 5] = 0x6B; // vk
+                pg[off + 4 + VK_NAME_LENGTH_OFFSET] = name.len() as u8;
+                pg[off + 4 + VK_DATA_LENGTH_OFFSET..off + 4 + VK_DATA_LENGTH_OFFSET + 4]
+                    .copy_from_slice(&data_len.to_le_bytes());
+                pg[off + 4 + VK_DATA_OFFSET_OFFSET..off + 4 + VK_DATA_OFFSET_OFFSET + 4]
+                    .copy_from_slice(&data_cell.to_le_bytes());
+                for (i, &b) in name.iter().enumerate() {
+                    pg[off + 4 + VK_NAME_OFFSET + i] = b;
+                }
+            };
 
         // ROOT nk at 0x010
         write_nk(&mut pg, 0x010, 1, 0x100, 0, 0, b"root");
@@ -1485,7 +1575,7 @@ mod tests {
         let url_str = "https://mega.nz/x";
         let url_utf16: Vec<u8> = url_str.encode_utf16().flat_map(u16::to_le_bytes).collect();
         pg[0xE00..0xE04].copy_from_slice(&(-64i32).to_le_bytes());
-        pg[0xE04..0xE04+url_utf16.len()].copy_from_slice(&url_utf16);
+        pg[0xE04..0xE04 + url_utf16.len()].copy_from_slice(&url_utf16);
 
         // FILETIME data at 0xF00: 132_000_000_000u64
         let ts: u64 = 132_000_000_000;
@@ -1502,7 +1592,7 @@ mod tests {
         // Write HBIN pages
         for i in 0..16usize {
             let src = i * 0x1000;
-            builder = builder.write_phys(hbin_paddr + i as u64 * 0x1000, &pg[src..src+0x1000]);
+            builder = builder.write_phys(hbin_paddr + i as u64 * 0x1000, &pg[src..src + 0x1000]);
         }
 
         let (cr3, mem) = builder.build();
@@ -1513,7 +1603,10 @@ mod tests {
         assert_eq!(results.len(), 1, "should find the URL");
         assert_eq!(results[0].url, "https://mega.nz/x");
         assert!(results[0].is_suspicious, "mega.nz is suspicious");
-        assert_eq!(results[0].timestamp, ts, "timestamp should be read from TypedURLsTime");
+        assert_eq!(
+            results[0].timestamp, ts,
+            "timestamp should be read from TypedURLsTime"
+        );
     }
 
     #[test]
@@ -1526,7 +1619,11 @@ mod tests {
         let hive_paddr: u64 = 0x009C_0000;
         let mut builder = PageTableBuilder::new();
         for i in 0..4u64 {
-            builder = builder.map_4k(hive_vaddr + i*0x1000, hive_paddr + i*0x1000, flags::WRITABLE);
+            builder = builder.map_4k(
+                hive_vaddr + i * 0x1000,
+                hive_paddr + i * 0x1000,
+                flags::WRITABLE,
+            );
         }
         let mut hive_page = vec![0u8; 0x1000];
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
@@ -1536,7 +1633,8 @@ mod tests {
         let mut cell_page = vec![0u8; 0x1000];
         let raw_size: i32 = -64;
         cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
-        cell_page[4] = 0xDE; cell_page[5] = 0xAD; // wrong sig
+        cell_page[4] = 0xDE;
+        cell_page[5] = 0xAD; // wrong sig
         builder = builder.write_phys(cell_paddr, &cell_page);
 
         let (cr3, mem) = builder.build();

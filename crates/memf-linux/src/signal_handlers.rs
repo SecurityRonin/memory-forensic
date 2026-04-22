@@ -273,11 +273,11 @@ mod tests {
     #[test]
     fn signal_name_all_known() {
         // Covers lines 46-57 (all match arms in signal_name)
-        assert_eq!(signal_name(1),  "SIGHUP");
-        assert_eq!(signal_name(2),  "SIGINT");
-        assert_eq!(signal_name(3),  "SIGQUIT");
-        assert_eq!(signal_name(6),  "SIGABRT");
-        assert_eq!(signal_name(9),  "SIGKILL");
+        assert_eq!(signal_name(1), "SIGHUP");
+        assert_eq!(signal_name(2), "SIGINT");
+        assert_eq!(signal_name(3), "SIGQUIT");
+        assert_eq!(signal_name(6), "SIGABRT");
+        assert_eq!(signal_name(9), "SIGKILL");
         assert_eq!(signal_name(10), "SIGUSR1");
         assert_eq!(signal_name(11), "SIGSEGV");
         assert_eq!(signal_name(12), "SIGUSR2");
@@ -293,7 +293,10 @@ mod tests {
         // Covers line 71 (custom address branch in handler_type)
         let addr: u64 = 0xFFFF_8000_DEAD_BEEF;
         let result = handler_type(addr);
-        assert!(result.starts_with("0x"), "custom handler must be hex-formatted");
+        assert!(
+            result.starts_with("0x"),
+            "custom handler must be hex-formatted"
+        );
         assert_eq!(result, format!("0x{:016x}", addr));
     }
 
@@ -399,7 +402,10 @@ mod tests {
         let reader = make_reader(&isf, ptb);
 
         let result = walk_signal_handlers(&reader).unwrap();
-        assert!(result.is_empty(), "sighand == 0 → task skipped, no suspicious entries");
+        assert!(
+            result.is_empty(),
+            "sighand == 0 → task skipped, no suspicious entries"
+        );
     }
 
     #[test]

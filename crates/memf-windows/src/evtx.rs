@@ -445,7 +445,10 @@ mod tests {
 
         let result = scan_evtx_chunks(&reader, &[(CHUNK_VADDR, CHUNK_SIZE)]).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].record_count, 0, "loop should break on small record_size");
+        assert_eq!(
+            result[0].record_count, 0,
+            "loop should break on small record_size"
+        );
     }
 
     /// Region too small for even one chunk (< CHUNK_SIZE) produces no results.
@@ -453,8 +456,7 @@ mod tests {
     fn scan_evtx_region_too_small() {
         let reader = build_empty_reader();
         // Region length = CHUNK_SIZE - 1 → while condition `addr + CHUNK_SIZE <= region_end` is false.
-        let result =
-            scan_evtx_chunks(&reader, &[(0xFFFF_8000_0000_0000, CHUNK_SIZE - 1)]).unwrap();
+        let result = scan_evtx_chunks(&reader, &[(0xFFFF_8000_0000_0000, CHUNK_SIZE - 1)]).unwrap();
         assert!(result.is_empty());
     }
 
