@@ -116,17 +116,26 @@ pub enum Error {
 
     /// A required kernel symbol was not found in the ISF.
     #[error("kernel symbol not found: {name}")]
-    MissingKernelSymbol { name: String },
+    MissingKernelSymbol {
+        /// The symbol name that was not found.
+        name: String,
+    },
 
     /// A required struct field was not found in the ISF.
     #[error("ISF missing field: {struct_name}.{field_name}")]
-    MissingField { struct_name: String, field_name: String },
+    MissingField {
+        /// The struct type name (e.g. `"_EPROCESS"`).
+        struct_name: String,
+        /// The field name that was not found.
+        field_name: String,
+    },
 
     /// A walker-specific failure with context.
     #[error("walker '{walker}' failed: {reason}")]
     WalkFailed {
         /// Name of the walker; must be a `'static` string literal.
         walker: &'static str,
+        /// Human-readable description of the failure.
         reason: String,
     },
 
@@ -135,6 +144,7 @@ pub enum Error {
     ListWalkFailed {
         /// Name of the walker; must be a `'static` string literal.
         walker: &'static str,
+        /// Human-readable description of the failure.
         reason: String,
     },
 }
