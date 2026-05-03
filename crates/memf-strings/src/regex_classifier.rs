@@ -29,6 +29,27 @@ fn patterns() -> &'static [PatternEntry] {
                 confidence: 0.95,
             },
             PatternEntry {
+                // IPv6: full 8-group, compressed (::), loopback (::1), etc.
+                // Covers RFC 5952 canonical forms without interface ID suffixes.
+                regex: Regex::new(
+                    concat!(
+                        r"^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$",
+                        r"|^(?:[0-9a-fA-F]{1,4}:){1,7}:$",
+                        r"|^::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$",
+                        r"|^::$",
+                        r"|^(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}$",
+                        r"|^(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}$",
+                        r"|^(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}$",
+                        r"|^(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}$",
+                        r"|^(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}$",
+                        r"|^[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}$",
+                    ),
+                )
+                .unwrap(),
+                category: StringCategory::IpV6,
+                confidence: 0.95,
+            },
+            PatternEntry {
                 regex: Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").unwrap(),
                 category: StringCategory::Email,
                 confidence: 0.90,
@@ -253,7 +274,7 @@ mod tests {
     #[test]
     fn classifies_ipv6_mixed_notation() {
         // Mixed IPv4/IPv6 compressed form
-        let r = classify("fe80::1%eth0");
+        let _r = classify("fe80::1%eth0");
         // This may or may not match depending on whether we include interface IDs;
         // at minimum fe80::1 without the interface suffix must match.
         let r2 = classify("fe80::1");
