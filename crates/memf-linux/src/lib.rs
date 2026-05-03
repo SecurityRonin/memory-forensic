@@ -98,6 +98,8 @@ pub enum Error {
     Symbol(#[from] memf_symbols::Error),
 
     /// Walker-specific error.
+    ///
+    /// Prefer [`WalkFailed`] for new code.
     #[error("walker error: {0}")]
     Walker(String),
 
@@ -111,11 +113,19 @@ pub enum Error {
 
     /// A walker-specific failure with context.
     #[error("walker '{walker}' failed: {reason}")]
-    WalkFailed { walker: &'static str, reason: String },
+    WalkFailed {
+        /// Name of the walker; must be a `'static` string literal.
+        walker: &'static str,
+        reason: String,
+    },
 
     /// A list walk failure with context.
     #[error("list walk failed in walker '{walker}': {reason}")]
-    ListWalkFailed { walker: &'static str, reason: String },
+    ListWalkFailed {
+        /// Name of the walker; must be a `'static` string literal.
+        walker: &'static str,
+        reason: String,
+    },
 }
 
 /// A Result alias for memf-linux.
@@ -185,5 +195,16 @@ mod tests {
             reason: "list corrupted".to_owned(),
         };
         assert!(e.to_string().contains("walk_processes"));
+        assert!(e.to_string().contains("list corrupted"));
+    }
+
+    #[test]
+    fn error_list_walk_failed_contains_walker_and_reason() {
+        let e = Error::ListWalkFailed {
+            walker: "walk_processes",
+            reason: "cycle detected".to_owned(),
+        };
+        assert!(e.to_string().contains("walk_processes"));
+        assert!(e.to_string().contains("cycle detected"));
     }
 }
