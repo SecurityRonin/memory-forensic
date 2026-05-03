@@ -84,6 +84,8 @@ fn read_core_layout<P: PhysicalMemoryProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::make_reader;
+    use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
@@ -102,16 +104,11 @@ mod tests {
             .add_struct("list_head", 16)
             .add_field("list_head", "next", 0, "pointer")
             .add_field("list_head", "prev", 8, "pointer")
-            .add_symbol("modules", vaddr)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
+            .add_symbol("modules", vaddr);
+        let ptb = PageTableBuilder::new()
             .map_4k(vaddr, paddr, flags::WRITABLE)
-            .write_phys(paddr, data)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+            .write_phys(paddr, data);
+        make_reader(&isf, ptb)
     }
 
     #[test]

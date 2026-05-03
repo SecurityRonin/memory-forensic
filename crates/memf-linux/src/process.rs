@@ -141,6 +141,8 @@ fn read_cr3<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, task_addr: u64)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::make_reader;
+    use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
@@ -174,16 +176,11 @@ mod tests {
             .add_field("list_head", "prev", 8, "pointer")
             .add_struct("mm_struct", 128)
             .add_field("mm_struct", "pgd", 0, "pointer")
-            .add_symbol("init_task", vaddr)
-            .build_json();
-
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
+            .add_symbol("init_task", vaddr);
+        let ptb = PageTableBuilder::new()
             .map_4k(vaddr, paddr, flags::WRITABLE)
-            .write_phys(paddr, data)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+            .write_phys(paddr, data);
+        make_reader(&isf, ptb)
     }
 
     #[test]

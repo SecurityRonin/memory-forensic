@@ -195,10 +195,9 @@ pub fn check_peb_masquerade<P: PhysicalMemoryProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::make_reader;
     use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
-    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
-    use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
     // Offsets from windows_kernel_preset:
@@ -232,11 +231,7 @@ mod tests {
     /// configured page table mapping.
     fn make_win_reader(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::windows_kernel_preset();
-        let json = isf.build_json();
-        let resolver = IsfResolver::from_value(&json).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        make_reader(&isf, ptb)
     }
 
     /// Write an _EPROCESS structure at the given physical address.
@@ -657,11 +652,7 @@ mod tests {
         let isf = IsfBuilder::windows_kernel_preset()
             .add_field("_EPROCESS", "ActiveThreads", 0x4B4, "unsigned int")
             .add_field("_EPROCESS", "Wow64Process", 0x548, "pointer");
-        let json = isf.build_json();
-        let resolver = IsfResolver::from_value(&json).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+        make_reader(&isf, ptb)
     }
 
     const EPROCESS_ACTIVE_THREADS: u64 = 0x4B4;
