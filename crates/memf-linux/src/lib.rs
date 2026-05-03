@@ -100,6 +100,22 @@ pub enum Error {
     /// Walker-specific error.
     #[error("walker error: {0}")]
     Walker(String),
+
+    /// A required kernel symbol was not found in the ISF.
+    #[error("kernel symbol not found: {name}")]
+    MissingKernelSymbol { name: String },
+
+    /// A required struct field was not found in the ISF.
+    #[error("ISF missing field: {struct_name}.{field_name}")]
+    MissingField { struct_name: String, field_name: String },
+
+    /// A walker-specific failure with context.
+    #[error("walker '{walker}' failed: {reason}")]
+    WalkFailed { walker: &'static str, reason: String },
+
+    /// A list walk failure with context.
+    #[error("list walk failed in walker '{walker}': {reason}")]
+    ListWalkFailed { walker: &'static str, reason: String },
 }
 
 /// A Result alias for memf-linux.
