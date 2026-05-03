@@ -78,6 +78,9 @@ pub mod user_ns_escalation;
 pub mod vdso_tamper;
 pub mod zombie_orphan;
 
+#[cfg(test)]
+pub mod testing;
+
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 

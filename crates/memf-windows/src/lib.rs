@@ -92,6 +92,9 @@ pub mod wmi;
 pub mod wmi_persistence;
 pub mod wow64_anomaly;
 
+#[cfg(test)]
+pub mod testing;
+
 pub use types::*;
 
 /// Error type for memf-windows operations.
