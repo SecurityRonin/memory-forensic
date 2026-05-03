@@ -693,6 +693,141 @@ impl HiberfilBuilder {
 /// Produces the `disk_dump_header` + `kdump_sub_header` + bitmaps + page
 /// descriptors + compressed page data layout used by makedumpfile and
 /// crash-utility.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::avml::AvmlProvider;
+    use crate::elf_core::ElfCoreProvider;
+    use crate::lime::LimeProvider;
+    use crate::PhysicalMemoryProvider;
+
+    // ─── LimeBuilder ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn lime_builder_roundtrip() {
+        let data = vec![0xAB; 64];
+        let bytes = LimeBuilder::new().add_range(0x1000, &data).build();
+        let provider = LimeProvider::from_bytes(&bytes).unwrap();
+        assert_eq!(provider.ranges().len(), 1);
+        assert_eq!(provider.ranges()[0].start, 0x1000);
+        assert_eq!(provider.ranges()[0].end, 0x1000 + 64);
+
+        let mut buf = vec![0u8; 64];
+        let n = provider.read_phys(0x1000, &mut buf).unwrap();
+        assert_eq!(n, 64);
+        assert!(buf.iter().all(|&b| b == 0xAB));
+    }
+
+    #[test]
+    fn lime_builder_two_ranges() {
+        let bytes = LimeBuilder::new()
+            .add_range(0x0000, &[0x11; 32])
+            .add_range(0x8000, &[0x22; 48])
+            .build();
+        let provider = LimeProvider::from_bytes(&bytes).unwrap();
+        assert_eq!(provider.ranges().len(), 2);
+        assert_eq!(provider.total_size(), 32 + 48);
+
+        let mut buf = [0u8; 4];
+        let n = provider.read_phys(0x0000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0x11; 4]);
+
+        let n = provider.read_phys(0x8000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0x22; 4]);
+    }
+
+    #[test]
+    fn lime_builder_empty_produces_parseable_bytes() {
+        // Empty builder: zero ranges, produces empty (or near-empty) output
+        let bytes = LimeBuilder::new().build();
+        // Should parse without panic and yield zero ranges
+        let provider = LimeProvider::from_bytes(&bytes).unwrap();
+        assert_eq!(provider.ranges().len(), 0);
+        assert_eq!(provider.total_size(), 0);
+    }
+
+    // ─── AvmlBuilder ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn avml_builder_roundtrip() {
+        let data = vec![0xCD; 128];
+        let bytes = AvmlBuilder::new().add_range(0x2000, &data).build();
+        let provider = AvmlProvider::from_bytes(&bytes).unwrap();
+        assert_eq!(provider.ranges().len(), 1);
+        assert_eq!(provider.ranges()[0].start, 0x2000);
+        assert_eq!(provider.ranges()[0].end, 0x2000 + 128);
+
+        let mut buf = vec![0u8; 128];
+        let n = provider.read_phys(0x2000, &mut buf).unwrap();
+        assert_eq!(n, 128);
+        assert!(buf.iter().all(|&b| b == 0xCD));
+    }
+
+    #[test]
+    fn avml_builder_two_ranges() {
+        let bytes = AvmlBuilder::new()
+            .add_range(0x0000, &[0xAA; 64])
+            .add_range(0x4000, &[0xBB; 96])
+            .build();
+        let provider = AvmlProvider::from_bytes(&bytes).unwrap();
+        assert_eq!(provider.ranges().len(), 2);
+        assert_eq!(provider.total_size(), 64 + 96);
+
+        let mut buf = [0u8; 4];
+        let n = provider.read_phys(0x0000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0xAA; 4]);
+
+        let n = provider.read_phys(0x4000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0xBB; 4]);
+    }
+
+    // ─── ElfCoreBuilder ──────────────────────────────────────────────────────
+
+    #[test]
+    fn elf_builder_roundtrip() {
+        let data = vec![0xEF; 256];
+        let bytes = ElfCoreBuilder::new().add_segment(0x3000, &data).build();
+        let provider = ElfCoreProvider::from_bytes(bytes).unwrap();
+        assert_eq!(provider.ranges().len(), 1);
+        assert_eq!(provider.ranges()[0].start, 0x3000);
+        assert_eq!(provider.ranges()[0].end, 0x3000 + 256);
+
+        let mut buf = vec![0u8; 256];
+        let n = provider.read_phys(0x3000, &mut buf).unwrap();
+        assert_eq!(n, 256);
+        assert!(buf.iter().all(|&b| b == 0xEF));
+    }
+
+    #[test]
+    fn elf_builder_two_segments() {
+        let bytes = ElfCoreBuilder::new()
+            .add_segment(0x0000, &[0x55; 512])
+            .add_segment(0x1000_0000, &[0x66; 128])
+            .build();
+        let provider = ElfCoreProvider::from_bytes(bytes).unwrap();
+        assert_eq!(provider.ranges().len(), 2);
+        assert_eq!(provider.total_size(), 512 + 128);
+
+        let mut buf = [0u8; 4];
+        let n = provider.read_phys(0x0000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0x55; 4]);
+
+        let n = provider.read_phys(0x1000_0000, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(buf, [0x66; 4]);
+    }
+}
+
+/// Build a synthetic kdump (makedumpfile) dump for testing.
+///
+/// Produces the `disk_dump_header` + `kdump_sub_header` + bitmaps + page
+/// descriptors + compressed page data layout used by makedumpfile and
+/// crash-utility.
 ///
 /// File layout (block_size = 4096 by default):
 /// - Block 0: `disk_dump_header`
