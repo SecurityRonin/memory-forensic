@@ -145,4 +145,29 @@ mod tests {
         let e = Error::Walker("test error".into());
         assert_eq!(e.to_string(), "walker error: test error");
     }
+
+    #[test]
+    fn error_missing_kernel_symbol_contains_name() {
+        let e = Error::MissingKernelSymbol { name: "init_task".to_owned() };
+        assert!(e.to_string().contains("init_task"));
+    }
+
+    #[test]
+    fn error_missing_field_contains_struct_and_field() {
+        let e = Error::MissingField {
+            struct_name: "task_struct".to_owned(),
+            field_name: "mm".to_owned(),
+        };
+        assert!(e.to_string().contains("task_struct"));
+        assert!(e.to_string().contains("mm"));
+    }
+
+    #[test]
+    fn error_walk_failed_contains_walker_name() {
+        let e = Error::WalkFailed {
+            walker: "walk_processes",
+            reason: "list corrupted".to_owned(),
+        };
+        assert!(e.to_string().contains("walk_processes"));
+    }
 }
