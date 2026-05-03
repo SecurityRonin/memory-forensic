@@ -30,25 +30,11 @@ pub struct OomEventInfo {
     pub is_suspicious: bool,
 }
 
-/// Well-known process names whose OOM-death is considered suspicious.
-const SUSPICIOUS_PROCESS_NAMES: &[&str] = &[
-    "auditd",
-    "sshd",
-    "systemd",
-    "journald",
-    "rsyslogd",
-    "containerd",
-    "dockerd",
-];
-
 /// Classify whether an OOM kill event is suspicious.
 ///
 /// Suspicious when the victim command matches a security/monitoring daemon
 /// name, or the victim PID is below 100 (likely a critical system process).
-pub fn classify_oom_victim(comm: &str, pid: u32) -> bool {
-    let lower = comm.to_ascii_lowercase();
-    SUSPICIOUS_PROCESS_NAMES.iter().any(|n| lower.contains(n)) || pid < 100
-}
+pub use crate::heuristics::classify_oom_victim;
 
 /// Parse a single OOM kill log line and return `(pid, comm, oom_score_adj, total_vm_kb, rss_kb)`.
 ///

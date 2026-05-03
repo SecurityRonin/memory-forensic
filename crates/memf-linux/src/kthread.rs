@@ -10,11 +10,6 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{ProcessInfo, Result};
 
-/// Minimum address for the kernel address space on x86_64.
-/// Addresses below this are userspace. A kernel thread function pointer
-/// in userspace range is suspicious (possible rootkit manipulation).
-const KERNEL_SPACE_MIN: u64 = 0xFFFF_0000_0000_0000;
-
 /// Information about a kernel thread extracted from memory.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct KernelThreadInfo {
@@ -81,58 +76,27 @@ pub fn walk_kernel_threads<P: PhysicalMemoryProvider>(
 /// - Its name is empty (unnamed kernel thread)
 /// - Its name contains sequences of hex characters (random-looking names)
 /// - Its start function address is in userspace range (below `KERNEL_SPACE_MIN`)
-pub fn classify_kthread(name: &str, start_fn_addr: u64) -> (bool, Option<String>) {
-    // Check 1: unnamed kernel thread
-    if name.is_empty() {
-        return (true, Some("unnamed kernel thread".into()));
-    }
-
-    // Check 2: start function in userspace range
-    if start_fn_addr != 0 && start_fn_addr < KERNEL_SPACE_MIN {
-        return (
-            true,
-            Some(format!(
-                "thread function at userspace address {start_fn_addr:#x}"
-            )),
-        );
-    }
-
-    // Check 3: name looks like random hex (rootkit-generated)
-    if looks_like_hex_name(name) {
-        return (
-            true,
-            Some(format!("name '{name}' contains suspicious hex pattern")),
-        );
-    }
-
-    (false, None)
-}
-
-/// Check whether a name looks like random hex characters.
-///
-/// Returns `true` if the name contains a run of 8+ hex digits, which is
-/// unusual for legitimate kernel thread names.
-fn looks_like_hex_name(name: &str) -> bool {
-    // Count the longest consecutive run of hex digits in the name.
-    // A run of 8+ is suspicious -- legitimate kernel thread names like
-    // "kworker/0:0", "ksoftirqd/0", "migration/0" don't have such runs.
-    let mut run = 0u32;
-    for ch in name.chars() {
-        if ch.is_ascii_hexdigit() {
-            run += 1;
-            if run >= 8 {
-                return true;
-            }
-        } else {
-            run = 0;
-        }
-    }
-    false
-}
+pub use crate::heuristics::classify_kthread;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Check whether a name looks like random hex characters.
+    fn looks_like_hex_name(name: &str) -> bool {
+        let mut run = 0u32;
+        for ch in name.chars() {
+            if ch.is_ascii_hexdigit() {
+                run += 1;
+                if run >= 8 {
+                    return true;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        false
+    }
 
     // ---------------------------------------------------------------
     // classify_kthread tests (pure function, no mock memory needed)

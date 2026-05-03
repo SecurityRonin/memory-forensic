@@ -27,20 +27,8 @@ pub struct KmsgEntry {
     pub is_suspicious: bool,
 }
 
-/// Suspicious patterns in kernel log messages.
-const SUSPICIOUS_PATTERNS: &[&str] = &[
-    "rootkit",
-    "hide",
-    "call trace",
-    "kernel bug",
-    "general protection",
-];
-
 /// Classify whether a kernel log message is suspicious.
-pub fn classify_kmsg(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    SUSPICIOUS_PATTERNS.iter().any(|p| lower.contains(p))
-}
+pub use crate::heuristics::classify_kmsg;
 
 /// Walk the kernel log ring buffer and return parsed entries.
 ///

@@ -16,20 +16,6 @@ use crate::Result;
 /// VM flag bit: region is executable.
 const VM_EXEC: u64 = 0x4;
 
-/// Known-benign memfd name prefixes produced by legitimate system components.
-const BENIGN_MEMFD_PREFIXES: &[&str] = &[
-    "shm",
-    "pulseaudio",
-    "wayland",
-    "dbus",
-    "chrome",
-    "firefox",
-    "v8",
-];
-
-/// Suspicious memfd name substrings (case-insensitive).
-const SUSPICIOUS_NAMES: &[&str] = &["payload", "shellcode", "stage", "loader", "inject", "hack"];
-
 /// Information about an open `memfd_create` file descriptor.
 #[derive(Debug, Clone, Serialize)]
 pub struct MemfdInfo {
@@ -55,35 +41,7 @@ pub struct MemfdInfo {
 /// - `name` is empty — anonymous memfd with no name is an evasion technique.
 ///
 /// Returns `false` (benign) if `name` starts with a known-benign prefix.
-pub fn classify_memfd(name: &str, is_executable: bool) -> bool {
-    // Executable anonymous memory is always suspicious.
-    if is_executable {
-        return true;
-    }
-
-    let name_lower = name.to_lowercase();
-
-    // Known-benign prefixes override everything else.
-    for prefix in BENIGN_MEMFD_PREFIXES {
-        if name_lower.starts_with(prefix) {
-            return false;
-        }
-    }
-
-    // Empty name → evasion attempt.
-    if name.is_empty() {
-        return true;
-    }
-
-    // Suspicious substrings.
-    for s in SUSPICIOUS_NAMES {
-        if name_lower.contains(s) {
-            return true;
-        }
-    }
-
-    false
-}
+pub use crate::heuristics::classify_memfd;
 
 /// Walk the task list and collect information about open `memfd_create` file descriptors.
 ///

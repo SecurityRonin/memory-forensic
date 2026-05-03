@@ -44,10 +44,6 @@ const BPF_MAP_TYPES: &[&str] = &[
     "task_storage",          // 28
 ];
 
-/// Known suspicious eBPF map names used by rootkits/implants.
-const SUSPICIOUS_MAP_NAMES: &[&str] =
-    &["rootkit", "hide_", "intercept", "keylog", "exfil", "covert"];
-
 /// Convert a raw map type integer to its string name.
 pub fn map_type_name(raw: u32) -> String {
     BPF_MAP_TYPES
@@ -81,16 +77,7 @@ pub struct EbpfMapInfo {
 /// Suspicious criteria:
 /// - Map type is `perf_event_array` or `ringbuf` AND name matches known rootkit patterns
 /// - Any map type AND name exactly matches a known suspicious name
-pub fn classify_ebpf_map(map_type: u32, name: &str, value_size: u32) -> bool {
-    let _ = value_size;
-    let name_lower = name.to_lowercase();
-    let suspicious_name = SUSPICIOUS_MAP_NAMES.iter().any(|p| name_lower.contains(p));
-
-    // perf_event_array (3) and ringbuf (26) are high-risk exfiltration channels
-    let high_risk_type = matches!(map_type, 3 | 26);
-
-    suspicious_name || high_risk_type
-}
+pub use crate::heuristics::classify_ebpf_map;
 
 /// Walk `map_idr` and return all loaded eBPF maps.
 ///

@@ -25,9 +25,6 @@ pub const IORING_OP_READ: u8 = 22;
 /// io_uring opcode for writing to a file descriptor (IORING_OP_WRITE).
 pub const IORING_OP_WRITE: u8 = 23;
 
-/// Sensitive opcode set — network or file operations that bypass seccomp.
-const SENSITIVE_OPCODES: &[u8] = &[IORING_OP_SENDMSG, IORING_OP_RECVMSG, IORING_OP_CONNECT];
-
 /// Information about an io_uring context attached to a process.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct IoUringEntry {
@@ -56,12 +53,7 @@ pub struct IoUringEntry {
 /// process has seccomp enabled — a combination indicative of seccomp bypass.
 ///
 /// `seccomp_mode` maps to `SECCOMP_MODE_STRICT = 1`, `SECCOMP_MODE_FILTER = 2`.
-pub fn classify_io_uring(opcodes: &[u8], seccomp_mode: u32) -> bool {
-    if seccomp_mode == 0 {
-        return false;
-    }
-    opcodes.iter().any(|op| SENSITIVE_OPCODES.contains(op))
-}
+pub use crate::heuristics::classify_io_uring;
 
 /// Walk all `io_ring_ctx` structures reachable from each process's
 /// `task_struct->io_uring` field and return forensic entries.

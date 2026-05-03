@@ -24,21 +24,10 @@ pub struct ContainerEscapeInfo {
     pub is_suspicious: bool,
 }
 
-/// Kernel thread comm prefixes that are never suspicious.
-const KERNEL_THREAD_COMMS: &[&str] = &["kthread", "kworker", "migration", "ksoftirqd", "rcu_"];
-
 /// Classify whether a process's indicator is suspicious.
 ///
 /// Returns `false` for kernel threads regardless of indicator.
-pub fn classify_container_escape(comm: &str, indicator: &str) -> bool {
-    let is_kernel = KERNEL_THREAD_COMMS
-        .iter()
-        .any(|prefix| comm.starts_with(prefix));
-    if is_kernel {
-        return false;
-    }
-    matches!(indicator, "namespace_mismatch" | "host_mount_access")
-}
+pub use crate::heuristics::classify_container_escape;
 
 /// Walk all tasks and report container escape indicators.
 ///

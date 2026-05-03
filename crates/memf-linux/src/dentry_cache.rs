@@ -13,9 +13,6 @@ use serde::Serialize;
 
 use crate::Result;
 
-/// Suspicious file extensions that indicate executable/library payloads.
-const SUSPICIOUS_EXTENSIONS: &[&str] = &[".so", ".py", ".sh", ".elf", ".bin"];
-
 /// Information about a hidden (unlinked but open) file descriptor.
 #[derive(Debug, Clone, Serialize)]
 pub struct HiddenDentryInfo {
@@ -48,24 +45,7 @@ pub struct HiddenDentryInfo {
 /// Returns `false` (benign) if:
 /// - `filename` is empty (kernel internal anonymous files).
 /// - `nlink > 0` and no suspicious extension.
-pub fn classify_hidden_dentry(nlink: u32, filename: &str) -> bool {
-    // Empty filename → kernel internal file, not suspicious.
-    if filename.is_empty() {
-        return false;
-    }
-
-    let name_lower = filename.to_lowercase();
-
-    // File still in the directory tree → check only for suspicious extensions.
-    if nlink > 0 {
-        return SUSPICIOUS_EXTENSIONS
-            .iter()
-            .any(|ext| name_lower.ends_with(ext));
-    }
-
-    // nlink == 0 → file is unlinked (hidden), always suspicious.
-    true
-}
+pub use crate::heuristics::classify_hidden_dentry;
 
 /// Walk the task list and enumerate all open-but-unlinked file descriptors.
 ///

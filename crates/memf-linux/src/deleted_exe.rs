@@ -16,25 +16,6 @@ use serde::Serialize;
 
 use crate::{Error, Result};
 
-/// Known-benign process names that may legitimately run from deleted executables.
-///
-/// Package managers and their helpers frequently replace their own binaries
-/// during upgrade operations, causing a transient "(deleted)" state.
-const KNOWN_BENIGN_COMMS: &[&str] = &[
-    "apt",
-    "apt-get",
-    "apt-check",
-    "aptd",
-    "dpkg",
-    "dpkg-deb",
-    "yum",
-    "dnf",
-    "rpm",
-    "rpmdb",
-    "packagekitd",
-    "unattended-upgr",
-];
-
 /// Information about a process whose executable may have been deleted.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeletedExeInfo {
@@ -62,33 +43,7 @@ pub struct DeletedExeInfo {
 /// - Package manager processes (apt, dpkg, yum, dnf, rpm, etc.)
 /// - Kernel threads with empty exe paths
 /// - Processes with empty comm (likely kernel threads)
-pub fn classify_deleted_exe(exe_path: &str, comm: &str) -> bool {
-    // Not deleted at all -> not suspicious
-    if !exe_path.contains("(deleted)") {
-        return false;
-    }
-
-    // Empty exe path -> kernel thread, not suspicious
-    if exe_path.is_empty() {
-        return false;
-    }
-
-    // Empty comm -> likely kernel thread, not suspicious
-    if comm.is_empty() {
-        return false;
-    }
-
-    // Check against known-benign process names
-    let comm_lower = comm.to_lowercase();
-    for &benign in KNOWN_BENIGN_COMMS {
-        if comm_lower == benign {
-            return false;
-        }
-    }
-
-    // All other deleted executables are suspicious
-    true
-}
+pub use crate::heuristics::classify_deleted_exe;
 
 /// Walk the task list and detect processes running from deleted executables.
 ///
@@ -206,6 +161,11 @@ fn read_file_dentry_name<P: PhysicalMemoryProvider>(
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
+
+    const KNOWN_BENIGN_COMMS: &[&str] = &[
+        "apt", "apt-get", "apt-check", "aptd", "dpkg", "dpkg-deb",
+        "yum", "dnf", "rpm", "rpmdb", "packagekitd", "unattended-upgr",
+    ];
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;

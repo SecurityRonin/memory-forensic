@@ -53,34 +53,6 @@ fn parse_ld_preload(value: &str) -> Vec<String> {
 /// - Resides outside standard library directories (`/usr/lib`, `/lib`, etc.)
 pub use crate::heuristics::classify_ld_preload;
 
-/// Check whether a single library path looks suspicious.
-fn is_suspicious_path(path: &str, safe_prefixes: &[&str]) -> bool {
-    // Libraries in /tmp are suspicious (attacker staging area).
-    if path.starts_with("/tmp/") || path == "/tmp" {
-        return true;
-    }
-
-    // Libraries in /dev/shm are suspicious (shared memory, no disk footprint).
-    if path.starts_with("/dev/shm/") || path == "/dev/shm" {
-        return true;
-    }
-
-    // Hidden path components (directories or files starting with '.') are suspicious.
-    if path
-        .split('/')
-        .any(|component| !component.is_empty() && component.starts_with('.'))
-    {
-        return true;
-    }
-
-    // Libraries outside standard directories are suspicious.
-    if !safe_prefixes.iter().any(|prefix| path.starts_with(prefix)) {
-        return true;
-    }
-
-    false
-}
-
 /// Scan processes for LD_PRELOAD environment variable injection.
 ///
 /// For each process in the provided list, reads the environment block from
@@ -172,6 +144,26 @@ fn extract_ld_preload(data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Check whether a single library path looks suspicious (test helper).
+    fn is_suspicious_path(path: &str, safe_prefixes: &[&str]) -> bool {
+        if path.starts_with("/tmp/") || path == "/tmp" {
+            return true;
+        }
+        if path.starts_with("/dev/shm/") || path == "/dev/shm" {
+            return true;
+        }
+        if path
+            .split('/')
+            .any(|component| !component.is_empty() && component.starts_with('.'))
+        {
+            return true;
+        }
+        if !safe_prefixes.iter().any(|prefix| path.starts_with(prefix)) {
+            return true;
+        }
+        false
+    }
 
     // ---------------------------------------------------------------
     // parse_ld_preload tests
