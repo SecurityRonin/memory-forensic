@@ -612,8 +612,6 @@ mod tests {
         assert_eq!(reader.symbols().field_offset("task_struct", "pid"), Some(0));
     }
 
-    /// A→B→A cycle (neither node points back to head) must exhaust
-    /// MAX_LIST_ITERATIONS and return Err(Error::ListCycle(_)).
     #[test]
     fn required_symbol_ok() {
         let isf = IsfBuilder::new()
