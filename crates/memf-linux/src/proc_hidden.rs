@@ -16,3 +16,70 @@ pub fn find_hidden_processes<P: PhysicalMemoryProvider>(
     let _ = reader;
     Ok(vec![])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memf_core::test_builders::PageTableBuilder;
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    fn make_minimal_reader(
+    ) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    #[test]
+    fn empty_memory_returns_ok_empty() {
+        let reader = make_minimal_reader();
+        let result = find_hidden_processes(&reader);
+        assert!(result.is_ok(), "should succeed with minimal reader");
+        assert!(
+            result.unwrap().is_empty(),
+            "empty memory → no hidden processes"
+        );
+    }
+
+    #[test]
+    fn result_is_vec_of_hidden_process_info() {
+        let reader = make_minimal_reader();
+        let result: Result<Vec<HiddenProcessInfo>> = find_hidden_processes(&reader);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn hidden_process_info_fields_constructible() {
+        let info = HiddenProcessInfo {
+            pid: 1234,
+            comm: "evil".to_string(),
+            present_in_pid_ns: false,
+            present_in_task_list: true,
+            present_in_pid_hash: true,
+        };
+        assert_eq!(info.pid, 1234);
+        assert_eq!(info.comm, "evil");
+        assert!(!info.present_in_pid_ns);
+        assert!(info.present_in_task_list);
+        assert!(info.present_in_pid_hash);
+    }
+
+    #[test]
+    fn hidden_process_info_serializes() {
+        let info = HiddenProcessInfo {
+            pid: 42,
+            comm: "rootkit".to_string(),
+            present_in_pid_ns: false,
+            present_in_task_list: false,
+            present_in_pid_hash: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":42"));
+        assert!(json.contains("rootkit"));
+        assert!(json.contains("\"present_in_pid_hash\":true"));
+    }
+}
