@@ -28,3 +28,73 @@ pub fn scan_wow64_anomalies<P: PhysicalMemoryProvider>(
     let _ = reader;
     Ok(vec![])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memf_core::test_builders::PageTableBuilder;
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    fn make_minimal_reader(
+    ) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    #[test]
+    fn empty_memory_returns_ok_empty() {
+        let reader = make_minimal_reader();
+        let result = scan_wow64_anomalies(&reader);
+        assert!(result.is_ok(), "should succeed with minimal reader");
+        assert!(
+            result.unwrap().is_empty(),
+            "empty memory → no WoW64 anomaly hits"
+        );
+    }
+
+    #[test]
+    fn result_is_vec_of_wow64_anomaly_info() {
+        let reader = make_minimal_reader();
+        let result: Result<Vec<Wow64AnomalyInfo>> = scan_wow64_anomalies(&reader);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn wow64_anomaly_info_fields_constructible() {
+        let info = Wow64AnomalyInfo {
+            pid: 3030,
+            image_name: "malware32.exe".to_string(),
+            has_peb32: true,
+            heavens_gate_detected: true,
+            wow64_dll_path: String::new(),
+            syscall_stub_tampered: true,
+        };
+        assert_eq!(info.pid, 3030);
+        assert!(info.has_peb32);
+        assert!(info.heavens_gate_detected);
+        assert!(info.syscall_stub_tampered);
+        assert!(info.wow64_dll_path.is_empty());
+    }
+
+    #[test]
+    fn wow64_anomaly_info_serializes() {
+        let info = Wow64AnomalyInfo {
+            pid: 17,
+            image_name: "iexplore.exe".to_string(),
+            has_peb32: true,
+            heavens_gate_detected: false,
+            wow64_dll_path: r"C:\Windows\SysWOW64\wow64.dll".to_string(),
+            syscall_stub_tampered: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":17"));
+        assert!(json.contains("iexplore.exe"));
+        assert!(json.contains("\"heavens_gate_detected\":false"));
+        assert!(json.contains("\"syscall_stub_tampered\":false"));
+    }
+}

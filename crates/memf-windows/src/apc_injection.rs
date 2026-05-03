@@ -26,3 +26,77 @@ pub fn scan_apc_queues<P: PhysicalMemoryProvider>(
     let _ = reader;
     Ok(vec![])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ApcType;
+    use memf_core::test_builders::PageTableBuilder;
+    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+    use memf_symbols::isf::IsfResolver;
+    use memf_symbols::test_builders::IsfBuilder;
+
+    fn make_minimal_reader(
+    ) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    #[test]
+    fn empty_memory_returns_ok_empty() {
+        let reader = make_minimal_reader();
+        let result = scan_apc_queues(&reader);
+        assert!(result.is_ok(), "should succeed with minimal reader");
+        assert!(result.unwrap().is_empty(), "empty memory → no APC entries");
+    }
+
+    #[test]
+    fn result_is_vec_of_apc_info() {
+        let reader = make_minimal_reader();
+        let result: Result<Vec<ApcInfo>> = scan_apc_queues(&reader);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn apc_info_fields_constructible() {
+        let info = ApcInfo {
+            pid: 888,
+            tid: 1000,
+            image_name: "svchost.exe".to_string(),
+            apc_type: ApcType::UserMode,
+            normal_routine: 0xDEAD_BEEF,
+            kernel_routine: 0xC0DE_C0DE,
+            is_unbacked: true,
+        };
+        assert_eq!(info.pid, 888);
+        assert_eq!(info.tid, 1000);
+        assert_eq!(info.apc_type, ApcType::UserMode);
+        assert!(info.is_unbacked);
+    }
+
+    #[test]
+    fn apc_info_serializes() {
+        let info = ApcInfo {
+            pid: 4,
+            tid: 8,
+            image_name: "evil.exe".to_string(),
+            apc_type: ApcType::KernelMode,
+            normal_routine: 0,
+            kernel_routine: 0xFFFF_8000_0000,
+            is_unbacked: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":4"));
+        assert!(json.contains("evil.exe"));
+        assert!(json.contains("KernelMode"));
+        assert!(json.contains("\"is_unbacked\":false"));
+    }
+
+    #[test]
+    fn apc_type_variants_accessible() {
+        assert_ne!(ApcType::KernelMode, ApcType::UserMode);
+    }
+}
