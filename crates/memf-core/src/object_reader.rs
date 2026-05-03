@@ -199,9 +199,10 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
     }
 
     /// Resolve a struct field offset, returning an error if absent.
-    pub fn required_field_offset(&self, struct_name: &str, field_name: &str) -> Result<u64> {
+    pub fn required_field_offset(&self, struct_name: &str, field_name: &str) -> Result<usize> {
         self.symbols()
             .field_offset(struct_name, field_name)
+            .map(|v| v as usize)
             .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{field_name}")))
     }
 

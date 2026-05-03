@@ -16,7 +16,7 @@ pub fn walk_processes<P: PhysicalMemoryProvider>(
     let init_task_addr = reader.required_symbol("init_task")?;
     let tasks_offset = reader.required_field_offset("task_struct", "tasks")?;
 
-    let head_vaddr = init_task_addr + tasks_offset;
+    let head_vaddr = init_task_addr + tasks_offset as u64;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
 
     let mut processes = Vec::new();
