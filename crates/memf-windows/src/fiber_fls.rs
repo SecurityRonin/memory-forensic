@@ -89,4 +89,23 @@ mod tests {
         assert!(json.contains("evil.exe"));
         assert!(json.contains("\"fls_callback_unbacked\":true"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn fiber_rip_outside_all_ranges_is_suspicious() {
+        let ranges = [(0x7fff_0000_u64, 0x7fff_1000_u64)];
+        assert!(is_suspicious_fiber_rip(0xDEAD_C0DE, &ranges));
+    }
+
+    #[test]
+    fn fiber_rip_inside_a_range_is_not_suspicious() {
+        let ranges = [(0x7fff_0000_u64, 0x7fff_1000_u64)];
+        assert!(!is_suspicious_fiber_rip(0x7fff_0800, &ranges));
+    }
+
+    #[test]
+    fn fiber_rip_with_empty_ranges_is_suspicious() {
+        assert!(is_suspicious_fiber_rip(0x1234, &[]));
+    }
 }

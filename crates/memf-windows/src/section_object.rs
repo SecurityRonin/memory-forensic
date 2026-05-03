@@ -100,4 +100,21 @@ mod tests {
         assert!(json.contains("\"is_image_section\":false"));
         assert!(json.contains("\"file_on_disk\":false"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn mapped_count_above_threshold_is_suspicious_section() {
+        assert!(is_suspicious_section(11, 10));
+    }
+
+    #[test]
+    fn mapped_count_at_threshold_is_not_suspicious() {
+        assert!(!is_suspicious_section(10, 10));
+    }
+
+    #[test]
+    fn mapped_count_below_threshold_is_not_suspicious() {
+        assert!(!is_suspicious_section(2, 10));
+    }
 }

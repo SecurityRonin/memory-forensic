@@ -89,4 +89,21 @@ mod tests {
         assert!(json.contains("chrome.exe"));
         assert!(json.contains("\"nop_sled_detected\":false"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn heap_commit_above_threshold_is_spray_pattern() {
+        assert!(is_spray_pattern(16 * 1024 * 1024, 8 * 1024 * 1024));
+    }
+
+    #[test]
+    fn heap_commit_at_threshold_is_not_spray_pattern() {
+        assert!(!is_spray_pattern(8 * 1024 * 1024, 8 * 1024 * 1024));
+    }
+
+    #[test]
+    fn heap_commit_below_threshold_is_not_spray_pattern() {
+        assert!(!is_spray_pattern(1024, 8 * 1024 * 1024));
+    }
 }

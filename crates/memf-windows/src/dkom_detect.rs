@@ -98,4 +98,27 @@ mod tests {
         let _ = DkomType::DriverUnlinked;
         let _ = DkomType::ThreadUnlinked;
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn process_in_cid_not_in_active_list_is_process_unlinked() {
+        assert_eq!(
+            classify_dkom(true, false, false, false),
+            Some(DkomType::ProcessUnlinked)
+        );
+    }
+
+    #[test]
+    fn driver_in_mm_not_in_loaded_list_is_driver_unlinked() {
+        assert_eq!(
+            classify_dkom(false, false, true, false),
+            Some(DkomType::DriverUnlinked)
+        );
+    }
+
+    #[test]
+    fn both_present_in_all_sources_is_none() {
+        assert!(classify_dkom(true, true, true, true).is_none());
+    }
 }

@@ -78,4 +78,17 @@ mod tests {
         assert!(json.contains("miner"));
         assert!(json.contains("\"pinned_cpu_count\":2"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn differing_cpu_mask_is_suspicious_pinning() {
+        // Actual mask restricts to CPU 0 only (0x1), but expected is all 8 CPUs (0xFF)
+        assert!(is_suspicious_pinning(0x1, 0xFF));
+    }
+
+    #[test]
+    fn matching_cpu_mask_is_not_suspicious() {
+        assert!(!is_suspicious_pinning(0xFF, 0xFF));
+    }
 }

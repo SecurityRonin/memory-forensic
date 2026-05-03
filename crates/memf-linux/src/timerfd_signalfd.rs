@@ -93,4 +93,21 @@ mod tests {
         assert!(json.contains("\"pid\":7"));
         assert!(json.contains("EventFd"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn fd_count_above_threshold_is_suspicious() {
+        assert!(is_suspicious_fd_count(101, 100));
+    }
+
+    #[test]
+    fn fd_count_at_threshold_is_not_suspicious() {
+        assert!(!is_suspicious_fd_count(100, 100));
+    }
+
+    #[test]
+    fn fd_count_below_threshold_is_not_suspicious() {
+        assert!(!is_suspicious_fd_count(5, 100));
+    }
 }

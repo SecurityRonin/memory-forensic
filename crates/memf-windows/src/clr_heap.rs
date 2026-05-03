@@ -93,4 +93,21 @@ mod tests {
         assert!(json.contains("\"is_dynamic\":false"));
         assert!(json.contains("\"has_pe_header\":false"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn in_memory_assembly_without_pe_path_is_dynamic() {
+        assert!(is_dynamic_assembly(true, false));
+    }
+
+    #[test]
+    fn in_memory_assembly_with_pe_path_is_not_dynamic() {
+        assert!(!is_dynamic_assembly(true, true));
+    }
+
+    #[test]
+    fn on_disk_assembly_is_not_dynamic() {
+        assert!(!is_dynamic_assembly(false, true));
+    }
 }

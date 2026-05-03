@@ -99,4 +99,25 @@ mod tests {
     fn apc_type_variants_accessible() {
         assert_ne!(ApcType::KernelMode, ApcType::UserMode);
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn normal_routine_outside_all_ranges_is_unbacked_apc() {
+        let ranges = [(0x7fff_0000_u64, 0x7fff_1000_u64)];
+        // 0xDEAD_BEEF is outside the range → unbacked
+        assert!(is_unbacked_apc(0xDEAD_BEEF, &ranges));
+    }
+
+    #[test]
+    fn normal_routine_inside_a_range_is_backed_apc() {
+        let ranges = [(0x7fff_0000_u64, 0x7fff_1000_u64)];
+        // 0x7fff_0500 falls within the range
+        assert!(!is_unbacked_apc(0x7fff_0500, &ranges));
+    }
+
+    #[test]
+    fn normal_routine_with_empty_ranges_is_unbacked_apc() {
+        assert!(is_unbacked_apc(0x1234, &[]));
+    }
 }

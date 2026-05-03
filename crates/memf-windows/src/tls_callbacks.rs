@@ -92,4 +92,23 @@ mod tests {
         assert!(json.contains("vcruntime.dll"));
         assert!(json.contains("\"is_outside_module\":false"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn tls_callback_outside_all_ranges_is_unbacked() {
+        let ranges = [(0x7fff_0000_u64, 0x7fff_1000_u64)];
+        assert!(is_unbacked_tls_callback(0xDEAD_CAFE, &ranges));
+    }
+
+    #[test]
+    fn tls_callback_inside_a_range_is_backed() {
+        let ranges = [(0x7fff_0000_u64, 0x7fff_1000_u64)];
+        assert!(!is_unbacked_tls_callback(0x7fff_0100, &ranges));
+    }
+
+    #[test]
+    fn tls_callback_with_empty_ranges_is_unbacked() {
+        assert!(is_unbacked_tls_callback(0x1234, &[]));
+    }
 }

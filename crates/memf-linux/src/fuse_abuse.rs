@@ -79,4 +79,22 @@ mod tests {
         assert!(json.contains("/etc"));
         assert!(json.contains("\"is_over_sensitive_path\":true"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn non_root_uid_with_setuid_is_suspicious_fuse_mount() {
+        // Non-root daemon with setuid flag → privilege escalation path
+        assert!(is_suspicious_fuse_mount(1000, true));
+    }
+
+    #[test]
+    fn root_uid_with_setuid_is_not_suspicious() {
+        assert!(!is_suspicious_fuse_mount(0, true));
+    }
+
+    #[test]
+    fn non_root_uid_without_setuid_is_not_suspicious() {
+        assert!(!is_suspicious_fuse_mount(1000, false));
+    }
 }

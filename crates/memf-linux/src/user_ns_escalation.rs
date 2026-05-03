@@ -87,4 +87,22 @@ mod tests {
         assert!(json.contains("\"has_cap_sys_admin\":true"));
         assert!(json.contains("\"is_suspicious\":true"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn non_root_in_parent_but_root_in_ns_is_suspicious_escalation() {
+        // Parent UID 1000, namespace UID 0 → escalated to root via user namespace
+        assert!(is_escalation_suspicious(1000, 0));
+    }
+
+    #[test]
+    fn root_in_both_is_not_suspicious() {
+        assert!(!is_escalation_suspicious(0, 0));
+    }
+
+    #[test]
+    fn non_root_in_both_is_not_suspicious() {
+        assert!(!is_escalation_suspicious(1000, 1000));
+    }
 }

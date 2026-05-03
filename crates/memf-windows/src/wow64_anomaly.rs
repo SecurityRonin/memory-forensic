@@ -97,4 +97,22 @@ mod tests {
         assert!(json.contains("\"heavens_gate_detected\":false"));
         assert!(json.contains("\"syscall_stub_tampered\":false"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn wow64_process_without_peb32_is_suspicious() {
+        // Marked as WoW64 but has no 32-bit PEB → anomalous
+        assert!(is_wow64_suspicious(true, false));
+    }
+
+    #[test]
+    fn wow64_process_with_peb32_is_not_suspicious() {
+        assert!(!is_wow64_suspicious(true, true));
+    }
+
+    #[test]
+    fn non_wow64_process_is_not_suspicious() {
+        assert!(!is_wow64_suspicious(false, false));
+    }
 }

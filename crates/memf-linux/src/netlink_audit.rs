@@ -80,4 +80,17 @@ mod tests {
         assert!(json.contains("\"backlog_limit\":64"));
         assert!(json.contains("\"audit_globally_disabled\":false"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn mismatched_audit_pid_is_tampered() {
+        // auditd PID 1234 but netlink socket owned by PID 9999 → tampered
+        assert!(is_audit_tampered(1234, 9999));
+    }
+
+    #[test]
+    fn matching_audit_pid_is_clean() {
+        assert!(!is_audit_tampered(1234, 1234));
+    }
 }

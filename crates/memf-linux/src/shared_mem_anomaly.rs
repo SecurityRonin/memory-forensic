@@ -87,4 +87,21 @@ mod tests {
         assert!(json.contains("\"is_executable\":true"));
         assert!(json.contains("\"is_cross_uid\":true"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn nattch_above_threshold_is_suspicious_shm() {
+        assert!(is_suspicious_shm(100, 50));
+    }
+
+    #[test]
+    fn nattch_at_threshold_is_not_suspicious() {
+        assert!(!is_suspicious_shm(50, 50));
+    }
+
+    #[test]
+    fn nattch_below_threshold_is_not_suspicious() {
+        assert!(!is_suspicious_shm(10, 50));
+    }
 }

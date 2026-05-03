@@ -79,4 +79,21 @@ mod tests {
         assert!(json.contains("\"differs_from_canonical\":true"));
         assert!(json.contains("\"diff_byte_count\":16"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn nonzero_diff_bytes_is_tampered() {
+        assert!(is_vdso_tampered(16, 4096));
+    }
+
+    #[test]
+    fn single_byte_diff_is_tampered() {
+        assert!(is_vdso_tampered(1, 4096));
+    }
+
+    #[test]
+    fn zero_diff_is_clean() {
+        assert!(!is_vdso_tampered(0, 4096));
+    }
 }

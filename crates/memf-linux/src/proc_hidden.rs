@@ -82,4 +82,23 @@ mod tests {
         assert!(json.contains("rootkit"));
         assert!(json.contains("\"present_in_pid_hash\":true"));
     }
+
+    // --- classifier helper tests (genuine RED: function does not exist yet) ---
+
+    #[test]
+    fn process_missing_from_task_list_is_hidden() {
+        // Missing from task list but in PID hash → DKOM hidden
+        assert!(is_dkom_hidden(false, true));
+    }
+
+    #[test]
+    fn process_missing_from_pid_hash_is_hidden() {
+        // In task list but missing from PID hash → also suspicious
+        assert!(is_dkom_hidden(true, false));
+    }
+
+    #[test]
+    fn process_in_all_sources_is_not_hidden() {
+        assert!(!is_dkom_hidden(true, true));
+    }
 }
