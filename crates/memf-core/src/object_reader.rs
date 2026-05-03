@@ -596,4 +596,57 @@ mod tests {
         assert_eq!(reader.symbols().backend_name(), "ISF JSON");
         assert_eq!(reader.symbols().field_offset("task_struct", "pid"), Some(0));
     }
+
+    /// A→B→A cycle (neither node points back to head) must exhaust
+    /// MAX_LIST_ITERATIONS and return Err(Error::ListCycle(_)).
+    #[test]
+    fn walk_list_cycle_detection() {
+        // ISF: _EPROCESS with ActiveProcessLinks at offset 0x10;
+        // _LIST_ENTRY with Flink at offset 0.
+        let isf = IsfBuilder::new()
+            .add_struct("_EPROCESS", 256)
+            .add_field("_EPROCESS", "ActiveProcessLinks", 0x10, "_LIST_ENTRY")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer");
+
+        // head: never referenced by the cycle, so the walk never terminates
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+        let b_paddr: u64 = 0x0080_2000;
+
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let b_vaddr: u64 = 0xFFFF_8000_0010_2000;
+
+        let list_offset: u64 = 0x10; // ActiveProcessLinks offset
+
+        // head.Flink → a.ActiveProcessLinks (kick off the walk)
+        // A.Flink → B.ActiveProcessLinks
+        // B.Flink → A.ActiveProcessLinks  (cycle — never reaches head)
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .map_4k(b_vaddr, b_paddr, flags::WRITABLE)
+            // head.Flink → a's list field
+            .write_phys_u64(head_paddr, a_vaddr + list_offset)
+            // A.ActiveProcessLinks.Flink → B.ActiveProcessLinks
+            .write_phys_u64(a_paddr + list_offset, b_vaddr + list_offset)
+            // B.ActiveProcessLinks.Flink → A.ActiveProcessLinks (cycle)
+            .write_phys_u64(b_paddr + list_offset, a_vaddr + list_offset);
+
+        let reader = make_reader(&isf, ptb);
+        let result = reader.walk_list_with(
+            head_vaddr,
+            "_LIST_ENTRY",
+            "Flink",
+            "_EPROCESS",
+            "ActiveProcessLinks",
+        );
+
+        assert!(
+            matches!(result, Err(Error::ListCycle(_))),
+            "expected ListCycle error, got: {result:?}"
+        );
+    }
 }
