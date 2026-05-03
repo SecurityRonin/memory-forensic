@@ -6,6 +6,16 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::HiddenProcessInfo;
 use crate::Result;
 
+/// Classify whether a process is DKOM-hidden based on its visibility in the
+/// task list and PID hash table.
+///
+/// Returns `true` if the process is absent from either the task list or the
+/// PID hash table — both must be present for a process to be considered
+/// visible by the kernel.
+pub fn is_dkom_hidden(in_task_list: bool, in_pid_hash: bool) -> bool {
+    !in_task_list || !in_pid_hash
+}
+
 /// Scan for processes hidden by DKOM or PID namespace tricks.
 ///
 /// Compares the PID namespace, task list, and PID hash table for discrepancies.

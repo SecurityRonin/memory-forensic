@@ -6,6 +6,16 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::AuditTamperInfo;
 use crate::Result;
 
+/// Classify whether the kernel audit subsystem has been tampered with by
+/// comparing the expected audit daemon PID against the PID that actually
+/// owns the audit netlink socket.
+///
+/// Returns `true` if `expected_pid != actual_pid`, indicating that the
+/// netlink socket has been hijacked or the audit daemon has been replaced.
+pub fn is_audit_tampered(expected_pid: u32, actual_pid: u32) -> bool {
+    expected_pid != actual_pid
+}
+
 /// Scan for audit subsystem tampering.
 ///
 /// Returns `Ok(vec![])` as a stub until full implementation is added.

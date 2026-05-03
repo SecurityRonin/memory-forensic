@@ -6,6 +6,15 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::FuseAbuseInfo;
 use crate::Result;
 
+/// Classify whether a FUSE mount is suspicious based on the daemon's UID and
+/// whether the mounted filesystem has the setuid bit honoured.
+///
+/// Returns `true` if the daemon is a non-root user (`uid != 0`) but the mount
+/// allows setuid execution — a privilege-escalation path.
+pub fn is_suspicious_fuse_mount(uid: u32, is_setuid: bool) -> bool {
+    uid != 0 && is_setuid
+}
+
 /// Scan for FUSE filesystem abuse (mounted over sensitive paths, root daemon with allow_other).
 ///
 /// Returns `Ok(vec![])` as a stub until full implementation is added.

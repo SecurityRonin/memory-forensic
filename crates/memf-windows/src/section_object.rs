@@ -10,6 +10,16 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{types::SectionObjectInfo, Result};
 
+/// Classify whether a section object is suspicious based on how many processes
+/// have it mapped.
+///
+/// Returns `true` if `mapped_count > threshold`, indicating the section is
+/// shared across an abnormal number of processes — consistent with a
+/// process-doppelgänging or shared shellcode staging pattern.
+pub fn is_suspicious_section(mapped_count: u32, threshold: u32) -> bool {
+    mapped_count > threshold
+}
+
 /// Enumerate section objects from the kernel object manager and analyse
 /// them for suspicious attributes.
 ///

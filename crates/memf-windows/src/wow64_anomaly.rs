@@ -9,6 +9,16 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{types::Wow64AnomalyInfo, Result};
 
+/// Classify whether a WoW64 process has an anomalous configuration.
+///
+/// Returns `true` if the process is marked as WoW64 (`is_wow64`) but does not
+/// have a 32-bit PEB (`!has_32bit_peb`). A genuine WoW64 process always has
+/// a 32-bit PEB; its absence while the WoW64 flag is set indicates that the
+/// WoW64 machinery has been tampered with (e.g. Heaven's Gate manipulation).
+pub fn is_wow64_suspicious(is_wow64: bool, has_32bit_peb: bool) -> bool {
+    is_wow64 && !has_32bit_peb
+}
+
 /// Scan all WoW64 (32-bit) processes for Heaven's Gate and syscall-stub
 /// tampering anomalies.
 ///

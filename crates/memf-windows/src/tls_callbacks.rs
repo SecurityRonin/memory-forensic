@@ -10,6 +10,18 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{types::TlsCallbackInfo, Result};
 
+/// Classify whether a TLS callback virtual address is unbacked — i.e. it does
+/// not fall within any known loaded module's address range.
+///
+/// Returns `true` if `callback_va` is not covered by any `(start, end)` range
+/// in `module_ranges`, indicating the callback has been redirected to
+/// injected or shellcode memory.
+pub fn is_unbacked_tls_callback(callback_va: u64, module_ranges: &[(u64, u64)]) -> bool {
+    !module_ranges
+        .iter()
+        .any(|&(start, end)| callback_va >= start && callback_va < end)
+}
+
 /// Walk TLS directories of all loaded modules in all processes and validate
 /// callback addresses.
 ///

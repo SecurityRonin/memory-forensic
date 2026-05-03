@@ -9,6 +9,15 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{types::HeapSprayInfo, Result};
 
+/// Classify whether a heap's committed size exceeds the spray threshold.
+///
+/// Returns `true` if `heap_commit_size > threshold`, indicating that the heap
+/// has grown to a size consistent with a heap spray attack (large number of
+/// uniform allocations filling the heap).
+pub fn is_spray_pattern(heap_commit_size: u64, threshold: u64) -> bool {
+    heap_commit_size > threshold
+}
+
 /// Scan process heaps for heap spray indicators.
 ///
 /// For each process, walks the `_PEB.ProcessHeaps` array of `_HEAP`

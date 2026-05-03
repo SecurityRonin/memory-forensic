@@ -7,7 +7,36 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{types::DkomDiscrepancy, Result};
+use crate::{
+    types::{DkomDiscrepancy, DkomType},
+    Result,
+};
+
+/// Classify a kernel object's presence across multiple enumeration sources and
+/// return the type of DKOM hiding detected, if any.
+///
+/// - Returns `Some(DkomType::ProcessUnlinked)` if the object is in `CidTable`
+///   (`in_cid`) but absent from `PsActiveProcessHead` (`!in_active`).
+/// - Returns `Some(DkomType::DriverUnlinked)` if the driver is in `MmDriverList`
+///   (`in_driver`) but absent from `PsLoadedModuleList` (`!in_module`).
+/// - Returns `None` if no discrepancy is detected.
+///
+/// Process unlinking takes priority over driver unlinking when both conditions
+/// are simultaneously true.
+pub fn classify_dkom(
+    in_cid: bool,
+    in_active: bool,
+    in_driver: bool,
+    in_module: bool,
+) -> Option<DkomType> {
+    if in_cid && !in_active {
+        Some(DkomType::ProcessUnlinked)
+    } else if in_driver && !in_module {
+        Some(DkomType::DriverUnlinked)
+    } else {
+        None
+    }
+}
 
 /// Cross-reference kernel process/driver/thread lists to detect DKOM hiding.
 ///

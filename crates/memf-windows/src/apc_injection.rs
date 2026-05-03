@@ -8,6 +8,18 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{types::ApcInfo, Result};
 
+/// Classify whether an APC `NormalRoutine` pointer is unbacked (not within any
+/// known loaded module's address range).
+///
+/// Returns `true` if `normal_routine` does not fall within any `(start, end)`
+/// range in `module_ranges`, indicating the APC target resides in untracked
+/// (potentially injected) memory.
+pub fn is_unbacked_apc(normal_routine: u64, module_ranges: &[(u64, u64)]) -> bool {
+    !module_ranges
+        .iter()
+        .any(|&(start, end)| normal_routine >= start && normal_routine < end)
+}
+
 /// Scan all thread APC queues in the memory image for queued APCs.
 ///
 /// For each `_KTHREAD` found, walks the `ApcState.ApcListHead[0]` (kernel)

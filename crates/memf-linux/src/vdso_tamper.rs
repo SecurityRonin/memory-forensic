@@ -6,6 +6,15 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::VdsoTamperInfo;
 use crate::Result;
 
+/// Classify whether a vDSO region has been tampered with.
+///
+/// Returns `true` if any bytes differ from the canonical kernel copy
+/// (`diff_byte_count > 0`). `_vdso_size` is accepted for future use
+/// (e.g. percentage-based thresholds) but is currently unused.
+pub fn is_vdso_tampered(diff_byte_count: usize, _vdso_size: usize) -> bool {
+    diff_byte_count > 0
+}
+
 /// Scan for vDSO regions that differ from the canonical kernel copy.
 ///
 /// Returns `Ok(vec![])` as a stub until full implementation is added.

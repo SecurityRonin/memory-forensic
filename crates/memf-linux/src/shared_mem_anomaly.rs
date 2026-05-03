@@ -6,6 +6,16 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::SharedMemAnomalyInfo;
 use crate::Result;
 
+/// Classify whether a shared memory segment has an anomalously high attach
+/// count (`nattch`) that exceeds the given threshold.
+///
+/// Returns `true` if `nattch > threshold`, indicating that an unusually large
+/// number of processes have the segment attached — a potential indicator of
+/// cross-process shellcode staging.
+pub fn is_suspicious_shm(nattch: u64, threshold: u64) -> bool {
+    nattch > threshold
+}
+
 /// Scan for shared memory anomalies (executable memfd, ELF headers, cross-uid sharing).
 ///
 /// Returns `Ok(vec![])` as a stub until full implementation is added.

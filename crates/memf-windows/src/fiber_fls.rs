@@ -8,6 +8,18 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{types::FiberInfo, Result};
 
+/// Classify whether a fiber's saved instruction pointer (`RIP`) points outside
+/// all known loaded module address ranges.
+///
+/// Returns `true` if `rip` does not fall within any `(start, end)` range in
+/// `module_ranges`, indicating the fiber is executing injected or shellcode
+/// that is not backed by a mapped module.
+pub fn is_suspicious_fiber_rip(rip: u64, module_ranges: &[(u64, u64)]) -> bool {
+    !module_ranges
+        .iter()
+        .any(|&(start, end)| rip >= start && rip < end)
+}
+
 /// Scan all threads for fiber conversion and suspicious FLS callbacks.
 ///
 /// Walks `_ETHREAD` structures looking for threads whose `Fiber` flag is

@@ -6,6 +6,16 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::FdAbuseInfo;
 use crate::Result;
 
+/// Classify whether a process has a suspicious number of timer/signal/event
+/// file descriptors by comparing against a threshold.
+///
+/// Returns `true` if `count > threshold`, indicating an abnormal accumulation
+/// of special FDs which can be used as covert inter-process signalling
+/// channels or timing oracles.
+pub fn is_suspicious_fd_count(count: usize, threshold: usize) -> bool {
+    count > threshold
+}
+
 /// Scan for timerfd/signalfd/eventfd abuse patterns.
 ///
 /// Returns `Ok(vec![])` as a stub until full implementation is added.

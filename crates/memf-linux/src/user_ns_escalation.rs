@@ -6,6 +6,17 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::UserNsEscalationInfo;
 use crate::Result;
 
+/// Classify whether a user namespace mapping represents a suspicious privilege
+/// escalation.
+///
+/// Returns `true` if the process appears as UID 0 (root) inside the namespace
+/// (`uid_in_ns == 0`) while its UID in the parent namespace is non-root
+/// (`uid_in_parent != 0`). This pattern is the core of user-namespace-based
+/// privilege escalation.
+pub fn is_escalation_suspicious(uid_in_parent: u32, uid_in_ns: u32) -> bool {
+    uid_in_ns == 0 && uid_in_parent != 0
+}
+
 /// Scan for user namespace escalation patterns.
 ///
 /// Returns `Ok(vec![])` as a stub until full implementation is added.

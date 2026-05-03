@@ -9,6 +9,18 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{types::ClrAssemblyInfo, Result};
 
+/// Classify whether a CLR assembly was loaded dynamically (reflectively) with
+/// no backing file on disk.
+///
+/// Returns `true` if the assembly is flagged as in-memory (`is_in_memory`) and
+/// has no associated PE path on disk (`!has_pe_path`). An assembly that is
+/// in memory but has a known disk path is a normal compiled assembly; one
+/// that is in memory without a path is a dynamically emitted / reflectively
+/// loaded assembly.
+pub fn is_dynamic_assembly(is_in_memory: bool, has_pe_path: bool) -> bool {
+    is_in_memory && !has_pe_path
+}
+
 /// Scan CLR `AppDomain` heaps for dynamically loaded (fileless) assemblies.
 ///
 /// Locates the CLR data structure roots via the `mscorwks.dll` or

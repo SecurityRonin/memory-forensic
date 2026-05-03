@@ -6,6 +6,15 @@ use memf_format::PhysicalMemoryProvider;
 use crate::types::CpuPinningInfo;
 use crate::Result;
 
+/// Classify whether a CPU affinity mask is suspicious by comparing it against
+/// the expected (system-wide) mask.
+///
+/// Returns `true` if `cpu_mask != expected_mask`, indicating the process has
+/// been explicitly pinned to a subset of CPUs — a common cryptominer pattern.
+pub fn is_suspicious_pinning(cpu_mask: u64, expected_mask: u64) -> bool {
+    cpu_mask != expected_mask
+}
+
 /// Scan for processes with suspicious CPU pinning (potential cryptominers).
 ///
 /// Returns `Ok(vec![])` as a stub until full implementation is added.
