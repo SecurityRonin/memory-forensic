@@ -600,6 +600,66 @@ mod tests {
     /// A→B→A cycle (neither node points back to head) must exhaust
     /// MAX_LIST_ITERATIONS and return Err(Error::ListCycle(_)).
     #[test]
+    fn required_symbol_ok() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_symbol("init_task", 0xFFFF_8000_CAFE_0000);
+
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let ptb = PageTableBuilder::new().map_4k(vaddr, paddr, flags::WRITABLE);
+
+        let reader = make_reader(&isf, ptb);
+        assert_eq!(
+            reader.required_symbol("init_task").unwrap(),
+            0xFFFF_8000_CAFE_0000
+        );
+    }
+
+    #[test]
+    fn required_symbol_missing_returns_error() {
+        let isf = IsfBuilder::new().add_struct("task_struct", 128);
+
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let ptb = PageTableBuilder::new().map_4k(vaddr, paddr, flags::WRITABLE);
+
+        let reader = make_reader(&isf, ptb);
+        assert!(reader.required_symbol("nonexistent").is_err());
+    }
+
+    #[test]
+    fn required_field_offset_ok() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 4, "int");
+
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let ptb = PageTableBuilder::new().map_4k(vaddr, paddr, flags::WRITABLE);
+
+        let reader = make_reader(&isf, ptb);
+        assert_eq!(
+            reader.required_field_offset("task_struct", "pid").unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn required_field_offset_missing_returns_error() {
+        let isf = IsfBuilder::new().add_struct("task_struct", 128);
+
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let ptb = PageTableBuilder::new().map_4k(vaddr, paddr, flags::WRITABLE);
+
+        let reader = make_reader(&isf, ptb);
+        assert!(reader
+            .required_field_offset("task_struct", "nonexistent")
+            .is_err());
+    }
+
+    #[test]
     fn walk_list_cycle_detection() {
         // ISF: _EPROCESS with ActiveProcessLinks at offset 0x10;
         // _LIST_ENTRY with Flink at offset 0.
