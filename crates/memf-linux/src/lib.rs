@@ -31,6 +31,7 @@ pub mod envvars;
 pub mod files;
 pub mod fs;
 pub mod ftrace;
+pub mod heuristics;
 pub mod fuse_abuse;
 pub mod futex_forensics;
 pub mod io_uring;
