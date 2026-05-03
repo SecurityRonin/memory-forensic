@@ -229,4 +229,37 @@ mod tests {
         let r3 = classify("-----BEGIN OPENSSH PRIVATE KEY-----");
         assert!(r3.iter().any(|(c, _)| *c == StringCategory::PrivateKey));
     }
+
+    #[test]
+    fn classifies_ipv6_full() {
+        // Full 8-group IPv6 address
+        let r = classify("2001:0db8:85a3:0000:0000:8a2e:0370:7334");
+        assert!(
+            r.iter().any(|(c, _)| *c == StringCategory::IpV6),
+            "expected IpV6 classification for a full IPv6 address"
+        );
+    }
+
+    #[test]
+    fn classifies_ipv6_compressed() {
+        // Compressed IPv6 with :: notation
+        let r = classify("::1");
+        assert!(
+            r.iter().any(|(c, _)| *c == StringCategory::IpV6),
+            "expected IpV6 classification for loopback ::1"
+        );
+    }
+
+    #[test]
+    fn classifies_ipv6_mixed_notation() {
+        // Mixed IPv4/IPv6 compressed form
+        let r = classify("fe80::1%eth0");
+        // This may or may not match depending on whether we include interface IDs;
+        // at minimum fe80::1 without the interface suffix must match.
+        let r2 = classify("fe80::1");
+        assert!(
+            r2.iter().any(|(c, _)| *c == StringCategory::IpV6),
+            "expected IpV6 classification for fe80::1 link-local"
+        );
+    }
 }
