@@ -36,7 +36,7 @@ pub struct LdPreloadInfo {
 ///
 /// LD_PRELOAD entries are separated by `:` or whitespace. Empty entries
 /// (from consecutive delimiters) are filtered out.
-pub fn parse_ld_preload(value: &str) -> Vec<String> {
+fn parse_ld_preload(value: &str) -> Vec<String> {
     value
         .split(|c: char| c == ':' || c.is_ascii_whitespace())
         .filter(|s| !s.is_empty())
@@ -51,24 +51,7 @@ pub fn parse_ld_preload(value: &str) -> Vec<String> {
 /// - Resides in `/dev/shm` or subdirectories
 /// - Contains a hidden path component (directory or file starting with `.`)
 /// - Resides outside standard library directories (`/usr/lib`, `/lib`, etc.)
-pub fn classify_ld_preload(value: &str) -> bool {
-    /// Standard library directories considered benign.
-    const SAFE_PREFIXES: &[&str] = &[
-        "/usr/lib/",
-        "/usr/lib64/",
-        "/usr/lib32/",
-        "/usr/local/lib/",
-        "/usr/local/lib64/",
-        "/lib/",
-        "/lib64/",
-        "/lib32/",
-    ];
-
-    let libraries = parse_ld_preload(value);
-    libraries
-        .iter()
-        .any(|lib| is_suspicious_path(lib, SAFE_PREFIXES))
-}
+pub use crate::heuristics::classify_ld_preload;
 
 /// Check whether a single library path looks suspicious.
 fn is_suspicious_path(path: &str, safe_prefixes: &[&str]) -> bool {

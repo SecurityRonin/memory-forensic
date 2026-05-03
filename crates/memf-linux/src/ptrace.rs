@@ -13,12 +13,6 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{ProcessInfo, Result};
 
-/// Well-known debugger/tracer binaries that are expected to ptrace.
-const KNOWN_DEBUGGERS: &[&str] = &["gdb", "lldb", "strace", "ltrace", "valgrind", "perf"];
-
-/// High-value target processes -- tracing these by a non-debugger is suspicious.
-const HIGH_VALUE_TARGETS: &[&str] = &["sshd", "login", "passwd", "sudo", "su", "gpg-agent"];
-
 /// A detected ptrace relationship between a tracer and a tracee process.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PtraceRelationship {
@@ -35,21 +29,7 @@ pub struct PtraceRelationship {
 }
 
 /// Classify whether a ptrace relationship is suspicious.
-pub fn classify_ptrace(tracer_name: &str, tracee_name: &str) -> bool {
-    if tracer_name.is_empty() {
-        return true;
-    }
-    if KNOWN_DEBUGGERS.iter().any(|&d| d == tracer_name) {
-        return false;
-    }
-    if HIGH_VALUE_TARGETS.iter().any(|&t| t == tracee_name) {
-        return true;
-    }
-    if tracer_name == tracee_name {
-        return true;
-    }
-    false
-}
+pub use crate::heuristics::classify_ptrace;
 
 /// Scan for active ptrace relationships across the given process list.
 pub fn scan_ptrace_relationships<P: PhysicalMemoryProvider>(

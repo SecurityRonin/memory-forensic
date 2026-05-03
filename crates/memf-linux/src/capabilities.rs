@@ -30,14 +30,6 @@ const CAP_SYS_PTRACE: u64 = 1 << 19;
 /// Catch-all admin capability (mount, sethostname, reboot, etc.).
 const CAP_SYS_ADMIN: u64 = 1 << 21;
 
-/// Capabilities considered suspicious when held by a non-root process.
-const SUSPICIOUS_CAPS: &[(u64, &str)] = &[
-    (CAP_SYS_ADMIN, "CAP_SYS_ADMIN"),
-    (CAP_SYS_PTRACE, "CAP_SYS_PTRACE"),
-    (CAP_SYS_MODULE, "CAP_SYS_MODULE"),
-    (CAP_NET_RAW, "CAP_NET_RAW"),
-];
-
 /// Process capability information extracted from `task_struct.cred`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProcessCapabilities {
@@ -83,25 +75,10 @@ pub fn cap_name(bit: u64) -> &'static str {
 /// Classify whether a process's effective capabilities are suspicious.
 ///
 /// A process is suspicious if it is **non-root** (uid != 0) and holds any
-/// of the capabilities in [`SUSPICIOUS_CAPS`].
+/// dangerous capability (e.g. `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_SYS_MODULE`, `CAP_NET_RAW`).
 ///
 /// Returns `(is_suspicious, list_of_suspicious_cap_names)`.
-pub fn classify_capabilities(effective: u64, uid: u32) -> (bool, Vec<String>) {
-    // Root is never suspicious -- it's expected to have all caps.
-    if uid == 0 {
-        return (false, Vec::new());
-    }
-
-    let mut suspicious_names = Vec::new();
-    for &(cap_bit, cap_label) in SUSPICIOUS_CAPS {
-        if effective & cap_bit != 0 {
-            suspicious_names.push(cap_label.to_string());
-        }
-    }
-
-    let is_suspicious = !suspicious_names.is_empty();
-    (is_suspicious, suspicious_names)
-}
+pub use crate::heuristics::classify_capabilities;
 
 /// Walk capability information for each process in the provided list.
 ///

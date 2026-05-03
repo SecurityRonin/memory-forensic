@@ -12,12 +12,6 @@ use std::collections::HashSet;
 
 use crate::{Error, Result};
 
-/// Linux `PF_KTHREAD` flag — set on kernel threads.
-const PF_KTHREAD: u64 = 0x0020_0000;
-
-/// Threshold for extremely large virtual memory size (100 GB).
-const VSIZE_ABUSE_THRESHOLD: u64 = 100 * 1024 * 1024 * 1024;
-
 /// Maximum number of processes to enumerate (safety bound).
 const MAX_PROCESSES: usize = 8192;
 
@@ -73,18 +67,7 @@ pub fn task_state_name(state: u64) -> String {
 }
 
 /// Classify a process as suspicious based on forensic heuristics.
-pub fn classify_psaux(state: u64, uid: u32, flags: u64, vsize: u64) -> bool {
-    if state == 16 && uid == 0 {
-        return true;
-    }
-    if (flags & PF_KTHREAD) != 0 && uid != 0 {
-        return true;
-    }
-    if vsize > VSIZE_ABUSE_THRESHOLD {
-        return true;
-    }
-    false
-}
+pub use crate::heuristics::classify_psaux;
 
 /// Walk the Linux process list and extract detailed `ps aux`-style information.
 pub fn walk_psaux<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<PsAuxInfo>> {
@@ -243,6 +226,11 @@ fn read_tty_name<P: PhysicalMemoryProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Linux `PF_KTHREAD` flag — set on kernel threads.
+    const PF_KTHREAD: u64 = 0x0020_0000;
+    /// Threshold for extremely large virtual memory size (100 GB).
+    const VSIZE_ABUSE_THRESHOLD: u64 = 100 * 1024 * 1024 * 1024;
 
     #[test]
     fn state_running() {

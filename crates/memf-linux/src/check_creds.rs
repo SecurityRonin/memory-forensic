@@ -41,37 +41,7 @@ pub struct SharedCredInfo {
 /// Returns `false` (benign) when:
 /// - Threads of the same process share creds (normal behaviour)
 /// - All uid-0 kernel threads share the kernel cred
-pub fn classify_shared_creds(pid: u32, shared_with: &[u32], uid: u32) -> bool {
-    // Sharing with init (pid 1) by a non-kernel-thread is suspicious.
-    // Kernel threads typically have pid >= 2 and uid 0, but a user-space
-    // process (uid != 0) sharing with init is always suspicious.
-    if shared_with.contains(&1) && pid != 1 {
-        // uid 0 kernel threads sharing with init is expected (kernel cred)
-        if uid == 0 && is_likely_kernel_thread(pid) {
-            return false;
-        }
-        return true;
-    }
-
-    // If all participants are uid-0 kernel threads, benign.
-    if uid == 0 && is_likely_kernel_thread(pid) {
-        return false;
-    }
-
-    // Threads of the same process share creds — benign.
-    // We approximate this: thread PIDs are usually close together and
-    // the caller should have already filtered thread groups. If we reach
-    // here with unrelated PIDs, flag as suspicious.
-    //
-    // Without parent/tgid info at this level we conservatively flag
-    // any remaining sharing as suspicious.
-    !shared_with.is_empty()
-}
-
-/// Heuristic: PIDs <= 2 are typically kernel threads (idle, kthreadd).
-fn is_likely_kernel_thread(pid: u32) -> bool {
-    pid <= 2
-}
+pub use crate::heuristics::classify_shared_creds;
 
 /// Walk all tasks and detect shared `struct cred` pointers.
 ///

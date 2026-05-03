@@ -19,21 +19,6 @@ const SOCK_RAW: u16 = 3;
 /// Interface flag: promiscuous mode.
 const IFF_PROMISC: u32 = 0x100;
 
-/// Known-benign process names that legitimately use `AF_PACKET` sockets.
-const BENIGN_AF_PACKET: &[&str] = &[
-    "tcpdump",
-    "wireshark",
-    "dumpcap",
-    "dhclient",
-    "dhcpcd",
-    "arping",
-    "ping",
-    "ping6",
-];
-
-/// Known-benign process names that legitimately use `SOCK_RAW` sockets.
-const BENIGN_SOCK_RAW: &[&str] = &["ping", "ping6", "traceroute", "traceroute6", "arping"];
-
 /// Information about a raw socket held by a process.
 #[derive(Debug, Clone, Serialize)]
 pub struct RawSocketInfo {
@@ -57,23 +42,7 @@ pub struct RawSocketInfo {
 /// - `is_promiscuous` — captures all traffic on the interface.
 /// - `socket_type == "AF_PACKET"` and `comm` is not a known diagnostic tool.
 /// - `socket_type == "SOCK_RAW"` and `comm` is not a known diagnostic tool.
-pub fn classify_raw_socket(comm: &str, socket_type: &str, is_promiscuous: bool) -> bool {
-    if is_promiscuous {
-        return true;
-    }
-
-    let comm_lower = comm.to_lowercase();
-
-    if socket_type == "AF_PACKET" {
-        return !BENIGN_AF_PACKET.iter().any(|&b| comm_lower == b);
-    }
-
-    if socket_type == "SOCK_RAW" {
-        return !BENIGN_SOCK_RAW.iter().any(|&b| comm_lower == b);
-    }
-
-    false
-}
+pub use crate::heuristics::classify_raw_socket;
 
 /// Walk the task list and enumerate all open raw sockets.
 ///

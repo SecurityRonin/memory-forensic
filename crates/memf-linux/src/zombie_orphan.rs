@@ -12,23 +12,6 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{ProcessState, Result};
 
-const SUSPICIOUS_DAEMON_NAMES: &[&str] = &[
-    "sshd",
-    "httpd",
-    "nginx",
-    "apache",
-    "mysqld",
-    "postgres",
-    "redis",
-    "memcached",
-    "mongod",
-    "named",
-    "bind",
-    "cupsd",
-    "cron",
-    "atd",
-];
-
 /// Information about a zombie or orphan process found in memory.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ZombieOrphanInfo {
@@ -53,21 +36,7 @@ pub struct ZombieOrphanInfo {
 }
 
 /// Classify whether a zombie/orphan process is suspicious.
-pub fn classify_zombie_orphan(is_zombie: bool, is_orphan: bool, ppid: u32, comm: &str) -> bool {
-    if is_zombie && ppid == 1 {
-        return true;
-    }
-    if is_orphan {
-        let lower = comm.to_lowercase();
-        if SUSPICIOUS_DAEMON_NAMES
-            .iter()
-            .any(|&name| lower.contains(name))
-        {
-            return true;
-        }
-    }
-    false
-}
+pub use crate::heuristics::classify_zombie_orphan;
 
 /// Walk the Linux process list and detect zombie and orphan processes.
 pub fn walk_zombie_orphan<P: PhysicalMemoryProvider>(

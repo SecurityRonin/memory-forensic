@@ -276,8 +276,7 @@ const SUSPICIOUS_MAP_NAMES: &[&str] = &[
 ///
 /// Flags high-risk map types (perf_event_array=3, ringbuf=26) and maps whose
 /// names match known rootkit patterns.
-pub fn classify_ebpf_map(map_type: u32, name: &str, value_size: u32) -> bool {
-    let _ = value_size;
+pub fn classify_ebpf_map(map_type: u32, name: &str, _value_size: u32) -> bool {
     let name_lower = name.to_lowercase();
     let suspicious_name = SUSPICIOUS_MAP_NAMES.iter().any(|p| name_lower.contains(p));
 
