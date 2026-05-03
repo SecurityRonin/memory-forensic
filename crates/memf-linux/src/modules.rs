@@ -12,10 +12,7 @@ use crate::{Error, ModuleInfo, ModuleState, Result};
 pub fn walk_modules<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<ModuleInfo>> {
-    let modules_addr = reader
-        .symbols()
-        .symbol_address("modules")
-        .ok_or_else(|| Error::Walker("symbol 'modules' not found".into()))?;
+    let modules_addr = reader.required_symbol("modules")?;
 
     let module_addrs = reader.walk_list(modules_addr, "module", "list")?;
 

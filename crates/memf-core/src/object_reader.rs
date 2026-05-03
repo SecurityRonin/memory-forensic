@@ -191,6 +191,20 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         Ok(buf)
     }
 
+    /// Resolve a global kernel symbol address, returning an error if absent.
+    pub fn required_symbol(&self, name: &str) -> Result<u64> {
+        self.symbols()
+            .symbol_address(name)
+            .ok_or_else(|| Error::MissingSymbol(name.to_owned()))
+    }
+
+    /// Resolve a struct field offset, returning an error if absent.
+    pub fn required_field_offset(&self, struct_name: &str, field_name: &str) -> Result<u64> {
+        self.symbols()
+            .field_offset(struct_name, field_name)
+            .ok_or_else(|| Error::MissingSymbol(format!("{struct_name}.{field_name}")))
+    }
+
     fn read_u64_at(&self, vaddr: u64) -> Result<u64> {
         let mut buf = [0u8; 8];
         self.vas.read_virt(vaddr, &mut buf)?;

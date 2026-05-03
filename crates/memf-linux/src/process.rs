@@ -13,15 +13,8 @@ use crate::{Error, ProcessInfo, ProcessState, PsTreeEntry, Result};
 pub fn walk_processes<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<ProcessInfo>> {
-    let init_task_addr = reader
-        .symbols()
-        .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
-
-    let tasks_offset = reader
-        .symbols()
-        .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+    let init_task_addr = reader.required_symbol("init_task")?;
+    let tasks_offset = reader.required_field_offset("task_struct", "tasks")?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;

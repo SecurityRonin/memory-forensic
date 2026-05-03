@@ -48,10 +48,7 @@ fn read_process_info<P: PhysicalMemoryProvider>(
 
     // Pcb is at offset 0 within _EPROCESS, which IS the _KPROCESS.
     // We need the offset of Pcb within _EPROCESS to compute the _KPROCESS base.
-    let pcb_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "Pcb")
-        .ok_or_else(|| Error::Walker("missing _EPROCESS.Pcb offset".into()))?;
+    let pcb_offset = reader.required_field_offset("_EPROCESS", "Pcb")?;
     let kproc_addr = eproc_addr.wrapping_add(pcb_offset);
     let cr3: u64 = reader.read_field(kproc_addr, "_KPROCESS", "DirectoryTableBase")?;
 
