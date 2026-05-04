@@ -37,6 +37,28 @@ pub struct ProcessNode {
     pub threat_score: f64,
 }
 
+fn build_node(
+    pid: u32,
+    by_pid: &mut HashMap<u32, (String, Option<u32>, Vec<ForensicEvent>)>,
+    parent_to_children: &HashMap<u32, Vec<u32>>,
+) -> ProcessNode {
+    let (name, ppid, events) = by_pid.remove(&pid).unwrap_or_default();
+    let threat_score = score_events(&events);
+    let child_pids = parent_to_children.get(&pid).cloned().unwrap_or_default();
+    let children = child_pids
+        .into_iter()
+        .map(|child_pid| build_node(child_pid, by_pid, parent_to_children))
+        .collect();
+    ProcessNode {
+        pid,
+        name,
+        ppid,
+        children,
+        events,
+        threat_score,
+    }
+}
+
 /// A tree of processes built from forensic events.
 pub struct ProcessTree {
     roots: Vec<ProcessNode>,
@@ -79,29 +101,6 @@ impl ProcessTree {
             }
         }
 
-        // Recursively build nodes.
-        fn build_node(
-            pid: u32,
-            by_pid: &mut HashMap<u32, (String, Option<u32>, Vec<ForensicEvent>)>,
-            parent_to_children: &HashMap<u32, Vec<u32>>,
-        ) -> ProcessNode {
-            let (name, ppid, events) = by_pid.remove(&pid).unwrap_or_default();
-            let threat_score = score_events(&events);
-            let child_pids = parent_to_children.get(&pid).cloned().unwrap_or_default();
-            let children = child_pids
-                .into_iter()
-                .map(|child_pid| build_node(child_pid, by_pid, parent_to_children))
-                .collect();
-            ProcessNode {
-                pid,
-                name,
-                ppid,
-                children,
-                events,
-                threat_score,
-            }
-        }
-
         let roots = root_pids
             .into_iter()
             .map(|pid| build_node(pid, &mut by_pid, &parent_to_children))
@@ -141,24 +140,10 @@ impl ProcessTree {
     pub fn orphaned_nodes(&self) -> Vec<&ProcessNode> {
         // Orphans are roots that have a non-None, non-zero ppid
         // (they became roots because their parent is missing).
-        fn collect_orphans<'a>(node: &'a ProcessNode, out: &mut Vec<&'a ProcessNode>) {
-            if matches!(node.ppid, Some(p) if p != 0) && node.children.is_empty() {
-                // Only mark as orphan if it's a "root" itself — we check at call site.
-            }
-            for child in &node.children {
-                collect_orphans(child, out);
-            }
-        }
-
-        let mut orphans = Vec::new();
-        for root in &self.roots {
-            if matches!(root.ppid, Some(p) if p != 0) {
-                orphans.push(root);
-            }
-            // Children with present parents are NOT orphans.
-            collect_orphans(root, &mut orphans);
-        }
-        orphans
+        self.roots
+            .iter()
+            .filter(|root| matches!(root.ppid, Some(p) if p != 0))
+            .collect()
     }
 
     /// Walk from roots, following the child with the highest threat_score at each step.
