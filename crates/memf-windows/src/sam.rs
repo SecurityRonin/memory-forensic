@@ -61,6 +61,15 @@ pub const UAC_NORMAL_ACCOUNT: u32 = 0x0200;
 /// - Recently created account with password-not-required flag
 /// - Username matches known attack tool default accounts
 pub fn classify_sam_user(username: &str, rid: u32, flags: u32) -> bool {
+    const SUSPICIOUS_NAMES: &[&str] = &[
+        "defaultaccount0",
+        "support_388945a0",
+        "svc_admin",
+        "backdoor",
+        "hacker",
+        "test123",
+    ];
+
     if username.is_empty() {
         return false;
     }
@@ -83,14 +92,6 @@ pub fn classify_sam_user(username: &str, rid: u32, flags: u32) -> bool {
     }
 
     // Known attack tool default account names
-    const SUSPICIOUS_NAMES: &[&str] = &[
-        "defaultaccount0",
-        "support_388945a0",
-        "svc_admin",
-        "backdoor",
-        "hacker",
-        "test123",
-    ];
     if SUSPICIOUS_NAMES.iter().any(|&s| lower == s) {
         return true;
     }
@@ -227,9 +228,9 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(MAX_USERS as u16) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
+            [b'l', b'f' | b'h'] => {
                 // lf/lh: 8-byte entries (offset + hash) starting at +4
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
@@ -238,7 +239,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
             }
             [b'l', b'i'] => {
                 // li: 4-byte entries (offset only) starting at +4
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
@@ -283,7 +284,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
         let username = if names_key != 0 {
             find_name_for_rid(reader, flat_base, names_key, rid)
         } else {
-            format!("RID-{}", rid)
+            format!("RID-{rid}")
         };
 
         // Read the F value for account metadata.
@@ -319,7 +320,7 @@ fn read_cell_addr<P: PhysicalMemoryProvider>(
     cell_off: u32,
 ) -> u64 {
     // Cell data starts 4 bytes after the cell offset (cell size header).
-    let addr = flat_base + (cell_off as u64) + 4;
+    let addr = flat_base + u64::from(cell_off) + 4;
     // Verify we can read from this address.
     match reader.read_bytes(addr, 2) {
         Ok(bytes) if bytes.len() == 2 => addr,
@@ -365,15 +366,15 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+            [b'l', b'f' | b'h'] => {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                 Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => continue,
             },
@@ -418,44 +419,44 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
     // type encodes the RID. We read each subkey name and check the value type.
     let subkey_count: u32 = match reader.read_bytes(names_key + 0x18, 4) {
         Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-        _ => return format!("RID-{}", target_rid),
+        _ => return format!("RID-{target_rid}"),
     };
 
     if subkey_count == 0 || subkey_count > 4096 {
-        return format!("RID-{}", target_rid);
+        return format!("RID-{target_rid}");
     }
 
     let list_off: u32 = match reader.read_bytes(names_key + 0x20, 4) {
         Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-        _ => return format!("RID-{}", target_rid),
+        _ => return format!("RID-{target_rid}"),
     };
 
     let list_addr = read_cell_addr(reader, flat_base, list_off);
     if list_addr == 0 {
-        return format!("RID-{}", target_rid);
+        return format!("RID-{target_rid}");
     }
 
     let list_sig = match reader.read_bytes(list_addr, 2) {
         Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
-        _ => return format!("RID-{}", target_rid),
+        _ => return format!("RID-{target_rid}"),
     };
 
     let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
         Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
-        _ => return format!("RID-{}", target_rid),
+        _ => return format!("RID-{target_rid}"),
     };
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+            [b'l', b'f' | b'h'] => {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                 Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => continue,
             },
@@ -522,7 +523,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
         }
     }
 
-    format!("RID-{}", target_rid)
+    format!("RID-{target_rid}")
 }
 
 /// Read account metadata from the F value of a user's RID key.
@@ -556,7 +557,7 @@ fn read_f_value<P: PhysicalMemoryProvider>(
 
     // Scan values for "F".
     for v in 0..val_count.min(64) {
-        let val_off: u32 = match reader.read_bytes(val_list_addr + (v as u64) * 4, 4) {
+        let val_off: u32 = match reader.read_bytes(val_list_addr + u64::from(v) * 4, 4) {
             Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
             _ => continue,
         };
@@ -639,11 +640,11 @@ fn read_f_value<P: PhysicalMemoryProvider>(
         };
 
         return (
-            flags_raw as u32,
+            u32::from(flags_raw),
             last_login,
             last_pw,
             created,
-            login_cnt as u32,
+            u32::from(login_cnt),
         );
     }
 

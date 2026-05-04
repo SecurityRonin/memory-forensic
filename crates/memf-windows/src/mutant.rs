@@ -45,7 +45,7 @@ pub fn walk_mutants<P: PhysicalMemoryProvider>(
     let body_offset = reader
         .symbols()
         .struct_size("_OBJECT_HEADER")
-        .unwrap_or(0x30) as u64;
+        .unwrap_or(0x30);
 
     let mut results = Vec::new();
     walk_directory_recursive(
@@ -55,7 +55,7 @@ pub fn walk_mutants<P: PhysicalMemoryProvider>(
         body_offset,
         0,
         &mut results,
-    )?;
+    );
     Ok(results)
 }
 
@@ -67,9 +67,9 @@ fn walk_directory_recursive<P: PhysicalMemoryProvider>(
     body_offset: u64,
     depth: usize,
     results: &mut Vec<MutantInfo>,
-) -> Result<()> {
+) {
     if depth >= MAX_DIR_DEPTH {
-        return Ok(());
+        return;
     }
 
     let entries = walk_directory(reader, dir_addr).unwrap_or_default();
@@ -85,12 +85,10 @@ fn walk_directory_recursive<P: PhysicalMemoryProvider>(
         let type_name = resolve_type_name(reader, ob_type_table_addr, type_index);
 
         if type_name == "Mutant" {
-            if let Ok(info) = read_mutant_info(reader, body_addr, name) {
-                results.push(info);
-            }
+            results.push(read_mutant_info(reader, body_addr, name));
         } else if type_name == "Directory" {
             // Recurse into subdirectory
-            let _ = walk_directory_recursive(
+            walk_directory_recursive(
                 reader,
                 body_addr,
                 ob_type_table_addr,
@@ -100,7 +98,6 @@ fn walk_directory_recursive<P: PhysicalMemoryProvider>(
             );
         }
     }
-    Ok(())
 }
 
 /// Resolve the object type name from `ObTypeIndexTable[type_index]`.
@@ -125,7 +122,7 @@ fn resolve_type_name<P: PhysicalMemoryProvider>(
     let name_off = reader
         .symbols()
         .field_offset("_OBJECT_TYPE", "Name")
-        .unwrap_or(0x10) as u64;
+        .unwrap_or(0x10);
     let name = read_unicode_string(reader, obj_type_ptr + name_off).unwrap_or_default();
     if name.is_empty() {
         "<unknown>".to_string()
@@ -139,15 +136,15 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     object_body_addr: u64,
     name: String,
-) -> Result<MutantInfo> {
+) -> MutantInfo {
     let owner_thread_off = reader
         .symbols()
         .field_offset("_KMUTANT", "OwnerThread")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let abandoned_off = reader
         .symbols()
         .field_offset("_KMUTANT", "Abandoned")
-        .unwrap_or(0x30) as u64;
+        .unwrap_or(0x30);
 
     let owner_thread_ptr: u64 = reader
         .read_bytes(object_body_addr + owner_thread_off, 8)
@@ -163,7 +160,7 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
         let cid_off = reader
             .symbols()
             .field_offset("_ETHREAD", "Cid")
-            .unwrap_or(0x620) as u64;
+            .unwrap_or(0x620);
         let pid: u64 = reader
             .read_bytes(owner_thread_ptr + cid_off, 8)
             .map(|b| u64::from_le_bytes(b[..8].try_into().expect("8")))
@@ -177,12 +174,12 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
         (0, 0)
     };
 
-    Ok(MutantInfo {
+    MutantInfo {
         name,
         owner_pid,
         owner_thread_id: owner_tid,
         abandoned,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -205,7 +202,7 @@ mod tests {
     // _ETHREAD.Cid offset (from preset)
     const ETHREAD_CID: u64 = 0x620;
     fn utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     fn make_isf() -> serde_json::Value {
@@ -408,7 +405,7 @@ mod tests {
                 ..body_off + KMUTANT_OWNER_THREAD as usize + 8]
                 .copy_from_slice(&ETHREAD_VADDR.to_le_bytes());
         }
-        obj_page[body_off + KMUTANT_ABANDONED as usize] = abandoned as u8;
+        obj_page[body_off + KMUTANT_ABANDONED as usize] = u8::from(abandoned);
 
         // _ETHREAD: Cid at +0x620
         let mut ethread_page = vec![0u8; 0x700];
@@ -515,7 +512,7 @@ mod tests {
     fn walk_directory_recursive_depth_limit_returns_ok() {
         let reader = make_test_reader(PageTableBuilder::new());
         let mut results = Vec::new();
-        let result = walk_directory_recursive(
+        walk_directory_recursive(
             &reader,
             0xFFFF_DEAD_0000_0000,
             0,
@@ -523,7 +520,6 @@ mod tests {
             MAX_DIR_DEPTH,
             &mut results,
         );
-        assert!(result.is_ok());
         assert!(results.is_empty());
     }
 
@@ -566,7 +562,7 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
         let mut table_page = vec![0u8; 4096];
-        table_page[1 * 8..1 * 8 + 8].copy_from_slice(&TYPE_VADDR.to_le_bytes());
+        table_page[8..8 + 8].copy_from_slice(&TYPE_VADDR.to_le_bytes());
 
         // _OBJECT_TYPE with Name Length=0 (empty _UNICODE_STRING)
         let type_page = vec![0u8; 4096];

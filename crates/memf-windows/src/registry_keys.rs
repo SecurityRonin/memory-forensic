@@ -212,9 +212,8 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
             break;
         }
         let val_cell = u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
-        match read_single_value(reader, hive_addr, val_cell, &key_name) {
-            Ok(v) => values.push(v),
-            Err(_) => continue, // skip corrupt values
+        if let Ok(v) = read_single_value(reader, hive_addr, val_cell, &key_name) {
+            values.push(v); // skip corrupt values silently
         }
     }
 
@@ -230,7 +229,7 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
 fn cell_address(hive_addr: u64, cell_index: u32) -> u64 {
     hive_addr
         .wrapping_add(HBIN_START_OFFSET)
-        .wrapping_add(cell_index as u64)
+        .wrapping_add(u64::from(cell_index))
 }
 
 /// Read cell data from a cell at `cell_vaddr`.
@@ -282,6 +281,7 @@ fn read_key_name(nk_data: &[u8]) -> String {
 }
 
 /// Recursively walk key nodes.
+#[allow(clippy::needless_pass_by_value)]
 fn walk_key_recursive<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
@@ -871,7 +871,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0010_0000;
         let hive_paddr: u64 = 0x0080_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -962,7 +962,7 @@ mod tests {
         let hive_paddr: u64 = 0x0080_0000;
         // HBIN page is at hive_vaddr + 0x1000
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         // Build _HBASE_BLOCK
         let mut hbase_block = vec![0u8; 4096];
@@ -1017,7 +1017,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0010_0000;
         let hive_paddr: u64 = 0x0080_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         // Key cell offset (used as the key_cell_offset parameter)
         let nk_offset: u32 = 0x20;
@@ -1095,7 +1095,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0020_0000;
         let hive_paddr: u64 = 0x0090_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         // Offsets within the HBIN page:
         let root_cell_index: u32 = 0x20; // root nk cell
@@ -1144,7 +1144,7 @@ mod tests {
             keys.len()
         );
         let paths: Vec<&str> = keys.iter().map(|k| k.path.as_str()).collect();
-        assert!(paths.iter().any(|p| *p == "ROOT"), "expected ROOT");
+        assert!(paths.contains(&"ROOT"), "expected ROOT");
         assert!(
             paths.iter().any(|p| p.ends_with("ChildKey")),
             "expected ChildKey"
@@ -1160,7 +1160,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0030_0000;
         let hive_paddr: u64 = 0x00A0_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let ri_cell_index: u32 = 0x100; // ri index of indices
@@ -1229,7 +1229,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0040_0000;
         let hive_paddr: u64 = 0x00B0_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let list_cell_index: u32 = 0x100;
@@ -1277,7 +1277,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0050_0000;
         let hive_paddr: u64 = 0x00C0_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
 
@@ -1286,7 +1286,7 @@ mod tests {
         bad_data[0..2].copy_from_slice(&0xFFFFu16.to_le_bytes()); // bad sig
         let bad_cell = build_cell(&bad_data);
 
-        let mut hbase = vec![0u8; 4096];
+        let hbase = vec![0u8; 4096];
         let mut hbin = vec![0u8; 4096];
         hbin[nk_offset as usize..nk_offset as usize + bad_cell.len()].copy_from_slice(&bad_cell);
 
@@ -1310,7 +1310,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0060_0000;
         let hive_paddr: u64 = 0x00D0_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -1352,7 +1352,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0070_0000;
         let hive_paddr: u64 = 0x00E0_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -1427,11 +1427,11 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0080_0000;
         let hive_paddr: u64 = 0x00F0_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let cell_index: u32 = 0x20;
-        let cell_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET + cell_index as u64;
-        let cell_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64 + cell_index as u64;
+        let cell_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET + u64::from(cell_index);
+        let cell_paddr: u64 = hive_paddr + HBIN_START_OFFSET + u64::from(cell_index);
 
         // +8 raw_size: abs = 8, data_len = 4 → should read 4 bytes
         let raw_size: i32 = 8i32; // positive (free cell), abs = 8
@@ -1465,7 +1465,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_0090_0000;
         let hive_paddr: u64 = 0x0070_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let list_cell_index: u32 = 0x100;
@@ -1516,7 +1516,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_00A0_0000;
         let hive_paddr: u64 = 0x0075_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -1595,7 +1595,7 @@ mod tests {
         let hive_vaddr: u64 = 0xFFFF_8000_00B0_0000;
         let hive_paddr: u64 = 0x007A_0000;
         let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET as u64;
+        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let ri_cell_index: u32 = 0x100;

@@ -126,7 +126,7 @@ pub fn walk_systemd_units<P: PhysicalMemoryProvider>(
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
 
     // Include init_task itself (PID 1 = systemd on modern Linux).
-    let all_tasks = std::iter::once(init_task_addr).chain(task_addrs.into_iter());
+    let all_tasks = std::iter::once(init_task_addr).chain(task_addrs);
 
     for task_addr in all_tasks {
         let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
@@ -139,7 +139,7 @@ pub fn walk_systemd_units<P: PhysicalMemoryProvider>(
 
         // Find systemd: comm == "systemd" and pid == 1.
         if pid == 1 && comm == "systemd" {
-            return scan_systemd_vmas(reader, task_addr);
+            return Ok(scan_systemd_vmas(reader, task_addr));
         }
     }
 
@@ -150,18 +150,18 @@ pub fn walk_systemd_units<P: PhysicalMemoryProvider>(
 fn scan_systemd_vmas<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     task_addr: u64,
-) -> Result<Vec<SystemdUnitInfo>> {
+) -> Vec<SystemdUnitInfo> {
     let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
         Ok(v) => v,
-        Err(_) => return Ok(vec![]),
+        Err(_) => return vec![],
     };
     if mm_ptr == 0 {
-        return Ok(vec![]);
+        return vec![];
     }
 
     let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
         Ok(v) => v,
-        Err(_) => return Ok(vec![]),
+        Err(_) => return vec![],
     };
 
     let mut findings = Vec::new();
@@ -190,7 +190,7 @@ fn scan_systemd_vmas<P: PhysicalMemoryProvider>(
             .unwrap_or(0);
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Scan a VMA's address range in chunks for unit name strings.
@@ -206,12 +206,9 @@ fn scan_vma_for_units<P: PhysicalMemoryProvider>(
     while offset < total {
         let chunk_size = SCAN_CHUNK.min((total - offset) as usize);
         let chunk_addr = vm_start + offset;
-        let bytes = match reader.read_bytes(chunk_addr, chunk_size) {
-            Ok(b) => b,
-            Err(_) => {
-                offset += chunk_size as u64;
-                continue;
-            }
+        let bytes = if let Ok(b) = reader.read_bytes(chunk_addr, chunk_size) { b } else {
+            offset += chunk_size as u64;
+            continue;
         };
 
         // Scan chunk for unit name markers.

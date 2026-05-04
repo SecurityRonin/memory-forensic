@@ -166,6 +166,7 @@ pub fn walk_symlinks<P: PhysicalMemoryProvider>(
 
 /// Recursively walk an `_OBJECT_DIRECTORY` and collect symbolic link objects.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::only_used_in_recursion)]
 fn walk_dir_recursive<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     dir_addr: u64,

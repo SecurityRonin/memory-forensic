@@ -85,7 +85,7 @@ pub fn walk_seccomp_profiles<P: PhysicalMemoryProvider>(
                 let filter_ptr: u64 = reader
                     .read_field(seccomp_base, "seccomp", "filter")
                     .unwrap_or(0);
-                count_filter_chain(reader, filter_ptr)?
+                count_filter_chain(reader, filter_ptr)
             } else {
                 // We know mode is filter but can't walk the chain.
                 0
@@ -112,9 +112,9 @@ pub fn walk_seccomp_profiles<P: PhysicalMemoryProvider>(
 fn count_filter_chain<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     first_filter: u64,
-) -> Result<u32> {
+) -> u32 {
     if first_filter == 0 {
-        return Ok(0);
+        return 0;
     }
 
     let mut count: u32 = 0;
@@ -133,7 +133,7 @@ fn count_filter_chain<P: PhysicalMemoryProvider>(
         current = prev;
     }
 
-    Ok(count)
+    count
 }
 
 #[cfg(test)]

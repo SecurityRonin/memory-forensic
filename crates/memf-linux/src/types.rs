@@ -970,6 +970,7 @@ pub struct CpuPinningInfo {
 // ---------------------------------------------------------------------------
 
 /// Container escape / breakout detection info.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ContainerEscapeCorrelateInfo {
     /// Process ID.
@@ -1017,6 +1018,7 @@ pub struct FdAbuseInfo {
 }
 
 /// Shared memory anomaly info.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SharedMemAnomalyInfo {
     /// Process ID.

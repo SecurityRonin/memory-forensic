@@ -30,7 +30,7 @@ pub fn classify_mbr(bootstrap_bytes: &[u8]) -> bool {
     matches!(bootstrap_bytes[0], 0xFA | 0x90)
         && !matches!(
             &bootstrap_bytes[..3],
-            [0xFA, 0x33, 0xC0] | [0xFA, 0x31, 0xC0]
+            [0xFA, 0x33 | 0x31, 0xC0]
         )
 }
 
@@ -50,12 +50,9 @@ pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Res
     let mut results = Vec::new();
     let mut offset: u64 = 0;
     while offset + 512 <= 65536 {
-        let sector = match reader.read_bytes(offset, 512) {
-            Ok(b) => b,
-            Err(_) => {
-                offset += 512;
-                continue;
-            }
+        let sector = if let Ok(b) = reader.read_bytes(offset, 512) { b } else {
+            offset += 512;
+            continue;
         };
 
         let has_valid_magic = sector[510] == 0x55 && sector[511] == 0xAA;
@@ -87,10 +84,15 @@ pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Res
 }
 
 fn sha256_hex(data: &[u8]) -> String {
+    use std::fmt::Write;
     let digest = sha256(data);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    digest.iter().fold(String::with_capacity(64), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
+#[allow(clippy::many_single_char_names)]
 fn sha256(data: &[u8]) -> [u8; 32] {
     #[rustfmt::skip]
     const K: [u32; 64] = [

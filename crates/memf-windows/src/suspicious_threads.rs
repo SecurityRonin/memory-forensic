@@ -15,6 +15,7 @@ use memf_format::PhysicalMemoryProvider;
 use crate::{dll, process, thread, vad};
 
 /// Information about a suspicious thread detected during injection analysis.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SuspiciousThreadInfo {
     /// Process ID owning this thread.
@@ -73,8 +74,7 @@ pub fn classify_suspicious_thread(
         return (
             true,
             format!(
-                "orphan thread in system process {}; thread start address not in any loaded module",
-                process_name
+                "orphan thread in system process {process_name}; thread start address not in any loaded module"
             ),
         );
     }

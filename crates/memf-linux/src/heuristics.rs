@@ -19,17 +19,13 @@
 /// unnamed tracing/raw_tracepoint programs.
 pub fn classify_bpf_program(prog_type: &str, name: &str) -> bool {
     match prog_type {
-        // kprobe can hook arbitrary kernel functions — always suspicious.
-        "kprobe" => true,
-
         // Unnamed tracing/raw_tracepoint programs suggest evasion.
         "tracing" | "raw_tracepoint" => name.is_empty(),
 
-        // raw_tracepoint_writable can modify tracepoint arguments — always suspicious.
-        "raw_tracepoint_writable" => true,
-
-        // LSM programs can override security decisions.
-        "lsm" => true,
+        // kprobe, raw_tracepoint_writable, and lsm are always suspicious:
+        // kprobe hooks arbitrary kernel functions; raw_tracepoint_writable can
+        // modify tracepoint arguments; lsm programs can override security decisions.
+        "kprobe" | "raw_tracepoint_writable" | "lsm" => true,
 
         // Everything else (socket_filter, xdp, tracepoint, etc.) is
         // considered benign by default at the type level.
@@ -355,7 +351,9 @@ pub fn classify_iomem(name: &str, start: u64, end: u64) -> bool {
     }
 
     // Region overlapping kernel text range but not named "Kernel code".
+    #[allow(clippy::items_after_statements)]
     const KERNEL_TEXT_START: u64 = 0xffff_ffff_8100_0000;
+    #[allow(clippy::items_after_statements)]
     const KERNEL_TEXT_END: u64 = 0xffff_ffff_8200_0000;
     if start < KERNEL_TEXT_END && end > KERNEL_TEXT_START && name != "Kernel code" {
         return true;
@@ -564,7 +562,9 @@ pub fn classify_library(lib_path: &str) -> bool {
     }
 
     // Not a standard shared library name.
-    if !clean.ends_with(".so") && !clean.contains(".so.") {
+    if !std::path::Path::new(clean).extension().is_some_and(|e| e.eq_ignore_ascii_case("so"))
+        && !clean.contains(".so.")
+    {
         return true;
     }
 
@@ -781,10 +781,10 @@ pub fn classify_ptrace(tracer_name: &str, tracee_name: &str) -> bool {
     if tracer_name.is_empty() {
         return true;
     }
-    if KNOWN_DEBUGGERS.iter().any(|&d| d == tracer_name) {
+    if KNOWN_DEBUGGERS.contains(&tracer_name) {
         return false;
     }
-    if HIGH_VALUE_TARGETS.iter().any(|&t| t == tracee_name) {
+    if HIGH_VALUE_TARGETS.contains(&tracee_name) {
         return true;
     }
     if tracer_name == tracee_name {

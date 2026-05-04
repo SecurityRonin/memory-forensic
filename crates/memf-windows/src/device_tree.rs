@@ -176,11 +176,7 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
     let mut current = driver_list_head;
     let mut count = 0;
 
-    loop {
-        let flink_bytes = match reader.read_bytes(current, 8) {
-            Ok(b) => b,
-            Err(_) => break,
-        };
+    while let Ok(flink_bytes) = reader.read_bytes(current, 8) {
         let flink = u64::from_le_bytes(flink_bytes[..8].try_into().unwrap());
 
         if flink == driver_list_head {
@@ -196,19 +192,16 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
             break;
         }
 
-        let driver_addr = flink.wrapping_sub(driver_section_off as u64);
+        let driver_addr = flink.wrapping_sub(driver_section_off);
 
         let driver_name =
-            read_unicode_string(reader, driver_addr.wrapping_add(driver_name_off as u64))
+            read_unicode_string(reader, driver_addr.wrapping_add(driver_name_off))
                 .unwrap_or_default();
 
         let dev_ptr_bytes =
-            match reader.read_bytes(driver_addr.wrapping_add(device_object_off as u64), 8) {
-                Ok(b) => b,
-                Err(_) => {
-                    current = flink;
-                    continue;
-                }
+            if let Ok(b) = reader.read_bytes(driver_addr.wrapping_add(device_object_off), 8) { b } else {
+                current = flink;
+                continue;
             };
         let mut device_addr = u64::from_le_bytes(dev_ptr_bytes[..8].try_into().unwrap());
 
@@ -224,18 +217,16 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
             }
 
             let device_type = reader
-                .read_bytes(device_addr.wrapping_add(device_type_off as u64), 4)
+                .read_bytes(device_addr.wrapping_add(device_type_off), 4)
                 .ok()
                 .and_then(|b| b[..4].try_into().ok())
-                .map(u32::from_le_bytes)
-                .unwrap_or(0);
+                .map_or(0, u32::from_le_bytes);
 
             let attached_device = reader
-                .read_bytes(device_addr.wrapping_add(attached_device_off as u64), 8)
+                .read_bytes(device_addr.wrapping_add(attached_device_off), 8)
                 .ok()
                 .and_then(|b| b[..8].try_into().ok())
-                .map(u64::from_le_bytes)
-                .unwrap_or(0);
+                .map_or(0, u64::from_le_bytes);
 
             let is_suspicious = classify_device(&driver_name, device_type);
 
@@ -250,11 +241,10 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
             });
 
             device_addr = reader
-                .read_bytes(device_addr.wrapping_add(next_device_off as u64), 8)
+                .read_bytes(device_addr.wrapping_add(next_device_off), 8)
                 .ok()
                 .and_then(|b| b[..8].try_into().ok())
-                .map(u64::from_le_bytes)
-                .unwrap_or(0);
+                .map_or(0, u64::from_le_bytes);
         }
 
         current = flink;

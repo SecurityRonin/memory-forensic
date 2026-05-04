@@ -144,6 +144,7 @@ pub fn walk_consoles<P: PhysicalMemoryProvider + Clone>(
 /// Scans the process heap region for `_CONSOLE_INFORMATION` signature,
 /// then walks `HistoryList` to find `_COMMAND_HISTORY` entries and their
 /// command buffers.
+#[allow(clippy::unnecessary_wraps)]
 fn extract_console_commands<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     pid: u32,
@@ -158,7 +159,7 @@ fn extract_console_commands<P: PhysicalMemoryProvider>(
     let peb_heap_off = reader
         .symbols()
         .field_offset("_PEB", "ProcessHeap")
-        .unwrap_or(0x30) as u64;
+        .unwrap_or(0x30);
 
     let heap_addr = read_ptr(reader, peb_addr + peb_heap_off);
     if heap_addr == 0 {
@@ -169,31 +170,31 @@ fn extract_console_commands<P: PhysicalMemoryProvider>(
     let hist_list_off = reader
         .symbols()
         .field_offset("_CONSOLE_INFORMATION", "HistoryList")
-        .unwrap_or(0x40) as u64;
+        .unwrap_or(0x40);
     let cmd_hist_list_off = reader
         .symbols()
         .field_offset("_COMMAND_HISTORY", "ListEntry")
-        .unwrap_or(0) as u64;
+        .unwrap_or(0);
     let cmd_hist_app_off = reader
         .symbols()
         .field_offset("_COMMAND_HISTORY", "Application")
-        .unwrap_or(0x10) as u64;
+        .unwrap_or(0x10);
     let cmd_hist_count_off = reader
         .symbols()
         .field_offset("_COMMAND_HISTORY", "CommandCount")
-        .unwrap_or(0x20) as u64;
+        .unwrap_or(0x20);
     let cmd_hist_buf_off = reader
         .symbols()
         .field_offset("_COMMAND_HISTORY", "CommandBucket")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let cmd_entry_size_off = reader
         .symbols()
         .field_offset("_COMMAND", "CommandLength")
-        .unwrap_or(0) as u64;
+        .unwrap_or(0);
     let cmd_entry_data_off = reader
         .symbols()
         .field_offset("_COMMAND", "Command")
-        .unwrap_or(0x08) as u64;
+        .unwrap_or(0x08);
 
     // Scan heap for _CONSOLE_INFORMATION candidates
     let candidates = scan_for_console_info(reader, heap_addr, hist_list_off);
@@ -221,7 +222,7 @@ fn extract_console_commands<P: PhysicalMemoryProvider>(
                 continue;
             }
 
-            for i in 0..command_count as u64 {
+            for i in 0..u64::from(command_count) {
                 let cmd_entry_ptr = read_ptr(reader, bucket_ptr + i * 8);
                 if cmd_entry_ptr == 0 {
                     continue;
@@ -762,7 +763,7 @@ mod tests {
         const VADDR: u64 = 0xFFFF_8000_0025_0000;
         const PADDR: u64 = 0x0025_0000;
         let text = "Hello";
-        let utf16: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let mut page = vec![0u8; 4096];
         page[..utf16.len()].copy_from_slice(&utf16);
         let isf = IsfBuilder::new().build_json();
@@ -1125,12 +1126,12 @@ mod tests {
         let whoami = "whoami";
         let whoami_utf16: Vec<u8> = whoami
             .encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
+            .flat_map(u16::to_le_bytes)
             .collect();
         let cmdexe = "cmd.exe";
         let cmdexe_utf16: Vec<u8> = cmdexe
             .encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
+            .flat_map(u16::to_le_bytes)
             .collect();
 
         let isf = IsfBuilder::new()

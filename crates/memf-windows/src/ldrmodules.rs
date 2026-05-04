@@ -22,6 +22,7 @@ const MAX_MODULES: usize = 4096;
 /// Each boolean indicates whether the module was found in that particular list.
 /// A module missing from one or more lists (while present in at least one)
 /// suggests DLL unlinking — a technique used by malware to hide injected DLLs.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LdrModuleInfo {
     /// Process ID that owns this module.
@@ -117,6 +118,7 @@ pub fn walk_ldrmodules<P: PhysicalMemoryProvider>(
 
     /// Walk a single linked list, returning `(entry_addr, DllBase)` pairs.
     /// Uses a `HashSet` for cycle detection and caps at `MAX_MODULES`.
+    #[allow(clippy::items_after_statements)]
     fn walk_single_list<P2: PhysicalMemoryProvider>(
         reader: &ObjectReader<P2>,
         ldr_addr: u64,
@@ -577,7 +579,7 @@ mod tests {
         // ldr_page:
         // InLoadOrderModuleList at ldr+0x10: Flink = entry_vaddr + 0
         let mut ldr_page = vec![0u8; 4096];
-        ldr_page[0x10..0x18].copy_from_slice(&(entry_vaddr + 0).to_le_bytes()); // load head Flink
+        ldr_page[0x10..0x18].copy_from_slice(&entry_vaddr.to_le_bytes()); // load head Flink
         ldr_page[0x20..0x28].copy_from_slice(&(entry_vaddr + 0x10).to_le_bytes()); // mem head Flink
         ldr_page[0x30..0x38].copy_from_slice(&(entry_vaddr + 0x20).to_le_bytes()); // init head Flink
 

@@ -29,20 +29,11 @@ use crate::{process, thread, DirectSyscallInfo, Result};
 /// - A normal syscall inside ntdll with a standard technique is benign.
 pub fn classify_syscall_technique(in_ntdll: bool, technique: &str) -> bool {
     match technique {
-        // Heaven's Gate is always suspicious -- legitimate code does not
-        // perform 32->64 bit transitions to invoke syscalls.
-        "heavens_gate" => true,
+        // Heaven's Gate (32->64 bit transition) and indirect syscall (call from
+        // non-system module into ntdll syscall stub) are always suspicious.
+        "heavens_gate" | "indirect_syscall" => true,
 
-        // Direct syscall: suspicious only when the instruction is outside ntdll.
-        "direct_syscall" => !in_ntdll,
-
-        // Indirect syscall: the actual `syscall` instruction is inside ntdll
-        // (so in_ntdll is typically true), but the *call* originates from a
-        // non-system module. We flag these as suspicious when they come from
-        // an unknown/non-system origin.
-        "indirect_syscall" => true,
-
-        // Any other technique outside ntdll is suspicious.
+        // Direct syscall and any other technique: suspicious when outside ntdll.
         _ => !in_ntdll,
     }
 }
@@ -88,10 +79,7 @@ pub fn walk_direct_syscalls<P: PhysicalMemoryProvider + Clone>(
         for thr in &threads {
             // Read the thread's last syscall address from _KTHREAD fields.
             let (syscall_addr, syscall_number, technique) =
-                match read_thread_syscall_info(reader, thr.vaddr) {
-                    Some(info) => info,
-                    None => continue,
-                };
+                read_thread_syscall_info(reader, thr.vaddr);
 
             // Skip threads with no recorded syscall (address == 0).
             if syscall_addr == 0 {
@@ -189,7 +177,7 @@ fn find_ntdll_range<P: PhysicalMemoryProvider + Clone>(
             let size: u64 = proc_reader
                 .read_bytes(mod_addr.wrapping_add(size_of_image_off), 4)
                 .ok()
-                .and_then(|b| Some(u32::from_le_bytes(b[..4].try_into().ok()?) as u64))
+                .and_then(|b| Some(u64::from(u32::from_le_bytes(b[..4].try_into().ok()?))))
                 .unwrap_or(0);
 
             if base != 0 && size != 0 {
@@ -208,7 +196,7 @@ fn find_ntdll_range<P: PhysicalMemoryProvider + Clone>(
 fn read_thread_syscall_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ethread_addr: u64,
-) -> Option<(u64, u32, String)> {
+) -> (u64, u32, String) {
     // _KTHREAD.SystemCallNumber -- the SSN of the last syscall.
     let syscall_number_off = reader
         .symbols()
@@ -246,7 +234,7 @@ fn read_thread_syscall_info<P: PhysicalMemoryProvider>(
         "direct_syscall".to_string()
     };
 
-    Some((syscall_addr, syscall_number, technique))
+    (syscall_addr, syscall_number, technique)
 }
 
 #[cfg(test)]
@@ -454,9 +442,8 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = read_thread_syscall_info(&reader, 0xFFFF_8000_DEAD_0000);
-        // Unmapped → all fields default to 0 → Some((0, 0, "direct_syscall"))
-        assert!(result.is_some());
-        let (addr, num, technique) = result.unwrap();
+        // Unmapped → all fields default to 0 → (0, 0, "direct_syscall")
+        let (addr, num, technique) = result;
         assert_eq!(addr, 0);
         assert_eq!(num, 0);
         assert_eq!(technique, "direct_syscall");
@@ -495,8 +482,7 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let result = read_thread_syscall_info(&reader, ethread_vaddr).unwrap();
-        let (addr, num, technique) = result;
+        let (addr, num, technique) = read_thread_syscall_info(&reader, ethread_vaddr);
         assert_eq!(addr, win32_start);
         assert_eq!(num, syscall_number);
         assert_eq!(
@@ -538,8 +524,7 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let result = read_thread_syscall_info(&reader, ethread_vaddr).unwrap();
-        let (addr, num, technique) = result;
+        let (addr, num, technique) = read_thread_syscall_info(&reader, ethread_vaddr);
         assert_eq!(addr, win32_start);
         assert_eq!(num, syscall_number);
         assert_eq!(

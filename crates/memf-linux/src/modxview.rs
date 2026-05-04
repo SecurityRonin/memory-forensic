@@ -21,6 +21,7 @@ const MAX_MODULES: usize = 4096;
 /// Each entry represents a kernel module found in at least one view,
 /// with flags indicating which views contain it. A module missing from
 /// any view but present in others is classified as hidden/suspicious.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ModXviewEntry {
     /// Module name from the kernel `module.name` field.
@@ -45,19 +46,7 @@ pub struct ModXviewEntry {
 /// Returns `true` (hidden/suspicious) if the module is missing from any
 /// view but present in at least one. All-false means the module was not
 /// found at all (not suspicious — just absent). All-true means benign.
-pub fn classify_module_visibility(
-    in_module_list: bool,
-    in_kobj_list: bool,
-    in_memory_map: bool,
-) -> bool {
-    let present_count = [in_module_list, in_kobj_list, in_memory_map]
-        .iter()
-        .filter(|&&v| v)
-        .count();
-
-    // Hidden if present in at least one view but not all three
-    present_count > 0 && present_count < 3
-}
+pub use crate::heuristics::classify_module_visibility;
 
 /// Walk and cross-reference kernel module views for hidden module detection.
 ///

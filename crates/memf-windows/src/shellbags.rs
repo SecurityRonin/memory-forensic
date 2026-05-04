@@ -96,6 +96,9 @@ pub fn walk_shellbags<P: PhysicalMemoryProvider>(
     Ok(entries)
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::only_used_in_recursion)]
 fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     node_addr: u64,
@@ -103,7 +106,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     depth: usize,
     subkeys_offset: u64,
     value_list_offset: u64,
-    _last_write_offset: u64,
+    last_write_offset: u64,
     entries: &mut Vec<ShellbagEntry>,
 ) {
     if depth >= MAX_DEPTH || node_addr == 0 {
@@ -130,7 +133,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     } else if folder_name.is_empty() {
         parent_path.clone()
     } else {
-        format!("{}\\{}", parent_path, folder_name)
+        format!("{parent_path}\\{folder_name}")
     };
 
     if !current_path.is_empty() {
@@ -171,7 +174,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
             depth + 1,
             subkeys_offset,
             value_list_offset,
-            _last_write_offset,
+            last_write_offset,
             entries,
         );
     }
@@ -187,7 +190,7 @@ fn parse_shitemid<P: PhysicalMemoryProvider>(
     };
 
     let cb = u16::from_le_bytes([header[0], header[1]]) as usize;
-    if cb < 4 || cb > 0x800 {
+    if !(4..=0x800).contains(&cb) {
         return (String::new(), 0, 0);
     }
 
@@ -737,7 +740,7 @@ mod tests {
             0x08,
             &mut entries,
         );
-        assert!(entries.len() >= 1, "should push at least root entry");
+        assert!(!entries.is_empty(), "should push at least root entry");
     }
 
     #[test]

@@ -70,6 +70,7 @@ pub fn classify_hashdump(username: &str, nt_hash: &str) -> bool {
     }
 
     // Well-known default/weak password hashes
+    #[allow(clippy::items_after_statements)]
     const KNOWN_BAD_HASHES: &[&str] = &[
         // "password"
         "a4f49c406510bdcab6824ee7c30fd852",
@@ -211,15 +212,15 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(MAX_USERS as u16) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+            [b'l', b'f' | b'h'] => {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                 Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => continue,
             },
@@ -331,7 +332,7 @@ fn extract_boot_key<P: PhysicalMemoryProvider>(
             .chunks_exact(2)
             .filter_map(|pair| {
                 let ch = u16::from_le_bytes([pair[0], pair[1]]);
-                char::from_u32(ch as u32)
+                char::from_u32(u32::from(ch))
             })
             .collect();
         raw_key_hex.push_str(&class_str);
@@ -381,7 +382,7 @@ fn decrypt_hashed_boot_key(f_data: &[u8], boot_key: &[u8]) -> Vec<u8> {
     }
 
     // The revision byte at offset 0x68 determines the crypto format.
-    let revision = f_data[0x68] as u32 | ((f_data[0x69] as u32) << 8);
+    let revision = u32::from(f_data[0x68]) | (u32::from(f_data[0x69]) << 8);
 
     match revision {
         // Revision 2: MD5 + RC4
@@ -502,8 +503,6 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
         } else {
             empty_lm.clone()
         }
-    } else if lm_length == 4 {
-        empty_lm.clone()
     } else {
         empty_lm.clone()
     };
@@ -549,15 +548,15 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+            [b'l', b'f' | b'h'] => {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                 Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => continue,
             },
@@ -645,6 +644,7 @@ fn simple_md5_derive(boot_key: &[u8], salt: &[u8]) -> Vec<u8> {
 }
 
 /// Minimal MD5 implementation (RFC 1321) for SAM key derivation.
+#[allow(clippy::many_single_char_names)]
 fn md5_hash(message: &[u8]) -> Vec<u8> {
     // MD5 constants
     const S: [u32; 64] = [
@@ -830,7 +830,7 @@ const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x
 
 /// AES-128 key expansion: produce 11 round keys (176 bytes).
 fn aes128_key_expansion(key: &[u8]) -> Vec<[u8; 16]> {
-    let mut w = vec![0u32; 44];
+    let mut w = [0u32; 44];
 
     // First 4 words from the key
     for i in 0..4 {
@@ -850,7 +850,7 @@ fn aes128_key_expansion(key: &[u8]) -> Vec<[u8; 16]> {
                 AES_SBOX[b[2] as usize],
                 AES_SBOX[b[3] as usize],
             ]);
-            temp ^= (RCON[i / 4 - 1] as u32) << 24;
+            temp ^= u32::from(RCON[i / 4 - 1]) << 24;
         }
         w[i] = w[i - 4] ^ temp;
     }
@@ -968,7 +968,7 @@ fn read_cell_addr<P: PhysicalMemoryProvider>(
     flat_base: u64,
     cell_off: u32,
 ) -> u64 {
-    let addr = flat_base + (cell_off as u64) + 4;
+    let addr = flat_base + u64::from(cell_off) + 4;
     match reader.read_bytes(addr, 2) {
         Ok(bytes) if bytes.len() == 2 => addr,
         _ => 0,
@@ -1013,15 +1013,15 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+            [b'l', b'f' | b'h'] => {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                 Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => continue,
             },
@@ -1082,10 +1082,7 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
         return Vec::new();
     }
 
-    match reader.read_bytes(class_addr, class_len as usize) {
-        Ok(bytes) => bytes,
-        _ => Vec::new(),
-    }
+    reader.read_bytes(class_addr, class_len as usize).unwrap_or_default()
 }
 
 /// Read the named value data from a registry key's value list.
@@ -1116,7 +1113,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
     }
 
     for v in 0..val_count.min(64) {
-        let val_off: u32 = match reader.read_bytes(val_list_addr + (v as u64) * 4, 4) {
+        let val_off: u32 = match reader.read_bytes(val_list_addr + u64::from(v) * 4, 4) {
             Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
             _ => continue,
         };
@@ -1257,13 +1254,19 @@ fn resolve_root_cell<P: PhysicalMemoryProvider>(
 
 /// Format a byte slice as a lowercase hex string.
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 /// Perform a single DES block encryption (used for RID-based hash decryption).
 /// This is a minimal DES implementation for the specific SAM hash use case.
 /// Windows uses two DES keys derived from the RID to decrypt the 16-byte hash.
 #[allow(dead_code)]
+#[allow(clippy::trivially_copy_pass_by_ref)]
+#[allow(clippy::needless_range_loop)]
 fn des_ecb_encrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
     // DES Initial Permutation table
     const IP: [u8; 64] = [
@@ -1405,7 +1408,7 @@ fn des_ecb_encrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
 
     let mut subkeys = [[0u8; 6]; 16];
     for round in 0..16 {
-        let shift = SHIFTS[round] as u32;
+        let shift = u32::from(SHIFTS[round]);
         c = ((c << shift) | (c >> (28 - shift))) & 0x0FFF_FFFF;
         d = ((d << shift) | (d >> (28 - shift))) & 0x0FFF_FFFF;
 
@@ -1487,7 +1490,7 @@ fn des_ecb_encrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
             let row = ((val >> 5) & 1) << 1 | (val & 1);
             let col = (val >> 1) & 0x0F;
             let sbox_val = SBOXES[s as usize][(row as usize) * 16 + (col as usize)];
-            sbox_out |= (sbox_val as u32) << (4 * (7 - s));
+            sbox_out |= u32::from(sbox_val) << (4 * (7 - s));
         }
 
         // P-box permutation
@@ -1548,6 +1551,7 @@ fn rid_to_des_keys(rid: u32) -> ([u8; 8], [u8; 8]) {
 }
 
 /// Expand a 7-byte value into an 8-byte DES key with parity bits.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn str_to_key(s: &[u8; 7]) -> [u8; 8] {
     let mut key = [0u8; 8];
     key[0] = s[0] >> 1;
@@ -1573,6 +1577,8 @@ fn str_to_key(s: &[u8; 7]) -> [u8; 8] {
 }
 
 /// DES-decrypt a single 8-byte block (DES-ECB decrypt = encrypt with reversed subkeys).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+#[allow(clippy::needless_range_loop)]
 fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
     // For decryption we reverse the subkey order. Rather than duplicating
     // the full DES implementation, we reuse encrypt and note that
@@ -1719,7 +1725,7 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
 
     let mut subkeys = [[0u8; 6]; 16];
     for round in 0..16 {
-        let shift = SHIFTS[round] as u32;
+        let shift = u32::from(SHIFTS[round]);
         c = ((c << shift) | (c >> (28 - shift))) & 0x0FFF_FFFF;
         d = ((d << shift) | (d >> (28 - shift))) & 0x0FFF_FFFF;
 
@@ -1797,7 +1803,7 @@ fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
             let row = ((val >> 5) & 1) << 1 | (val & 1);
             let col = (val >> 1) & 0x0F;
             let sbox_val = SBOXES[s as usize][(row as usize) * 16 + (col as usize)];
-            sbox_out |= (sbox_val as u32) << (4 * (7 - s));
+            sbox_out |= u32::from(sbox_val) << (4 * (7 - s));
         }
 
         let sbox_bytes = sbox_out.to_be_bytes();
@@ -2296,7 +2302,7 @@ mod tests {
         // Then extract_boot_key will call find_subkey_by_name for
         // "CurrentControlSet" on the root NK which has subkey_count=0 → returns 0
         // → extract_boot_key returns empty → walk returns empty.
-        let mut sys_flat_page = vec![0u8; 0x1000];
+        let sys_flat_page = vec![0u8; 0x1000];
         // subkey_count at (root_cell_off+4+0x18) = 0x3C stays 0
         let _ = sys_flat_page[0]; // silence unused warning
 
@@ -2436,7 +2442,7 @@ mod tests {
         ];
         // Apply forward S-box manually
         let mut sboxed = original;
-        for b in sboxed.iter_mut() {
+        for b in &mut sboxed {
             *b = AES_SBOX[*b as usize];
         }
         // Apply inverse S-box
@@ -3155,7 +3161,7 @@ mod tests {
         // Class name "00000000" as UTF-16LE = 8 × [0x30, 0x00] = 16 bytes
         let class_utf16: Vec<u8> = "00000000"
             .encode_utf16()
-            .flat_map(|ch| ch.to_le_bytes())
+            .flat_map(u16::to_le_bytes)
             .collect(); // 16 bytes
         let class_len: u16 = class_utf16.len() as u16; // 16
 
@@ -3415,7 +3421,7 @@ mod tests {
         key_page[0x2C..0x30].copy_from_slice(&vlist_off.to_le_bytes());
 
         // vlist at flat_base + vlist_off + 4 → map to vlist_paddr
-        let vlist_vaddr = flat_base + vlist_off as u64;
+        let vlist_vaddr = flat_base + u64::from(vlist_off);
         // But key_vaddr IS the key addr (flat cell style):
         // read_value_data(reader, flat_base, key_vaddr, "F") →
         //   val_list_off = vlist_off

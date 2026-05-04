@@ -23,6 +23,7 @@ use crate::{
 ///
 /// Process unlinking takes priority over driver unlinking when both conditions
 /// are simultaneously true.
+#[allow(clippy::fn_params_excessive_bools)]
 pub fn classify_dkom(
     in_cid: bool,
     in_active: bool,

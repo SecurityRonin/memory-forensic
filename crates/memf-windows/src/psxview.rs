@@ -21,6 +21,7 @@ use memf_format::PhysicalMemoryProvider;
 use crate::{Error, Result};
 
 /// Cross-view process entry showing visibility across enumeration sources.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PsxViewEntry {
     /// Process ID.
@@ -63,7 +64,7 @@ pub fn psxview<P: PhysicalMemoryProvider>(
     let cid_procs = walk_cid_table(reader)?;
 
     // Merge both views by PID
-    merge_views(active_procs, cid_procs)
+    Ok(merge_views(active_procs, cid_procs))
 }
 
 /// Process info extracted from a single enumeration source.
@@ -125,7 +126,7 @@ fn walk_cid_table<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result
 fn merge_views(
     active_list: Vec<RawProcInfo>,
     cid_table: Vec<RawProcInfo>,
-) -> Result<Vec<PsxViewEntry>> {
+) -> Vec<PsxViewEntry> {
     let mut map: HashMap<u64, PsxViewEntry> = HashMap::new();
 
     // Insert all processes from the active list
@@ -174,7 +175,7 @@ fn merge_views(
         .collect();
 
     results.sort_by_key(|e| e.pid);
-    Ok(results)
+    results
 }
 
 #[cfg(test)]

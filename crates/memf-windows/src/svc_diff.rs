@@ -79,6 +79,7 @@ pub fn walk_svc_diff<P: PhysicalMemoryProvider>(
     system_hive_addr: u64,
 ) -> Result<Vec<SvcDiffEntry>> {
     use std::collections::HashMap;
+    const SERVICES_KEY: &str = "CurrentControlSet\\Services";
 
     // ── 1. Collect services from SCM memory ──────────────────────────
     let scm_services: Vec<crate::ServiceInfo> = if scm_list_head != 0 {
@@ -95,8 +96,6 @@ pub fn walk_svc_diff<P: PhysicalMemoryProvider>(
 
     // ── 2. Collect services from SYSTEM registry hive ────────────────
     // Services live under SYSTEM\CurrentControlSet\Services.
-    const SERVICES_KEY: &str = "CurrentControlSet\\Services";
-
     // Walk the Services key one level deep to get service subkey names.
     let service_subkeys: Vec<String> = if system_hive_addr != 0 {
         // Find the Services key cell, then enumerate its direct subkeys.
@@ -117,7 +116,7 @@ pub fn walk_svc_diff<P: PhysicalMemoryProvider>(
             .unwrap_or_default()
             .into_iter()
             .find(|v| v.name.eq_ignore_ascii_case("Start"))
-            .map(|v| {
+            .map_or(3, |v| {
                 let s = v.data_preview.trim();
                 // Handle "0x00000002 (2)" format (REG_DWORD display) and plain "2" format.
                 if let Some(dec) = s.split('(').nth(1).and_then(|p| p.split(')').next()) {
@@ -125,8 +124,7 @@ pub fn walk_svc_diff<P: PhysicalMemoryProvider>(
                 } else {
                     s.parse::<u32>().unwrap_or(3)
                 }
-            })
-            .unwrap_or(3); // Default to Demand start.
+            }); // Default to Demand start.
         reg_map.insert(svc_name.to_ascii_lowercase(), start_type);
     }
 
@@ -192,7 +190,7 @@ const NK_NAME_DATA: usize = 0x4C;
 fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
     hive_addr
         .wrapping_add(HBIN_START)
-        .wrapping_add(cell_index as u64)
+        .wrapping_add(u64::from(cell_index))
 }
 
 fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<Vec<u8>> {
@@ -200,11 +198,12 @@ fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) ->
     // (two's-complement) size; the data length is abs(size) - 4, capped at 64 KiB.
     let size_bytes = reader.read_bytes(vaddr, 4).ok()?;
     let raw_size = i32::from_le_bytes(size_bytes[..4].try_into().ok()?);
+    #[allow(clippy::cast_sign_loss)]
     let data_len = if raw_size < 0 {
-        ((-raw_size as u32).saturating_sub(4) as usize).min(65536)
+        (raw_size.unsigned_abs().saturating_sub(4) as usize).min(65536)
     } else {
-        // Free cell (positive size) — still try to read it, capped.
-        (raw_size.saturating_sub(4) as usize).min(65536)
+        // Free cell (positive size): raw_size >= 0 so cast is safe.
+        (raw_size as u32).saturating_sub(4) as usize
     };
     if data_len == 0 {
         return Some(Vec::new());
@@ -526,7 +525,7 @@ mod tests {
     fn cell_vaddr_calculation() {
         let hive: u64 = 0x1000_0000;
         let cell: u32 = 0x200;
-        let expected = hive + HBIN_START + cell as u64;
+        let expected = hive + HBIN_START + u64::from(cell);
         assert_eq!(cell_vaddr(hive, cell), expected);
     }
 
@@ -584,7 +583,7 @@ mod tests {
         let cell_paddr: u64 = 0x0051_0000;
 
         // root cell index = 0 (4 LE bytes at hive_paddr + 0x24)
-        let mut hive_page = [0u8; 4096];
+        let hive_page = [0u8; 4096];
         // leave [0x24..0x28] as 0 → root_cell_index = 0
 
         // At the cell page: write bad signature (0xDEAD instead of NK_SIG)
@@ -756,7 +755,7 @@ mod tests {
         let hive: u64 = 0x0010_0000;
         let idx: u32 = 0x300;
         let result = cell_vaddr(hive, idx);
-        assert_eq!(result, hive + HBIN_START + idx as u64);
+        assert_eq!(result, hive + HBIN_START + u64::from(idx));
     }
 
     /// read_cell on unmapped address returns None.
@@ -813,7 +812,7 @@ mod tests {
         let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
         let cell_page_paddr: u64 = 0x0071_0000;
 
-        let mut hive_page = [0u8; 4096];
+        let hive_page = [0u8; 4096];
 
         let mut cell_page = vec![0u8; 0x1000];
 
@@ -873,7 +872,7 @@ mod tests {
         let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
         let cell_page_paddr: u64 = 0x0081_0000;
 
-        let mut hive_page = [0u8; 4096];
+        let hive_page = [0u8; 4096];
 
         let mut cell_page = vec![0u8; 0x1000];
 
@@ -932,7 +931,7 @@ mod tests {
         let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
         let cell_page_paddr: u64 = 0x0091_0000;
 
-        let mut hive_page = [0u8; 4096];
+        let hive_page = [0u8; 4096];
 
         let mut cell_page = vec![0u8; 0x1000];
         cell_page[0..4].copy_from_slice(&(-0x80i32).to_le_bytes());
@@ -975,7 +974,7 @@ mod tests {
         let cell_page_vaddr = hive_vaddr.wrapping_add(HBIN_START);
         let cell_page_paddr: u64 = 0x00A1_0000;
 
-        let mut hive_page = [0u8; 4096];
+        let hive_page = [0u8; 4096];
 
         let mut cell_page = vec![0u8; 0x1000];
         // Root NK: valid sig but stable_count = 0 → "CurrentControlSet" not found
@@ -1337,7 +1336,7 @@ mod tests {
         w32(&mut cp, 0x410, 1u32); // type = REG_SZ
         cp[0x404 + 0x14..0x404 + 0x14 + start_name.len()].copy_from_slice(start_name);
 
-        let mut hive_page = vec![0u8; 0x1000];
+        let hive_page = vec![0u8; 0x1000];
 
         let ptb = PageTableBuilder::new()
             .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
