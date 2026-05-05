@@ -53,7 +53,7 @@ jobs:
           cp README.md target/doc/docs/README.md 2>/dev/null || true
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d231e97723741e312 # v4
+        uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./target/doc
