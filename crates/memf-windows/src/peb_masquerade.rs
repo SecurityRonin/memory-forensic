@@ -10,20 +10,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use forensicnomicon::processes::is_masquerade_target;
 
 use crate::unicode::read_unicode_string;
 use crate::{Error, Result};
-
-/// High-value system process names that attackers commonly impersonate.
-const HIGH_VALUE_TARGETS: &[&str] = &[
-    "svchost.exe",
-    "csrss.exe",
-    "lsass.exe",
-    "services.exe",
-    "smss.exe",
-    "wininit.exe",
-    "explorer.exe",
-];
 
 /// Information about a potential PEB masquerade for a single process.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -77,10 +67,7 @@ pub fn classify_peb_masquerade(eprocess_name: &str, peb_image_path: &str) -> boo
 
     // Names differ — only flag as masquerading if the EPROCESS name is a
     // high-value target that attackers commonly impersonate.
-    let eprocess_lower = eprocess_name.to_ascii_lowercase();
-    HIGH_VALUE_TARGETS
-        .iter()
-        .any(|target| *target == eprocess_lower)
+    is_masquerade_target(eprocess_name)
 }
 
 /// Walk a single process's PEB to detect image path masquerading.
@@ -366,7 +353,17 @@ mod tests {
 
     #[test]
     fn forensicnomicon_masquerade_target_covers_all_high_value_targets() {
-        for name in HIGH_VALUE_TARGETS {
+        // Verify that the forensicnomicon classifier covers every name that was
+        // previously listed in the local HIGH_VALUE_TARGETS const.
+        for name in &[
+            "svchost.exe",
+            "csrss.exe",
+            "lsass.exe",
+            "services.exe",
+            "smss.exe",
+            "wininit.exe",
+            "explorer.exe",
+        ] {
             assert!(
                 forensicnomicon::processes::is_masquerade_target(name),
                 "forensicnomicon missing: {name}"
