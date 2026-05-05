@@ -1223,6 +1223,23 @@ pub struct WdigestCredentialInfo {
     pub password_encrypted: Option<Vec<u8>>,
 }
 
+/// An authentication token found in process memory.
+///
+/// Recovered by scanning private writable VAD regions of all processes for
+/// token patterns including JWTs, OAuth Bearer tokens, and provider-specific
+/// formats such as GitHub PATs, GitLab PATs, Slack tokens, and AWS STS tokens.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionTokenInfo {
+    /// PID of the process containing this token.
+    pub pid: u64,
+    /// Image name of the process.
+    pub process_name: String,
+    /// Classification of the token (e.g. `"Jwt"`, `"GitHub"`, `"Slack"`).
+    pub token_type: String,
+    /// The token value itself.
+    pub token_value: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1329,4 +1346,5 @@ mod tests {
         assert_eq!(DnsRecordType::Txt.to_string(), "TXT");
         assert_eq!(DnsRecordType::Unknown(42).to_string(), "Unknown(42)");
     }
+
 }

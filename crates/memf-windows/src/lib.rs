@@ -74,6 +74,7 @@ pub mod sam;
 pub mod scheduled_tasks;
 pub mod section_object;
 pub mod service;
+pub mod session_tokens;
 pub mod sessions;
 pub mod shellbags;
 pub mod shimcache;
