@@ -347,6 +347,15 @@ mod tests {
     }
 
     #[test]
+    fn forensicnomicon_masquerade_target_covers_svchost() {
+        // This test verifies forensicnomicon is reachable and its list is a superset
+        // of the local HIGH_VALUE_TARGETS. If this fails to compile, the dep is missing.
+        assert!(forensicnomicon::processes::is_masquerade_target("svchost.exe"));
+        assert!(forensicnomicon::processes::is_masquerade_target("lsass.exe"));
+        assert!(forensicnomicon::processes::is_masquerade_target("csrss.exe"));
+    }
+
+    #[test]
     fn walk_benign_process() {
         // EPROCESS name matches PEB ImagePathName → not masquerading.
         let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
