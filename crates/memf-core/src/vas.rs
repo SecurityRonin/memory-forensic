@@ -12,8 +12,10 @@ use crate::{Error, Result};
 /// Translation mode for virtual-to-physical address translation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationMode {
-    /// x86_64 4-level paging (PML4 -> PDPT -> PD -> PT).
+    /// x86_64 4-level paging (PML4 → PDPT → PD → PT).
     X86_64FourLevel,
+    /// x86_64 5-level paging (PML5 → PML4 → PDPT → PD → PT). Linux LA57, Windows Server 2025.
+    X86_645Level,
 }
 
 /// A virtual address space backed by physical memory and page tables.
@@ -81,6 +83,16 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     pub fn virt_to_phys(&self, vaddr: u64) -> Result<u64> {
         match self.mode {
             TranslationMode::X86_64FourLevel => self.walk_x86_64_4level(vaddr),
+            TranslationMode::X86_645Level => {
+                match self.walk_x86_64_5level_internal(vaddr)? {
+                    TranslationResult::Physical(addr) | TranslationResult::Transition(addr) => Ok(addr),
+                    TranslationResult::DemandZero => Err(Error::PageNotPresent(vaddr)),
+                    TranslationResult::PagefileEntry { pagefile_num, page_offset } => {
+                        Err(Error::PagedOut { vaddr, pagefile_num, page_offset })
+                    }
+                    TranslationResult::Prototype(_) => Err(Error::PrototypePte(vaddr)),
+                }
+            }
         }
     }
 
@@ -105,6 +117,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             let result = match self.mode {
                 TranslationMode::X86_64FourLevel => {
                     self.walk_x86_64_4level_internal(current_vaddr)?
+                }
+                TranslationMode::X86_645Level => {
+                    self.walk_x86_64_5level_internal(current_vaddr)?
                 }
             };
 
@@ -228,6 +243,10 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     }
 
     fn walk_x86_64_4level_internal(&self, vaddr: u64) -> Result<TranslationResult> {
+        self.walk_4level_from(self.page_table_root, vaddr)
+    }
+
+    fn walk_4level_from(&self, pml4_root: u64, vaddr: u64) -> Result<TranslationResult> {
         let page_vaddr = vaddr & !0xFFF;
         // peek avoids promoting on read; no mut borrow needed on the hot path.
         if let Some(&paddr_base) = self.tlb_cache.borrow().peek(&page_vaddr) {
@@ -236,12 +255,12 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
 
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pdpt_idx = (vaddr >> 30) & 0x1FF;
-        let pd_idx = (vaddr >> 21) & 0x1FF;
-        let pt_idx = (vaddr >> 12) & 0x1FF;
+        let pd_idx   = (vaddr >> 21) & 0x1FF;
+        let pt_idx   = (vaddr >> 12) & 0x1FF;
         let page_offset = vaddr & 0xFFF;
 
         // PML4
-        let pml4e = self.read_pte(self.page_table_root + pml4_idx * 8)?;
+        let pml4e = self.read_pte(pml4_root + pml4_idx * 8)?;
         if pml4e & PRESENT == 0 {
             return Err(Error::PageNotPresent(vaddr));
         }
@@ -291,6 +310,16 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
 
         // Non-present PTE decoding (PT level only)
         Ok(Self::decode_non_present_pte(pte, page_offset))
+    }
+
+    fn walk_x86_64_5level_internal(&self, vaddr: u64) -> Result<TranslationResult> {
+        let pml5_idx = (vaddr >> 48) & 0x1FF;
+        let pml5e = self.read_pte(self.page_table_root + pml5_idx * 8)?;
+        if pml5e & PRESENT == 0 {
+            return Err(Error::PageNotPresent(vaddr));
+        }
+        let pml4_root = pml5e & ADDR_MASK;
+        self.walk_4level_from(pml4_root, vaddr)
     }
 
     fn decode_non_present_pte(pte: u64, page_offset: u64) -> TranslationResult {
