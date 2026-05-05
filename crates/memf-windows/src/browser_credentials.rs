@@ -1,8 +1,12 @@
 //! Browser credential forensics walker.
 //!
-//! Scans Chromium-based Microsoft Edge (`msedge.exe`) root process heap regions
-//! for plaintext credential records that the browser's password manager writes
-//! to committed, writeable heap pages.
+//! Scans Chromium-based browser root process heap regions for plaintext
+//! credential records that the browser's password manager writes to committed,
+//! writeable heap pages.
+//!
+//! Supported browsers (all Chromium-based, share the same credential layout):
+//! `msedge.exe`, `chrome.exe`, `brave.exe`, `opera.exe`, `vivaldi.exe`,
+//! `chromium.exe`.
 //!
 //! # Memory layout
 //!
@@ -46,20 +50,36 @@ use crate::{
     Result,
 };
 
+/// Chromium-based browser process names whose credential layout is supported.
+///
+/// All entries share the same Chromium password manager codebase and therefore
+/// the same in-memory credential record format. Root-process detection is
+/// performed per entry so child processes of one browser are not confused with
+/// those of another.
+pub const CHROMIUM_BROWSERS: &[&str] = &[
+    "msedge.exe",
+    "chrome.exe",
+    "brave.exe",
+    "opera.exe",
+    "vivaldi.exe",
+    "chromium.exe",
+];
+
 /// Maximum bytes read from a single VAD region.
 ///
 /// Caps memory consumption when a large anonymous mapping is encountered.
 const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
-/// Walk committed, writeable heap regions of the root `msedge.exe` process(es)
-/// in the dump and extract any plaintext credential records found therein.
+/// Walk committed, writeable heap regions of the root Chromium-based browser
+/// process(es) in the dump and extract any plaintext credential records.
 ///
 /// # Root process selection
 ///
-/// Chromium spawns many child `msedge.exe` processes. Saved passwords reside
-/// only in the **root** (browser) process — the one whose parent PID does not
-/// belong to another `msedge.exe` process. This matches the filtering logic in
-/// the original C# PoC.
+/// Chromium spawns many child processes under the same executable name.
+/// Saved passwords reside only in the **root** (browser) process — the one
+/// whose parent PID does not belong to another process of the same image name.
+/// Root detection is performed independently for each browser in
+/// [`CHROMIUM_BROWSERS`], so multiple browsers can coexist in the same dump.
 ///
 /// # Arguments
 ///
@@ -71,21 +91,21 @@ pub fn walk_browser_credentials<P: PhysicalMemoryProvider + Clone>(
 ) -> Result<Vec<BrowserCredentialInfo>> {
     let procs = walk_processes(reader, ps_head_vaddr)?;
 
-    // Collect the set of PIDs that belong to msedge.exe.
-    let edge_pids: HashSet<u64> = procs
-        .iter()
-        .filter(|p| p.image_name.eq_ignore_ascii_case("msedge.exe"))
-        .map(|p| p.pid)
-        .collect();
+    // For each supported browser, find the root process(es) independently.
+    let mut root_procs = Vec::new();
+    for &browser in CHROMIUM_BROWSERS {
+        let browser_pids: HashSet<u64> = procs
+            .iter()
+            .filter(|p| p.image_name.eq_ignore_ascii_case(browser))
+            .map(|p| p.pid)
+            .collect();
 
-    // Root Edge processes: msedge.exe whose parent is NOT also msedge.exe.
-    let root_procs: Vec<_> = procs
-        .iter()
-        .filter(|p| {
-            p.image_name.eq_ignore_ascii_case("msedge.exe")
-                && !edge_pids.contains(&p.ppid)
-        })
-        .collect();
+        for p in procs.iter().filter(|p| {
+            p.image_name.eq_ignore_ascii_case(browser) && !browser_pids.contains(&p.ppid)
+        }) {
+            root_procs.push(p);
+        }
+    }
 
     let vad_root_offset = reader
         .symbols()
@@ -202,6 +222,16 @@ pub(crate) fn scan_region(data: &[u8]) -> Vec<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chromium_browsers_includes_all_supported() {
+        assert!(CHROMIUM_BROWSERS.contains(&"msedge.exe"));
+        assert!(CHROMIUM_BROWSERS.contains(&"chrome.exe"));
+        assert!(CHROMIUM_BROWSERS.contains(&"brave.exe"));
+        assert!(CHROMIUM_BROWSERS.contains(&"opera.exe"));
+        assert!(CHROMIUM_BROWSERS.contains(&"vivaldi.exe"));
+        assert!(CHROMIUM_BROWSERS.contains(&"chromium.exe"));
+    }
 
     #[test]
     fn scan_region_empty_returns_nothing() {
