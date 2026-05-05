@@ -229,6 +229,7 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
 
     fn walk_x86_64_4level_internal(&self, vaddr: u64) -> Result<TranslationResult> {
         let page_vaddr = vaddr & !0xFFF;
+        // peek avoids promoting on read; no mut borrow needed on the hot path.
         if let Some(&paddr_base) = self.tlb_cache.borrow().peek(&page_vaddr) {
             return Ok(TranslationResult::Physical(paddr_base | (vaddr & 0xFFF)));
         }
