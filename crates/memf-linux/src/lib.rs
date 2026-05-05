@@ -1,5 +1,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::too_many_lines)]
 //! Linux kernel memory forensic walkers.
 //!
 //! Provides process, network connection, and kernel module enumeration
@@ -44,6 +46,7 @@ pub mod kmsg;
 pub mod kthread;
 pub mod ld_preload;
 pub mod library_list;
+pub mod magic_gid;
 pub mod malfind;
 pub mod maps;
 pub mod memfd_create;

@@ -157,6 +157,41 @@ fn read_file_dentry_name<P: PhysicalMemoryProvider>(
     reader.read_string(name_ptr, 256).ok()
 }
 
+// ---------------------------------------------------------------------------
+// Pure-logic helpers and finding type for LD_PRELOAD / Father rootkit detection
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `exe_path` carries a `(deleted)` suffix.
+///
+/// This covers both the kernel's canonical `" (deleted)"` (space-prefixed) and
+/// the bare `"(deleted)"` form occasionally written by userspace tools.
+pub fn is_deleted_exe(exe_path: &str) -> bool {
+    todo!("implement is_deleted_exe")
+}
+
+/// Returns the path with any `(deleted)` suffix stripped, trimming trailing
+/// whitespace that the kernel inserts before the marker.
+///
+/// If the path carries no deleted marker the original string slice is returned
+/// unchanged.
+pub fn strip_deleted_suffix(exe_path: &str) -> &str {
+    todo!("implement strip_deleted_suffix")
+}
+
+/// A lightweight finding produced by the pure-logic deleted-exe classifier,
+/// suitable for use without a full memory-image reader.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeletedExeFinding {
+    /// Process ID.
+    pub pid: u32,
+    /// Process name (`task_struct.comm`, max 16 chars).
+    pub comm: String,
+    /// Full exe path as seen in memory — includes the `(deleted)` suffix.
+    pub exe_path: String,
+    /// Exe path with the `(deleted)` suffix and trailing whitespace stripped.
+    pub original_path: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,7 +334,7 @@ mod tests {
         assert_eq!(cloned.pid, 999);
         assert!(cloned.is_deleted);
         assert!(cloned.is_suspicious);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("evil"));
     }
 
@@ -743,5 +778,88 @@ mod tests {
             result[0].is_suspicious,
             "payload with deleted exe → suspicious"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests for the new pure-logic helpers and DeletedExeFinding
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn is_deleted_exe_space_prefix_true() {
+        assert!(is_deleted_exe("/usr/bin/xmrig (deleted)"));
+    }
+
+    #[test]
+    fn is_deleted_exe_bare_suffix_true() {
+        assert!(is_deleted_exe("/usr/bin/xmrig(deleted)"));
+    }
+
+    #[test]
+    fn is_deleted_exe_live_binary_false() {
+        assert!(!is_deleted_exe("/usr/bin/bash"));
+    }
+
+    #[test]
+    fn is_deleted_exe_empty_string_false() {
+        assert!(!is_deleted_exe(""));
+    }
+
+    #[test]
+    fn strip_deleted_suffix_removes_space_prefix() {
+        assert_eq!(strip_deleted_suffix("/usr/bin/xmrig (deleted)"), "/usr/bin/xmrig");
+    }
+
+    #[test]
+    fn strip_deleted_suffix_removes_bare_suffix() {
+        assert_eq!(strip_deleted_suffix("/usr/bin/xmrig(deleted)"), "/usr/bin/xmrig");
+    }
+
+    #[test]
+    fn strip_deleted_suffix_no_marker_unchanged() {
+        assert_eq!(strip_deleted_suffix("/usr/bin/bash"), "/usr/bin/bash");
+    }
+
+    #[test]
+    fn strip_deleted_suffix_empty_unchanged() {
+        assert_eq!(strip_deleted_suffix(""), "");
+    }
+
+    #[test]
+    fn deleted_exe_finding_fields_constructible() {
+        let finding = DeletedExeFinding {
+            pid: 999,
+            comm: "evil".to_string(),
+            exe_path: "/tmp/.x (deleted)".to_string(),
+            original_path: "/tmp/.x".to_string(),
+        };
+        assert_eq!(finding.pid, 999);
+        assert_eq!(finding.original_path, "/tmp/.x");
+    }
+
+    #[test]
+    fn deleted_exe_finding_serializes_to_json() {
+        let finding = DeletedExeFinding {
+            pid: 42,
+            comm: "malware".to_string(),
+            exe_path: "/dev/shm/.bin (deleted)".to_string(),
+            original_path: "/dev/shm/.bin".to_string(),
+        };
+        let json = serde_json::to_string(&finding).unwrap();
+        assert!(json.contains("\"pid\":42"));
+        assert!(json.contains("\"exe_path\""));
+        assert!(json.contains("\"original_path\""));
+    }
+
+    #[test]
+    fn deleted_exe_finding_clone_and_debug() {
+        let finding = DeletedExeFinding {
+            pid: 7,
+            comm: "sh".to_string(),
+            exe_path: "/bin/sh (deleted)".to_string(),
+            original_path: "/bin/sh".to_string(),
+        };
+        let cloned = finding.clone();
+        let dbg = format!("{cloned:?}");
+        assert!(dbg.contains("DeletedExeFinding"));
     }
 }
