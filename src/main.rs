@@ -364,6 +364,18 @@ enum OutputFormat {
     Table,
     Json,
     Csv,
+    /// Newline-delimited JSON (one JSON object per line). Suitable for Splunk HEC,
+    /// Elasticsearch bulk API, and piping to `jq`.
+    Ndjson,
+}
+
+#[allow(dead_code)] // exercised via unit tests; available for external callers
+fn write_ndjson<T: serde::Serialize>(items: &[T], writer: &mut impl std::io::Write) -> std::io::Result<()> {
+    for item in items {
+        let line = serde_json::to_string(item).unwrap_or_default();
+        writeln!(writer, "{line}")?;
+    }
+    Ok(())
 }
 
 /// Sort field for the `ps` subcommand.
@@ -1150,7 +1162,7 @@ fn cmd_strings(
     // Output
     match output {
         OutputFormat::Table => print_strings_table(&strings),
-        OutputFormat::Json => print_strings_json(&strings)?,
+        OutputFormat::Json | OutputFormat::Ndjson => print_strings_json(&strings)?,
         OutputFormat::Csv => print_strings_csv(&strings),
     }
 
@@ -1356,7 +1368,7 @@ fn print_linux_processes(
 ) {
     match output {
         OutputFormat::Table => print_linux_processes_table(procs, boot_info),
-        OutputFormat::Json => print_linux_processes_json(procs, boot_info),
+        OutputFormat::Json | OutputFormat::Ndjson => print_linux_processes_json(procs, boot_info),
         OutputFormat::Csv => print_linux_processes_csv(procs, boot_info),
     }
 }
@@ -1382,7 +1394,7 @@ fn print_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat)
             println!("{table}");
             println!("\nTotal: {} threads", threads.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for t in threads {
                 let json = serde_json::json!({
                     "tid": t.tid,
@@ -1448,7 +1460,7 @@ fn print_linux_pstree(
             println!("{table}");
             println!("\nTotal: {} processes", entries.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let abs_epoch = boot_info.absolute_secs(e.process.start_time);
                 let mut json = serde_json::json!({
@@ -1517,7 +1529,7 @@ fn print_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputForm
             println!("{table}");
             println!("\nTotal: {} processes with command lines", cmdlines.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for c in cmdlines {
                 let json = serde_json::json!({
                     "pid": c.pid,
@@ -1564,7 +1576,7 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
             println!("{table}");
             println!("\nTotal: {} processes", procs.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for p in procs {
                 let json = serde_json::json!({
                     "pid": p.pid,
@@ -1614,7 +1626,7 @@ fn print_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) {
             println!("{table}");
             println!("\nTotal: {} modules", mods.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for m in mods {
                 let json = serde_json::json!({
                     "name": m.name,
@@ -1654,7 +1666,7 @@ fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: Output
             println!("{table}");
             println!("\nTotal: {} drivers", drivers.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for d in drivers {
                 let json = serde_json::json!({
                     "name": d.name,
@@ -1700,7 +1712,7 @@ fn print_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: Out
             println!("{table}");
             println!("\nTotal: {} command lines", cmdlines.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for c in cmdlines {
                 let json = serde_json::json!({
                     "pid": c.pid,
@@ -1741,7 +1753,7 @@ fn print_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFor
             println!("{table}");
             println!("\nTotal: {} environment variables", vars.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for v in vars {
                 let json = serde_json::json!({
                     "pid": v.pid,
@@ -1795,7 +1807,7 @@ fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) 
             println!("{table}");
             println!("\nTotal: {} processes", entries.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "pid": e.process.pid,
@@ -1857,7 +1869,7 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
                 suspicious_count
             );
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for r in results {
                 let json = serde_json::json!({
                     "pid": r.pid,
@@ -1902,7 +1914,7 @@ fn print_arp_entries(entries: &[memf_linux::ArpEntryInfo], output: OutputFormat)
             println!("{table}");
             println!("\nTotal: {} ARP entries", entries.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "ip_addr": e.ip_addr,
@@ -1943,7 +1955,7 @@ fn print_connections(conns: &[memf_linux::ConnectionInfo], output: OutputFormat)
             println!("{table}");
             println!("\nTotal: {} connections", conns.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for c in conns {
                 let json = serde_json::json!({
                     "protocol": format!("{}", c.protocol),
@@ -2000,7 +2012,7 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
             println!("{table}");
             println!("\nTotal: {} connections", conns.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for c in conns {
                 let json = serde_json::json!({
                     "protocol": c.protocol,
@@ -2066,7 +2078,7 @@ fn print_threads(threads: &[memf_windows::WinThreadInfo], output: OutputFormat) 
             println!("{table}");
             println!("\nTotal: {} threads", threads.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for t in threads {
                 let json = serde_json::json!({
                     "tid": t.tid,
@@ -2108,7 +2120,7 @@ fn print_libs(
     if let Some((pid, name)) = process_ctx {
         match output {
             OutputFormat::Table => println!("=== {name} (PID {pid}) ==="),
-            OutputFormat::Json | OutputFormat::Csv => {}
+            OutputFormat::Json | OutputFormat::Ndjson | OutputFormat::Csv => {}
         }
     }
     match output {
@@ -2128,7 +2140,7 @@ fn print_libs(
             println!("{table}");
             println!("Total: {} DLLs\n", dlls.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for d in dlls {
                 let mut json = serde_json::json!({
                     "name": d.name,
@@ -2351,7 +2363,7 @@ fn print_vmas(vmas: &[memf_linux::VmaInfo], output: OutputFormat) {
             println!("{table}");
             println!("\nTotal: {} VMAs", vmas.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for v in vmas {
                 let json = serde_json::json!({
                     "pid": v.pid,
@@ -2400,7 +2412,7 @@ fn print_file_descriptors(fds: &[memf_linux::FileDescriptorInfo], output: Output
             println!("{table}");
             println!("\nTotal: {} file descriptors", fds.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for f in fds {
                 let json = serde_json::json!({
                     "pid": f.pid,
@@ -2448,7 +2460,7 @@ fn print_envvars(vars: &[memf_linux::EnvVarInfo], output: OutputFormat) {
             println!("{table}");
             println!("\nTotal: {} environment variables", vars.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for v in vars {
                 let json = serde_json::json!({
                     "pid": v.pid,
@@ -2496,7 +2508,7 @@ fn print_malfind(findings: &[memf_linux::MalfindInfo], output: OutputFormat) {
                 println!("\nTotal: {} suspicious regions", findings.len());
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for f in findings {
                 let hex_header: String = f.header_bytes.iter().fold(String::new(), |mut s, b| {
                     write!(s, "{b:02x}").unwrap();
@@ -2551,7 +2563,7 @@ fn print_mounts(mounts: &[memf_linux::MountInfo], output: OutputFormat) {
             println!("{table}");
             println!("\nTotal: {} mounts", mounts.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for m in mounts {
                 let json = serde_json::json!({
                     "dev_name": m.dev_name,
@@ -2597,7 +2609,7 @@ fn print_syscalls(entries: &[memf_linux::SyscallInfo], output: OutputFormat) {
                 hooked_count
             );
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "number": e.number,
@@ -2641,7 +2653,7 @@ fn print_bash_history(entries: &[memf_linux::BashHistoryInfo], output: OutputFor
             println!("{table}");
             println!("\nTotal: {} history entries", entries.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "pid": e.pid,
@@ -2690,7 +2702,7 @@ fn print_psxview(entries: &[memf_linux::PsxViewInfo], output: OutputFormat) {
                 .count();
             println!("\nTotal: {} processes ({} hidden)", entries.len(), hidden);
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "pid": e.pid,
@@ -2736,7 +2748,7 @@ fn print_tty_check(entries: &[memf_linux::TtyCheckInfo], output: OutputFormat) {
                 hooked
             );
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "name": e.name,
@@ -2790,7 +2802,7 @@ fn print_check_hooks(entries: &[memf_linux::KernelHookInfo], output: OutputForma
                 suspicious
             );
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "symbol": e.symbol,
@@ -2840,7 +2852,7 @@ fn print_elfinfo(entries: &[memf_linux::ElfInfo], output: OutputFormat) {
             println!("{table}");
             println!("\nTotal: {} ELF headers", entries.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "pid": e.pid,
@@ -2891,7 +2903,7 @@ fn print_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: OutputF
                 .count();
             println!("\nTotal: {} modules ({} hidden)", entries.len(), hidden);
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in entries {
                 let json = serde_json::json!({
                     "name": e.name,
@@ -3308,7 +3320,7 @@ fn print_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat) 
             println!("{table}");
             println!("\nTotal: {} handles", handles.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for h in handles {
                 let json = serde_json::json!({
                     "pid": h.pid,
@@ -3374,7 +3386,7 @@ fn print_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputForma
                 );
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for h in hooks {
                 let json = serde_json::json!({
                     "index": h.index,
@@ -3445,7 +3457,7 @@ fn print_irp_hooks(hooks: &[memf_windows::WinIrpHookInfo], output: OutputFormat)
                 );
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for h in hooks {
                 let json = serde_json::json!({
                     "driver_name": h.driver_name,
@@ -3510,7 +3522,7 @@ fn print_callbacks(cbs: &[memf_windows::WinCallbackInfo], output: OutputFormat) 
                 println!("\nTotal: {} callbacks", cbs.len());
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for cb in cbs {
                 let json = serde_json::json!({
                     "callback_type": cb.callback_type,
@@ -3566,7 +3578,7 @@ fn print_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) {
             println!("{table}");
             println!("\nTotal: {} VAD entries", vads.len());
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for v in vads {
                 let json = serde_json::json!({
                     "pid": v.pid,
@@ -3632,7 +3644,7 @@ fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Outp
                 );
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for f in findings {
                 let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
                     write!(s, "{b:02x}").unwrap();
@@ -3713,7 +3725,7 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
                 );
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for (pid, image_name, m) in mods {
                 let json = serde_json::json!({
                     "pid": pid,
@@ -3796,7 +3808,7 @@ fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFo
                 );
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for f in findings {
                 let json = serde_json::json!({
                     "pid": f.pid,
@@ -3871,7 +3883,7 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
                 );
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for t in tokens {
                 let json = serde_json::json!({
                     "pid": t.pid,
@@ -4332,7 +4344,7 @@ fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
                 );
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Ndjson => {
             for e in events {
                 let json = serde_json::json!({
                     "timestamp": e.timestamp,
