@@ -9,6 +9,7 @@
 
 pub mod arp;
 pub mod bash;
+pub mod bash_history;
 pub mod boot_time;
 pub mod bpf;
 pub mod capabilities;
@@ -60,6 +61,7 @@ pub mod network;
 pub mod oom_events;
 pub mod pam_hooks;
 pub mod perf_event;
+pub mod proc_cmdline;
 pub mod proc_hidden;
 pub mod process;
 pub mod psaux;
