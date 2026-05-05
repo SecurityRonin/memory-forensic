@@ -6,6 +6,7 @@
 //! process runs as SYSTEM, that is suspicious. Equivalent to
 //! Volatility's `getsids` plugin. MITRE ATT&CK T1078/T1134.
 
+use forensicnomicon::processes::is_masquerade_target;
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
@@ -37,25 +38,14 @@ pub fn well_known_sid(sid: &str) -> Option<&'static str> {
 ///   svchost, smss) but runs as SYSTEM (`S-1-5-18`).
 /// - Its SID is ANONYMOUS LOGON (`S-1-5-7`) regardless of process name.
 pub fn classify_process_sid(process_name: &str, sid: &str) -> bool {
-    const SYSTEM_PROCS: &[&str] = &[
-        "csrss.exe",
-        "lsass.exe",
-        "services.exe",
-        "svchost.exe",
-        "smss.exe",
-    ];
-
     // Any process running as ANONYMOUS LOGON is suspicious
     if sid == "S-1-5-7" {
         return true;
     }
 
     // Non-system process running as SYSTEM is suspicious
-    if sid == "S-1-5-18" {
-        let lower = process_name.to_ascii_lowercase();
-        if !SYSTEM_PROCS.iter().any(|&p| lower == p) {
-            return true;
-        }
+    if sid == "S-1-5-18" && !is_masquerade_target(process_name) {
+        return true;
     }
 
     false
@@ -452,14 +442,12 @@ mod tests {
     }
 
     #[test]
-    fn pin_taskhostw_is_not_in_local_system_procs() {
-        // taskhostw.exe is NOT in the local SYSTEM_PROCS const, so it is
-        // currently flagged suspicious when running as SYSTEM.  This test
-        // pins the pre-refactor boundary so any regression is immediately
-        // visible during the GREEN step.
+    fn pin_taskhostw_in_masquerade_target_list() {
+        // taskhostw.exe IS in forensicnomicon's WINDOWS_MASQUERADE_TARGETS,
+        // so after the refactor it must NOT be flagged suspicious as SYSTEM.
         assert!(
-            classify_process_sid("taskhostw.exe", "S-1-5-18"),
-            "taskhostw.exe is not in local SYSTEM_PROCS — currently suspicious as SYSTEM"
+            !classify_process_sid("taskhostw.exe", "S-1-5-18"),
+            "taskhostw.exe is a masquerade target — should not be suspicious as SYSTEM"
         );
     }
 
