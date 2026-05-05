@@ -1076,6 +1076,80 @@ pub struct HeapSprayInfo {
 }
 
 #[cfg(test)]
+mod forensic_events_tests {
+    use super::*;
+    use memf_correlate::traits::IntoForensicEvents;
+
+    #[test]
+    fn malfind_info_produces_forensic_event() {
+        let info = WinMalfindInfo {
+            pid: 1234,
+            image_name: "malware.exe".into(),
+            start_vaddr: 0x1000,
+            end_vaddr: 0x2000,
+            protection_str: "PAGE_EXECUTE_READWRITE".into(),
+            first_bytes: vec![0x4D, 0x5A],
+        };
+        let events = info.into_forensic_events();
+        assert!(!events.is_empty());
+        assert_eq!(events[0].source_walker, "malfind");
+    }
+
+    #[test]
+    fn hollowing_info_suspicious_produces_event() {
+        let info = WinHollowingInfo {
+            pid: 999,
+            image_name: "svchost.exe".into(),
+            image_base: 0x400000,
+            has_mz: false,
+            has_pe: false,
+            pe_size_of_image: 0,
+            ldr_size_of_image: 0x5000,
+            suspicious: true,
+            reason: "MZ header missing".into(),
+        };
+        let events = info.into_forensic_events();
+        assert!(!events.is_empty());
+        assert_eq!(events[0].source_walker, "hollowing");
+    }
+
+    #[test]
+    fn hollowing_info_not_suspicious_produces_no_events() {
+        let info = WinHollowingInfo {
+            pid: 4,
+            image_name: "System".into(),
+            image_base: 0,
+            has_mz: true,
+            has_pe: true,
+            pe_size_of_image: 0x1000,
+            ldr_size_of_image: 0x1000,
+            suspicious: false,
+            reason: String::new(),
+        };
+        let events = info.into_forensic_events();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn connection_info_produces_event() {
+        let info = WinConnectionInfo {
+            protocol: "TCPv4".into(),
+            local_addr: "127.0.0.1".into(),
+            local_port: 54321,
+            remote_addr: "10.0.0.1".into(),
+            remote_port: 443,
+            state: WinTcpState::Established,
+            pid: 1234,
+            process_name: "chrome.exe".into(),
+            create_time: 0,
+        };
+        let events = info.into_forensic_events();
+        assert!(!events.is_empty());
+        assert_eq!(events[0].source_walker, "netscan");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
