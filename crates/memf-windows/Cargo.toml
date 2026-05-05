@@ -11,6 +11,7 @@ memf-format.workspace = true
 memf-symbols.workspace = true
 memf-core.workspace = true
 memf-correlate.workspace = true
+forensicnomicon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
