@@ -27,20 +27,9 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winevt_core::binary::{CHUNK_RECORDS_OFFSET, CHUNK_SIZE, ELFCHNK_MAGIC, RECORD_MAGIC};
 
 use crate::{EvtxChunkInfo, Result};
-
-/// Magic bytes at the start of every EVTX chunk: `ElfChnk\0`.
-const ELFCHNK_MAGIC: [u8; 8] = [0x45, 0x6C, 0x66, 0x43, 0x68, 0x6E, 0x6B, 0x00];
-
-/// Magic bytes at the start of every event record: `**\0\0`.
-const RECORD_MAGIC: [u8; 4] = [0x2A, 0x2A, 0x00, 0x00];
-
-/// Each EVTX chunk is exactly 64 KiB (0x10000 bytes).
-const CHUNK_SIZE: u64 = 0x10000;
-
-/// Event records start at this offset within a chunk.
-const RECORDS_OFFSET: u64 = 0x200;
 
 /// Chunks are aligned on 4 KiB boundaries in memory.
 const CHUNK_ALIGNMENT: u64 = 0x1000;
@@ -109,7 +98,7 @@ fn parse_chunk_header<P: PhysicalMemoryProvider>(
     let last_event_rec_num = read_u64_at(reader, chunk_addr + 0x10)?;
 
     // Walk event records starting at offset 0x200.
-    let records_start = chunk_addr + RECORDS_OFFSET;
+    let records_start = chunk_addr + CHUNK_RECORDS_OFFSET;
     let chunk_end = chunk_addr + CHUNK_SIZE;
 
     let mut record_count: u32 = 0;
@@ -203,7 +192,7 @@ fn identify_channel<P: PhysicalMemoryProvider>(
     // channel name strings. EVTX BinXml is complex to parse fully, so
     // we do a best-effort search for common channel name patterns in
     // the raw chunk bytes.
-    let search_start = chunk_addr + RECORDS_OFFSET;
+    let search_start = chunk_addr + CHUNK_RECORDS_OFFSET;
     // Read a limited window (first 4 KiB of records area) to search.
     let search_len: usize = 4096;
     let Ok(bytes) = reader.read_bytes(search_start, search_len) else {
@@ -309,7 +298,7 @@ mod tests {
         builder = builder.write_phys(CHUNK_PADDR + 0x28, &0x80u32.to_le_bytes());
 
         // Now write one event record at offset 0x200 within the chunk.
-        let record_paddr = CHUNK_PADDR + RECORDS_OFFSET;
+        let record_paddr = CHUNK_PADDR + CHUNK_RECORDS_OFFSET;
         // -- Record magic: "**\0\0"
         builder = builder.write_phys(record_paddr, &RECORD_MAGIC);
         // -- Record size at offset 4 (say 56 bytes — minimal record)
@@ -364,7 +353,7 @@ mod tests {
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect();
-        builder = builder.write_phys(CHUNK_PADDR + RECORDS_OFFSET + 0x10, &channel_utf16);
+        builder = builder.write_phys(CHUNK_PADDR + CHUNK_RECORDS_OFFSET + 0x10, &channel_utf16);
 
         let (cr3, mem) = builder.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -435,7 +424,7 @@ mod tests {
         builder = builder.write_phys(CHUNK_PADDR + 0x10, &5u64.to_le_bytes());
 
         // Write record magic but size = 10 (< 24 minimum) → loop breaks.
-        let record_paddr = CHUNK_PADDR + RECORDS_OFFSET;
+        let record_paddr = CHUNK_PADDR + CHUNK_RECORDS_OFFSET;
         builder = builder.write_phys(record_paddr, &RECORD_MAGIC);
         builder = builder.write_phys(record_paddr + 4, &10u32.to_le_bytes()); // too small
 

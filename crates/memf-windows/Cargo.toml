@@ -12,6 +12,7 @@ memf-symbols.workspace = true
 memf-core.workspace = true
 memf-correlate.workspace = true
 forensicnomicon.workspace = true
+winevt-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

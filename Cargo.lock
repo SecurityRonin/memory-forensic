@@ -1016,6 +1016,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "forensicnomicon"
+version = "0.1.0"
+
+[[package]]
 name = "fs4"
 version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1686,6 +1690,7 @@ dependencies = [
 name = "memf-windows"
 version = "0.1.0"
 dependencies = [
+ "forensicnomicon",
  "memf-core",
  "memf-correlate",
  "memf-format",
@@ -1693,6 +1698,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "winevt-core",
 ]
 
 [[package]]
@@ -3590,6 +3596,14 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "winevt-core"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "serde",
+]
 
 [[package]]
 name = "wit-bindgen"
