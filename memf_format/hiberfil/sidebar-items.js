@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BLOCK_HEADER_SIZE","HIBR_MAGIC","HORM_MAGIC","OFF_CR3_IN_PROC_STATE","OFF_FIRST_TABLE_PAGE","OFF_LENGTH_SELF","PAGE_SIZE","RSTR_MAGIC","WAKE_MAGIC","XPRESS_SIG"],"fn":["build_ranges","is_hiberfil_magic","read_u32","read_u64"],"struct":["HiberfilPlugin","HiberfilProvider"]};

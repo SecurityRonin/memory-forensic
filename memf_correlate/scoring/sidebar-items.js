@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["amplifier","entity_key","has_finding","matches_finding","severity_weight"],"struct":["EntityScore","ScoringEngine"]};

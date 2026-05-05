@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["KNOWN_TAGS"],"fn":["classify_pool_tag","infer_struct_type","pool_type_name","scan_pool_for_tag","walk_pool_scan"],"struct":["HiddenProcessInfo","PoolEntry"]};

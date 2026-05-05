@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_HANDLE_ENTRIES"],"fn":["resolve_type_name","walk_handles"]};

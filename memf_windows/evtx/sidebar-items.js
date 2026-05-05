@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CHUNK_ALIGNMENT","CHUNK_SIZE","ELFCHNK_MAGIC","MAX_CHUNKS","MAX_RECORDS_PER_CHUNK","RECORDS_OFFSET","RECORD_MAGIC"],"fn":["identify_channel","parse_chunk_header","read_u32_at","read_u64_at","scan_evtx_chunks"]};

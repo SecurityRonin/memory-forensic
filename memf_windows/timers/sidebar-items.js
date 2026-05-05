@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_TIMERS","TIMER_TABLE_SIZE"],"fn":["classify_timer","walk_timers"],"struct":["KernelTimerInfo"]};

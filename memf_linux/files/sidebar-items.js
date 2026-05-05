@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["collect_process_files","walk_files","walk_process_files"]};

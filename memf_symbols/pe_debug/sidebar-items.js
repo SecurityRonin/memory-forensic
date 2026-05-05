@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["extract_pdb_id","format_guid"],"struct":["PdbId"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_USERS","UAC_ACCOUNT_DISABLED","UAC_LOCKOUT","UAC_NORMAL_ACCOUNT","UAC_PASSWORD_NOT_REQUIRED"],"fn":["classify_sam_user","find_name_for_rid","find_subkey_by_name","read_cell_addr","read_f_value","walk_sam_users"],"struct":["SamUserInfo"]};

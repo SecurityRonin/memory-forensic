@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["classify_tmpfs_file","walk_tmpfs_files"],"struct":["TmpfsFileInfo"]};

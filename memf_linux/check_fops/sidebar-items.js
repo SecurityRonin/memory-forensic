@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["FOP_FIELDS","MAX_PROC_ENTRIES"],"fn":["check_fops_entry","is_kernel_text_address","scan_proc_fops"],"struct":["FopsHookInfo","HookedFop"]};

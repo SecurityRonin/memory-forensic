@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_HOOKS","MAX_IMPORT_DESCRIPTORS","MAX_THUNKS"],"fn":["classify_iat_hook","find_module_range","le_u16","le_u32","le_u64","parse_import_descriptors","parse_module_imports","read_ascii_string","read_import_name","resolve_module","walk_iat_hooks"],"struct":["IatHookInfo"]};

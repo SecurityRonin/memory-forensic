@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_DESKTOPS_PER_STATION","MAX_WINSTATIONS","STANDARD_DESKTOPS"],"fn":["classify_desktop","classify_winstation","read_ptr","read_u32","walk_desktops","walk_station_desktops"],"struct":["DesktopInfo","WindowStationInfo"]};

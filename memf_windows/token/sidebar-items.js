@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PRIVILEGE_NAMES"],"fn":["decode_privileges","read_user_sid","sid_to_string","walk_tokens"]};

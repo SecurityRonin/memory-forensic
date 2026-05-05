@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["HIGH_VALUE_TARGETS"],"fn":["classify_peb_masquerade","walk_peb_masquerade"],"struct":["PebMasqueradeInfo"]};

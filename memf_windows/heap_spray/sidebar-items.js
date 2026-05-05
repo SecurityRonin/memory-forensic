@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_spray_pattern","scan_heap_spray"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["event","mitre","process_tree","scoring","timeline","traits"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_PROCESSES","PAGE_SIZE"],"fn":["read_cred_ids","read_mm_stats","read_parent_pid","read_psaux_info","read_tty_name","task_state_name","walk_psaux"],"struct":["PsAuxInfo"]};

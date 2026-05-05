@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_ENTRIES"],"fn":["parse_printk_record","walk_kmsg"],"struct":["KmsgEntry"]};

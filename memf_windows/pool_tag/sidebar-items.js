@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_POOL_TAG_ENTRIES"],"fn":["describe_tag","walk_pool_tags"]};

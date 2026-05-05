@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["VM_EXEC"],"fn":["collect_memfd_for_task","read_file_dentry_name","try_read_memfd_vma","walk_memfd_create"],"struct":["MemfdInfo"]};

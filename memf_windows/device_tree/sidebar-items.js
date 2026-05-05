@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_DEVICES_PER_DRIVER","MAX_DRIVERS"],"fn":["classify_device","device_type_name","walk_device_tree"],"struct":["DeviceTreeEntry"]};

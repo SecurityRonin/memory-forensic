@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["check_hidden_modules","check_module_in_sysfs"]};

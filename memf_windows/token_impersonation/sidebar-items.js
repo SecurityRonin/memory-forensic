@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["classify_token_impersonation","impersonation_level_name","walk_token_impersonation"],"struct":["TokenImpersonationInfo"]};

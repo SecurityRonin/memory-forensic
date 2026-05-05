@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["find_hidden_processes","is_dkom_hidden"]};

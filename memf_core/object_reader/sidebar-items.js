@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_LIST_ITERATIONS"],"struct":["ObjectReader"]};

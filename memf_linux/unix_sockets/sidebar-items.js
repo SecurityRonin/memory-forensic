@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_UNIX_SOCKETS","UNIX_HASH_SIZE"],"fn":["classify_unix_socket","socket_type_name","walk_unix_sockets"],"struct":["UnixSocketInfo"]};

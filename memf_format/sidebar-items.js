@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Error","MachineType"],"fn":["open_dump","open_dump_inner","open_dump_with_raw_fallback"],"mod":["avml","elf_core","hiberfil","kdump","lime","raw","test_builders","vmware","win_crashdump"],"struct":["DumpMetadata","PhysicalRange"],"trait":["FormatPlugin","PhysicalMemoryProvider"],"type":["Result"]};

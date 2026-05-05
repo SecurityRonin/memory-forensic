@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AFINFO_SYMBOLS","SEQ_OPS_FIELDS"],"fn":["classify_afinfo_hook","walk_check_afinfo"],"struct":["AfInfoHookInfo"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["from_strings_file","parse_line","parse_offset"]};

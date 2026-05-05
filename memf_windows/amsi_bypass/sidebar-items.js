@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["classify_amsi_patch","hex_string","walk_amsi_bypass"],"struct":["AmsiBypassInfo"]};

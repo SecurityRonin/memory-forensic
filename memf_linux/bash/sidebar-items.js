@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_COMMAND_LEN","MAX_HEAP_SCAN"],"fn":["addr_in_vmas","is_printable_ascii","parse_bash_timestamp","scan_heap_for_entries","scan_process_history","walk_bash_history"]};

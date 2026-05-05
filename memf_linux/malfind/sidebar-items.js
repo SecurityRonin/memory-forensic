@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["HEADER_SIZE"],"fn":["check_vma","scan_malfind","scan_process_vmas"]};

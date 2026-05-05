@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_ENV_SIZE"],"fn":["parse_env_block","walk_envvars"]};

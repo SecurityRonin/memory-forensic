@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["KERNEL_MAP_BASE"],"enum":["OsProfile"],"fn":["build_analysis_context","detect_os","extract_cr3","parse_hex_addr"],"struct":["AnalysisContext"]};

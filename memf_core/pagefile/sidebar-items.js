@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["REGION_ENTRY_SIZE","SM_HEADER_SIZE","SM_MAGIC"],"struct":["PagefileProvider","SwapfileProvider"],"trait":["PagefileSource"]};

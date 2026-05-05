@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_suspicious_shm","scan_shared_mem_anomalies"]};

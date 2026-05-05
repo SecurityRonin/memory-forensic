@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_ENTRIES","PRINTK_HEADER_SIZE"],"fn":["extract_dmesg"],"struct":["DmesgEntry"]};

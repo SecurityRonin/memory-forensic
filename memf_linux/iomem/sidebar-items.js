@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_RESOURCES"],"fn":["classify_iomem","read_ptr","read_u64","walk_iomem_regions"],"struct":["IoMemRegion"]};

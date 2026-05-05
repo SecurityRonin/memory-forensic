@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BPF_PROG_TYPES"],"fn":["classify_bpf_program","prog_type_name","read_bpf_prog","walk_bpf_programs","walk_idr_entries"],"struct":["BpfProgramInfo"]};

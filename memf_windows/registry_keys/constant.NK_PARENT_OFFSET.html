@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Number of values: u32 at offset 24 (0x18) — volatile subkey count at 0x18, we actually need values count at 0x28. Corrected: SubKeyCount(stable)@0x10, SubKeyCount(volatile)@0x14 — no."><title>NK_PARENT_OFFSET in memf_windows::registry_keys - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><script id="default-settings" 
+data-use_system_theme="false"
+data-theme="ayu"></script><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="memf_windows" data-themes="" data-resource-suffix="" data-rustdoc-version="1.97.0-nightly (cb40c25f6 2026-05-04)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-aa4d37ac.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">NK_PARENT_OFFSET</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../memf_windows/index.html">memf_<wbr>windows</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In memf_<wbr>windows::<wbr>registry_<wbr>keys</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">memf_windows</a>::<wbr><a href="index.html">registry_keys</a></div><h1>Constant <span class="constant">NK_<wbr>PARENT_<wbr>OFFSET</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/memf_windows/registry_keys.rs.html#65">Source</a> </span></div><pre class="rust item-decl"><code>const NK_PARENT_OFFSET: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a> = 0x10;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Number of values: u32 at offset 24 (0x18) — volatile subkey count at 0x18,
+we actually need values count at 0x28.
+Corrected: SubKeyCount(stable)@0x10, SubKeyCount(volatile)@0x14 — no.</p>
+<p>Actual _CM_KEY_NODE layout (from Windows internals):
+0x00: Signature (u16) “nk”
+0x02: Flags (u16)
+0x04: LastWriteTime (u64)
+0x0C: AccessBits (u32)  [Win8+, overlaps Spare]
+0x10: Parent (u32) — cell index of parent key
+0x14: SubKeyCounts[0] (u32) — stable subkey count
+0x18: SubKeyCounts[1] (u32) — volatile subkey count
+0x1C: SubKeys[0] (u32) — stable subkeys list cell index
+0x20: SubKeys[1] (u32) — volatile subkeys list cell index
+0x24: ValueCount (u32)
+0x28: Values (u32) — cell index of value-list cell
+0x2C: Security (u32)
+0x30: Class (u32)
+0x34: MaxNameLen (u32)
+0x38: MaxClassLen (u32)
+0x3C: MaxValueNameLen (u32)
+0x40: MaxValueDataLen (u32)
+0x44: WorkVar (u32)
+0x48: NameLength (u16)
+0x4A: ClassLength (u16)
+0x4C: Name (variable, ASCII or UTF-16)</p>
+</div></details></section></div></main></body></html>

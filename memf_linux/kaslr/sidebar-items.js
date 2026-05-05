@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BANNER_PREFIX","KERNEL_MAP_BASE"],"fn":["adjust_address","detect_kaslr_offset","find_subsequence","scan_for_banner"]};

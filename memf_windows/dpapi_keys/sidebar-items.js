@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["classify_dpapi_master_key","walk_dpapi_master_keys"],"struct":["DpapiMasterKeyInfo"]};

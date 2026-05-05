@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["classify_ftrace_hook","walk_ftrace_hooks"],"struct":["FtraceHookInfo"]};

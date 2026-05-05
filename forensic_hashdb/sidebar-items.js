@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BadFileSource"],"mod":["known_bad","known_good","lol_drivers","types"],"struct":["BadFileInfo","DriverInfo"]};

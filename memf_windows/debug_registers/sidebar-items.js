@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_KTHREAD_TRAP_FRAME","DEFAULT_KTRAP_FRAME_DR0","DEFAULT_KTRAP_FRAME_DR1","DEFAULT_KTRAP_FRAME_DR2","DEFAULT_KTRAP_FRAME_DR3","DEFAULT_KTRAP_FRAME_DR6","DEFAULT_KTRAP_FRAME_DR7","MAX_RESULTS"],"fn":["classify_debug_registers","read_thread_debug_regs","read_u64","walk_debug_registers"],"struct":["DebugRegisterInfo"]};

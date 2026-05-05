@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["GATE_DESC_SIZE","MAX_IDT_ENTRIES"],"fn":["classify_idt_entry","gate_type_name","walk_check_idt"],"struct":["IdtEntryInfo"]};

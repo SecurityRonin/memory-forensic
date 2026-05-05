@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_SHIMCACHE_ENTRIES"],"fn":["walk_shimcache"],"struct":["ShimcacheEntry"]};

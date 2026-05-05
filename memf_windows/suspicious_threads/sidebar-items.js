@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_SUSPICIOUS_THREADS","SYSTEM_PROCESSES","VAD_PROT_EXECUTE_READWRITE","VAD_PROT_EXECUTE_WRITECOPY"],"fn":["classify_suspicious_thread","find_containing_module","is_address_in_rwx_vad","is_rwx_protection","walk_suspicious_threads"],"struct":["SuspiciousThreadInfo"]};
