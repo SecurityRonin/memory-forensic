@@ -93,15 +93,103 @@ pub fn walk_cloud_credentials<P: PhysicalMemoryProvider + Clone>(
     Ok(results)
 }
 
+// AWS IAM Access Key ID (permanent: AKIA, temporary STS: ASIA)
+const AWS_KEY_ID: &str = r"(?:AKIA|ASIA)[A-Z0-9]{16}";
+
+// GCP API key
+const GCP_API_KEY: &str = r"AIza[0-9A-Za-z\-_]{35}";
+
+// Azure Storage Account key (base64, 88 chars ending in ==)
+const AZURE_STORAGE_KEY: &str = r"AccountKey=([A-Za-z0-9+/]{86}==)";
+
+// Azure SAS token
+const AZURE_SAS: &str = r"SharedAccessSignature=([A-Za-z0-9%&=+]{30,})";
+
+// Stripe secret key (live and test)
+const STRIPE_SECRET: &str = r"sk_(?:live|test)_[A-Za-z0-9]{24,}";
+
+// Stripe publishable key
+const STRIPE_PK: &str = r"pk_(?:live|test)_[A-Za-z0-9]{24,}";
+
+// Twilio Account SID
+const TWILIO_SID: &str = r"AC[a-f0-9]{32}";
+
+// Generic high-entropy API key pattern near "api_key", "apikey", "api-key" labels
+const GENERIC_API_KEY: &str = r#"(?i)api[_\-]?key["\s:=]+([A-Za-z0-9\-_]{32,64})"#;
+
 /// Scan raw bytes from a memory region for cloud provider credentials.
 ///
 /// Run all patterns, label each match with provider + credential_type.
 /// For patterns with capture groups (Azure, generic API key), use capture
-/// group 1. For others, use full match.
+/// group 1. For others, use full match. Deduplicates by value within the
+/// returned slice.
 pub(crate) fn scan_cloud_region(data: &[u8], pid: u64, process_name: &str) -> Vec<CloudCredentialInfo> {
-    // RED STUB: returns empty — tests will fail until implementation is added.
-    let _ = (data, pid, process_name);
-    vec![]
+    let text = String::from_utf8_lossy(data);
+    let mut out: Vec<CloudCredentialInfo> = Vec::new();
+    let mut seen_values: HashSet<String> = HashSet::new();
+
+    macro_rules! scan_pattern {
+        ($pat:expr, $provider:expr, $cred_type:expr, capture: false) => {{
+            if let Ok(re) = regex::Regex::new($pat) {
+                for m in re.find_iter(&text) {
+                    let value = m.as_str().to_owned();
+                    if seen_values.insert(value.clone()) {
+                        out.push(CloudCredentialInfo {
+                            pid,
+                            process_name: process_name.to_owned(),
+                            provider: $provider.to_owned(),
+                            credential_type: $cred_type.to_owned(),
+                            value,
+                        });
+                    }
+                }
+            }
+        }};
+        ($pat:expr, $provider:expr, $cred_type:expr, capture: true) => {{
+            if let Ok(re) = regex::Regex::new($pat) {
+                for caps in re.captures_iter(&text) {
+                    if let Some(m) = caps.get(1) {
+                        let value = m.as_str().to_owned();
+                        if seen_values.insert(value.clone()) {
+                            out.push(CloudCredentialInfo {
+                                pid,
+                                process_name: process_name.to_owned(),
+                                provider: $provider.to_owned(),
+                                credential_type: $cred_type.to_owned(),
+                                value,
+                            });
+                        }
+                    }
+                }
+            }
+        }};
+    }
+
+    // AWS — both AKIA (permanent) and ASIA (temporary STS) are AccessKeyId credentials.
+    if let Ok(re) = regex::Regex::new(AWS_KEY_ID) {
+        for m in re.find_iter(&text) {
+            let value = m.as_str().to_owned();
+            if seen_values.insert(value.clone()) {
+                out.push(CloudCredentialInfo {
+                    pid,
+                    process_name: process_name.to_owned(),
+                    provider: "AWS".to_owned(),
+                    credential_type: "AccessKeyId".to_owned(),
+                    value,
+                });
+            }
+        }
+    }
+
+    scan_pattern!(GCP_API_KEY, "GCP", "ApiKey", capture: false);
+    scan_pattern!(AZURE_STORAGE_KEY, "Azure", "StorageKey", capture: true);
+    scan_pattern!(AZURE_SAS, "Azure", "SasToken", capture: true);
+    scan_pattern!(STRIPE_SECRET, "Stripe", "SecretKey", capture: false);
+    scan_pattern!(STRIPE_PK, "Stripe", "PublishableKey", capture: false);
+    scan_pattern!(TWILIO_SID, "Twilio", "AccountSid", capture: false);
+    scan_pattern!(GENERIC_API_KEY, "Generic", "ApiKey", capture: true);
+
+    out
 }
 
 #[cfg(test)]
