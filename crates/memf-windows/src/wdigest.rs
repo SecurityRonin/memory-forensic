@@ -38,11 +38,71 @@ const MAX_ITERATIONS: usize = 10_000;
 /// * `lsass_cr3` — CR3 value of the LSASS process (page table root)
 /// * `l_log_sess_list_vaddr` — virtual address of `l_LogSessList` in wdigest.dll VA space
 pub fn walk_wdigest<P: PhysicalMemoryProvider + Clone>(
-    _reader: &ObjectReader<P>,
-    _lsass_cr3: u64,
-    _l_log_sess_list_vaddr: u64,
+    reader: &ObjectReader<P>,
+    lsass_cr3: u64,
+    l_log_sess_list_vaddr: u64,
 ) -> Result<Vec<WdigestCredentialInfo>> {
-    Ok(Vec::new()) // stub — tests will fail until implemented
+    // Switch to LSASS process address space
+    let proc_reader = reader.with_cr3(lsass_cr3);
+    let vas = proc_reader.vas();
+
+    // Read head Flink → first entry
+    let mut ptr_buf = [0u8; 8];
+    vas.read_virt(l_log_sess_list_vaddr, &mut ptr_buf)
+        .map_err(crate::Error::Core)?;
+    let mut current = u64::from_le_bytes(ptr_buf);
+
+    let mut results = Vec::new();
+    let mut iterations = 0usize;
+
+    while current != l_log_sess_list_vaddr {
+        if iterations >= MAX_ITERATIONS {
+            break;
+        }
+        iterations += 1;
+
+        // Read username at current+0x30
+        let username_bytes =
+            read_unicode_string_raw(vas, current + 0x30).unwrap_or_default();
+        // Read domain at current+0x40
+        let domain_bytes =
+            read_unicode_string_raw(vas, current + 0x40).unwrap_or_default();
+        // Read password (raw) at current+0x58
+        let password_bytes =
+            read_unicode_string_raw(vas, current + 0x58).unwrap_or_default();
+
+        // Skip entries with empty username
+        if !username_bytes.is_empty() {
+            let username = decode_utf16le_or_none(&username_bytes)
+                .unwrap_or_default();
+            let domain = decode_utf16le_or_none(&domain_bytes)
+                .unwrap_or_default();
+
+            let (password, password_encrypted) = if password_bytes.is_empty() {
+                (None, None)
+            } else if let Some(plain) = decode_utf16le_or_none(&password_bytes) {
+                (Some(plain), None)
+            } else {
+                (None, Some(password_bytes))
+            };
+
+            if !username.is_empty() {
+                results.push(WdigestCredentialInfo {
+                    username,
+                    domain,
+                    password,
+                    password_encrypted,
+                });
+            }
+        }
+
+        // Advance: read Flink at current+0x00
+        vas.read_virt(current, &mut ptr_buf)
+            .map_err(crate::Error::Core)?;
+        current = u64::from_le_bytes(ptr_buf);
+    }
+
+    Ok(results)
 }
 
 // ── helpers (used by the real implementation in GREEN) ───────────────────────
