@@ -97,6 +97,112 @@ fn ipv4_to_string(addr: u32) -> String {
     format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
 }
 
+/// Walk Linux TCP IPv6 connections via `tcp6_hashinfo.ehash`.
+///
+/// Returns `Ok(Vec::new())` if `tcp6_hashinfo` symbol is absent.
+pub fn walk_connections6<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+) -> Result<Vec<ConnectionInfo>> {
+    let tcp6_hashinfo_addr = match reader.symbols().symbol_address("tcp6_hashinfo") {
+        Some(a) => a,
+        None => return Ok(Vec::new()),
+    };
+
+    let ehash_ptr: u64 = reader.read_field(tcp6_hashinfo_addr, "inet_hashinfo", "ehash")?;
+    let ehash_mask: u32 = reader.read_field(tcp6_hashinfo_addr, "inet_hashinfo", "ehash_mask")?;
+
+    if ehash_ptr == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut connections = Vec::new();
+    let bucket_count = u64::from(ehash_mask) + 1;
+
+    for i in 0..bucket_count {
+        let bucket_size = reader
+            .symbols()
+            .struct_size("inet_ehash_bucket")
+            .unwrap_or(8);
+        let bucket_addr = ehash_ptr + i * bucket_size;
+
+        let chain_first: u64 = match reader.read_field(bucket_addr, "inet_ehash_bucket", "chain") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if chain_first == 0 || chain_first & 1 != 0 {
+            continue;
+        }
+
+        let mut sk_addr = chain_first;
+        let mut chain_len = 0;
+        while sk_addr != 0 && sk_addr & 1 == 0 && chain_len < 1000 {
+            if let Ok(conn) = read_inet6_sock(reader, sk_addr) {
+                connections.push(conn);
+            }
+            sk_addr = match reader.read_pointer(sk_addr, "sock_common", "skc_nulls_node") {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            chain_len += 1;
+        }
+    }
+
+    Ok(connections)
+}
+
+fn read_inet6_sock<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    sk_addr: u64,
+) -> Result<ConnectionInfo> {
+    let sk_common_off = reader
+        .symbols()
+        .field_offset("sock", "__sk_common")
+        .unwrap_or(0);
+    let common_addr = sk_addr + sk_common_off;
+
+    // Read 16-byte IPv6 addresses using read_bytes on the computed field offsets.
+    let daddr_off = reader
+        .symbols()
+        .field_offset("sock_common", "skc_v6_daddr")
+        .unwrap_or(8);
+    let saddr_off = reader
+        .symbols()
+        .field_offset("sock_common", "skc_v6_rcv_saddr")
+        .unwrap_or(24);
+
+    let daddr_bytes = reader.read_bytes(common_addr + daddr_off, 16)?;
+    let saddr_bytes = reader.read_bytes(common_addr + saddr_off, 16)?;
+
+    let mut daddr = [0u8; 16];
+    let mut saddr = [0u8; 16];
+    daddr.copy_from_slice(&daddr_bytes);
+    saddr.copy_from_slice(&saddr_bytes);
+
+    let dport: u16 = reader.read_field(common_addr, "sock_common", "skc_dport")?;
+    let sport: u16 = reader.read_field(common_addr, "sock_common", "skc_num")?;
+    let state: u8 = reader.read_field(common_addr, "sock_common", "skc_state")?;
+
+    Ok(ConnectionInfo {
+        protocol: Protocol::Tcp6,
+        local_addr: ipv6_to_string(&saddr),
+        local_port: sport,
+        remote_addr: ipv6_to_string(&daddr),
+        remote_port: u16::from_be(dport),
+        state: ConnectionState::from_raw(state),
+        pid: None,
+    })
+}
+
+pub(crate) fn ipv6_to_string(addr: &[u8; 16]) -> String {
+    use std::net::Ipv6Addr;
+    let mut groups = [0u16; 8];
+    for (i, chunk) in addr.chunks_exact(2).enumerate() {
+        groups[i] = u16::from_be_bytes([chunk[0], chunk[1]]);
+    }
+    Ipv6Addr::from(groups).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
