@@ -172,17 +172,13 @@ fn read_integrity_level<P: PhysicalMemoryProvider>(
     token_addr: u64,
 ) -> String {
     // Try to get IntegrityLevelIndex first
-    let integrity_index: u32 = match reader.read_field(token_addr, "_TOKEN", "IntegrityLevelIndex")
-    {
-        Ok(v) => v,
-        Err(_) => {
-            // Fall back: read UserAndGroupCount - 1 as the integrity entry index
-            let count: u32 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroupCount") {
-                Ok(v) if v > 0 => v,
-                _ => return String::new(),
-            };
-            count - 1
-        }
+    let integrity_index: u32 = if let Ok(v) = reader.read_field(token_addr, "_TOKEN", "IntegrityLevelIndex") { v } else {
+        // Fall back: read UserAndGroupCount - 1 as the integrity entry index
+        let count: u32 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroupCount") {
+            Ok(v) if v > 0 => v,
+            _ => return String::new(),
+        };
+        count - 1
     };
 
     let user_and_groups: u64 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroups") {
@@ -194,7 +190,7 @@ fn read_integrity_level<P: PhysicalMemoryProvider>(
     let sa_size = reader
         .symbols()
         .struct_size("_SID_AND_ATTRIBUTES")
-        .unwrap_or(16) as u64;
+        .unwrap_or(16);
 
     let entry_addr = user_and_groups.wrapping_add(u64::from(integrity_index) * sa_size);
 
@@ -236,9 +232,7 @@ pub fn walk_getsids<P: PhysicalMemoryProvider>(
         let sid_name = if user_sid.is_empty() {
             String::new()
         } else {
-            well_known_sid(&user_sid)
-                .map(String::from)
-                .unwrap_or_else(|| user_sid.clone())
+            well_known_sid(&user_sid).map_or_else(|| user_sid.clone(), String::from)
         };
 
         // Read integrity level
@@ -429,6 +423,43 @@ mod tests {
         assert!(
             !classify_process_sid("explorer.exe", "S-1-5-32-544"),
             "Administrators group SID should not be suspicious"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Pinning tests: system-proc boundary before DRY refactor
+    // These verify the exact membership contract so that swapping the
+    // local SYSTEM_PROCS const for forensicnomicon::is_masquerade_target
+    // does not silently change behaviour.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pin_lsass_is_system_proc() {
+        // lsass.exe running as SYSTEM must never be flagged suspicious.
+        assert!(
+            !classify_process_sid("lsass.exe", "S-1-5-18"),
+            "lsass.exe as SYSTEM should be recognised as a system proc"
+        );
+    }
+
+    #[test]
+    fn pin_notepad_is_not_system_proc() {
+        // notepad.exe is not a system process — SYSTEM context is suspicious.
+        assert!(
+            classify_process_sid("notepad.exe", "S-1-5-18"),
+            "notepad.exe as SYSTEM should be suspicious"
+        );
+    }
+
+    #[test]
+    fn pin_taskhostw_is_not_in_local_system_procs() {
+        // taskhostw.exe is NOT in the local SYSTEM_PROCS const, so it is
+        // currently flagged suspicious when running as SYSTEM.  This test
+        // pins the pre-refactor boundary so any regression is immediately
+        // visible during the GREEN step.
+        assert!(
+            classify_process_sid("taskhostw.exe", "S-1-5-18"),
+            "taskhostw.exe is not in local SYSTEM_PROCS — currently suspicious as SYSTEM"
         );
     }
 
@@ -1091,7 +1122,7 @@ mod tests {
         // eproc page
         let mut eproc_page = vec![0u8; 0x1000];
         // _KPROCESS.DirectoryTableBase at eproc+0x28 (Pcb is at +0, so kproc=eproc)
-        eproc_page[0x28..0x30].copy_from_slice(&(eproc_paddr as u64).to_le_bytes());
+        eproc_page[0x28..0x30].copy_from_slice(&eproc_paddr.to_le_bytes());
         // UniqueProcessId at +0x440
         eproc_page[0x440..0x448].copy_from_slice(&1234u64.to_le_bytes());
         // ActiveProcessLinks.Flink at +0x448 = head_vaddr (sentinel → stop)
