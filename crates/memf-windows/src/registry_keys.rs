@@ -1431,7 +1431,7 @@ mod tests {
 
         let cell_index: u32 = 0x20;
         let cell_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET + u64::from(cell_index);
-        let cell_paddr: u64 = hive_paddr + HBIN_START_OFFSET + u64::from(cell_index);
+        let _cell_paddr: u64 = hive_paddr + HBIN_START_OFFSET + u64::from(cell_index);
 
         // +8 raw_size: abs = 8, data_len = 4 → should read 4 bytes
         let raw_size: i32 = 8i32; // positive (free cell), abs = 8

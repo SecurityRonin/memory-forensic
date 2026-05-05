@@ -3408,8 +3408,8 @@ mod tests {
     fn read_value_data_zero_data_len_returns_empty() {
         let key_vaddr: u64 = 0x009B_0000;
         let key_paddr: u64 = 0x009B_0000;
-        let vlist_paddr: u64 = 0x009C_0000;
-        let vk_paddr: u64 = 0x009D_0000;
+        let _vlist_paddr: u64 = 0x009C_0000;
+        let _vk_paddr: u64 = 0x009D_0000;
         let flat_base: u64 = 0x009E_0000;
 
         let vlist_off: u32 = 0x0050;
@@ -3421,7 +3421,7 @@ mod tests {
         key_page[0x2C..0x30].copy_from_slice(&vlist_off.to_le_bytes());
 
         // vlist at flat_base + vlist_off + 4 → map to vlist_paddr
-        let vlist_vaddr = flat_base + u64::from(vlist_off);
+        let _vlist_vaddr = flat_base + u64::from(vlist_off);
         // But key_vaddr IS the key addr (flat cell style):
         // read_value_data(reader, flat_base, key_vaddr, "F") →
         //   val_list_off = vlist_off
