@@ -205,6 +205,24 @@ mod tests {
         assert!(!classify_peb_masquerade("", ""));
     }
 
+    #[test]
+    fn high_value_target_svchost_is_masquerade_candidate() {
+        // svchost.exe with mismatched PEB path must be flagged
+        assert!(classify_peb_masquerade(
+            "svchost.exe",
+            "C:\\Windows\\Temp\\malware.exe"
+        ));
+    }
+
+    #[test]
+    fn high_value_target_notepad_mismatch_not_flagged() {
+        // notepad.exe is not a high-value target — mismatch should NOT flag
+        assert!(!classify_peb_masquerade(
+            "notepad.exe",
+            "C:\\Windows\\Temp\\malware.exe"
+        ));
+    }
+
     // ---------------------------------------------------------------
     // Walker tests
     // ---------------------------------------------------------------
