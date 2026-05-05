@@ -6357,4 +6357,39 @@ mod tests {
         assert_eq!(written, 0, "empty ranges should produce 0 bytes");
         assert!(output.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // write_ndjson tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn write_ndjson_produces_one_line_per_item() {
+        let items = vec![
+            serde_json::json!({"id": 1, "name": "alpha"}),
+            serde_json::json!({"id": 2, "name": "beta"}),
+            serde_json::json!({"id": 3, "name": "gamma"}),
+        ];
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_ndjson(&items, &mut buf).expect("write_ndjson should not fail");
+
+        let output = String::from_utf8(buf).expect("output is UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+
+        assert_eq!(lines.len(), 3, "expected exactly 3 lines, one per item");
+
+        for line in &lines {
+            let parsed: serde_json::Value =
+                serde_json::from_str(line).expect("each line must be valid JSON");
+            assert!(parsed.is_object(), "each line must be a JSON object");
+        }
+    }
+
+    #[test]
+    fn write_ndjson_empty_produces_no_output() {
+        let items: Vec<serde_json::Value> = vec![];
+        let mut buf: Vec<u8> = Vec::new();
+        write_ndjson(&items, &mut buf).expect("write_ndjson should not fail on empty slice");
+        assert!(buf.is_empty(), "empty slice must produce no output");
+    }
 }
