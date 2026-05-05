@@ -347,12 +347,13 @@ mod tests {
     }
 
     #[test]
-    fn forensicnomicon_masquerade_target_covers_svchost() {
-        // This test verifies forensicnomicon is reachable and its list is a superset
-        // of the local HIGH_VALUE_TARGETS. If this fails to compile, the dep is missing.
-        assert!(forensicnomicon::processes::is_masquerade_target("svchost.exe"));
-        assert!(forensicnomicon::processes::is_masquerade_target("lsass.exe"));
-        assert!(forensicnomicon::processes::is_masquerade_target("csrss.exe"));
+    fn forensicnomicon_masquerade_target_covers_all_high_value_targets() {
+        for name in HIGH_VALUE_TARGETS {
+            assert!(
+                forensicnomicon::processes::is_masquerade_target(name),
+                "forensicnomicon missing: {name}"
+            );
+        }
     }
 
     #[test]
