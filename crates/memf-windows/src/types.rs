@@ -1169,6 +1169,20 @@ mod forensic_events_tests {
     }
 }
 
+/// WDigest SSP credentials recovered from LSASS `l_LogSessList`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WdigestCredentialInfo {
+    /// Username from the logon session.
+    pub username: String,
+    /// Domain or computer name.
+    pub domain: String,
+    /// Plaintext password, present on Windows 7/8 or when UseLogonCredential=1.
+    pub password: Option<String>,
+    /// Raw password bytes when the password is encrypted (Windows 8.1+ default).
+    /// Decrypt with the LSASS session key (3DES) to recover plaintext.
+    pub password_encrypted: Option<Vec<u8>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

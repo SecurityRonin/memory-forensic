@@ -91,6 +91,7 @@ pub mod types;
 pub mod unicode;
 pub mod userassist;
 pub mod vad;
+pub mod wdigest;
 pub mod wmi;
 pub mod wmi_persistence;
 pub mod wow64_anomaly;
