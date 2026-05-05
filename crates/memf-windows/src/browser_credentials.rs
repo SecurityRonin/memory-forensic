@@ -4,6 +4,22 @@
 //! for plaintext credential records that the browser's password manager writes
 //! to committed, writeable heap pages.
 //!
+//! # Memory layout
+//!
+//! The browser's credential manager transiently materialises saved passwords in
+//! the form:
+//!
+//! ```text
+//! <alpha-prefix>https?<SP><username><SP><password><SP><NUL>
+//! ```
+//!
+//! Each credential record is typically preceded (in the same region) by a URL
+//! record of the form:
+//!
+//! ```text
+//! <NUL><NUL><NUL><url-chars>https?<SP><username><SP><password>
+//! ```
+//!
 //! # Attribution
 //!
 //! Technique originally documented and demonstrated (C#) by:
@@ -11,27 +27,176 @@
 //!   <https://github.com/L1v1ng0ffTh3L4N/EdgeSavedPasswordsDumper>
 //!   (MIT License; regex patterns independently re-implemented in Rust for
 //!   read-only forensic analysis of memory dumps)
+//!
+//! # Forensic guarantee
+//!
+//! This walker only reads bytes from a memory dump — it opens no live process,
+//! calls no Win32 API, and modifies no state.
+
+use std::collections::HashSet;
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use regex::Regex;
 
-use crate::{types::BrowserCredentialInfo, Result};
+use crate::{
+    process::walk_processes,
+    types::BrowserCredentialInfo,
+    vad::walk_vad_tree,
+    Result,
+};
+
+/// Maximum bytes read from a single VAD region.
+///
+/// Caps memory consumption when a large anonymous mapping is encountered.
+const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Walk committed, writeable heap regions of the root `msedge.exe` process(es)
 /// in the dump and extract any plaintext credential records found therein.
+///
+/// # Root process selection
+///
+/// Chromium spawns many child `msedge.exe` processes. Saved passwords reside
+/// only in the **root** (browser) process — the one whose parent PID does not
+/// belong to another `msedge.exe` process. This matches the filtering logic in
+/// the original C# PoC.
+///
+/// # Arguments
+///
+/// * `reader` — kernel-space `ObjectReader` (uses kernel CR3 / symbol table).
+/// * `ps_head_vaddr` — virtual address of `PsActiveProcessHead`.
 pub fn walk_browser_credentials<P: PhysicalMemoryProvider + Clone>(
-    _reader: &ObjectReader<P>,
-    _ps_head_vaddr: u64,
+    reader: &ObjectReader<P>,
+    ps_head_vaddr: u64,
 ) -> Result<Vec<BrowserCredentialInfo>> {
-    todo!()
+    let procs = walk_processes(reader, ps_head_vaddr)?;
+
+    // Collect the set of PIDs that belong to msedge.exe.
+    let edge_pids: HashSet<u64> = procs
+        .iter()
+        .filter(|p| p.image_name.eq_ignore_ascii_case("msedge.exe"))
+        .map(|p| p.pid)
+        .collect();
+
+    // Root Edge processes: msedge.exe whose parent is NOT also msedge.exe.
+    let root_procs: Vec<_> = procs
+        .iter()
+        .filter(|p| {
+            p.image_name.eq_ignore_ascii_case("msedge.exe")
+                && !edge_pids.contains(&p.ppid)
+        })
+        .collect();
+
+    let vad_root_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "VadRoot")
+        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
+
+    let mut results = Vec::new();
+    let mut seen: HashSet<(u64, String, String)> = HashSet::new(); // (pid, username, password)
+
+    for proc in root_procs {
+        if proc.cr3 == 0 || proc.peb_addr == 0 {
+            continue;
+        }
+
+        // Walk VAD tree using the kernel reader.
+        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
+        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Create a reader that uses this process's page table for VA translation.
+        let proc_reader = reader.with_cr3(proc.cr3);
+
+        for vad in &vads {
+            // Only scan private, writable (not execute) regions — these are heap pages.
+            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
+                continue;
+            }
+            // Skip if protection includes EXECUTE (e.g., PAGE_EXECUTE_READWRITE).
+            if vad.protection_str.contains("EXECUTE") {
+                continue;
+            }
+
+            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
+                .min(MAX_REGION_BYTES as u64) as usize;
+
+            if region_size == 0 {
+                continue;
+            }
+
+            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
+                Ok(b) => b,
+                Err(_) => continue, // region may be paged out in the dump
+            };
+
+            for (url, username, password) in scan_region(&bytes) {
+                let key = (proc.pid, username.clone(), password.clone());
+                if seen.insert(key) {
+                    results.push(BrowserCredentialInfo {
+                        pid: proc.pid,
+                        image_name: proc.image_name.clone(),
+                        url,
+                        username,
+                        password,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 /// Scan raw bytes from a memory region for Edge credential records.
 ///
 /// Returns `(url, username, password)` tuples. `url` is empty when the URL
 /// pattern did not match in the same buffer.
-pub(crate) fn scan_region(_data: &[u8]) -> Vec<(String, String, String)> {
-    vec![] // stub — tests will fail
+///
+/// # Pattern source
+///
+/// Adapted from the regex in:
+///   L1v1ng0ffTh3L4N, "EdgeSavedPasswordsDumper"
+///   <https://github.com/L1v1ng0ffTh3L4N/EdgeSavedPasswordsDumper>
+pub(crate) fn scan_region(data: &[u8]) -> Vec<(String, String, String)> {
+    // Convert to UTF-8 with lossy replacement; NUL bytes are preserved as-is.
+    let text = String::from_utf8_lossy(data);
+
+    // Credential record pattern:
+    //   <alpha>https?<SP><username>{3,20}<SP><password>{6,40}<SP><NUL>
+    let cred_re = match Regex::new(
+        r"(?-u)[a-zA-Z]https?[ ]([a-zA-Z0-9\-_\.@?]{3,20})[ ]([a-zA-Z0-9!#$%^&*()\-+=\[\]{};:<>?/~\t ]{6,40})[ ]\x00",
+    ) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+
+    for caps in cred_re.captures_iter(&text) {
+        let username = caps[1].to_string();
+        let password = caps[2].trim_end().to_string();
+
+        // URL record pattern:
+        //   <NUL><NUL><NUL><url_chars>https?<SP><username><SP><password>
+        let url_pat = format!(
+            r"(?-u)\x00\x00\x00([A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+)https?[ ]{}[ ]{}",
+            regex::escape(&username),
+            regex::escape(&password),
+        );
+
+        let url = Regex::new(&url_pat)
+            .ok()
+            .and_then(|re| re.captures(&text))
+            .map(|m| m[1].to_string())
+            .unwrap_or_default();
+
+        out.push((url, username, password));
+    }
+
+    out
 }
 
 #[cfg(test)]
