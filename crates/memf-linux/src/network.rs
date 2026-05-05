@@ -105,6 +105,29 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
+    #[test]
+    fn walk_ipv6_no_symbol_returns_empty() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_connections6(&reader).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ipv6_loopback_formats_correctly() {
+        let addr = [0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(ipv6_to_string(&addr), "::1");
+    }
+
+    #[test]
+    fn ipv6_full_address_formats_correctly() {
+        let addr = [0x20u8, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(ipv6_to_string(&addr), "2001:db8::1");
+    }
+
     fn make_net_reader(data: &[u8], vaddr: u64, paddr: u64) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::new()
             .add_struct("inet_hashinfo", 64)
