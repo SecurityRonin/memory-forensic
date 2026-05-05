@@ -246,7 +246,7 @@ mod tests {
 
         let ptb = PageTableBuilder::new()
             .map_4k(vaddr, paddr, flags::WRITABLE)
-            .write_phys_u64(paddr, 42u32 as u64); // pid = 42 at offset 0
+            .write_phys_u64(paddr, u64::from(42u32)); // pid = 42 at offset 0
 
         let reader = make_reader(&isf, ptb);
         let pid: u32 = reader.read_field(vaddr, "task_struct", "pid").unwrap();
@@ -721,5 +721,87 @@ mod tests {
             matches!(result, Err(Error::ListCycle(_))),
             "expected ListCycle error, got: {result:?}"
         );
+    }
+
+    #[test]
+    fn iter_list_yields_same_as_walk_list() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 8, "list_head")
+            .add_field("task_struct", "comm", 16, "char")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer");
+
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+        let b_paddr: u64 = 0x0080_2000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let b_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let list_offset: u64 = 8;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .map_4k(b_vaddr, b_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, 0)
+            .write_phys_u64(head_paddr + list_offset, a_vaddr + list_offset)
+            .write_phys_u64(a_paddr, 100)
+            .write_phys_u64(a_paddr + list_offset, b_vaddr + list_offset)
+            .write_phys_u64(b_paddr, 200)
+            .write_phys_u64(b_paddr + list_offset, head_vaddr + list_offset);
+
+        let reader = make_reader(&isf, ptb);
+        let head = head_vaddr + list_offset;
+
+        let walk_result = reader.walk_list(head, "task_struct", "tasks").unwrap();
+        let iter_result: Vec<u64> = reader
+            .iter_list(head, "task_struct", "tasks")
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(iter_result, walk_result);
+    }
+
+    #[test]
+    fn iter_list_take_stops_early() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "tasks", 8, "list_head")
+            .add_field("task_struct", "comm", 16, "char")
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer");
+
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+        let b_paddr: u64 = 0x0080_2000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let b_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let list_offset: u64 = 8;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .map_4k(b_vaddr, b_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, 0)
+            .write_phys_u64(head_paddr + list_offset, a_vaddr + list_offset)
+            .write_phys_u64(a_paddr, 100)
+            .write_phys_u64(a_paddr + list_offset, b_vaddr + list_offset)
+            .write_phys_u64(b_paddr, 200)
+            .write_phys_u64(b_paddr + list_offset, head_vaddr + list_offset);
+
+        let reader = make_reader(&isf, ptb);
+        let head = head_vaddr + list_offset;
+
+        let first_two: Vec<u64> = reader
+            .iter_list(head, "task_struct", "tasks")
+            .take(2)
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(first_two.len(), 2);
     }
 }
