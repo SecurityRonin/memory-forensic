@@ -9,6 +9,7 @@
 //! and spawns threads to execute it. Common techniques like process hollowing,
 //! DLL injection, and shellcode injection leave distinctive thread artifacts.
 
+use forensicnomicon::processes::is_masquerade_target;
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
@@ -40,16 +41,6 @@ pub struct SuspiciousThreadInfo {
     pub is_suspicious: bool,
 }
 
-/// System processes where orphan threads are highly suspicious.
-const SYSTEM_PROCESSES: &[&str] = &[
-    "csrss.exe",
-    "smss.exe",
-    "services.exe",
-    "lsass.exe",
-    "wininit.exe",
-    "svchost.exe",
-];
-
 /// Classify whether a thread is suspicious based on its characteristics.
 ///
 /// Returns `(is_suspicious, reason)` where `reason` is a human-readable
@@ -66,8 +57,7 @@ pub fn classify_suspicious_thread(
     in_rwx_memory: bool,
     process_name: &str,
 ) -> (bool, String) {
-    let proc_lower = process_name.to_lowercase();
-    let is_system = SYSTEM_PROCESSES.iter().any(|&s| proc_lower == s);
+    let is_system = is_masquerade_target(process_name);
 
     // Rule 1: System process with orphan thread -> highly suspicious
     if is_orphan && is_system {
@@ -186,8 +176,7 @@ pub fn walk_suspicious_threads<P: PhysicalMemoryProvider + Clone>(
             Err(_) => continue,
         };
 
-        let proc_lower = proc.image_name.to_lowercase();
-        let is_system_proc = SYSTEM_PROCESSES.iter().any(|&s| proc_lower == s);
+        let is_system_proc = is_masquerade_target(&proc.image_name);
 
         for thr in &threads {
             // Skip threads with null start address (kernel threads, idle threads)
@@ -634,7 +623,7 @@ mod tests {
     /// classify: orphan in multiple system processes.
     #[test]
     fn classify_orphan_in_all_system_processes() {
-        for proc in SYSTEM_PROCESSES {
+        for proc in forensicnomicon::processes::WINDOWS_MASQUERADE_TARGETS {
             let (suspicious, reason) = classify_suspicious_thread("unknown", true, false, proc);
             assert!(suspicious, "orphan in {proc} should be suspicious");
             assert!(reason.contains("system process"), "{proc}: {reason}");
@@ -652,11 +641,11 @@ mod tests {
 
     // ── Pinning tests: SYSTEM_PROCESSES boundary (pre-refactor baseline) ───
 
-    /// Every name in SYSTEM_PROCESSES must trigger the "system process" rule
-    /// when an orphan thread is present.
+    /// Every name that is_masquerade_target returns true for must trigger the
+    /// "system process" rule when an orphan thread is present.
     #[test]
     fn all_system_processes_trigger_system_process_rule() {
-        for proc in SYSTEM_PROCESSES {
+        for proc in forensicnomicon::processes::WINDOWS_MASQUERADE_TARGETS {
             let (suspicious, reason) = classify_suspicious_thread("unknown", true, false, proc);
             assert!(suspicious, "orphan in {proc} should be suspicious");
             assert!(

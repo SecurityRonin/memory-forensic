@@ -1,5 +1,6 @@
 //! [`IntoForensicEvents`] implementations for Windows walker output types.
 
+use forensicnomicon::processes::is_masquerade_target;
 use memf_correlate::event::{Entity, Finding, ForensicEvent, Severity};
 use memf_correlate::mitre::MitreAttackId;
 use memf_correlate::traits::IntoForensicEvents;
@@ -9,17 +10,6 @@ use crate::types::{
     SectionObjectInfo, TlsCallbackInfo, WinConnectionInfo, WinDriverInfo, WinHollowingInfo,
     WinMalfindInfo, WinProcessInfo, WinTokenInfo, Wow64AnomalyInfo,
 };
-
-/// Suspicious image names that are often spoofed by malware (T1036 - Masquerading).
-const SPOOFABLE_NAMES: &[&str] = &[
-    "svchost.exe",
-    "lsass.exe",
-    "csrss.exe",
-    "winlogon.exe",
-    "services.exe",
-    "smss.exe",
-    "wininit.exe",
-];
 
 /// Processes with these PIDs are kernel/system and should never have a non-zero PPID
 /// other than the System process (pid 4) or Idle (pid 0).
@@ -42,7 +32,7 @@ impl IntoForensicEvents for WinProcessInfo {
             finding = Finding::DefenseEvasion;
             mitre.push(MitreAttackId::new("T1564").expect("valid id"));
             confidence = 0.75;
-        } else if SPOOFABLE_NAMES.contains(&self.image_name.to_lowercase().as_str()) {
+        } else if is_masquerade_target(&self.image_name) {
             finding = Finding::Other("spoofable_name".into());
             confidence = 0.4;
         }
@@ -702,10 +692,11 @@ mod tests {
 
     // ── Pinning tests: SPOOFABLE_NAMES boundary (pre-refactor baseline) ────
 
-    /// Every name in SPOOFABLE_NAMES must produce finding="spoofable_name" at confidence=0.4.
+    /// Every name that is_masquerade_target returns true for must produce
+    /// finding="spoofable_name" at confidence=0.4.
     #[test]
     fn all_spoofable_names_produce_spoofable_finding() {
-        for name in SPOOFABLE_NAMES {
+        for name in forensicnomicon::processes::WINDOWS_MASQUERADE_TARGETS {
             let proc = make_process(1000, 4, name, 3);
             let events = proc.into_forensic_events();
             assert_eq!(events.len(), 1, "name={name}");
