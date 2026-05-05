@@ -439,4 +439,10 @@ mod tests {
         let stored_cr3 = u64::from_le_bytes(dump[cr3_offset..cr3_offset + 8].try_into().unwrap());
         assert_eq!(stored_cr3, cr3_val);
     }
+
+    #[test]
+    fn from_bytes_empty_returns_error_not_panic() {
+        let result = HiberfilProvider::from_bytes(&[]);
+        assert!(result.is_err(), "empty input must return Err");
+    }
 }

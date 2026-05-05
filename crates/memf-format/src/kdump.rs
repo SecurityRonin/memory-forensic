@@ -638,4 +638,10 @@ mod tests {
         let dump = KdumpBuilder::new().add_page(0, &[0u8; 4096]).build();
         assert_eq!(&dump[0..8], b"KDUMP   ");
     }
+
+    #[test]
+    fn from_bytes_tiny_input_returns_error_not_panic() {
+        let result = KdumpProvider::from_bytes(&[0u8; 4]);
+        assert!(result.is_err(), "4 bytes is too short for kdump header");
+    }
 }

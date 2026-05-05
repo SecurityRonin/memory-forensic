@@ -611,4 +611,16 @@ mod tests {
             "expected Corrupt, got {err:?}"
         );
     }
+
+    #[test]
+    fn from_bytes_empty_returns_error_not_panic() {
+        let result = CrashDumpProvider::from_bytes(&[]);
+        assert!(result.is_err(), "empty input must return Err");
+    }
+
+    #[test]
+    fn from_bytes_3_bytes_returns_error_not_panic() {
+        let result = CrashDumpProvider::from_bytes(&[0u8; 3]);
+        assert!(result.is_err(), "3 bytes is too short for any valid header");
+    }
 }
