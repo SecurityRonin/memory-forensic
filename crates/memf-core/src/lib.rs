@@ -77,6 +77,37 @@ pub enum Error {
 /// A Result alias for memf-core.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Output from a walker that may encounter unreadable entries.
+///
+/// Wraps the collected items with a counter of entries that were
+/// skipped due to unreadable memory or parse errors. Provides
+/// analysts visibility into partial walks ("500/512 processes walked,
+/// 12 skipped").
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct WalkResult<T: serde::Serialize> {
+    /// Successfully walked entries.
+    pub items: Vec<T>,
+    /// Number of entries skipped due to unreadable memory or parse errors.
+    pub skipped: u32,
+}
+
+impl<T: serde::Serialize> WalkResult<T> {
+    /// Create a new `WalkResult` with the given items and skip count.
+    pub fn new(items: Vec<T>, skipped: u32) -> Self {
+        Self { items, skipped }
+    }
+
+    /// Push a successfully walked item.
+    pub fn push(&mut self, item: T) {
+        self.items.push(item);
+    }
+
+    /// Increment the skip counter for one unreadable entry.
+    pub fn skip(&mut self) {
+        self.skipped += 1;
+    }
+}
+
 #[cfg(test)]
 mod walk_result_tests {
     use super::WalkResult;
