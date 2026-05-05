@@ -103,6 +103,28 @@ pub fn walk_session_tokens<P: PhysicalMemoryProvider + Clone>(
     Ok(results)
 }
 
+// JWT: three base64url segments separated by dots, header starts with eyJ ({"  in base64)
+const JWT_PATTERN: &str = r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}";
+
+// Bearer token in Authorization header or JSON
+const BEARER_PATTERN: &str = r"[Bb]earer ([A-Za-z0-9\-._~+/]{20,})";
+
+// GitHub PAT (classic: ghp_, fine-grained: github_pat_)
+const GITHUB_PATTERN: &str = r"(?:ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})";
+
+// GitLab PAT
+const GITLAB_PATTERN: &str = r"glpat-[A-Za-z0-9_-]{20}";
+
+// Slack tokens
+const SLACK_PATTERN: &str = r"xox[bpoas]-[0-9A-Za-z-]{10,}";
+
+// AWS STS temporary token (longer than AKIA access key, starts with AQOD/AQIA/IQoJ etc.)
+const AWS_STS_PATTERN: &str = r"(?:AQOD|AQIA|IQoJ|IQoI)[A-Za-z0-9+/=]{100,}";
+
+// Generic access_token / refresh_token in JSON
+const GENERIC_TOKEN_PATTERN: &str =
+    r#"["'](?:access_token|refresh_token|id_token)["']\s*:\s*["']([A-Za-z0-9\-._~+/=]{20,})["']"#;
+
 /// Scan raw bytes for authentication token patterns.
 ///
 /// Returns one [`SessionTokenInfo`] per unique token value found in `data`.
@@ -110,9 +132,49 @@ pub fn walk_session_tokens<P: PhysicalMemoryProvider + Clone>(
 /// value is used; for patterns without (JWT, GitHub, GitLab, Slack, AWS STS),
 /// the full match is used.
 pub(crate) fn scan_for_tokens(data: &[u8], pid: u64, process_name: &str) -> Vec<SessionTokenInfo> {
-    // Stub: not yet implemented — returns empty vec so RED tests fail.
-    let _ = (data, pid, process_name);
-    vec![]
+    let text = String::from_utf8_lossy(data);
+
+    // (type_label, regex, use_capture_group_1)
+    let patterns: &[(&str, &str, bool)] = &[
+        ("Jwt", JWT_PATTERN, false),
+        ("Bearer", BEARER_PATTERN, true),
+        ("GitHub", GITHUB_PATTERN, false),
+        ("GitLab", GITLAB_PATTERN, false),
+        ("Slack", SLACK_PATTERN, false),
+        ("AwsSts", AWS_STS_PATTERN, false),
+        ("GenericAccessToken", GENERIC_TOKEN_PATTERN, true),
+    ];
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+
+    for &(label, pat, use_capture) in patterns {
+        let re = match regex::Regex::new(pat) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for caps in re.captures_iter(&text) {
+            let value = if use_capture {
+                caps.get(1).map(|m| m.as_str().to_string())
+            } else {
+                caps.get(0).map(|m| m.as_str().to_string())
+            };
+
+            let Some(token_value) = value else { continue };
+
+            if seen.insert(token_value.clone()) {
+                out.push(SessionTokenInfo {
+                    pid,
+                    process_name: process_name.to_string(),
+                    token_type: label.to_string(),
+                    token_value,
+                });
+            }
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
