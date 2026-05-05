@@ -1,6 +1,9 @@
 //! Virtual address space and page table walking.
 
+use lru::LruCache;
 use memf_format::PhysicalMemoryProvider;
+use std::cell::RefCell;
+use std::num::NonZeroUsize;
 
 use crate::pagefile::PagefileSource;
 use crate::proto_pte::PrototypePteSource;
@@ -20,12 +23,17 @@ pub struct VirtualAddressSpace<P: PhysicalMemoryProvider> {
     mode: TranslationMode,
     pagefiles: Vec<Box<dyn PagefileSource>>,
     prototype_source: Option<Box<dyn PrototypePteSource>>,
+    /// LRU cache: page-aligned vaddr → page-aligned paddr.
+    tlb_cache: RefCell<LruCache<u64, u64>>,
 }
 
 // x86_64 page table constants
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PRESENT: u64 = 1;
 const PS: u64 = 1 << 7;
+
+/// Number of page translations to cache per `VirtualAddressSpace` instance.
+const TRANSLATION_CACHE_CAPACITY: usize = 4096;
 
 /// Internal result of page table walk — not exposed publicly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +59,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             mode,
             pagefiles: Vec::new(),
             prototype_source: None,
+            tlb_cache: RefCell::new(LruCache::new(
+                NonZeroUsize::new(TRANSLATION_CACHE_CAPACITY).expect("capacity is nonzero"),
+            )),
         }
     }
 
@@ -217,6 +228,11 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     }
 
     fn walk_x86_64_4level_internal(&self, vaddr: u64) -> Result<TranslationResult> {
+        let page_vaddr = vaddr & !0xFFF;
+        if let Some(&paddr_base) = self.tlb_cache.borrow().peek(&page_vaddr) {
+            return Ok(TranslationResult::Physical(paddr_base | (vaddr & 0xFFF)));
+        }
+
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pdpt_idx = (vaddr >> 30) & 0x1FF;
         let pd_idx = (vaddr >> 21) & 0x1FF;
@@ -240,7 +256,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         if pdpte & PS != 0 {
             let phys_base = pdpte & 0x000F_FFFF_C000_0000;
             let offset_1g = vaddr & 0x3FFF_FFFF;
-            return Ok(TranslationResult::Physical(phys_base | offset_1g));
+            let phys = phys_base | offset_1g;
+            self.tlb_cache.borrow_mut().put(page_vaddr, phys & !0xFFF);
+            return Ok(TranslationResult::Physical(phys));
         }
 
         // PD
@@ -254,7 +272,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         if pde & PS != 0 {
             let phys_base = pde & 0x000F_FFFF_FFE0_0000;
             let offset_2m = vaddr & 0x1F_FFFF;
-            return Ok(TranslationResult::Physical(phys_base | offset_2m));
+            let phys = phys_base | offset_2m;
+            self.tlb_cache.borrow_mut().put(page_vaddr, phys & !0xFFF);
+            return Ok(TranslationResult::Physical(phys));
         }
 
         // PT (4K page)
@@ -263,7 +283,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
 
         if pte & PRESENT != 0 {
             let phys_base = pte & ADDR_MASK;
-            return Ok(TranslationResult::Physical(phys_base | page_offset));
+            let phys = phys_base | page_offset;
+            self.tlb_cache.borrow_mut().put(page_vaddr, phys_base);
+            return Ok(TranslationResult::Physical(phys));
         }
 
         // Non-present PTE decoding (PT level only)
