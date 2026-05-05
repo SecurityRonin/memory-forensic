@@ -36,13 +36,27 @@ const OFF_FIRST_TABLE_PAGE: usize = 0x68;
 const OFF_CR3_IN_PROC_STATE: usize = 0x28;
 
 /// Read a little-endian u32 from `data` at `offset`.
-fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+fn read_u32(data: &[u8], offset: usize) -> crate::Result<u32> {
+    data.get(offset..offset + 4)
+        .and_then(|b| b.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| {
+            crate::Error::Corrupt(format!(
+                "truncated header: need 4 bytes at offset {offset}"
+            ))
+        })
 }
 
 /// Read a little-endian u64 from `data` at `offset`.
-fn read_u64(data: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+fn read_u64(data: &[u8], offset: usize) -> crate::Result<u64> {
+    data.get(offset..offset + 8)
+        .and_then(|b| b.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| {
+            crate::Error::Corrupt(format!(
+                "truncated header: need 8 bytes at offset {offset}"
+            ))
+        })
 }
 
 /// Provider that exposes physical memory from a Windows hibernation file.
@@ -65,7 +79,7 @@ impl HiberfilProvider {
         }
 
         // Validate magic.
-        let magic = read_u32(bytes, 0);
+        let magic = read_u32(bytes, 0)?;
         if !is_hiberfil_magic(magic) {
             return Err(Error::Corrupt(format!(
                 "invalid hiberfil magic: 0x{magic:08X}"
@@ -73,13 +87,13 @@ impl HiberfilProvider {
         }
 
         // Check LengthSelf to confirm 64-bit format (value 256).
-        let _length_self = read_u32(bytes, OFF_LENGTH_SELF);
+        let _length_self = read_u32(bytes, OFF_LENGTH_SELF)?;
 
         // Extract CR3 from processor state page (page 1, offset 0x28).
-        let cr3 = read_u64(bytes, PAGE_SIZE + OFF_CR3_IN_PROC_STATE);
+        let cr3 = read_u64(bytes, PAGE_SIZE + OFF_CR3_IN_PROC_STATE)?;
 
         // Read the page table from page indicated by FirstTablePage.
-        let first_table_page = read_u64(bytes, OFF_FIRST_TABLE_PAGE);
+        let first_table_page = read_u64(bytes, OFF_FIRST_TABLE_PAGE)?;
         let table_offset = first_table_page as usize * PAGE_SIZE;
 
         if table_offset + PAGE_SIZE > bytes.len() {
@@ -90,7 +104,7 @@ impl HiberfilProvider {
         let mut pfn_list = Vec::new();
         let mut pos = table_offset;
         while pos + 8 <= table_offset + PAGE_SIZE {
-            let pfn = read_u64(bytes, pos);
+            let pfn = read_u64(bytes, pos)?;
             if pfn == u64::MAX {
                 break;
             }
@@ -264,7 +278,7 @@ impl FormatPlugin for HiberfilPlugin {
         if header.len() < 4 {
             return 0;
         }
-        let magic = read_u32(header, 0);
+        let Ok(magic) = read_u32(header, 0) else { return 0 };
         match magic {
             HIBR_MAGIC | WAKE_MAGIC => 90,
             RSTR_MAGIC | HORM_MAGIC => 85,

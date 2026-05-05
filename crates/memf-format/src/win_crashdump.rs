@@ -71,13 +71,27 @@ pub struct CrashDumpProvider {
 }
 
 /// Read a little-endian u32 from `data` at `offset`.
-fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+fn read_u32(data: &[u8], offset: usize) -> crate::Result<u32> {
+    data.get(offset..offset + 4)
+        .and_then(|b| b.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| {
+            crate::Error::Corrupt(format!(
+                "truncated header: need 4 bytes at offset {offset}"
+            ))
+        })
 }
 
 /// Read a little-endian u64 from `data` at `offset`.
-fn read_u64(data: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+fn read_u64(data: &[u8], offset: usize) -> crate::Result<u64> {
+    data.get(offset..offset + 8)
+        .and_then(|b| b.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| {
+            crate::Error::Corrupt(format!(
+                "truncated header: need 8 bytes at offset {offset}"
+            ))
+        })
 }
 
 /// Convert a MachineImageType u32 to a [`MachineType`].
@@ -111,8 +125,8 @@ impl CrashDumpProvider {
         }
 
         // Validate magic.
-        let magic = read_u32(bytes, OFF_MAGIC);
-        let sig = read_u32(bytes, OFF_SIG);
+        let magic = read_u32(bytes, OFF_MAGIC)?;
+        let sig = read_u32(bytes, OFF_SIG)?;
         if magic != PAGE_MAGIC || sig != DU64_SIG {
             return Err(Error::Corrupt(format!(
                 "invalid crash dump magic: expected PAGE+DU64, got 0x{magic:08X}+0x{sig:08X}"
@@ -120,14 +134,14 @@ impl CrashDumpProvider {
         }
 
         // Extract metadata fields.
-        let cr3 = read_u64(bytes, OFF_CR3);
-        let ps_loaded_module_list = read_u64(bytes, OFF_PS_LOADED_MODULE_LIST);
-        let ps_active_process_head = read_u64(bytes, OFF_PS_ACTIVE_PROCESS_HEAD);
-        let machine_img_type = read_u32(bytes, OFF_MACHINE_TYPE);
-        let num_processors = read_u32(bytes, OFF_NUM_PROCESSORS);
-        let kd_debugger_data_block = read_u64(bytes, OFF_KD_DEBUGGER_DATA_BLOCK);
-        let dump_type_val = read_u32(bytes, OFF_DUMP_TYPE);
-        let system_time = read_u64(bytes, OFF_SYSTEM_TIME);
+        let cr3 = read_u64(bytes, OFF_CR3)?;
+        let ps_loaded_module_list = read_u64(bytes, OFF_PS_LOADED_MODULE_LIST)?;
+        let ps_active_process_head = read_u64(bytes, OFF_PS_ACTIVE_PROCESS_HEAD)?;
+        let machine_img_type = read_u32(bytes, OFF_MACHINE_TYPE)?;
+        let num_processors = read_u32(bytes, OFF_NUM_PROCESSORS)?;
+        let kd_debugger_data_block = read_u64(bytes, OFF_KD_DEBUGGER_DATA_BLOCK)?;
+        let dump_type_val = read_u32(bytes, OFF_DUMP_TYPE)?;
+        let system_time = read_u64(bytes, OFF_SYSTEM_TIME)?;
 
         let metadata = DumpMetadata {
             cr3: Some(cr3),
@@ -142,13 +156,13 @@ impl CrashDumpProvider {
         };
 
         // Parse runs from PhysicalMemoryBlockBuffer at 0x088.
-        let num_runs = read_u32(bytes, OFF_PHYS_MEM_BLOCK) as usize;
+        let num_runs = read_u32(bytes, OFF_PHYS_MEM_BLOCK)? as usize;
         // _num_pages at 0x090 (skip padding at 0x08C)
         let mut runs = Vec::with_capacity(num_runs);
         for i in 0..num_runs {
             let off = 0x098 + i * 16;
-            let base_page = read_u64(bytes, off);
-            let page_count = read_u64(bytes, off + 8);
+            let base_page = read_u64(bytes, off)?;
+            let page_count = read_u64(bytes, off + 8)?;
             runs.push(PhysMemRun {
                 base_page,
                 page_count,
@@ -207,15 +221,15 @@ impl CrashDumpProvider {
             ));
         }
 
-        let valid_dump = read_u32(data, summary_offset);
+        let valid_dump = read_u32(data, summary_offset)?;
         if valid_dump != DUMP_VALID {
             return Err(Error::Corrupt(format!(
                 "invalid bitmap summary ValidDump: expected 0x{DUMP_VALID:08X}, got 0x{valid_dump:08X}"
             )));
         }
 
-        let header_size = read_u32(data, summary_offset + 4) as usize;
-        let bitmap_size = read_u32(data, summary_offset + 8) as usize;
+        let header_size = read_u32(data, summary_offset + 4)? as usize;
+        let bitmap_size = read_u32(data, summary_offset + 8)? as usize;
 
         // Bitmap starts right after the 16-byte summary header fields.
         let bitmap_start = summary_offset + 16;
@@ -354,8 +368,8 @@ impl FormatPlugin for CrashDumpPlugin {
         if header.len() < 8 {
             return 0;
         }
-        let magic = read_u32(header, 0);
-        let sig = read_u32(header, 4);
+        let Ok(magic) = read_u32(header, 0) else { return 0 };
+        let Ok(sig) = read_u32(header, 4) else { return 0 };
         if magic == PAGE_MAGIC && sig == DU64_SIG {
             95
         } else {
