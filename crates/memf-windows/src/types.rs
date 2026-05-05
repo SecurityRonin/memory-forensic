@@ -1075,6 +1075,26 @@ pub struct HeapSprayInfo {
     pub committed_bytes: u64,
 }
 
+/// A plaintext credential record recovered from a Chromium-based browser's heap.
+///
+/// Recovered from committed, writeable VAD regions of the root browser process
+/// using the pattern documented by L1v1ng0ffTh3L4N in "EdgeSavedPasswordsDumper"
+/// (MIT License): <https://github.com/L1v1ng0ffTh3L4N/EdgeSavedPasswordsDumper>
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BrowserCredentialInfo {
+    /// PID of the root browser process that contained this credential.
+    pub pid: u64,
+    /// Process image name (e.g., "msedge.exe").
+    pub image_name: String,
+    /// URL associated with the credential, if found by the URL pattern.
+    /// Empty string if the URL pattern did not match in the same region.
+    pub url: String,
+    /// Username extracted from the credential record.
+    pub username: String,
+    /// Password extracted from the credential record.
+    pub password: String,
+}
+
 #[cfg(test)]
 mod forensic_events_tests {
     use super::*;

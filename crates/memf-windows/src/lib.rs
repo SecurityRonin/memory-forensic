@@ -1,5 +1,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::too_many_lines)]
 //! Windows kernel memory forensic walkers.
 //!
 //! Provides process, thread, driver, and DLL enumeration
@@ -12,6 +14,7 @@ pub mod apc_injection;
 pub mod atom_table;
 pub mod bigpools;
 pub mod bitlocker_keys;
+pub mod browser_credentials;
 pub mod cachedump;
 pub mod callbacks;
 pub mod clipboard;
