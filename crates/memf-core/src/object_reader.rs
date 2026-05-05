@@ -211,6 +211,103 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         self.vas.read_virt(vaddr, &mut buf)?;
         Ok(u64::from_le_bytes(buf))
     }
+
+    /// Returns a lazy iterator over a kernel linked list (Linux `list_head`).
+    ///
+    /// Yields the virtual address of each containing struct (container_of adjusted),
+    /// same as [`walk_list`](Self::walk_list). Unlike `walk_list`, this does not
+    /// allocate a `Vec` — entries are yielded one at a time. Use `.take(n)` for
+    /// early termination or filter with `.filter_map`.
+    ///
+    /// # Errors
+    ///
+    /// Each yielded item is `Result<u64>`. The iterator stops (returning `None`) on
+    /// cycle or when the list loops back to `head_vaddr`. If a pointer read fails,
+    /// the failing `Err` is yielded as the last item.
+    pub fn iter_list<'a>(
+        &'a self,
+        head_vaddr: u64,
+        container_struct: &'a str,
+        list_field: &'a str,
+    ) -> ListIter<'a, P> {
+        let list_offset = self
+            .symbols
+            .field_offset(container_struct, list_field)
+            .unwrap_or(0);
+        let next_offset = self
+            .symbols
+            .field_offset("list_head", "next")
+            .unwrap_or(0);
+
+        let current = match self.read_u64_at(head_vaddr.wrapping_add(next_offset)) {
+            Ok(v) => v,
+            Err(_) => head_vaddr, // will immediately return None (current == head)
+        };
+
+        ListIter {
+            reader: self,
+            head_vaddr,
+            current,
+            list_offset,
+            next_offset,
+            seen: std::collections::HashSet::new(),
+            done: false,
+        }
+    }
+}
+
+/// Streaming iterator over a kernel doubly-linked list.
+///
+/// Returned by [`ObjectReader::iter_list`]. Yields the virtual address of each
+/// container struct (using container_of logic, same as [`ObjectReader::walk_list`]).
+pub struct ListIter<'a, P: PhysicalMemoryProvider> {
+    reader: &'a ObjectReader<P>,
+    head_vaddr: u64,
+    current: u64,
+    list_offset: u64,
+    next_offset: u64,
+    seen: std::collections::HashSet<u64>,
+    done: bool,
+}
+
+impl<P: PhysicalMemoryProvider> Iterator for ListIter<'_, P> {
+    type Item = crate::Result<u64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        // Termination: looped back to head
+        if self.current == self.head_vaddr {
+            return None;
+        }
+        // Cycle detection
+        if !self.seen.insert(self.current) {
+            self.done = true;
+            return None; // silently stop on detected cycle without valid entry
+        }
+        if self.seen.len() > MAX_LIST_ITERATIONS {
+            self.done = true;
+            return Some(Err(crate::Error::ListCycle(MAX_LIST_ITERATIONS)));
+        }
+
+        // container_of: subtract list_offset to get containing struct base
+        let container = self.current.wrapping_sub(self.list_offset);
+
+        // Advance: follow next pointer
+        match self
+            .reader
+            .read_u64_at(self.current.wrapping_add(self.next_offset))
+        {
+            Ok(next) => self.current = next,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(e));
+            }
+        }
+
+        Some(Ok(container))
+    }
 }
 
 #[cfg(test)]
