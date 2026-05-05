@@ -650,6 +650,42 @@ mod tests {
         assert!(reason.is_empty());
     }
 
+    // ── Pinning tests: SYSTEM_PROCESSES boundary (pre-refactor baseline) ───
+
+    /// Every name in SYSTEM_PROCESSES must trigger the "system process" rule
+    /// when an orphan thread is present.
+    #[test]
+    fn all_system_processes_trigger_system_process_rule() {
+        for proc in SYSTEM_PROCESSES {
+            let (suspicious, reason) = classify_suspicious_thread("unknown", true, false, proc);
+            assert!(suspicious, "orphan in {proc} should be suspicious");
+            assert!(
+                reason.contains("system process"),
+                "reason for {proc} should mention 'system process': {reason}"
+            );
+            assert!(
+                reason.contains(proc),
+                "reason for {proc} should name the process: {reason}"
+            );
+        }
+    }
+
+    /// A process name NOT in SYSTEM_PROCESSES with an orphan thread must use
+    /// the generic orphan rule (NOT the system-process rule).
+    #[test]
+    fn non_system_process_orphan_uses_generic_rule() {
+        let (suspicious, reason) = classify_suspicious_thread("unknown", true, false, "mygame.exe");
+        assert!(suspicious, "orphan thread should still be suspicious");
+        assert!(
+            !reason.contains("system process"),
+            "non-system process should not trigger system process rule: {reason}"
+        );
+        assert!(
+            reason.contains("not in any loaded module"),
+            "should use generic orphan reason: {reason}"
+        );
+    }
+
     /// is_rwx_protection: all values from 0..10 exercise the match.
     #[test]
     fn is_rwx_protection_coverage() {
