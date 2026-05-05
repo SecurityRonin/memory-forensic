@@ -1,0 +1,61 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    name: Build and deploy cargo doc
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
+
+      - name: Build workspace docs
+        run: |
+          cargo doc \
+            --workspace \
+            --no-deps \
+            --document-private-items
+        env:
+          RUSTDOCFLAGS: "--enable-index-page -Zunstable-options --default-theme ayu"
+
+      - name: Add redirect index and copy markdown docs
+        run: |
+          # Root redirect → memf_core crate docs
+          cat > target/doc/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>memory-forensic — Docs</title>
+            <meta http-equiv="refresh" content="0; url=memf_core/index.html">
+          </head>
+          <body>
+            <p>Redirecting to <a href="memf_core/index.html">memf_core</a>&hellip;</p>
+          </body>
+          </html>
+          EOF
+          # Copy markdown docs so they're accessible under /docs/
+          mkdir -p target/doc/docs
+          cp -r docs/*.md target/doc/docs/ 2>/dev/null || true
+          cp README.md target/doc/docs/README.md 2>/dev/null || true
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d231e97723741e312 # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./target/doc
+          force_orphan: true
+          commit_message: "docs: deploy cargo doc [skip ci]"
