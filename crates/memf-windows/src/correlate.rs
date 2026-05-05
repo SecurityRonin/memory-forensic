@@ -108,7 +108,7 @@ impl IntoForensicEvents for WinMalfindInfo {
         };
 
         vec![ForensicEvent::builder()
-            .source_walker("win_malfind")
+            .source_walker("malfind")
             .entity(Entity::Process {
                 pid: self.pid as u32,
                 name: self.image_name.clone(),
@@ -124,6 +124,10 @@ impl IntoForensicEvents for WinMalfindInfo {
 
 impl IntoForensicEvents for WinHollowingInfo {
     fn into_forensic_events(self) -> Vec<ForensicEvent> {
+        if !self.suspicious && self.has_mz && self.has_pe {
+            return Vec::new();
+        }
+
         let (severity, finding, confidence) = if self.suspicious {
             (Severity::Critical, Finding::ProcessHollowing, 0.9f64)
         } else if !self.has_mz || !self.has_pe {
@@ -143,7 +147,7 @@ impl IntoForensicEvents for WinHollowingInfo {
         };
 
         vec![ForensicEvent::builder()
-            .source_walker("win_hollowing")
+            .source_walker("hollowing")
             .entity(Entity::Process {
                 pid: self.pid as u32,
                 name: self.image_name.clone(),
@@ -205,7 +209,7 @@ impl IntoForensicEvents for WinConnectionInfo {
             .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
 
         vec![ForensicEvent::builder()
-            .source_walker("windows_connection")
+            .source_walker("netscan")
             .entity(Entity::Connection {
                 src,
                 dst,
@@ -919,12 +923,11 @@ mod tests {
     }
 
     #[test]
-    fn clean_process_is_info() {
+    fn clean_process_produces_no_events() {
+        // A process with valid MZ+PE headers and suspicious=false is not flagged.
         let info = make_hollowing(1111, "notepad.exe", true, true, false, "");
         let events = info.into_forensic_events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].severity, Severity::Info);
-        assert!((events[0].confidence - 0.5).abs() < f64::EPSILON);
+        assert!(events.is_empty());
     }
 
     #[test]
@@ -987,10 +990,10 @@ mod tests {
     }
 
     #[test]
-    fn win_connection_source_walker_is_windows_connection() {
+    fn win_connection_source_walker_is_netscan() {
         let c = make_win_conn("1.2.3.4", 80, 42);
         let events = c.into_forensic_events();
-        assert_eq!(events[0].source_walker, "windows_connection");
+        assert_eq!(events[0].source_walker, "netscan");
     }
 
     // -----------------------------------------------------------------------
