@@ -78,6 +78,43 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
+mod walk_result_tests {
+    use super::WalkResult;
+
+    #[test]
+    fn walk_result_new_has_correct_counts() {
+        let r: WalkResult<u32> = WalkResult::new(vec![1, 2, 3], 5);
+        assert_eq!(r.items.len(), 3);
+        assert_eq!(r.skipped, 5);
+    }
+
+    #[test]
+    fn walk_result_skip_increments_counter() {
+        let mut r: WalkResult<u32> = WalkResult::default();
+        r.skip();
+        r.skip();
+        assert_eq!(r.skipped, 2);
+        assert!(r.items.is_empty());
+    }
+
+    #[test]
+    fn walk_result_push_adds_item() {
+        let mut r: WalkResult<u32> = WalkResult::default();
+        r.push(42u32);
+        assert_eq!(r.items, vec![42]);
+        assert_eq!(r.skipped, 0);
+    }
+
+    #[test]
+    fn walk_result_serializes_with_skipped_field() {
+        let r = WalkResult::new(vec![1u32, 2], 3);
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"skipped\":3"), "json: {json}");
+        assert!(json.contains("\"items\""), "json: {json}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
