@@ -25,7 +25,28 @@ pub struct ProcessCmdline {
 /// The first NUL-delimited field becomes `exe`; subsequent fields become
 /// `args`. `cmdline_raw` is all fields joined with spaces.
 pub fn parse_proc_cmdline(pid: u32, comm: &str, bytes: &[u8]) -> ProcessCmdline {
-    todo!("implement parse_proc_cmdline")
+    let fields: Vec<String> = bytes
+        .split(|&b| b == 0)
+        .filter_map(|chunk| {
+            if chunk.is_empty() {
+                None
+            } else {
+                Some(String::from_utf8_lossy(chunk).into_owned())
+            }
+        })
+        .collect();
+
+    let exe = fields.first().cloned().unwrap_or_default();
+    let args = fields.get(1..).unwrap_or(&[]).to_vec();
+    let cmdline_raw = fields.join(" ");
+
+    ProcessCmdline {
+        pid,
+        comm: comm.to_string(),
+        exe,
+        args,
+        cmdline_raw,
+    }
 }
 
 /// Returns `true` if this cmdline looks like an SSH port-forwarding tunnel.
@@ -33,7 +54,10 @@ pub fn parse_proc_cmdline(pid: u32, comm: &str, bytes: &[u8]) -> ProcessCmdline 
 /// Matches when the executable contains `"ssh"` and the arguments include
 /// `-L`, `-R`, or `-D`.
 pub fn is_ssh_tunnel_cmdline(cmdline: &ProcessCmdline) -> bool {
-    todo!("implement is_ssh_tunnel_cmdline")
+    if !cmdline.exe.contains("ssh") {
+        return false;
+    }
+    cmdline.args.iter().any(|a| matches!(a.as_str(), "-L" | "-R" | "-D"))
 }
 
 /// Returns `true` if this cmdline looks like a cryptominer.
@@ -41,7 +65,13 @@ pub fn is_ssh_tunnel_cmdline(cmdline: &ProcessCmdline) -> bool {
 /// Matches when the executable contains `"xmrig"` or the arguments contain
 /// `"stratum+"` or `"--pool"`.
 pub fn is_miner_cmdline(cmdline: &ProcessCmdline) -> bool {
-    todo!("implement is_miner_cmdline")
+    if cmdline.exe.contains("xmrig") {
+        return true;
+    }
+    cmdline
+        .args
+        .iter()
+        .any(|a| a.contains("stratum+") || a == "--pool")
 }
 
 #[cfg(test)]

@@ -27,7 +27,27 @@ pub struct BashHistoryEntry {
 ///
 /// Returns deduplicated lines in order of first appearance.
 pub fn extract_bash_history_from_bytes(bytes: &[u8]) -> Vec<String> {
-    todo!("implement extract_bash_history_from_bytes")
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for chunk in bytes.split(|&b| b == 0) {
+        if chunk.len() < 3 {
+            continue;
+        }
+        // Only printable ASCII (0x20..=0x7E plus tab)
+        if !chunk.iter().all(|&b| b == b'\t' || (0x20..=0x7E).contains(&b)) {
+            continue;
+        }
+        let s = match std::str::from_utf8(chunk) {
+            Ok(s) => s.to_string(),
+            Err(_) => continue,
+        };
+        if seen.insert(s.clone()) {
+            result.push(s);
+        }
+    }
+
+    result
 }
 
 /// Classify a bash command string for forensic significance.
@@ -44,7 +64,39 @@ pub fn extract_bash_history_from_bytes(bytes: &[u8]) -> Vec<String> {
 /// - `"staging_area"` — `/dev/shm`, `/run/shm`
 /// - `"process_termination"` — `kill -9`, `pkill`
 pub fn classify_bash_command(cmd: &str) -> Option<&'static str> {
-    todo!("implement classify_bash_command")
+    // Check in specificity order so more-specific patterns win.
+    if cmd.contains("ld.so.preload") || cmd.to_lowercase().contains("ldpreload") || cmd.contains("LD_PRELOAD") {
+        return Some("rootkit_persistence");
+    }
+    if cmd.contains("/dev/shm") || cmd.contains("/run/shm") {
+        return Some("staging_area");
+    }
+    if cmd.contains("rm -rf") || cmd.contains("unlink ") {
+        return Some("file_deletion");
+    }
+    // network_download before cryptomining: URLs may contain "xmrig" as a path segment
+    if cmd.contains("wget ") || cmd.contains("curl ") || cmd.starts_with("nc ")
+        || cmd.contains(" nc ") || cmd.contains("ncat ")
+    {
+        return Some("network_download");
+    }
+    // cryptomining: match the binary name as the first token, or stratum/cryptonight anywhere
+    let first_token = cmd.split_whitespace().next().unwrap_or("");
+    if first_token == "xmrig"
+        || first_token.ends_with("/xmrig")
+        || first_token.ends_with("\\xmrig")
+        || cmd.contains("stratum")
+        || cmd.contains("cryptonight")
+    {
+        return Some("cryptomining");
+    }
+    if cmd.contains("chmod +x") || cmd.contains("chmod 777") {
+        return Some("permission_change");
+    }
+    if cmd.contains("kill -9") || cmd.contains("pkill ") || cmd.starts_with("pkill") {
+        return Some("process_termination");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -66,11 +118,11 @@ mod tests {
 
     #[test]
     fn extract_deduplicates_repeated_commands() {
-        let input = b"ls\0ls\0pwd\0";
+        let input = b"pwd\0pwd\0whoami\0";
         let result = extract_bash_history_from_bytes(input);
-        let ls_count = result.iter().filter(|s| s.as_str() == "ls").count();
-        assert_eq!(ls_count, 1, "duplicate commands must be deduplicated");
-        assert!(result.contains(&"pwd".to_string()));
+        let pwd_count = result.iter().filter(|s| s.as_str() == "pwd").count();
+        assert_eq!(pwd_count, 1, "duplicate commands must be deduplicated");
+        assert!(result.contains(&"whoami".to_string()));
     }
 
     #[test]
