@@ -19,6 +19,7 @@ pub mod cachedump;
 pub mod callbacks;
 pub mod clipboard;
 pub mod clr_heap;
+pub mod cloud_credentials;
 pub mod cmdline;
 pub mod com_hijacking;
 pub mod consoles;

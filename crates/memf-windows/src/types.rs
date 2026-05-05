@@ -1223,6 +1223,26 @@ pub struct WdigestCredentialInfo {
     pub password_encrypted: Option<Vec<u8>>,
 }
 
+/// A cloud provider credential found in process memory.
+///
+/// Recovered by scanning private writable VAD regions of all processes for
+/// cloud service credentials that applications cache in memory during operation.
+/// Covers AWS IAM access keys, GCP API keys, Azure storage and SAS tokens,
+/// Stripe secret keys, Twilio SIDs, and generic high-entropy API key patterns.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CloudCredentialInfo {
+    /// PID of the process containing this credential.
+    pub pid: u64,
+    /// Image name of the process.
+    pub process_name: String,
+    /// Cloud provider or service name.
+    pub provider: String,  // "AWS", "GCP", "Azure", "Stripe", "Twilio", "Generic"
+    /// Type of credential within the provider.
+    pub credential_type: String,  // "AccessKeyId", "ApiKey", "StorageKey", "SecretKey", etc.
+    /// The credential value.
+    pub value: String,
+}
+
 /// An authentication token found in process memory.
 ///
 /// Recovered by scanning private writable VAD regions of all processes for
