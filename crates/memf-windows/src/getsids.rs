@@ -443,8 +443,10 @@ mod tests {
 
     #[test]
     fn pin_taskhostw_in_masquerade_target_list() {
-        // taskhostw.exe IS in forensicnomicon's WINDOWS_MASQUERADE_TARGETS,
-        // so after the refactor it must NOT be flagged suspicious as SYSTEM.
+        // taskhostw.exe was NOT in the old local SYSTEM_PROCS list (it was
+        // suspicious as SYSTEM pre-refactor). It IS in forensicnomicon's
+        // WINDOWS_MASQUERADE_TARGETS — a deliberate semantic expansion, not
+        // a bug. After the refactor it must NOT be flagged suspicious as SYSTEM.
         assert!(
             !classify_process_sid("taskhostw.exe", "S-1-5-18"),
             "taskhostw.exe is a masquerade target — should not be suspicious as SYSTEM"
