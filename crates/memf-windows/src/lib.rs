@@ -22,6 +22,7 @@ pub mod clr_heap;
 pub mod cmdline;
 pub mod com_hijacking;
 pub mod consoles;
+pub mod credman;
 pub mod correlate;
 pub mod crashinfo;
 pub mod debug_registers;

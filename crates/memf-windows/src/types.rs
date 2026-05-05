@@ -1196,6 +1196,19 @@ mod forensic_events_tests {
     }
 }
 
+/// Windows Credential Manager entry recovered from LSASS `_KIWI_CREDMAN_LIST_ENTRY`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CredManEntry {
+    /// Target server or resource name.
+    pub target: String,
+    /// Username for the credential.
+    pub username: String,
+    /// Plaintext password (present when credential is loaded from vault into LSASS).
+    pub password: Option<String>,
+    /// Raw credential bytes if password could not be decoded as UTF-16LE plaintext.
+    pub credential_blob: Option<Vec<u8>>,
+}
+
 /// WDigest SSP credentials recovered from LSASS `l_LogSessList`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WdigestCredentialInfo {
