@@ -40,6 +40,7 @@ pub mod etw;
 pub mod etw_patch;
 pub mod evtx;
 pub mod fiber_fls;
+pub mod firefox_credentials;
 pub mod filescan;
 pub mod getsids;
 pub mod handles;

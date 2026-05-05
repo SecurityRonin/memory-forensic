@@ -1075,6 +1075,33 @@ pub struct HeapSprayInfo {
     pub committed_bytes: u64,
 }
 
+/// A Firefox saved-password credential record recovered from process heap memory.
+///
+/// Firefox persists credentials in `logins.json`. When running, the JSON is
+/// loaded into heap memory. This struct captures the NSS-encrypted blobs
+/// extracted from `firefox.exe` VAD regions for offline decryption.
+///
+/// # Attribution
+///
+/// Firefox `logins.json` format: Mozilla Foundation, LoginStore
+/// <https://searchfox.org/mozilla-central/source/toolkit/components/passwordmgr/LoginStore.sys.mjs>
+/// (MPL-2.0; JSON field names are a public API, no code copied)
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FirefoxCredentialInfo {
+    /// PID of the firefox.exe process containing this credential.
+    pub pid: u64,
+    /// Origin URL (from "hostname" or "origin" JSON field).
+    pub origin: String,
+    /// HTML field name for username (from "usernameField").
+    pub username_field: String,
+    /// HTML field name for password (from "passwordField").
+    pub password_field: String,
+    /// NSS-encrypted username blob (base64). Requires NSS key + master password to decrypt.
+    pub encrypted_username: String,
+    /// NSS-encrypted password blob (base64). Requires NSS key + master password to decrypt.
+    pub encrypted_password: String,
+}
+
 /// A plaintext credential record recovered from a Chromium-based browser's heap.
 ///
 /// Recovered from committed, writeable VAD regions of the root browser process
