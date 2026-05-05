@@ -16,6 +16,8 @@ pub enum TranslationMode {
     X86_64FourLevel,
     /// x86_64 5-level paging (PML5 → PML4 → PDPT → PD → PT). Linux LA57, Windows Server 2025.
     X86_645Level,
+    /// AArch64 4-level page tables (4K granule, 48-bit VA). Linux, Android, macOS ARM.
+    AArch64FourLevel,
 }
 
 /// A virtual address space backed by physical memory and page tables.
@@ -33,6 +35,11 @@ pub struct VirtualAddressSpace<P: PhysicalMemoryProvider> {
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PRESENT: u64 = 1;
 const PS: u64 = 1 << 7;
+
+// AArch64 4K-granule page table constants (ARMv8-A, 4K granule, 48-bit VA)
+const AARCH64_VALID: u64   = 1;         // bit 0: entry is valid
+const AARCH64_TABLE: u64   = 1 << 1;   // bit 1: 1=table/page, 0=block
+const AARCH64_OA_MASK: u64 = 0x0000_FFFF_FFFF_F000; // bits [47:12]: output address
 
 /// Number of page translations to cache per `VirtualAddressSpace` instance.
 const TRANSLATION_CACHE_CAPACITY: usize = 4096;
@@ -93,6 +100,7 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
                     TranslationResult::Prototype(_) => Err(Error::PrototypePte(vaddr)),
                 }
             }
+            TranslationMode::AArch64FourLevel => self.walk_aarch64_4level(vaddr),
         }
     }
 
@@ -120,6 +128,9 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
                 }
                 TranslationMode::X86_645Level => {
                     self.walk_x86_64_5level_internal(current_vaddr)?
+                }
+                TranslationMode::AArch64FourLevel => {
+                    self.walk_aarch64_internal(current_vaddr)?
                 }
             };
 
@@ -320,6 +331,74 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         }
         let pml4_root = pml5e & ADDR_MASK;
         self.walk_4level_from(pml4_root, vaddr)
+    }
+
+    fn walk_aarch64_4level(&self, vaddr: u64) -> Result<u64> {
+        match self.walk_aarch64_internal(vaddr)? {
+            TranslationResult::Physical(addr) | TranslationResult::Transition(addr) => Ok(addr),
+            TranslationResult::DemandZero
+            | TranslationResult::PagefileEntry { .. }
+            | TranslationResult::Prototype(_) => Err(Error::PageNotPresent(vaddr)),
+        }
+    }
+
+    fn walk_aarch64_internal(&self, vaddr: u64) -> Result<TranslationResult> {
+        let page_vaddr = vaddr & !0xFFF;
+        // peek avoids promoting on read; no mut borrow needed on the hot path.
+        if let Some(&paddr_base) = self.tlb_cache.borrow().peek(&page_vaddr) {
+            return Ok(TranslationResult::Physical(paddr_base | (vaddr & 0xFFF)));
+        }
+
+        let l0_idx   = (vaddr >> 39) & 0x1FF;
+        let l1_idx   = (vaddr >> 30) & 0x1FF;
+        let l2_idx   = (vaddr >> 21) & 0x1FF;
+        let l3_idx   = (vaddr >> 12) & 0x1FF;
+        let page_off = vaddr & 0xFFF;
+
+        // Level 0 (PGD)
+        let l0e = self.read_pte(self.page_table_root + l0_idx * 8)?;
+        if l0e & AARCH64_VALID == 0 {
+            return Err(Error::PageNotPresent(vaddr));
+        }
+        let l1_base = l0e & AARCH64_OA_MASK;
+
+        // Level 1 (PUD)
+        let l1e = self.read_pte(l1_base + l1_idx * 8)?;
+        if l1e & AARCH64_VALID == 0 {
+            return Err(Error::PageNotPresent(vaddr));
+        }
+        if l1e & AARCH64_TABLE == 0 {
+            // 1GB block entry
+            let phys_base = l1e & 0x0000_FFFF_C000_0000;
+            let phys = phys_base | (vaddr & 0x3FFF_FFFF);
+            self.tlb_cache.borrow_mut().put(page_vaddr, phys & !0xFFF);
+            return Ok(TranslationResult::Physical(phys));
+        }
+        let l2_base = l1e & AARCH64_OA_MASK;
+
+        // Level 2 (PMD)
+        let l2e = self.read_pte(l2_base + l2_idx * 8)?;
+        if l2e & AARCH64_VALID == 0 {
+            return Err(Error::PageNotPresent(vaddr));
+        }
+        if l2e & AARCH64_TABLE == 0 {
+            // 2MB block entry
+            let phys_base = l2e & 0x0000_FFFF_FFE0_0000;
+            let phys = phys_base | (vaddr & 0x001F_FFFF);
+            self.tlb_cache.borrow_mut().put(page_vaddr, phys & !0xFFF);
+            return Ok(TranslationResult::Physical(phys));
+        }
+        let l3_base = l2e & AARCH64_OA_MASK;
+
+        // Level 3 (PTE) — bit1=1 means "page" at L3
+        let l3e = self.read_pte(l3_base + l3_idx * 8)?;
+        if l3e & AARCH64_VALID == 0 {
+            return Err(Error::PageNotPresent(vaddr));
+        }
+        let phys_base = l3e & AARCH64_OA_MASK;
+        let phys = phys_base | page_off;
+        self.tlb_cache.borrow_mut().put(page_vaddr, phys_base);
+        Ok(TranslationResult::Physical(phys))
     }
 
     fn decode_non_present_pte(pte: u64, page_offset: u64) -> TranslationResult {
