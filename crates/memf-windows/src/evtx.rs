@@ -501,6 +501,15 @@ mod tests {
         assert_eq!(result[1].first_event_id, 2);
     }
 
+    /// winevt_core::binary constants match our local magic values.
+    #[test]
+    fn winevt_core_magic_matches_our_constant() {
+        assert_eq!(winevt_core::binary::ELFCHNK_MAGIC, *b"ElfChnk\0");
+        assert_eq!(winevt_core::binary::RECORD_MAGIC, [0x2A, 0x2A, 0x00, 0x00]);
+        assert_eq!(winevt_core::binary::CHUNK_SIZE, 0x10000u64);
+        assert_eq!(winevt_core::binary::CHUNK_RECORDS_OFFSET, 0x200u64);
+    }
+
     /// EvtxChunkInfo serializes correctly.
     #[test]
     fn evtx_chunk_info_serializes() {
