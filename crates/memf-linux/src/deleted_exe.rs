@@ -166,7 +166,7 @@ fn read_file_dentry_name<P: PhysicalMemoryProvider>(
 /// This covers both the kernel's canonical `" (deleted)"` (space-prefixed) and
 /// the bare `"(deleted)"` form occasionally written by userspace tools.
 pub fn is_deleted_exe(exe_path: &str) -> bool {
-    todo!("implement is_deleted_exe")
+    exe_path.ends_with(" (deleted)") || exe_path.ends_with("(deleted)")
 }
 
 /// Returns the path with any `(deleted)` suffix stripped, trimming trailing
@@ -175,7 +175,11 @@ pub fn is_deleted_exe(exe_path: &str) -> bool {
 /// If the path carries no deleted marker the original string slice is returned
 /// unchanged.
 pub fn strip_deleted_suffix(exe_path: &str) -> &str {
-    todo!("implement strip_deleted_suffix")
+    if let Some(stripped) = exe_path.strip_suffix("(deleted)") {
+        stripped.trim_end()
+    } else {
+        exe_path
+    }
 }
 
 /// A lightweight finding produced by the pure-logic deleted-exe classifier,

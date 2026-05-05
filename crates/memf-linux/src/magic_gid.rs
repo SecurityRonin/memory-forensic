@@ -16,12 +16,15 @@ pub const KNOWN_MAGIC_GIDS: &[(u32, &str)] = &[(7823, "Father")];
 /// Returns `Some(rootkit_name)` if the GID is a known rootkit magic GID,
 /// or `None` if it is not recognised.
 pub fn classify_magic_gid(gid: u32) -> Option<&'static str> {
-    todo!("implement classify_magic_gid")
+    KNOWN_MAGIC_GIDS
+        .iter()
+        .find(|&&(known_gid, _)| known_gid == gid)
+        .map(|&(_, name)| name)
 }
 
 /// Returns `true` if any GID in the list is a known rootkit magic GID.
 pub fn has_magic_gid(gids: &[u32]) -> bool {
-    todo!("implement has_magic_gid")
+    gids.iter().any(|&g| classify_magic_gid(g).is_some())
 }
 
 /// A finding produced when a process carries a known rootkit magic GID.
