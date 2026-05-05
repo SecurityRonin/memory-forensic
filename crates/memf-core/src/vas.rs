@@ -739,6 +739,38 @@ mod tests {
     }
 
     #[test]
+    fn translation_cache_hit_returns_same_result() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let first  = vas.virt_to_phys(vaddr).unwrap();
+        let second = vas.virt_to_phys(vaddr).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first, paddr);
+    }
+
+    #[test]
+    fn translation_cache_capacity_100_distinct_pages() {
+        use std::collections::HashSet;
+        let base_vaddr: u64 = 0xFFFF_8000_0000_0000;
+        let mut builder = PageTableBuilder::new();
+        for i in 0..200u64 {
+            builder = builder.map_4k(base_vaddr + i * 0x1000, 0x1000 + i * 0x1000, flags::WRITABLE);
+        }
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let mut results = HashSet::new();
+        for i in 0..200u64 {
+            let paddr = vas.virt_to_phys(base_vaddr + i * 0x1000).unwrap();
+            results.insert(paddr);
+        }
+        assert_eq!(results.len(), 200, "each page must map to a distinct physical address");
+    }
+
+    #[test]
     fn read_virt_prototype_pte_with_page_offset() {
         let vaddr_base: u64 = 0xFFFF_8000_0010_0000;
         let vaddr: u64 = vaddr_base + 0x100;

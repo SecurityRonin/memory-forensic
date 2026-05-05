@@ -14,6 +14,7 @@ bytemuck.workspace = true
 memmap2.workspace = true
 rust-lzxpress.workspace = true
 lzo1x.workspace = true
+lru.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
