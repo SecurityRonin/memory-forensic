@@ -1245,6 +1245,28 @@ pub struct CloudCredentialInfo {
 
 /// An authentication token found in process memory.
 ///
+/// An SSH private key found in ssh-agent or pageant process memory.
+///
+/// When a private key is loaded into an SSH agent (`ssh-add`), the agent
+/// decrypts it and holds the plaintext key material in heap memory. This
+/// struct captures a single key find from a forensic memory dump.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SshAgentKeyInfo {
+    /// PID of the agent process containing this key.
+    pub pid: u64,
+    /// Process image name ("ssh-agent.exe" or "pageant.exe").
+    pub process_name: String,
+    /// SSH key type string (e.g., "ssh-rsa", "ssh-ed25519", "ecdsa-sha2-nistp256").
+    /// "pem-rsa", "pem-ec", "pem-openssh", "pem-dsa" for PEM-format finds.
+    pub key_type: String,
+    /// Raw key material bytes (SSH wire format blob or PEM text).
+    /// For SSH wire format: starts after the key type string, up to 4096 bytes.
+    /// For PEM: the full PEM block up to 8192 bytes.
+    pub key_blob: Vec<u8>,
+    /// Byte offset within the scanned region where the key was found.
+    pub region_offset: usize,
+}
+
 /// Recovered by scanning private writable VAD regions of all processes for
 /// token patterns including JWTs, OAuth Bearer tokens, and provider-specific
 /// formats such as GitHub PATs, GitLab PATs, Slack tokens, and AWS STS tokens.

@@ -77,6 +77,7 @@ pub mod section_object;
 pub mod service;
 pub mod session_tokens;
 pub mod sessions;
+pub mod ssh_agent_keys;
 pub mod shellbags;
 pub mod shimcache;
 pub mod skeleton_key;
