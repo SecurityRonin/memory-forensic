@@ -24,11 +24,15 @@
 //!
 //! Read-only. No live process access, no Win32 API calls, no state modification.
 
+use std::collections::HashSet;
+
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 use crate::{
+    process::walk_processes,
     types::SshAgentKeyInfo,
+    vad::walk_vad_tree,
     Result,
 };
 
@@ -38,24 +42,149 @@ pub const SSH_AGENT_PROCESSES: &[&str] = &["ssh-agent.exe", "pageant.exe"];
 /// Maximum bytes read from a single VAD region.
 const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
+/// Maximum bytes captured for an SSH wire-format key blob.
+const MAX_WIRE_BLOB: usize = 4096;
+
+/// Maximum bytes captured for a PEM key block.
+const MAX_PEM_BLOB: usize = 8192;
+
+/// SSH wire-format magic sequences: (bytes, key_type_name).
+///
+/// Each entry is the 4-byte big-endian length prefix concatenated with the
+/// key-type ASCII string as specified in RFC 4251.
+const SSH_KEY_SIGS: &[(&[u8], &str)] = &[
+    (b"\x00\x00\x00\x07ssh-rsa",            "ssh-rsa"),
+    (b"\x00\x00\x00\x13ecdsa-sha2-nistp256", "ecdsa-sha2-nistp256"),
+    (b"\x00\x00\x00\x13ecdsa-sha2-nistp384", "ecdsa-sha2-nistp384"),
+    (b"\x00\x00\x00\x13ecdsa-sha2-nistp521", "ecdsa-sha2-nistp521"),
+    (b"\x00\x00\x00\x0bssh-ed25519",         "ssh-ed25519"),
+];
+
+/// PEM header patterns: (begin_marker, key_type_name).
+const PEM_SIGS: &[(&[u8], &str)] = &[
+    (b"-----BEGIN OPENSSH PRIVATE KEY-----", "pem-openssh"),
+    (b"-----BEGIN RSA PRIVATE KEY-----",     "pem-rsa"),
+    (b"-----BEGIN EC PRIVATE KEY-----",      "pem-ec"),
+    (b"-----BEGIN DSA PRIVATE KEY-----",     "pem-dsa"),
+];
+
 /// Walk committed, writable heap regions of `ssh-agent.exe` and `pageant.exe`
 /// processes and extract any SSH private key material found in memory.
 pub fn walk_ssh_agent_keys<P: PhysicalMemoryProvider + Clone>(
-    _reader: &ObjectReader<P>,
-    _ps_head_vaddr: u64,
+    reader: &ObjectReader<P>,
+    ps_head_vaddr: u64,
 ) -> Result<Vec<SshAgentKeyInfo>> {
-    // GREEN: not yet implemented — stub returns empty.
-    Ok(Vec::new())
+    let procs = walk_processes(reader, ps_head_vaddr)?;
+
+    let vad_root_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "VadRoot")
+        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
+
+    let mut results = Vec::new();
+    // Dedup by (pid, key_type, region_offset).
+    let mut seen: HashSet<(u64, String, usize)> = HashSet::new();
+
+    for proc in procs.iter().filter(|p| {
+        SSH_AGENT_PROCESSES
+            .iter()
+            .any(|&name| p.image_name.eq_ignore_ascii_case(name))
+    }) {
+        if proc.cr3 == 0 {
+            continue;
+        }
+
+        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
+        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let proc_reader = reader.with_cr3(proc.cr3);
+
+        for vad in &vads {
+            // Private, writable, non-execute pages only.
+            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
+                continue;
+            }
+            if vad.protection_str.contains("EXECUTE") {
+                continue;
+            }
+
+            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
+                .min(MAX_REGION_BYTES as u64) as usize;
+            if region_size == 0 {
+                continue;
+            }
+
+            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            for mut item in scan_ssh_agent_region(&bytes) {
+                let key = (proc.pid, item.key_type.clone(), item.region_offset);
+                if seen.insert(key) {
+                    item.pid = proc.pid;
+                    item.process_name.clone_from(&proc.image_name);
+                    results.push(item);
+                }
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 /// Scan a raw byte slice for SSH private key material.
 ///
 /// Returns `SshAgentKeyInfo` items with `pid: 0` and `process_name` empty;
-/// the caller fills those in after the call.
-///
-/// This is a stub — returns empty until the GREEN implementation.
-pub(crate) fn scan_ssh_agent_region(_data: &[u8]) -> Vec<SshAgentKeyInfo> {
-    Vec::new()
+/// the caller (`walk_ssh_agent_keys`) fills those in after the call.
+pub(crate) fn scan_ssh_agent_region(data: &[u8]) -> Vec<SshAgentKeyInfo> {
+    let mut results = Vec::new();
+
+    // --- SSH wire-format scan ---
+    for &(sig, name) in SSH_KEY_SIGS {
+        let sig_len = sig.len();
+        if data.len() < sig_len {
+            continue;
+        }
+        for window_start in 0..=(data.len() - sig_len) {
+            if &data[window_start..window_start + sig_len] == sig {
+                let blob_start = window_start + sig_len;
+                let blob_end = (blob_start + MAX_WIRE_BLOB).min(data.len());
+                results.push(SshAgentKeyInfo {
+                    pid: 0,
+                    process_name: String::new(),
+                    key_type: name.to_string(),
+                    key_blob: data[blob_start..blob_end].to_vec(),
+                    region_offset: window_start,
+                });
+            }
+        }
+    }
+
+    // --- PEM header scan ---
+    for &(sig, name) in PEM_SIGS {
+        let sig_len = sig.len();
+        if data.len() < sig_len {
+            continue;
+        }
+        for window_start in 0..=(data.len() - sig_len) {
+            if &data[window_start..window_start + sig_len] == sig {
+                let blob_end = (window_start + MAX_PEM_BLOB).min(data.len());
+                results.push(SshAgentKeyInfo {
+                    pid: 0,
+                    process_name: String::new(),
+                    key_type: name.to_string(),
+                    key_blob: data[window_start..blob_end].to_vec(),
+                    region_offset: window_start,
+                });
+            }
+        }
+    }
+
+    results
 }
 
 #[cfg(test)]
