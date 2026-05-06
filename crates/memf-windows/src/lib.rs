@@ -14,6 +14,7 @@ pub mod apc_injection;
 pub mod atom_table;
 pub mod bigpools;
 pub mod bitlocker_keys;
+pub mod browser_cookies;
 pub mod browser_credentials;
 pub mod cachedump;
 pub mod callbacks;

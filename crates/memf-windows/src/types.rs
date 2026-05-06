@@ -1267,6 +1267,27 @@ pub struct SshAgentKeyInfo {
     pub region_offset: usize,
 }
 
+/// A browser session cookie record extracted from a process heap dump.
+///
+/// Recovered by scanning private writable VAD regions of browser processes
+/// for HTTP `Set-Cookie` response headers and Netscape cookie-jar records
+/// held transiently in heap memory during active browser sessions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct BrowserCookieInfo {
+    /// PID of the browser process.
+    pub pid: u64,
+    /// Image name (e.g. `chrome.exe`, `msedge.exe`, `firefox.exe`).
+    pub image_name: String,
+    /// Cookie domain (e.g. `.example.com`).
+    pub domain: String,
+    /// Cookie name (e.g. `session_id`).
+    pub name: String,
+    /// Cookie value (plaintext string from heap).
+    pub value: String,
+    /// Cookie path if recoverable (e.g. `/`).
+    pub path: Option<String>,
+}
+
 /// Recovered by scanning private writable VAD regions of all processes for
 /// token patterns including JWTs, OAuth Bearer tokens, and provider-specific
 /// formats such as GitHub PATs, GitLab PATs, Slack tokens, and AWS STS tokens.
