@@ -236,4 +236,16 @@ mod tests {
         assert!(usernames.contains(&"alice"));
         assert!(usernames.contains(&"bob"));
     }
+
+    #[test]
+    fn scan_region_called_twice_is_consistent() {
+        let buf = b"Bhttps admin Secret123! \x00";
+        let r1 = scan_region(buf);
+        let r2 = scan_region(buf);
+        assert_eq!(r1.len(), r2.len(), "second call must return same number of results");
+        if !r1.is_empty() {
+            assert_eq!(r1[0].1, r2[0].1, "username must be identical across calls");
+            assert_eq!(r1[0].2, r2[0].2, "password must be identical across calls");
+        }
+    }
 }

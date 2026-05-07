@@ -189,4 +189,16 @@ mod tests {
         let jwt_results: Vec<_> = results.iter().filter(|t| t.token_type == "Jwt").collect();
         assert_eq!(jwt_results.len(), 1, "duplicate JWT should be deduplicated");
     }
+
+    #[test]
+    fn scan_for_tokens_called_twice_is_consistent() {
+        let data = b"Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwiaWF0IjoxNzAwMDAwMDAwfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let r1 = scan_for_tokens(data, DUMMY_PID, DUMMY_PROC);
+        let r2 = scan_for_tokens(data, DUMMY_PID, DUMMY_PROC);
+        assert_eq!(r1.len(), r2.len(), "second call must return same number of results");
+        for (t1, t2) in r1.iter().zip(r2.iter()) {
+            assert_eq!(t1.token_type, t2.token_type, "token_type must be identical across calls");
+            assert_eq!(t1.token_value, t2.token_value, "token_value must be identical across calls");
+        }
+    }
 }
