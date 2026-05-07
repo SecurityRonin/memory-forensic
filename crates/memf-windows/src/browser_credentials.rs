@@ -38,15 +38,26 @@
 //! calls no Win32 API, and modifies no state.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
-use regex::Regex;
 
 use crate::{
     types::BrowserCredentialInfo,
     Result,
 };
+
+static CRED_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+fn cred_re() -> &'static regex::Regex {
+    CRED_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?-u)[a-zA-Z]https?[ ]([a-zA-Z0-9\-_\.@?]{3,20})[ ]([a-zA-Z0-9!#$%^&*()\-+=\[\]{};:<>?/~\t ]{6,40})[ ]\x00",
+        )
+        .expect("cred_re is a valid compile-time pattern")
+    })
+}
 
 
 /// Chromium-based browser process names whose credential layout is supported.
@@ -139,12 +150,7 @@ pub(crate) fn scan_region(data: &[u8]) -> Vec<(String, String, String)> {
 
     // Credential record pattern:
     //   <alpha>https?<SP><username>{3,20}<SP><password>{6,40}<SP><NUL>
-    let cred_re = match Regex::new(
-        r"(?-u)[a-zA-Z]https?[ ]([a-zA-Z0-9\-_\.@?]{3,20})[ ]([a-zA-Z0-9!#$%^&*()\-+=\[\]{};:<>?/~\t ]{6,40})[ ]\x00",
-    ) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
+    let cred_re = cred_re();
 
     let mut out = Vec::new();
 
@@ -160,7 +166,7 @@ pub(crate) fn scan_region(data: &[u8]) -> Vec<(String, String, String)> {
             regex::escape(&password),
         );
 
-        let url = Regex::new(&url_pat)
+        let url = regex::Regex::new(&url_pat)
             .ok()
             .and_then(|re| re.captures(&text))
             .map(|m| m[1].to_string())

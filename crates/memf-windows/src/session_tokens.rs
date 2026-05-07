@@ -23,6 +23,7 @@
 //! Read-only. No live process access, no Win32 API calls, no state modification.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
@@ -31,6 +32,57 @@ use crate::{
     types::SessionTokenInfo,
     Result,
 };
+
+struct TokenPattern {
+    label: &'static str,
+    re: regex::Regex,
+    use_capture: bool,
+}
+
+static TOKEN_PATTERNS: OnceLock<Vec<TokenPattern>> = OnceLock::new();
+
+fn token_patterns() -> &'static [TokenPattern] {
+    TOKEN_PATTERNS.get_or_init(|| {
+        vec![
+            TokenPattern {
+                label: "Jwt",
+                re: regex::Regex::new(JWT_PATTERN).expect("JWT_PATTERN is valid"),
+                use_capture: false,
+            },
+            TokenPattern {
+                label: "Bearer",
+                re: regex::Regex::new(BEARER_PATTERN).expect("BEARER_PATTERN is valid"),
+                use_capture: true,
+            },
+            TokenPattern {
+                label: "GitHub",
+                re: regex::Regex::new(GITHUB_PATTERN).expect("GITHUB_PATTERN is valid"),
+                use_capture: false,
+            },
+            TokenPattern {
+                label: "GitLab",
+                re: regex::Regex::new(GITLAB_PATTERN).expect("GITLAB_PATTERN is valid"),
+                use_capture: false,
+            },
+            TokenPattern {
+                label: "Slack",
+                re: regex::Regex::new(SLACK_PATTERN).expect("SLACK_PATTERN is valid"),
+                use_capture: false,
+            },
+            TokenPattern {
+                label: "AwsSts",
+                re: regex::Regex::new(AWS_STS_PATTERN).expect("AWS_STS_PATTERN is valid"),
+                use_capture: false,
+            },
+            TokenPattern {
+                label: "GenericAccessToken",
+                re: regex::Regex::new(GENERIC_TOKEN_PATTERN)
+                    .expect("GENERIC_TOKEN_PATTERN is valid"),
+                use_capture: true,
+            },
+        ]
+    })
+}
 
 /// Walk committed, writable heap regions of ALL processes in the dump and
 /// extract any authentication tokens found as strings.
@@ -84,28 +136,12 @@ const GENERIC_TOKEN_PATTERN: &str =
 pub(crate) fn scan_for_tokens(data: &[u8], pid: u64, process_name: &str) -> Vec<SessionTokenInfo> {
     let text = String::from_utf8_lossy(data);
 
-    // (type_label, regex, use_capture_group_1)
-    let patterns: &[(&str, &str, bool)] = &[
-        ("Jwt", JWT_PATTERN, false),
-        ("Bearer", BEARER_PATTERN, true),
-        ("GitHub", GITHUB_PATTERN, false),
-        ("GitLab", GITLAB_PATTERN, false),
-        ("Slack", SLACK_PATTERN, false),
-        ("AwsSts", AWS_STS_PATTERN, false),
-        ("GenericAccessToken", GENERIC_TOKEN_PATTERN, true),
-    ];
-
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
 
-    for &(label, pat, use_capture) in patterns {
-        let re = match regex::Regex::new(pat) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
-        for caps in re.captures_iter(&text) {
-            let value = if use_capture {
+    for tp in token_patterns() {
+        for caps in tp.re.captures_iter(&text) {
+            let value = if tp.use_capture {
                 caps.get(1).map(|m| m.as_str().to_string())
             } else {
                 caps.get(0).map(|m| m.as_str().to_string())
@@ -117,7 +153,7 @@ pub(crate) fn scan_for_tokens(data: &[u8], pid: u64, process_name: &str) -> Vec<
                 out.push(SessionTokenInfo {
                     pid,
                     process_name: process_name.to_string(),
-                    token_type: label.to_string(),
+                    token_type: tp.label.to_string(),
                     token_value,
                 });
             }
