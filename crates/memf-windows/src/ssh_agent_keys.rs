@@ -85,7 +85,10 @@ pub fn walk_ssh_agent_keys<P: PhysicalMemoryProvider + Clone>(
                 })
                 .collect()
         },
-        |info: &SshAgentKeyInfo| (info.pid, info.region_offset),
+        |info: &SshAgentKeyInfo| {
+            let prefix_len = info.key_blob.len().min(32);
+            (info.pid, info.key_type.clone(), info.key_blob[..prefix_len].to_vec())
+        },
     )?;
     Ok(wr.items)
 }
