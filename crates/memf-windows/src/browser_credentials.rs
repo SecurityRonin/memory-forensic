@@ -44,11 +44,10 @@ use memf_format::PhysicalMemoryProvider;
 use regex::Regex;
 
 use crate::{
-    process::walk_processes,
     types::BrowserCredentialInfo,
-    vad::walk_vad_tree,
     Result,
 };
+
 
 /// Chromium-based browser process names whose credential layout is supported.
 ///
@@ -64,11 +63,6 @@ pub const CHROMIUM_BROWSERS: &[&str] = &[
     "vivaldi.exe",
     "chromium.exe",
 ];
-
-/// Maximum bytes read from a single VAD region.
-///
-/// Caps memory consumption when a large anonymous mapping is encountered.
-const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Walk committed, writeable heap regions of the root Chromium-based browser
 /// process(es) in the dump and extract any plaintext credential records.
@@ -89,85 +83,44 @@ pub fn walk_browser_credentials<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<BrowserCredentialInfo>> {
-    let procs = walk_processes(reader, ps_head_vaddr)?;
-
-    // For each supported browser, find the root process(es) independently.
-    let mut root_procs = Vec::new();
+    // Build root PID set: for each browser, root = process whose ppid is not in
+    // the same browser's PID set.
+    let procs = crate::process::walk_processes(reader, ps_head_vaddr)?;
+    let mut root_pids = HashSet::new();
     for &browser in CHROMIUM_BROWSERS {
         let browser_pids: HashSet<u64> = procs
             .iter()
             .filter(|p| p.image_name.eq_ignore_ascii_case(browser))
             .map(|p| p.pid)
             .collect();
-
         for p in procs.iter().filter(|p| {
             p.image_name.eq_ignore_ascii_case(browser) && !browser_pids.contains(&p.ppid)
         }) {
-            root_procs.push(p);
+            root_pids.insert(p.pid);
         }
     }
 
-    let vad_root_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "VadRoot")
-        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
-
-    let mut results = Vec::new();
-    let mut seen: HashSet<(u64, String, String)> = HashSet::new(); // (pid, username, password)
-
-    for proc in root_procs {
-        if proc.cr3 == 0 || proc.peb_addr == 0 {
-            continue;
-        }
-
-        // Walk VAD tree using the kernel reader.
-        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
-        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        // Create a reader that uses this process's page table for VA translation.
-        let proc_reader = reader.with_cr3(proc.cr3);
-
-        for vad in &vads {
-            // Only scan private, writable (not execute) regions — these are heap pages.
-            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
-                continue;
-            }
-            // Skip if protection includes EXECUTE (e.g., PAGE_EXECUTE_READWRITE).
-            if vad.protection_str.contains("EXECUTE") {
-                continue;
-            }
-
-            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
-                .min(MAX_REGION_BYTES as u64) as usize;
-
-            if region_size == 0 {
-                continue;
-            }
-
-            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
-                Ok(b) => b,
-                Err(_) => continue, // region may be paged out in the dump
-            };
-
-            for (url, username, password) in scan_region(&bytes) {
-                let key = (proc.pid, username.clone(), password.clone());
-                if seen.insert(key) {
-                    results.push(BrowserCredentialInfo {
-                        pid: proc.pid,
-                        image_name: proc.image_name.clone(),
-                        url,
-                        username,
-                        password,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(results)
+    // for_each_heap_region internally calls walk_processes again (acceptable double-call
+    // for read-only forensic analysis).
+    let wr = crate::heap_walker::for_each_heap_region(
+        reader,
+        ps_head_vaddr,
+        |proc| root_pids.contains(&proc.pid),
+        |bytes, proc| {
+            scan_region(bytes)
+                .into_iter()
+                .map(|(url, username, password)| BrowserCredentialInfo {
+                    pid: proc.pid,
+                    image_name: proc.image_name.clone(),
+                    url,
+                    username,
+                    password,
+                })
+                .collect()
+        },
+        |info: &BrowserCredentialInfo| (info.pid, info.username.clone(), info.password.clone()),
+    )?;
+    Ok(wr.items)
 }
 
 /// Scan raw bytes from a memory region for Edge credential records.

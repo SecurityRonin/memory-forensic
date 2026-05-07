@@ -24,23 +24,16 @@
 //!
 //! Read-only. No live process access, no Win32 API calls, no state modification.
 
-use std::collections::HashSet;
-
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 use crate::{
-    process::walk_processes,
     types::SshAgentKeyInfo,
-    vad::walk_vad_tree,
     Result,
 };
 
 /// SSH agent process names to scan.
 pub const SSH_AGENT_PROCESSES: &[&str] = &["ssh-agent.exe", "pageant.exe"];
-
-/// Maximum bytes read from a single VAD region.
-const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Maximum bytes captured for an SSH wire-format key blob.
 const MAX_WIRE_BLOB: usize = 4096;
@@ -74,66 +67,27 @@ pub fn walk_ssh_agent_keys<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<SshAgentKeyInfo>> {
-    let procs = walk_processes(reader, ps_head_vaddr)?;
-
-    let vad_root_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "VadRoot")
-        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
-
-    let mut results = Vec::new();
-    // Dedup by (pid, key_type, region_offset).
-    let mut seen: HashSet<(u64, String, usize)> = HashSet::new();
-
-    for proc in procs.iter().filter(|p| {
-        SSH_AGENT_PROCESSES
-            .iter()
-            .any(|&name| p.image_name.eq_ignore_ascii_case(name))
-    }) {
-        if proc.cr3 == 0 {
-            continue;
-        }
-
-        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
-        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let proc_reader = reader.with_cr3(proc.cr3);
-
-        for vad in &vads {
-            // Private, writable, non-execute pages only.
-            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
-                continue;
-            }
-            if vad.protection_str.contains("EXECUTE") {
-                continue;
-            }
-
-            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
-                .min(MAX_REGION_BYTES as u64) as usize;
-            if region_size == 0 {
-                continue;
-            }
-
-            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-
-            for mut item in scan_ssh_agent_region(&bytes) {
-                let key = (proc.pid, item.key_type.clone(), item.region_offset);
-                if seen.insert(key) {
+    let wr = crate::heap_walker::for_each_heap_region(
+        reader,
+        ps_head_vaddr,
+        |proc| {
+            SSH_AGENT_PROCESSES
+                .iter()
+                .any(|s| proc.image_name.eq_ignore_ascii_case(s))
+        },
+        |bytes, proc| {
+            scan_ssh_agent_region(bytes)
+                .into_iter()
+                .map(|mut item| {
                     item.pid = proc.pid;
                     item.process_name.clone_from(&proc.image_name);
-                    results.push(item);
-                }
-            }
-        }
-    }
-
-    Ok(results)
+                    item
+                })
+                .collect()
+        },
+        |info: &SshAgentKeyInfo| (info.pid, info.region_offset),
+    )?;
+    Ok(wr.items)
 }
 
 /// Scan a raw byte slice for SSH private key material.

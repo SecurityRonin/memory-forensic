@@ -18,14 +18,9 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 use crate::{
-    process::walk_processes,
     types::CloudCredentialInfo,
-    vad::walk_vad_tree,
     Result,
 };
-
-/// Maximum bytes read from a single VAD region.
-const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Walk committed, writable heap regions of ALL processes in the dump and
 /// extract any cloud provider credentials found as strings.
@@ -38,59 +33,14 @@ pub fn walk_cloud_credentials<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<CloudCredentialInfo>> {
-    let procs = walk_processes(reader, ps_head_vaddr)?;
-
-    let vad_root_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "VadRoot")
-        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
-
-    let mut results = Vec::new();
-    let mut seen: HashSet<(u64, String)> = HashSet::new(); // (pid, value)
-
-    for proc in &procs {
-        if proc.cr3 == 0 || proc.peb_addr == 0 {
-            continue;
-        }
-
-        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
-        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let proc_reader = reader.with_cr3(proc.cr3);
-
-        for vad in &vads {
-            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
-                continue;
-            }
-            if vad.protection_str.contains("EXECUTE") {
-                continue;
-            }
-
-            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
-                .min(MAX_REGION_BYTES as u64) as usize;
-
-            if region_size == 0 {
-                continue;
-            }
-
-            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-
-            for cred in scan_cloud_region(&bytes, proc.pid, &proc.image_name) {
-                let key = (proc.pid, cred.value.clone());
-                if seen.insert(key) {
-                    results.push(cred);
-                }
-            }
-        }
-    }
-
-    Ok(results)
+    let wr = crate::heap_walker::for_each_heap_region(
+        reader,
+        ps_head_vaddr,
+        |_proc| true,
+        |bytes, proc| scan_cloud_region(bytes, proc.pid, &proc.image_name),
+        |info: &CloudCredentialInfo| (info.pid, info.value.clone()),
+    )?;
+    Ok(wr.items)
 }
 
 // AWS IAM Access Key ID (permanent: AKIA, temporary STS: ASIA)

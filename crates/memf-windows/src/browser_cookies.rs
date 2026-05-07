@@ -30,9 +30,7 @@ use memf_format::PhysicalMemoryProvider;
 use regex::Regex;
 
 use crate::{
-    process::walk_processes,
     types::BrowserCookieInfo,
-    vad::walk_vad_tree,
     Result,
 };
 
@@ -46,9 +44,6 @@ pub const COOKIE_BROWSERS: &[&str] = &[
     "chromium.exe",
     "firefox.exe",
 ];
-
-/// Maximum bytes read from a single VAD region.
-const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Scan raw bytes from one heap region for browser cookie records.
 ///
@@ -124,78 +119,26 @@ pub fn walk_browser_cookies<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<BrowserCookieInfo>> {
-    let procs = walk_processes(reader, ps_head_vaddr)?;
-
-    // Include all browser processes — Firefox and Chrome both materialise
-    // cookies in multiple processes, so we do not restrict to root only.
-    let browser_procs: Vec<_> = procs
-        .iter()
-        .filter(|p| {
-            COOKIE_BROWSERS
-                .iter()
-                .any(|&b| p.image_name.eq_ignore_ascii_case(b))
-        })
-        .collect();
-
-    let vad_root_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "VadRoot")
-        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
-
-    let mut results = Vec::new();
-    let mut seen: HashSet<(u64, String, String, String)> = HashSet::new();
-
-    for proc in browser_procs {
-        if proc.cr3 == 0 || proc.peb_addr == 0 {
-            continue;
-        }
-
-        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
-        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let proc_reader = reader.with_cr3(proc.cr3);
-
-        for vad in &vads {
-            // Only scan private, writable (not execute) regions — heap pages.
-            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
-                continue;
-            }
-            if vad.protection_str.contains("EXECUTE") {
-                continue;
-            }
-
-            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
-                .min(MAX_REGION_BYTES as u64) as usize;
-
-            if region_size == 0 {
-                continue;
-            }
-
-            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-
-            for (domain, name, value, path) in scan_cookie_region(&bytes) {
-                let key = (proc.pid, domain.clone(), name.clone(), value.clone());
-                if seen.insert(key) {
-                    results.push(BrowserCookieInfo {
-                        pid: proc.pid,
-                        image_name: proc.image_name.clone(),
-                        domain,
-                        name,
-                        value,
-                        path,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(results)
+    let wr = crate::heap_walker::for_each_heap_region(
+        reader,
+        ps_head_vaddr,
+        |proc| COOKIE_BROWSERS.iter().any(|b| proc.image_name.eq_ignore_ascii_case(b)),
+        |bytes, proc| {
+            scan_cookie_region(bytes)
+                .into_iter()
+                .map(|(domain, name, value, path)| BrowserCookieInfo {
+                    pid: proc.pid,
+                    image_name: proc.image_name.clone(),
+                    domain,
+                    name,
+                    value,
+                    path,
+                })
+                .collect()
+        },
+        |info: &BrowserCookieInfo| (info.pid, info.domain.clone(), info.name.clone(), info.value.clone()),
+    )?;
+    Ok(wr.items)
 }
 
 #[cfg(test)]

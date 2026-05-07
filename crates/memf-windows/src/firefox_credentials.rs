@@ -24,23 +24,14 @@
 //!
 //! Read-only — no live process access, no Win32 API calls, no state modification.
 
-use std::collections::HashSet;
-
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 use regex::Regex;
 
 use crate::{
-    process::walk_processes,
     types::FirefoxCredentialInfo,
-    vad::walk_vad_tree,
     Result,
 };
-
-/// Maximum bytes read from a single VAD region.
-///
-/// Caps memory consumption when a large anonymous mapping is encountered.
-const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Walk committed, writeable VAD regions of all `firefox.exe` processes in the
 /// dump and extract NSS-encrypted credential blobs from logins.json content.
@@ -53,76 +44,28 @@ pub fn walk_firefox_credentials<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<FirefoxCredentialInfo>> {
-    let procs = walk_processes(reader, ps_head_vaddr)?;
-
-    let firefox_procs: Vec<_> = procs
-        .iter()
-        .filter(|p| p.image_name.eq_ignore_ascii_case("firefox.exe"))
-        .collect();
-
-    if firefox_procs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let vad_root_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "VadRoot")
-        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
-
-    let mut results = Vec::new();
-    let mut seen: HashSet<(u64, String, String)> = HashSet::new(); // (pid, enc_user, enc_pass)
-
-    for proc in firefox_procs {
-        if proc.cr3 == 0 || proc.peb_addr == 0 {
-            continue;
-        }
-
-        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
-        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let proc_reader = reader.with_cr3(proc.cr3);
-
-        for vad in &vads {
-            // Only scan private, writable (not execute) regions — these are heap pages.
-            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
-                continue;
-            }
-            if vad.protection_str.contains("EXECUTE") {
-                continue;
-            }
-
-            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
-                .min(MAX_REGION_BYTES as u64) as usize;
-
-            if region_size == 0 {
-                continue;
-            }
-
-            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-
-            for (origin, ufield, pfield, enc_user, enc_pass) in scan_firefox_region(&bytes) {
-                let key = (proc.pid, enc_user.clone(), enc_pass.clone());
-                if seen.insert(key) {
-                    results.push(FirefoxCredentialInfo {
-                        pid: proc.pid,
-                        origin,
-                        username_field: ufield,
-                        password_field: pfield,
-                        encrypted_username: enc_user,
-                        encrypted_password: enc_pass,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(results)
+    let wr = crate::heap_walker::for_each_heap_region(
+        reader,
+        ps_head_vaddr,
+        |proc| proc.image_name.eq_ignore_ascii_case("firefox.exe"),
+        |bytes, proc| {
+            scan_firefox_region(bytes)
+                .into_iter()
+                .map(|(origin, ufield, pfield, enc_user, enc_pass)| FirefoxCredentialInfo {
+                    pid: proc.pid,
+                    origin,
+                    username_field: ufield,
+                    password_field: pfield,
+                    encrypted_username: enc_user,
+                    encrypted_password: enc_pass,
+                })
+                .collect()
+        },
+        |info: &FirefoxCredentialInfo| {
+            (info.pid, info.encrypted_username.clone(), info.encrypted_password.clone())
+        },
+    )?;
+    Ok(wr.items)
 }
 
 /// Scan raw bytes from a memory region for Firefox logins.json credential entries.

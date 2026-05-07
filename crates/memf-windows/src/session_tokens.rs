@@ -28,14 +28,9 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 use crate::{
-    process::walk_processes,
     types::SessionTokenInfo,
-    vad::walk_vad_tree,
     Result,
 };
-
-/// Maximum bytes read from a single VAD region.
-const MAX_REGION_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Walk committed, writable heap regions of ALL processes in the dump and
 /// extract any authentication tokens found as strings.
@@ -48,59 +43,14 @@ pub fn walk_session_tokens<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<SessionTokenInfo>> {
-    let procs = walk_processes(reader, ps_head_vaddr)?;
-
-    let vad_root_offset = reader
-        .symbols()
-        .field_offset("_EPROCESS", "VadRoot")
-        .ok_or_else(|| crate::Error::Walker("missing _EPROCESS.VadRoot offset".into()))?;
-
-    let mut results = Vec::new();
-    let mut seen: HashSet<(u64, String)> = HashSet::new(); // (pid, token_value)
-
-    for proc in &procs {
-        if proc.cr3 == 0 || proc.peb_addr == 0 {
-            continue;
-        }
-
-        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
-        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let proc_reader = reader.with_cr3(proc.cr3);
-
-        for vad in &vads {
-            if !vad.is_private || !vad.protection_str.contains("READWRITE") {
-                continue;
-            }
-            if vad.protection_str.contains("EXECUTE") {
-                continue;
-            }
-
-            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
-                .min(MAX_REGION_BYTES as u64) as usize;
-
-            if region_size == 0 {
-                continue;
-            }
-
-            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-
-            for token in scan_for_tokens(&bytes, proc.pid, &proc.image_name) {
-                let key = (token.pid, token.token_value.clone());
-                if seen.insert(key) {
-                    results.push(token);
-                }
-            }
-        }
-    }
-
-    Ok(results)
+    let wr = crate::heap_walker::for_each_heap_region(
+        reader,
+        ps_head_vaddr,
+        |_proc| true,
+        |bytes, proc| scan_for_tokens(bytes, proc.pid, &proc.image_name),
+        |info: &SessionTokenInfo| (info.pid, info.token_value.clone()),
+    )?;
+    Ok(wr.items)
 }
 
 // JWT: three base64url segments separated by dots, header starts with eyJ ({"  in base64)
