@@ -60,12 +60,15 @@ where
     let mut result = WalkResult::new(Vec::new(), 0);
     let mut seen: HashSet<K> = HashSet::new();
 
-    for proc in procs.iter().filter(|p| filter_fn(p)) {
+    for proc in procs.iter().filter(|p| filter_fn(*p)) {
         if proc.cr3 == 0 || proc.peb_addr == 0 {
             continue;
         }
 
         let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset as u64);
+        // One skip is recorded per unreadable process VAD tree (not per
+        // individual region within it). A single failed walk_vad_tree may
+        // represent hundreds of unread regions.
         let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
             Ok(v) => v,
             Err(_) => {
@@ -84,6 +87,9 @@ where
                 continue;
             }
 
+            if vad.end_vaddr < vad.start_vaddr {
+                continue;
+            }
             let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) + 1)
                 .min(MAX_REGION_BYTES as u64) as usize;
             if region_size == 0 {
@@ -177,6 +183,6 @@ mod tests {
     /// MAX_REGION_BYTES must be exactly 64 MiB.
     #[test]
     fn max_region_bytes_is_64_mib() {
-        assert_eq!(MAX_REGION_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_REGION_BYTES, 67_108_864, "MAX_REGION_BYTES must be exactly 64 MiB");
     }
 }
