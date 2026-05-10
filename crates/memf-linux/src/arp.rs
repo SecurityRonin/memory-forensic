@@ -337,4 +337,52 @@ mod tests {
         assert_eq!(entries[1].state, NeighState::Permanent);
         assert!(entries.iter().all(|e| e.dev_name == "ens33"));
     }
+
+    #[test]
+    fn missing_arp_tbl_returns_missing_kernel_symbol() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_arp_cache(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "arp_tbl"),
+            "expected MissingKernelSymbol {{name: \"arp_tbl\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_neighbour_ha_field_returns_missing_field() {
+        // arp_tbl symbol present, but neighbour.ha field missing
+        let arp_tbl_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let arp_tbl_paddr: u64 = 0x0080_0000;
+        let data = vec![0u8; 4096];
+
+        let isf = IsfBuilder::new()
+            .add_symbol("arp_tbl", arp_tbl_vaddr)
+            .add_struct("neigh_table", 256)
+            .add_field("neigh_table", "nht", 0, "pointer")
+            // neighbour.ha intentionally omitted
+            .add_struct("neighbour", 128)
+            .add_field("neighbour", "next", 0, "pointer")
+            .add_struct("neigh_hash_table", 64)
+            .add_field("neigh_hash_table", "hash_buckets", 0, "pointer")
+            .add_field("neigh_hash_table", "hash_shift", 8, "int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(arp_tbl_vaddr, arp_tbl_paddr, flags::WRITABLE)
+            .write_phys(arp_tbl_paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_arp_cache(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "neighbour" && field_name == "ha"),
+            "expected MissingField neighbour.ha, got {:?}",
+            result
+        );
+    }
 }

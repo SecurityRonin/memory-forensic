@@ -321,4 +321,19 @@ mod tests {
             "192.168.1.1"
         );
     }
+
+    #[test]
+    fn missing_tcp_hashinfo_returns_missing_kernel_symbol() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_connections(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "tcp_hashinfo"),
+            "expected MissingKernelSymbol {{name: \"tcp_hashinfo\"}}, got {:?}",
+            result
+        );
+    }
 }

@@ -264,6 +264,33 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_envvars(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_task"),
+            "expected MissingKernelSymbol {{name: \"init_task\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_tasks_field_returns_missing_field() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_envvars(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "tasks"),
+            "expected MissingField task_struct.tasks, got {:?}",
+            result
+        );
     }
 }

@@ -370,4 +370,36 @@ mod tests {
         let results = check_inline_hooks(&reader).unwrap();
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn missing_stext_returns_missing_kernel_symbol() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = check_inline_hooks(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_stext"),
+            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_etext_returns_missing_kernel_symbol() {
+        let isf = IsfBuilder::new()
+            .add_symbol("_stext", 0xFFFF_8000_0000_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = check_inline_hooks(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_etext"),
+            "expected MissingKernelSymbol {{name: \"_etext\"}}, got {:?}",
+            result
+        );
+    }
 }

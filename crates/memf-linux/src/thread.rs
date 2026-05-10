@@ -205,4 +205,39 @@ mod tests {
         assert_eq!(threads[0].tid, 2);
         assert_eq!(threads[0].comm, "kthreadd");
     }
+
+    #[test]
+    fn missing_thread_group_field_returns_missing_field() {
+        let vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+        // Write minimal valid task_struct (pid=1, state=1, comm="init") — no thread_group field in ISF
+        data[0..4].copy_from_slice(&1u32.to_le_bytes()); // pid
+        data[4..12].copy_from_slice(&1i64.to_le_bytes()); // state
+        data[32..36].copy_from_slice(b"init");            // comm
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 128)
+            .add_field("task_struct", "pid", 0, "int")
+            .add_field("task_struct", "state", 4, "long")
+            .add_field("task_struct", "comm", 32, "char")
+            // thread_group intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_threads(&reader, vaddr, 1);
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "thread_group"),
+            "expected MissingField task_struct.thread_group, got {:?}",
+            result
+        );
+    }
 }

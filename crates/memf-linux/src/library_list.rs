@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, Result};
+use crate::{vma_walker::for_each_task_vma, Error, Result};
 
 /// Maximum number of unique libraries per process (cycle/corruption guard).
 const MAX_LIBS: usize = 4096;
@@ -58,57 +58,59 @@ pub fn walk_library_list<P: PhysicalMemoryProvider>(
     pid: u32,
     process_name: &str,
 ) -> Result<Vec<SharedLibraryInfo>> {
-    // Read mm pointer -- kernel threads have NULL mm.
-    let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
-    if mm_ptr == 0 {
-        return Ok(Vec::new());
-    }
-
     // Resolve struct field offsets for the dentry path chain.
     let f_path_offset = reader
         .symbols()
         .field_offset("file", "f_path")
-        .ok_or_else(|| Error::Walker("file.f_path field not found".into()))?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "file".into(),
+            field_name: "f_path".into(),
+        })?;
     let dentry_in_path_offset = reader
         .symbols()
         .field_offset("path", "dentry")
-        .ok_or_else(|| Error::Walker("path.dentry field not found".into()))?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "path".into(),
+            field_name: "dentry".into(),
+        })?;
     let d_name_offset = reader
         .symbols()
         .field_offset("dentry", "d_name")
-        .ok_or_else(|| Error::Walker("dentry.d_name field not found".into()))?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "dentry".into(),
+            field_name: "d_name".into(),
+        })?;
     let name_in_qstr_offset = reader
         .symbols()
         .field_offset("qstr", "name")
-        .ok_or_else(|| Error::Walker("qstr.name field not found".into()))?;
-
-    // Get head of the VMA linked list.
-    let mmap_ptr: u64 = reader.read_field(mm_ptr, "mm_struct", "mmap")?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "qstr".into(),
+            field_name: "name".into(),
+        })?;
 
     // Track per-library aggregated info: (min vm_start, total size).
     let mut lib_map: HashMap<String, (u64, u64)> = HashMap::new();
+    // Cycle detection: track seen VMA addresses.
     let mut seen_addrs: HashSet<u64> = HashSet::new();
-    let mut vma_addr = mmap_ptr;
+    // Capture limit flag for the closure.
+    let mut limit_reached = false;
 
-    // Walk the singly-linked vm_next chain (NULL-terminated).
-    while vma_addr != 0 {
+    for_each_task_vma(reader, task_addr, &mut |e| {
         // Cycle detection.
-        if !seen_addrs.insert(vma_addr) {
-            break;
+        if !seen_addrs.insert(e.vma_addr) {
+            limit_reached = true;
+            return;
         }
-        if lib_map.len() >= MAX_LIBS {
-            break;
+        if limit_reached || lib_map.len() >= MAX_LIBS {
+            limit_reached = true;
+            return;
         }
 
-        let vm_start: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_start")?;
-        let vm_end: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_end")?;
-        let vm_file: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_file")?;
-
-        if vm_file != 0 {
+        if e.file_ptr != 0 {
             // Read file path: file.f_path.dentry → d_name.name
             if let Some(name) = read_vma_file_path(
                 reader,
-                vm_file,
+                e.file_ptr,
                 f_path_offset,
                 dentry_in_path_offset,
                 d_name_offset,
@@ -116,17 +118,15 @@ pub fn walk_library_list<P: PhysicalMemoryProvider>(
             ) {
                 // Only include mappings that look like shared libraries.
                 if name.contains(".so") {
-                    let size = vm_end.saturating_sub(vm_start);
-                    let entry = lib_map.entry(name).or_insert((vm_start, 0));
+                    let size = e.end.saturating_sub(e.start);
+                    let entry = lib_map.entry(name).or_insert((e.start, 0));
                     // Track lowest base address and accumulate size.
-                    entry.0 = entry.0.min(vm_start);
+                    entry.0 = entry.0.min(e.start);
                     entry.1 += size;
                 }
             }
         }
-
-        vma_addr = reader.read_field(vma_addr, "vm_area_struct", "vm_next")?;
-    }
+    });
 
     // Build result vector from deduplicated map.
     let mut libs: Vec<SharedLibraryInfo> = lib_map
@@ -977,6 +977,25 @@ mod tests {
         assert!(
             classify_library(".hidden.so.1"),
             "hidden bare name must be suspicious"
+        );
+    }
+
+    #[test]
+    fn missing_file_f_path_field_returns_missing_field() {
+        // walk_library_list: file.f_path field absent → MissingField
+        let isf = IsfBuilder::new()
+            // file struct exists but no f_path field
+            .add_struct("file", 64)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_library_list(&reader, 0xFFFF_8000_0010_0000, 1, "init");
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "file" && field_name == "f_path"),
+            "expected MissingField file.f_path, got {:?}",
+            result
         );
     }
 }

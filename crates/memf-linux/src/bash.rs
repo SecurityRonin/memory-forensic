@@ -8,7 +8,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{BashHistoryInfo, Error, Result, VmaFlags};
+use crate::{vma_walker::for_each_task_vma, BashHistoryInfo, Error, Result};
 
 /// Maximum heap region size to scan (1 MiB safety limit).
 const MAX_HEAP_SCAN: u64 = 1024 * 1024;
@@ -28,12 +28,17 @@ pub fn walk_bash_history<P: PhysicalMemoryProvider>(
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "init_task".into(),
+        })?;
 
     let tasks_offset = reader
         .symbols()
         .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "task_struct".into(),
+            field_name: "tasks".into(),
+        })?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
@@ -64,57 +69,22 @@ fn scan_process_history<P: PhysicalMemoryProvider>(
         return;
     }
 
-    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    if mm_ptr == 0 {
-        return; // kernel thread
-    }
-
     let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
         Ok(v) => v,
         Err(_) => return,
     };
 
-    // Collect VMA ranges for pointer validation
-    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
+    // Collect VMA ranges for pointer validation and identify heap candidates.
     let mut vma_ranges: Vec<(u64, u64)> = Vec::new();
     let mut heap_regions: Vec<(u64, u64)> = Vec::new();
-    let mut vma_addr = mmap_ptr;
 
-    while vma_addr != 0 {
-        let vm_start: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_start") {
-            Ok(v) => v,
-            Err(_) => break,
-        };
-        let vm_end: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_end") {
-            Ok(v) => v,
-            Err(_) => break,
-        };
-        let vm_flags: u64 = reader
-            .read_field(vma_addr, "vm_area_struct", "vm_flags")
-            .unwrap_or(0);
-        let vm_file: u64 = reader
-            .read_field(vma_addr, "vm_area_struct", "vm_file")
-            .unwrap_or(0);
-
-        vma_ranges.push((vm_start, vm_end));
-
-        let flags = VmaFlags::from_raw(vm_flags);
-        // Heap candidate: anonymous (vm_file == 0), read+write
-        if vm_file == 0 && flags.read && flags.write && !flags.exec {
-            heap_regions.push((vm_start, vm_end));
+    for_each_task_vma(reader, task_addr, &mut |e| {
+        vma_ranges.push((e.start, e.end));
+        // Heap candidate: anonymous (file_ptr == 0), read+write, not exec
+        if e.file_ptr == 0 && e.flags.read && e.flags.write && !e.flags.exec {
+            heap_regions.push((e.start, e.end));
         }
-
-        vma_addr = reader
-            .read_field(vma_addr, "vm_area_struct", "vm_next")
-            .unwrap_or(0);
-    }
+    });
 
     // Scan each heap region for HIST_ENTRY patterns
     let mut index = 0u64;
@@ -471,6 +441,33 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_bash_history(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_task"),
+            "expected MissingKernelSymbol {{name: \"init_task\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_tasks_field_returns_missing_field() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_bash_history(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "tasks"),
+            "expected MissingField task_struct.tasks, got {:?}",
+            result
+        );
     }
 }

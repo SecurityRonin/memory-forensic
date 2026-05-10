@@ -175,7 +175,30 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_syscall_table(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "sys_call_table"),
+            "expected MissingKernelSymbol {{name: \"sys_call_table\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_stext_symbol_returns_missing_kernel_symbol() {
+        let isf = IsfBuilder::new()
+            .add_symbol("sys_call_table", 0xFFFF_8000_0010_0000)
+            // _stext intentionally omitted
+            .add_symbol("_etext", 0xFFFF_8000_00FF_FFFF)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = check_syscall_table(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_stext"),
+            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {:?}",
+            result
+        );
     }
 
     #[test]

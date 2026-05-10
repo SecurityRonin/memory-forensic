@@ -161,11 +161,15 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_tty_hooks(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "tty_drivers"),
+            "expected MissingKernelSymbol {{name: \"tty_drivers\"}}, got {:?}",
+            result
+        );
     }
 
     #[test]
-    fn missing_stext_symbol_returns_error() {
+    fn missing_stext_symbol_returns_missing_kernel_symbol() {
         // tty_drivers present but _stext absent → Error
         let isf = IsfBuilder::new()
             .add_struct("tty_driver", 64)
@@ -185,11 +189,15 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_tty_hooks(&reader);
-        assert!(result.is_err(), "missing _stext should return an error");
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_stext"),
+            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {:?}",
+            result
+        );
     }
 
     #[test]
-    fn missing_etext_symbol_returns_error() {
+    fn missing_etext_symbol_returns_missing_kernel_symbol() {
         // tty_drivers + _stext present but _etext absent → Error
         let isf = IsfBuilder::new()
             .add_struct("tty_driver", 64)
@@ -209,11 +217,15 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_tty_hooks(&reader);
-        assert!(result.is_err(), "missing _etext should return an error");
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_etext"),
+            "expected MissingKernelSymbol {{name: \"_etext\"}}, got {:?}",
+            result
+        );
     }
 
     #[test]
-    fn missing_tty_drivers_field_offset_returns_error() {
+    fn missing_tty_drivers_field_offset_returns_missing_field() {
         // tty_drivers symbol present but tty_driver.tty_drivers field absent → Error
         let isf = IsfBuilder::new()
             .add_struct("tty_driver", 64)
@@ -234,8 +246,9 @@ mod tests {
 
         let result = check_tty_hooks(&reader);
         assert!(
-            result.is_err(),
-            "missing tty_driver.tty_drivers field should error"
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "tty_driver" && field_name == "tty_drivers"),
+            "expected MissingField tty_driver.tty_drivers, got {:?}",
+            result
         );
     }
 

@@ -175,6 +175,45 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = extract_boot_time(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "tk_core" || name == "timekeeper"),
+            "expected MissingKernelSymbol for tk_core/timekeeper, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn extract_boot_time_missing_wall_to_monotonic_returns_missing_field() {
+        // tk_core symbol present, timekeeper struct present, but wall_to_monotonic missing
+        let tk_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let tk_paddr: u64 = 0x0080_0000;
+        let mut data = vec![0u8; 4096];
+        // xtime_sec at offset 0 = 1700000000
+        data[0..8].copy_from_slice(&1700000000i64.to_le_bytes());
+
+        let isf = IsfBuilder::new()
+            .add_symbol("tk_core", tk_vaddr)
+            .add_struct("tk_core", 256)
+            .add_field("tk_core", "timekeeper", 0, "timekeeper")
+            .add_struct("timekeeper", 128)
+            .add_field("timekeeper", "xtime_sec", 0, "long long")
+            // wall_to_monotonic intentionally omitted
+            .add_struct("timespec64", 16)
+            .add_field("timespec64", "tv_sec", 0, "long long")
+            .add_field("timespec64", "tv_nsec", 8, "long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(tk_vaddr, tk_paddr, flags::WRITABLE)
+            .write_phys(tk_paddr, &data)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = extract_boot_time(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "timekeeper" && field_name == "wall_to_monotonic"),
+            "expected MissingField timekeeper.wall_to_monotonic, got {:?}",
+            result
+        );
     }
 }

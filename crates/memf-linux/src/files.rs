@@ -354,7 +354,11 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_files(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_task"),
+            "expected MissingKernelSymbol {{name: \"init_task\"}}, got {:?}",
+            result
+        );
     }
 
     // walk_files: tasks field missing → Err (exercises the tasks_offset error path).
@@ -383,7 +387,11 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_files(&reader);
-        assert!(result.is_err(), "missing tasks field must produce an error");
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "tasks"),
+            "expected MissingField task_struct.tasks, got {:?}",
+            result
+        );
     }
 
     // walk_process_files: f_inode == 0 → inode field is None in result.

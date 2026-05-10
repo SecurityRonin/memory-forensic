@@ -164,6 +164,24 @@ mod tests {
     }
 
     #[test]
+    fn missing_linux_banner_symbol_returns_missing_kernel_symbol() {
+        let data = vec![0u8; 4096];
+        let mem = BannerPhysMem {
+            ranges: vec![PhysicalRange { start: 0, end: 4096 }],
+            data,
+        };
+        // No linux_banner symbol
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let result = detect_kaslr_offset(&mem, &resolver);
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "linux_banner"),
+            "expected MissingKernelSymbol {{name: \"linux_banner\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn no_banner_found() {
         let data = vec![0u8; 4096];
         let mem = BannerPhysMem {

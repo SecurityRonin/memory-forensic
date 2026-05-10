@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{ElfInfo, ElfType, Error, Result};
+use crate::{vma_walker::for_each_task_vma, ElfInfo, ElfType, Error, Result};
 
 /// ELF magic bytes.
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
@@ -24,12 +24,17 @@ pub fn walk_elfinfo<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Resu
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "init_task".into(),
+        })?;
 
     let tasks_offset = reader
         .symbols()
         .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "task_struct".into(),
+            field_name: "tasks".into(),
+        })?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
@@ -51,14 +56,6 @@ fn scan_process_elfs<P: PhysicalMemoryProvider>(
     task_addr: u64,
     out: &mut Vec<ElfInfo>,
 ) {
-    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    if mm_ptr == 0 {
-        return;
-    }
-
     let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
         Ok(v) => v,
         Err(_) => return,
@@ -67,29 +64,14 @@ fn scan_process_elfs<P: PhysicalMemoryProvider>(
         .read_field_string(task_addr, "task_struct", "comm", 16)
         .unwrap_or_default();
 
-    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    let mut vma_addr = mmap_ptr;
-    while vma_addr != 0 {
-        let vm_start: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_start") {
-            Ok(v) => v,
-            Err(_) => break,
-        };
-
+    for_each_task_vma(reader, task_addr, &mut |e| {
         // Read the first 64 bytes and check for ELF magic
-        if let Ok(header_bytes) = reader.read_bytes(vm_start, ELF64_HEADER_SIZE) {
-            if let Some(info) = parse_elf64_header(&header_bytes, u64::from(pid), &comm, vm_start) {
+        if let Ok(header_bytes) = reader.read_bytes(e.start, ELF64_HEADER_SIZE) {
+            if let Some(info) = parse_elf64_header(&header_bytes, u64::from(pid), &comm, e.start) {
                 out.push(info);
             }
         }
-
-        vma_addr = reader
-            .read_field(vma_addr, "vm_area_struct", "vm_next")
-            .unwrap_or(0);
-    }
+    });
 }
 
 /// Parse a 64-bit ELF header from raw bytes.
@@ -310,6 +292,33 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_elfinfo(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_task"),
+            "expected MissingKernelSymbol {{name: \"init_task\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_tasks_field_returns_missing_field() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_elfinfo(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "tasks"),
+            "expected MissingField task_struct.tasks, got {:?}",
+            result
+        );
     }
 }

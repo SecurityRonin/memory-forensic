@@ -167,7 +167,11 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = check_hidden_modules(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "modules"),
+            "expected MissingKernelSymbol {{name: \"modules\"}}, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -190,8 +194,9 @@ mod tests {
 
         let result = check_hidden_modules(&reader);
         assert!(
-            result.is_err(),
-            "missing module.list field should return error"
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "module" && field_name == "list"),
+            "expected MissingField module.list, got {:?}",
+            result
         );
     }
 

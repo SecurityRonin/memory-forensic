@@ -7,7 +7,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Error, MalfindInfo, Result, VmaFlags};
+use crate::{vma_walker::for_each_task_vma, Error, MalfindInfo, Result};
 
 /// Number of header bytes to capture from suspicious regions.
 const HEADER_SIZE: usize = 64;
@@ -23,12 +23,17 @@ pub fn scan_malfind<P: PhysicalMemoryProvider>(
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "init_task".into(),
+        })?;
 
     let tasks_offset = reader
         .symbols()
         .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "task_struct".into(),
+            field_name: "tasks".into(),
+        })?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
@@ -51,14 +56,6 @@ fn scan_process_vmas<P: PhysicalMemoryProvider>(
     task_addr: u64,
     out: &mut Vec<MalfindInfo>,
 ) {
-    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    if mm_ptr == 0 {
-        return; // kernel thread
-    }
-
     let pid: u32 = match reader.read_field(task_addr, "task_struct", "pid") {
         Ok(v) => v,
         Err(_) => return,
@@ -67,64 +64,49 @@ fn scan_process_vmas<P: PhysicalMemoryProvider>(
         .read_field_string(task_addr, "task_struct", "comm", 16)
         .unwrap_or_default();
 
-    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    let mut vma_addr = mmap_ptr;
-    while vma_addr != 0 {
-        if let Ok(Some(f)) = check_vma(reader, vma_addr, u64::from(pid), &comm) {
+    for_each_task_vma(reader, task_addr, &mut |e| {
+        if let Some(f) = check_vma(reader, &e, u64::from(pid), &comm) {
             out.push(f);
         }
-
-        vma_addr = reader
-            .read_field(vma_addr, "vm_area_struct", "vm_next")
-            .unwrap_or(0);
-    }
+    });
 }
 
 /// Check a single VMA for suspicious characteristics.
-/// Returns `Ok(Some(finding))` if suspicious, `Ok(None)` if clean.
+/// Returns `Some(finding)` if suspicious, `None` if clean.
 fn check_vma<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-    vma_addr: u64,
+    entry: &crate::vma_walker::VmaEntry,
     pid: u64,
     comm: &str,
-) -> Result<Option<MalfindInfo>> {
-    let vm_flags: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_flags")?;
-    let vm_file: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_file")?;
-
-    let flags = VmaFlags::from_raw(vm_flags);
-    let file_backed = vm_file != 0;
+) -> Option<MalfindInfo> {
+    let file_backed = entry.file_ptr != 0;
 
     // Suspicious: write+exec AND anonymous (not file-backed)
-    if !(flags.write && flags.exec && !file_backed) {
-        return Ok(None);
+    if !(entry.flags.write && entry.flags.exec && !file_backed) {
+        return None;
     }
 
-    let vm_start: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_start")?;
-    let vm_end: u64 = reader.read_field(vma_addr, "vm_area_struct", "vm_end")?;
-
     // Try to read header bytes from the region
-    let read_size = HEADER_SIZE.min((vm_end - vm_start) as usize);
-    let header_bytes = reader.read_bytes(vm_start, read_size).unwrap_or_default();
+    let read_size = HEADER_SIZE.min((entry.end - entry.start) as usize);
+    let header_bytes = reader
+        .read_bytes(entry.start, read_size)
+        .unwrap_or_default();
 
     let reason = format!(
         "anonymous rwx region ({} flags, {} bytes)",
-        flags,
-        vm_end - vm_start
+        entry.flags,
+        entry.end - entry.start
     );
 
-    Ok(Some(MalfindInfo {
+    Some(MalfindInfo {
         pid,
         comm: comm.to_string(),
-        start: vm_start,
-        end: vm_end,
-        flags,
+        start: entry.start,
+        end: entry.end,
+        flags: entry.flags,
         reason,
         header_bytes,
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -313,6 +295,33 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = scan_malfind(&reader);
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_task"),
+            "expected MissingKernelSymbol {{name: \"init_task\"}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_tasks_field_returns_missing_field() {
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 64)
+            .add_field("task_struct", "pid", 0, "int")
+            // tasks intentionally omitted
+            .add_struct("list_head", 16)
+            .add_field("list_head", "next", 0, "pointer")
+            .add_field("list_head", "prev", 8, "pointer")
+            .add_symbol("init_task", 0xFFFF_8000_0010_0000)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+        let result = scan_malfind(&reader);
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "tasks"),
+            "expected MissingField task_struct.tasks, got {:?}",
+            result
+        );
     }
 }

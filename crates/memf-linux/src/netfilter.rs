@@ -388,7 +388,11 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_netfilter_rules(&reader);
-        assert!(result.is_err(), "missing init_net should return an error");
+        assert!(
+            matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_net"),
+            "expected MissingKernelSymbol {{name: \"init_net\"}}, got {:?}",
+            result
+        );
     }
 
     #[test]

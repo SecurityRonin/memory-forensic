@@ -441,7 +441,11 @@ mod tests {
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_psaux(&reader);
-        assert!(result.is_err(), "missing tasks field must return an error");
+        assert!(
+            matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "tasks"),
+            "expected MissingField task_struct.tasks, got {:?}",
+            result
+        );
     }
 
     #[test]
