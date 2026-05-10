@@ -244,7 +244,8 @@ mod tests {
     }
 
     #[test]
-    fn scan_region_called_twice_is_consistent() {
+    fn scan_region_is_deterministic() {
+        // Regression guard: sequential calls must return identical results.
         let buf = b"Bhttps admin Secret123! \x00";
         let r1 = scan_region(buf);
         let r2 = scan_region(buf);

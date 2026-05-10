@@ -34,8 +34,12 @@ use crate::{
 };
 
 struct TokenPattern {
+    /// Human-readable token type label emitted in [`SessionTokenInfo::token_type`].
     label: &'static str,
+    /// Compiled regex for this token format.
     re: regex::Regex,
+    /// When `true`, capture group 1 is used as the token value;
+    /// when `false`, the full match is used.
     use_capture: bool,
 }
 
@@ -227,7 +231,8 @@ mod tests {
     }
 
     #[test]
-    fn scan_for_tokens_called_twice_is_consistent() {
+    fn scan_for_tokens_is_deterministic() {
+        // Regression guard: sequential calls must return identical results.
         let data = b"Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwiaWF0IjoxNzAwMDAwMDAwfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
         let r1 = scan_for_tokens(data, DUMMY_PID, DUMMY_PROC);
         let r2 = scan_for_tokens(data, DUMMY_PID, DUMMY_PROC);
