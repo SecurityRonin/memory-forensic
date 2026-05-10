@@ -358,7 +358,7 @@ enum Commands {
         output_dir: PathBuf,
     },
     /// Extract a PNG screenshot from the physical memory framebuffer.
-    Framebuffer {
+    Framebuf {
         /// Path to the memory dump file.
         dump: PathBuf,
         /// Path to ISF JSON symbol file or directory (required for Linux).
@@ -603,7 +603,7 @@ fn main() -> Result<()> {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_procdump(resolved.path(), symbols.as_deref(), cr3, pid, &output_dir)
         }
-        Commands::Framebuffer {
+        Commands::Framebuf {
             dump,
             symbols,
             output,
@@ -6497,8 +6497,8 @@ mod tests {
 
     #[test]
     fn framebuffer_subcommand_is_registered() {
-        // Compile-time check — if Commands::Framebuffer doesn't exist this won't compile.
-        let _ = Commands::Framebuffer {
+        // Compile-time check — if Commands::Framebuf doesn't exist this won't compile.
+        let _ = Commands::Framebuf {
             dump: std::path::PathBuf::from("test.dmp"),
             symbols: None,
             output: OutputFormat::Table,
