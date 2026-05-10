@@ -206,4 +206,13 @@ mod tests {
         assert!(names.contains(&"token_a"));
         assert!(names.contains(&"token_b"));
     }
+
+    #[test]
+    fn scan_cookie_region_detects_v10_prefix() {
+        // 3-byte "v10" prefix + 12-byte nonce + padding
+        let mut data = vec![0u8; 100];
+        data[0..3].copy_from_slice(b"v10");
+        let results = scan_cookie_region(&data);
+        assert!(!results.is_empty(), "v10 cookie should be detected");
+    }
 }
