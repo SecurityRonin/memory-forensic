@@ -9,6 +9,7 @@ members = [
     "crates/memf-windows",
     "crates/forensic-hashdb",
     "crates/memf-correlate",
+    "crates/memf-framebuffer",
 ]
 
 [workspace.package]
@@ -56,6 +57,7 @@ indicatif = "0.17"
 tar = "0.4"
 bzip2 = "0.6"
 tempfile = "3"
+png = "0.17"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
