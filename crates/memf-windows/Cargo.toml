@@ -13,6 +13,7 @@ memf-core.workspace = true
 memf-correlate.workspace = true
 forensicnomicon.workspace = true
 winevt-core.workspace = true
+memf-framebuffer.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 regex.workspace = true

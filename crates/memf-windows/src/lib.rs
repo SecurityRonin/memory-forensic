@@ -45,6 +45,7 @@ pub mod evtx;
 pub mod fiber_fls;
 pub mod firefox_credentials;
 pub mod filescan;
+pub mod framebuffer;
 pub mod getsids;
 pub mod handles;
 pub mod hashdump;
