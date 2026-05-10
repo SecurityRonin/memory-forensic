@@ -1,5 +1,128 @@
 /// Linux framebuffer walker — reads `boot_params.screen_info` to locate the
 /// EFI/VESA linear framebuffer and encode it as PNG.
+///
+/// Offsets within `boot_params` (screen_info is the first field, so these
+/// are offsets from the boot_params symbol address):
+///   +0x10  lfb_base        u32  — PA of linear framebuffer
+///   +0x14  lfb_width       u16  — width in pixels
+///   +0x16  lfb_height      u16  — height in pixels
+///   +0x18  lfb_depth       u16  — bits per pixel (16, 24, or 32)
+///   +0x1A  lfb_linelength  u32  — row stride in bytes
+use memf_framebuffer::{encode_png, FramebufferResult, PixelFormat};
+use memf_core::object_reader::ObjectReader;
+use memf_format::PhysicalMemoryProvider;
+
+use crate::Result;
+
+const MAX_FB_BYTES: u64 = 32 * 1024 * 1024; // 32 MiB hard cap
+
+const LFB_BASE_OFF:   u64 = 0x10;
+const LFB_WIDTH_OFF:  u64 = 0x14;
+const LFB_HEIGHT_OFF: u64 = 0x16;
+const LFB_DEPTH_OFF:  u64 = 0x18;
+const LFB_STRIDE_OFF: u64 = 0x1A;
+
+/// Walk the Linux `boot_params.screen_info` structure to locate and capture
+/// the linear framebuffer, returning a [`FramebufferResult`] with PNG bytes.
+pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
+    reader: &ObjectReader<P>,
+) -> Result<FramebufferResult> {
+    let boot_params_va = reader.required_symbol("boot_params")
+        .map_err(|_| crate::Error::WalkFailed {
+            walker: "framebuffer",
+            reason: "boot_params symbol not found".into(),
+        })?;
+
+    let lfb_base = {
+        let b = reader.read_bytes(boot_params_va + LFB_BASE_OFF, 4)
+            .map_err(|e| crate::Error::WalkFailed {
+                walker: "framebuffer",
+                reason: format!("read lfb_base: {e}"),
+            })?;
+        u32::from_le_bytes(b.try_into().unwrap()) as u64
+    };
+
+    let width = {
+        let b = reader.read_bytes(boot_params_va + LFB_WIDTH_OFF, 2)
+            .map_err(|e| crate::Error::WalkFailed {
+                walker: "framebuffer",
+                reason: format!("read lfb_width: {e}"),
+            })?;
+        u16::from_le_bytes(b.try_into().unwrap()) as u32
+    };
+
+    let height = {
+        let b = reader.read_bytes(boot_params_va + LFB_HEIGHT_OFF, 2)
+            .map_err(|e| crate::Error::WalkFailed {
+                walker: "framebuffer",
+                reason: format!("read lfb_height: {e}"),
+            })?;
+        u16::from_le_bytes(b.try_into().unwrap()) as u32
+    };
+
+    let depth = {
+        let b = reader.read_bytes(boot_params_va + LFB_DEPTH_OFF, 2)
+            .map_err(|e| crate::Error::WalkFailed {
+                walker: "framebuffer",
+                reason: format!("read lfb_depth: {e}"),
+            })?;
+        u16::from_le_bytes(b.try_into().unwrap())
+    };
+
+    let stride = {
+        let b = reader.read_bytes(boot_params_va + LFB_STRIDE_OFF, 4)
+            .map_err(|e| crate::Error::WalkFailed {
+                walker: "framebuffer",
+                reason: format!("read lfb_linelength: {e}"),
+            })?;
+        u32::from_le_bytes(b.try_into().unwrap())
+    };
+
+    if width == 0 || height == 0 || lfb_base == 0 {
+        return Err(crate::Error::WalkFailed {
+            walker: "framebuffer",
+            reason: "screen_info has zero dimensions or base address".into(),
+        });
+    }
+
+    let pixel_format = match depth {
+        32 => PixelFormat::Xbgr8888,
+        24 => PixelFormat::Bgr24,
+        16 => PixelFormat::Rgb565,
+        d  => PixelFormat::Unknown(d as u8),
+    };
+
+    let fb_size = u64::from(stride) * u64::from(height);
+    if fb_size > MAX_FB_BYTES {
+        return Err(crate::Error::WalkFailed {
+            walker: "framebuffer",
+            reason: format!("framebuffer size {fb_size} exceeds 32 MiB"),
+        });
+    }
+
+    let mut fb_bytes = vec![0u8; fb_size as usize];
+    reader.vas().physical().read_phys(lfb_base, &mut fb_bytes)
+        .map_err(|_| crate::Error::WalkFailed {
+            walker: "framebuffer",
+            reason: format!("could not read {fb_size} bytes from PA {lfb_base:#x}"),
+        })?;
+
+    let png_bytes = encode_png(&fb_bytes, width, height, pixel_format)
+        .map_err(|e| crate::Error::WalkFailed {
+            walker: "framebuffer",
+            reason: format!("PNG encode: {e}"),
+        })?;
+
+    Ok(FramebufferResult {
+        width,
+        height,
+        stride,
+        pixel_format: format!("{pixel_format:?}"),
+        phys_base: lfb_base,
+        source: "boot_params.screen_info".into(),
+        png_bytes,
+    })
+}
 
 #[cfg(test)]
 mod tests {
