@@ -22,18 +22,85 @@ pub fn find_globally_loaded_libraries(
     proc_maps: &[(u32, Vec<String>)],
     threshold: f64,
 ) -> Vec<GloballyLoadedLibrary> {
-    todo!()
+    use std::collections::HashMap;
+    let total = proc_maps.len();
+    if total == 0 {
+        return vec![];
+    }
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (_, paths) in proc_maps {
+        let unique: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+        for p in unique {
+            *counts.entry(p.to_string()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(path, count)| {
+            (path.ends_with(".so") || path.contains(".so."))
+                && (*count as f64 / total as f64) >= threshold
+        })
+        .map(|(path, count)| {
+            let prevalence = count as f64 / total as f64;
+            GloballyLoadedLibrary {
+                path,
+                present_in_pid_count: count,
+                total_pids_checked: total,
+                prevalence,
+                elf_report: None,
+            }
+        })
+        .collect()
 }
 
 pub fn parse_linux_elfs_tsv(content: &str) -> Vec<VolatilityElfEntry> {
-    todo!()
+    content
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.splitn(5, '\t').collect();
+            if cols.len() < 5 {
+                return None;
+            }
+            Some(VolatilityElfEntry {
+                pid: cols[0].trim().parse().ok()?,
+                process_name: cols[1].trim().to_string(),
+                start: u64::from_str_radix(cols[2].trim().trim_start_matches("0x"), 16).ok()?,
+                end: u64::from_str_radix(cols[3].trim().trim_start_matches("0x"), 16).ok()?,
+                path: cols[4].trim().to_string(),
+            })
+        })
+        .collect()
 }
 
 pub fn find_globally_loaded_from_elfs(
     entries: &[VolatilityElfEntry],
     threshold: f64,
 ) -> Vec<(String, f64)> {
-    todo!()
+    use std::collections::HashMap;
+    let mut pid_sets: HashMap<&str, std::collections::HashSet<u32>> = HashMap::new();
+    for e in entries {
+        pid_sets.entry(&e.path).or_default().insert(e.pid);
+    }
+    let total_pids: std::collections::HashSet<u32> = entries.iter().map(|e| e.pid).collect();
+    let n = total_pids.len() as f64;
+    if n == 0.0 {
+        return vec![];
+    }
+    let mut result: Vec<(String, f64)> = pid_sets
+        .into_iter()
+        .filter_map(|(path, pids)| {
+            let prevalence = pids.len() as f64 / n;
+            if prevalence >= threshold {
+                Some((path.to_string(), prevalence))
+            } else {
+                None
+            }
+        })
+        .collect();
+    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    result
 }
 
 #[cfg(test)]
