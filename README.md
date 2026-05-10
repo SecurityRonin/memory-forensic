@@ -64,7 +64,7 @@ memf strings memdump.dmp --rules ./yara-rules/ --min-length 8
 memf hash memdump.dmp --lookup
 
 # Extract framebuffer screenshot from live memory dump
-memf framebuffer memdump.dmp --symbols linux.json --png screen.png
+memf framebuf memdump.dmp --symbols linux.json --png screen.png
 ```
 
 Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
@@ -139,7 +139,7 @@ The Windows credential walkers cover:
 ## Framebuffer screenshot extraction
 
 ```bash
-memf framebuffer memdump.dmp --symbols ntkrnlmp.json --png screen.png
+memf framebuf memdump.dmp --symbols ntkrnlmp.json --png screen.png
 ```
 
 Extracts the framebuffer from a live or hibernation memory dump and writes it as a PNG. Works on both Linux (DRM/KMS `drm_framebuffer` walker) and Windows (session framebuffer via `win32k` pool scan). Useful for capturing the screen state at the moment of acquisition without booting the image.

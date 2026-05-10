@@ -7,7 +7,7 @@
 ```bash
 cargo install memory-forensic
 memf ps memdump.lime --symbols linux.json --tree
-memf framebuffer memdump.lime --symbols linux.json --png screen.png
+memf framebuf memdump.lime --symbols linux.json --png screen.png
 memf check memdump.dmp --symbols ntkrnlmp.json --dpapi-keys --browser-cookies
 ```
 
