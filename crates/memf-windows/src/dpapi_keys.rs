@@ -131,6 +131,78 @@ mod tests {
         assert!(json.contains("User master key"));
     }
 
+    /// Walk g_MasterKeyCache linked list with a synthetic one-entry cache.
+    #[test]
+    fn walk_master_key_cache_with_synthetic_entry() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // VAs for our synthetic structures
+        const LIST_HEAD_VA: u64 = 0xFFFF_8800_0001_0000;
+        const ENTRY_VA: u64 = 0xFFFF_8800_0002_0000;
+        const BLOB_VA: u64 = 0xFFFF_8800_0003_0000;
+        // Corresponding PAs
+        const LIST_HEAD_PA: u64 = 0x0010_0000;
+        const ENTRY_PA: u64 = 0x0020_0000;
+        const BLOB_PA: u64 = 0x0030_0000;
+
+        let guid_bytes = [
+            0xAAu8, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0x00,
+        ];
+        let blob_data = [0x42u8; 64];
+        const BLOB_LEN: u32 = 64;
+
+        // List head: Flink → ENTRY_VA
+        let mut list_head = [0u8; 16];
+        list_head[0..8].copy_from_slice(&ENTRY_VA.to_le_bytes()); // Flink
+        list_head[8..16].copy_from_slice(&ENTRY_VA.to_le_bytes()); // Blink
+
+        // Cache entry at ENTRY_VA
+        let mut entry = [0u8; 0x40];
+        // [0x00] Flink → LIST_HEAD_VA (one-entry list, circles back)
+        entry[0x00..0x08].copy_from_slice(&LIST_HEAD_VA.to_le_bytes());
+        // [0x08] Blink
+        entry[0x08..0x10].copy_from_slice(&LIST_HEAD_VA.to_le_bytes());
+        // [0x18] GUID (16 bytes)
+        entry[0x18..0x28].copy_from_slice(&guid_bytes);
+        // [0x28] blob pointer
+        entry[0x28..0x30].copy_from_slice(&BLOB_VA.to_le_bytes());
+        // [0x30] blob length
+        entry[0x30..0x34].copy_from_slice(&BLOB_LEN.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(LIST_HEAD_VA, LIST_HEAD_PA, flags::WRITABLE)
+            .write_phys(LIST_HEAD_PA, &list_head)
+            .map_4k(ENTRY_VA, ENTRY_PA, flags::WRITABLE)
+            .write_phys(ENTRY_PA, &entry)
+            .map_4k(BLOB_VA, BLOB_PA, flags::WRITABLE)
+            .write_phys(BLOB_PA, &blob_data)
+            .build();
+
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+
+        // ISF: g_MasterKeyCache symbol points to the list head VA
+        let isf = IsfBuilder::new()
+            .add_symbol("g_MasterKeyCache", LIST_HEAD_VA)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_dpapi_master_keys(&reader).expect("walk must succeed");
+        assert_eq!(results.len(), 1, "should find exactly one cache entry");
+        assert_eq!(results[0].master_key.len(), 64, "blob should be 64 bytes");
+        assert_eq!(results[0].master_key, blob_data, "blob bytes must match");
+        // GUID formatting: first 4 bytes LE → 0xDDCCBBAA
+        assert!(
+            results[0].guid.starts_with("{DDCCBBAA"),
+            "GUID prefix must match LE-decoded bytes"
+        );
+    }
+
     /// Without g_MasterKeyCache symbol, walker returns empty.
     #[test]
     fn walk_dpapi_master_keys_no_symbol_returns_empty() {
