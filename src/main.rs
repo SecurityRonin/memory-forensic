@@ -357,6 +357,20 @@ enum Commands {
         #[arg(long, default_value = ".")]
         output_dir: PathBuf,
     },
+    /// Extract a PNG screenshot from the physical memory framebuffer.
+    Framebuffer {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Path to ISF JSON symbol file or directory (required for Linux).
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+        /// Output format for metadata: table, json, csv, ndjson.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+        /// Write PNG to this file path (default: framebuffer.png).
+        #[arg(long)]
+        png: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -588,6 +602,21 @@ fn main() -> Result<()> {
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_procdump(resolved.path(), symbols.as_deref(), cr3, pid, &output_dir)
+        }
+        Commands::Framebuffer {
+            dump,
+            symbols,
+            output,
+            png,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_framebuffer(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                png.as_deref(),
+                resolved.is_extracted(),
+            )
         }
     }
 }
@@ -4595,6 +4624,67 @@ fn cmd_procdump(
         out_path.display()
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Framebuffer
+// ---------------------------------------------------------------------------
+
+fn cmd_framebuffer(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    png_path: Option<&Path>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, None, raw_fallback)?;
+
+    let result = match ctx.os {
+        OsProfile::Linux => memf_linux::framebuffer::walk_framebuffer_linux(&reader)
+            .context("Linux framebuffer walk failed")?,
+        OsProfile::Windows => {
+            let provider = reader.vas().physical();
+            memf_framebuffer_windows(provider)
+                .context("Windows framebuffer walk failed")?
+        }
+        OsProfile::MacOs => anyhow::bail!("framebuffer not supported for macOS dumps"),
+    };
+
+    // Write PNG (default to framebuffer.png if not specified)
+    let out_path = png_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("framebuffer.png"));
+    std::fs::write(&out_path, &result.png_bytes)
+        .with_context(|| format!("failed to write PNG to {}", out_path.display()))?;
+    eprintln!("PNG written: {}", out_path.display());
+
+    // Emit metadata
+    match output {
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        OutputFormat::Table | OutputFormat::Csv => {
+            let mut table = comfy_table::Table::new();
+            table.load_preset(comfy_table::presets::UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Field", "Value"]);
+            table.add_row(vec!["width", &result.width.to_string()]);
+            table.add_row(vec!["height", &result.height.to_string()]);
+            table.add_row(vec!["stride", &result.stride.to_string()]);
+            table.add_row(vec!["pixel_format", &result.pixel_format]);
+            table.add_row(vec!["phys_base", &format!("{:#x}", result.phys_base)]);
+            table.add_row(vec!["source", &result.source]);
+            println!("{table}");
+        }
+    }
+    Ok(())
+}
+
+/// Call `walk_framebuffer_windows` with any `PhysicalMemoryProvider` reference.
+fn memf_framebuffer_windows<P: memf_format::PhysicalMemoryProvider>(
+    provider: &P,
+) -> anyhow::Result<memf_framebuffer::FramebufferResult> {
+    memf_windows::framebuffer::walk_framebuffer_windows(provider)
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 // ---------------------------------------------------------------------------
