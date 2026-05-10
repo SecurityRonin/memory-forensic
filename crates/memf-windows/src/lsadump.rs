@@ -34,6 +34,11 @@ pub struct LsaSecretInfo {
     pub length: u32,
     /// Whether this secret is suspicious based on heuristics.
     pub is_suspicious: bool,
+    /// Raw value bytes of the secret; `None` if the value is absent, zero-length,
+    /// or exceeds 1 KiB. The `DPAPI_SYSTEM` secret carries 40 bytes (20-byte
+    /// machine key + 20-byte user key concatenated).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Vec<u8>>,
 }
 
 /// Classify an LSA secret by name.
@@ -223,8 +228,8 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
             _ => continue,
         };
 
-        // Read the CurrVal subkey's default value length.
-        let length = read_currval_length(reader, flat_base, key_addr);
+        // Read the CurrVal subkey's default value length and raw bytes.
+        let (length, data) = read_currval_data(reader, flat_base, key_addr);
 
         let (secret_type, is_suspicious) = classify_lsa_secret(&secret_name);
 
@@ -233,6 +238,7 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
             secret_type,
             length,
             is_suspicious,
+            data,
         });
     }
 
@@ -338,56 +344,85 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 ///
 /// Navigates `<secret_key>\CurrVal` and reads the `(Default)` value's
 /// `DataLength` field to determine the secret size.
-fn read_currval_length<P: PhysicalMemoryProvider>(
+/// Read the data length and raw bytes from a secret's `CurrVal` subkey's default value.
+///
+/// Returns `(length, data)` where `data` is `Some(bytes)` if `0 < length <= 1024`,
+/// or `None` if absent, zero-length, or exceeds 1 KiB.
+fn read_currval_data<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     flat_base: u64,
     secret_key_addr: u64,
-) -> u32 {
+) -> (u32, Option<Vec<u8>>) {
     // Find the CurrVal subkey.
     let currval_addr = find_subkey_by_name(reader, flat_base, secret_key_addr, "CurrVal");
     if currval_addr == 0 {
-        return 0;
+        return (0, None);
     }
 
     // Read value count from CurrVal key node (offset 0x28).
     let val_count: u32 = match reader.read_bytes(currval_addr + 0x28, 4) {
         Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-        _ => return 0,
+        _ => return (0, None),
     };
 
     if val_count == 0 {
-        return 0;
+        return (0, None);
     }
 
     // Read value list cell offset (0x2C in _CM_KEY_NODE).
     let val_list_off: u32 = match reader.read_bytes(currval_addr + 0x2C, 4) {
         Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-        _ => return 0,
+        _ => return (0, None),
     };
 
     let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
     if val_list_addr == 0 {
-        return 0;
+        return (0, None);
     }
 
     // Read the first value offset (the default value).
     let val_off: u32 = match reader.read_bytes(val_list_addr, 4) {
         Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-        _ => return 0,
+        _ => return (0, None),
     };
 
     let val_addr = read_cell_addr(reader, flat_base, val_off);
     if val_addr == 0 {
-        return 0;
+        return (0, None);
     }
 
     // _CM_KEY_VALUE: DataLength at offset 0x08 (u32). MSB indicates inline data.
-    match reader.read_bytes(val_addr + 0x08, 4) {
-        Ok(bytes) if bytes.len() == 4 => {
-            u32::from_le_bytes(bytes[..4].try_into().unwrap()) & 0x7FFF_FFFF
-        }
-        _ => 0,
+    let raw_len: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return (0, None),
+    };
+    let data_length = raw_len & 0x7FFF_FFFF;
+
+    if data_length == 0 || data_length > 1024 {
+        return (data_length, None);
     }
+
+    // _CM_KEY_VALUE: DataOffset at offset 0x0C (u32) — cell offset into flat storage.
+    let data_off: u32 = match reader.read_bytes(val_addr + 0x0C, 4) {
+        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        _ => return (data_length, None),
+    };
+
+    // data_off is a cell offset: actual data lives at flat_base + data_off + 4
+    // (cells have a 4-byte size header before the payload).
+    let data_va = flat_base + u64::from(data_off) + 4;
+    let data = reader.read_bytes(data_va, data_length as usize).ok();
+
+    (data_length, data)
+}
+
+/// Kept for backwards-compatibility with tests that call `read_currval_length` directly.
+fn read_currval_length<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    flat_base: u64,
+    secret_key_addr: u64,
+) -> u32 {
+    read_currval_data(reader, flat_base, secret_key_addr).0
 }
 
 #[cfg(test)]
@@ -567,6 +602,7 @@ mod tests {
             secret_type: "cached_domain_key".to_string(),
             length: 32,
             is_suspicious: false,
+            data: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("NL$KM"));
