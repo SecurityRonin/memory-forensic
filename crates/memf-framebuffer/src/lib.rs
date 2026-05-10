@@ -33,12 +33,77 @@ pub enum FramebufferError {
     ReadFailed,
 }
 
-pub fn to_rgb24(pixels: &[u8], width: u32, height: u32, format: PixelFormat) -> Result<Vec<u8>, FramebufferError> {
-    todo!()
+pub fn to_rgb24(pixels: &[u8], width: u32, height: u32, format: PixelFormat)
+    -> Result<Vec<u8>, FramebufferError>
+{
+    if width == 0 || height == 0 {
+        return Ok(Vec::new());
+    }
+    let n = (width * height) as usize;
+    match format {
+        PixelFormat::Xbgr8888 => {
+            if pixels.len() < n * 4 {
+                return Err(FramebufferError::BufferTooSmall { width, height, format });
+            }
+            Ok(pixels.chunks_exact(4).take(n)
+                .flat_map(|p| [p[2], p[1], p[0]])
+                .collect())
+        }
+        PixelFormat::Xrgb8888 => {
+            if pixels.len() < n * 4 {
+                return Err(FramebufferError::BufferTooSmall { width, height, format });
+            }
+            Ok(pixels.chunks_exact(4).take(n)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect())
+        }
+        PixelFormat::Bgr24 => {
+            if pixels.len() < n * 3 {
+                return Err(FramebufferError::BufferTooSmall { width, height, format });
+            }
+            Ok(pixels.chunks_exact(3).take(n)
+                .flat_map(|p| [p[2], p[1], p[0]])
+                .collect())
+        }
+        PixelFormat::Rgb565 => {
+            if pixels.len() < n * 2 {
+                return Err(FramebufferError::BufferTooSmall { width, height, format });
+            }
+            Ok(pixels.chunks_exact(2).take(n)
+                .flat_map(|p| {
+                    let v = u16::from_le_bytes([p[0], p[1]]);
+                    let r5 = ((v >> 11) & 0x1F) as u8;
+                    let g6 = ((v >> 5)  & 0x3F) as u8;
+                    let b5 = (v         & 0x1F) as u8;
+                    let r = (r5 << 3) | (r5 >> 2);
+                    let g = (g6 << 2) | (g6 >> 4);
+                    let b = (b5 << 3) | (b5 >> 2);
+                    [r, g, b]
+                })
+                .collect())
+        }
+        PixelFormat::Unknown(_) => Err(FramebufferError::UnsupportedPixelFormat(format)),
+    }
 }
 
-pub fn encode_png(pixels: &[u8], width: u32, height: u32, format: PixelFormat) -> Result<Vec<u8>, FramebufferError> {
-    todo!()
+pub fn encode_png(pixels: &[u8], width: u32, height: u32, format: PixelFormat)
+    -> Result<Vec<u8>, FramebufferError>
+{
+    if width == 0 || height == 0 {
+        return Ok(Vec::new());
+    }
+    let rgb = to_rgb24(pixels, width, height, format)?;
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header()
+            .map_err(|e| FramebufferError::PngEncode(e.to_string()))?;
+        writer.write_image_data(&rgb)
+            .map_err(|e| FramebufferError::PngEncode(e.to_string()))?;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

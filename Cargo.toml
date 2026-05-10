@@ -29,35 +29,46 @@ memf-core    = { path = "crates/memf-core" }
 memf-linux   = { path = "crates/memf-linux" }
 memf-windows = { path = "crates/memf-windows" }
 memf-correlate = { path = "crates/memf-correlate" }
-chrono = { version = "0.4", features = ["serde"] }
-thiserror = "2"
-anyhow = "1"
-inventory = "0.3"
-memmap2 = "0.9"
-snap = "1"
-regex = "1"
+aes            = "0.8"
+aes-gcm        = "0.10"
 aho-corasick = "1"
-yara-x = "0.12"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+anyhow = "1"
+block-padding  = "0.3"
+bzip2 = "0.6"
+bytemuck = { version = "1", features = ["derive"] }
+cbc            = { version = "0.1", features = ["alloc"] }
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
-bytemuck = { version = "1", features = ["derive"] }
-goblin = "0.9"
-rust-lzxpress = "0.7"
-lzo1x = "0.2"
+des            = "0.8"
+digest         = "0.10"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
-ruzstd = "0.8"
-lru = "0.16"
-pdb = "0.8"
-ureq = "3"
-zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
-sevenz-rust = "0.6"
+goblin = "0.9"
+hmac           = "0.12"
 indicatif = "0.17"
+inventory = "0.3"
+lru = "0.16"
+lzo1x = "0.2"
+md-5           = "0.10"
+memmap2 = "0.9"
+pbkdf2         = "0.12"
+pdb = "0.8"
+png            = "0.17"
+regex = "1"
+rust-lzxpress = "0.7"
+ruzstd = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sevenz-rust = "0.6"
+sha1           = { version = "0.10", features = ["oid"] }
+sha2           = "0.10"
+snap = "1"
 tar = "0.4"
-bzip2 = "0.6"
 tempfile = "3"
-png = "0.17"
+thiserror = "2"
+ureq = "3"
+yara-x = "0.12"
+zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
