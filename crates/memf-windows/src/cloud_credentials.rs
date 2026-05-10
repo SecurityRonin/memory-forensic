@@ -195,4 +195,17 @@ mod tests {
         let aws: Vec<_> = results.iter().filter(|c| c.provider == "AWS").collect();
         assert_eq!(aws.len(), 1, "same key should deduplicate");
     }
+
+    #[test]
+    fn output_type_has_image_name_field() {
+        // Compile-time check: field must be named image_name, not process_name.
+        let info = CloudCredentialInfo {
+            pid: 1,
+            image_name: "aws-cli.exe".to_string(),
+            provider: "AWS".to_string(),
+            credential_type: "AccessKeyId".to_string(),
+            value: "AKIAIOSFODNN7EXAMPLE".to_string(),
+        };
+        assert_eq!(info.image_name, "aws-cli.exe");
+    }
 }

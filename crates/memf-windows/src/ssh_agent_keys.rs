@@ -212,4 +212,17 @@ mod tests {
         assert!(types.contains(&"ssh-rsa"));
         assert!(types.contains(&"ssh-ed25519"));
     }
+
+    #[test]
+    fn output_type_has_image_name_field() {
+        // Compile-time check: field must be named image_name, not process_name.
+        let info = SshAgentKeyInfo {
+            pid: 1,
+            image_name: "ssh-agent.exe".to_string(),
+            key_type: "ssh-ed25519".to_string(),
+            key_blob: vec![0u8; 32],
+            region_offset: 0,
+        };
+        assert_eq!(info.image_name, "ssh-agent.exe");
+    }
 }

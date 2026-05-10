@@ -242,4 +242,16 @@ mod tests {
             assert_eq!(t1.token_value, t2.token_value, "token_value must be identical across calls");
         }
     }
+
+    #[test]
+    fn output_type_has_image_name_field() {
+        // Compile-time check: field must be named image_name, not process_name.
+        let info = SessionTokenInfo {
+            pid: 1,
+            image_name: "test.exe".to_string(),
+            token_type: "JWT".to_string(),
+            token_value: "tok".to_string(),
+        };
+        assert_eq!(info.image_name, "test.exe");
+    }
 }
