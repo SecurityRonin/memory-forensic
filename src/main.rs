@@ -6404,4 +6404,15 @@ mod tests {
         write_ndjson(&items, &mut buf).expect("write_ndjson should not fail on empty slice");
         assert!(buf.is_empty(), "empty slice must produce no output");
     }
+
+    #[test]
+    fn framebuffer_subcommand_is_registered() {
+        // Compile-time check — if Commands::Framebuffer doesn't exist this won't compile.
+        let _ = Commands::Framebuffer {
+            dump: std::path::PathBuf::from("test.dmp"),
+            symbols: None,
+            output: OutputFormat::Table,
+            png: None,
+        };
+    }
 }
