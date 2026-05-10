@@ -49,29 +49,106 @@ pub fn classify_dpapi_master_key(guid: &str, description: &str) -> bool {
         || description.to_ascii_lowercase().contains("backdoor")
 }
 
-/// Walk LSASS memory for cached DPAPI master keys.
+/// Format a 16-byte Windows GUID (little-endian) as `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`.
+///
+/// Windows stores GUIDs with the first three components in little-endian byte order:
+/// - Data1: 4 bytes LE → u32
+/// - Data2: 2 bytes LE → u16
+/// - Data3: 2 bytes LE → u16
+/// - Data4: 8 bytes as-is
+fn format_guid(raw: &[u8; 16]) -> String {
+    let d1 = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+    let d2 = u16::from_le_bytes([raw[4], raw[5]]);
+    let d3 = u16::from_le_bytes([raw[6], raw[7]]);
+    format!(
+        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+        d1, d2, d3, raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]
+    )
+}
+
+/// Walk LSASS memory for cached DPAPI master keys via `lsasrv!g_MasterKeyCache`.
 ///
 /// Returns `Ok(Vec::new())` when `lsasrv`-related symbols (e.g.
 /// `g_MasterKeyCache`) are absent from the symbol table (graceful degradation).
 ///
-/// # Full Implementation Notes
-/// Would walk `lsasrv!g_MasterKeyCache` → `LSAP_DPAPI_MASTERKEY_CACHE_ENTRY`
-/// linked list, extract GUID and encrypted blob, then decrypt using the
-/// session key from `lsasrv!h_PreferredMasterKey`.
+/// Walks the doubly-linked `LIST_ENTRY` chain rooted at `g_MasterKeyCache`.
+/// For each entry it reads the GUID (offset +0x18), blob pointer (+0x28),
+/// and blob length (+0x30), then reads up to 512 bytes of blob data.
 pub fn walk_dpapi_master_keys<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<DpapiMasterKeyInfo>> {
     // Graceful degradation: require g_MasterKeyCache symbol from lsasrv.dll
-    if reader
-        .symbols()
-        .symbol_address("g_MasterKeyCache")
-        .is_none()
-    {
-        return Ok(Vec::new());
+    let list_head_va = match reader.symbols().symbol_address("g_MasterKeyCache") {
+        None => return Ok(Vec::new()),
+        Some(va) => va,
+    };
+
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Read the first Flink from the list head
+    let flink_bytes = match reader.read_bytes(list_head_va, 8) {
+        Ok(b) => b,
+        Err(_) => return Ok(results),
+    };
+    let mut flink_va = u64::from_le_bytes(flink_bytes.try_into().unwrap_or([0u8; 8]));
+
+    for _ in 0..1000 {
+        // Stop conditions: full circle or null pointer
+        if flink_va == list_head_va || flink_va == 0 {
+            break;
+        }
+        // Cycle detection
+        if !seen.insert(flink_va) {
+            break;
+        }
+
+        let entry_va = flink_va;
+
+        // Read GUID: 16 bytes at entry_va + 0x18
+        if let Ok(guid_bytes) = reader.read_bytes(entry_va + 0x18, 16) {
+            let mut guid_raw = [0u8; 16];
+            guid_raw.copy_from_slice(&guid_bytes);
+
+            // Read blob pointer: 8 bytes at entry_va + 0x28
+            // Read blob length: 4 bytes at entry_va + 0x30
+            let blob = match (
+                reader.read_bytes(entry_va + 0x28, 8),
+                reader.read_bytes(entry_va + 0x30, 4),
+            ) {
+                (Ok(ptr_b), Ok(len_b)) => {
+                    let blob_ptr =
+                        u64::from_le_bytes(ptr_b.try_into().unwrap_or([0u8; 8]));
+                    let blob_len =
+                        u32::from_le_bytes(len_b.try_into().unwrap_or([0u8; 4])) as usize;
+                    if blob_len > 0 && blob_len <= 512 && blob_ptr != 0 {
+                        reader.read_bytes(blob_ptr, blob_len).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                _ => Vec::new(),
+            };
+
+            let guid = format_guid(&guid_raw);
+            results.push(DpapiMasterKeyInfo {
+                guid,
+                version: 1,
+                flags: 0,
+                description: String::new(),
+                master_key: blob,
+                is_suspicious: false,
+            });
+        }
+
+        // Advance: read Flink at entry_va + 0x00
+        match reader.read_bytes(entry_va, 8) {
+            Ok(b) => flink_va = u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+            Err(_) => break,
+        }
     }
 
-    // Full implementation pending lsasrv struct definitions.
-    Ok(Vec::new())
+    Ok(results)
 }
 
 #[cfg(test)]
