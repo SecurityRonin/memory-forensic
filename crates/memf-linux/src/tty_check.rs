@@ -129,7 +129,7 @@ mod tests {
         let etext: u64 = 0xFFFF_8000_00FF_FFFF;
         let mut data = vec![0u8; 4096];
 
-        let handler: u64 = 0xFFFF_8000_0001_0000; // in text region
+        let _handler: u64 = 0xFFFF_8000_0001_0000; // in text region
 
         // tty_drivers list_head at +0x800 (points to self = empty list → just test setup)
         let drivers_head = vaddr + 0x800;

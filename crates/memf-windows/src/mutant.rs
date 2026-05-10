@@ -254,6 +254,7 @@ mod tests {
 
     /// Write a named object (name_info + header + body) at `base_vaddr/base_paddr`.
     /// Returns the virtual address of the object body.
+    #[allow(dead_code)]
     fn write_named_object(
         ptb: PageTableBuilder,
         base_vaddr: u64,
@@ -290,6 +291,7 @@ mod tests {
     }
 
     /// Write an `_OBJECT_DIRECTORY_ENTRY` at the given physical address.
+    #[allow(dead_code)]
     fn write_dir_entry(
         ptb: PageTableBuilder,
         entry_paddr: u64,
@@ -303,6 +305,7 @@ mod tests {
     }
 
     /// Set a hash bucket pointer in a directory page.
+    #[allow(dead_code)]
     fn set_bucket(
         ptb: PageTableBuilder,
         dir_paddr: u64,

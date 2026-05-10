@@ -43,20 +43,7 @@ pub struct CgroupInfo {
 /// For Docker containers, the container ID is the 64-character hex string
 /// following `/docker/`. For other runtimes, the segment after the runtime
 /// prefix is extracted as the container ID.
-pub fn classify_cgroup(path: &str) -> (bool, String) {
-    const RUNTIME_PREFIXES: &[&str] = &["/docker/", "/lxc/", "/kubepods/", "/containerd/"];
-
-    for prefix in RUNTIME_PREFIXES {
-        if let Some(idx) = path.find(prefix) {
-            let after_prefix = &path[idx + prefix.len()..];
-            // Extract the container ID: take everything up to the next '/' or end.
-            let id = after_prefix.split('/').next().unwrap_or("").to_string();
-            return (true, id);
-        }
-    }
-
-    (false, String::new())
-}
+pub use crate::heuristics::classify_cgroup;
 
 /// Classify whether a cgroup path is suspicious (potential container escape).
 ///
@@ -865,7 +852,7 @@ mod tests {
         let css_cgroup_offset: u64 = 0x08;
         let cgroup_kn_offset: u64 = 0x48;
         let kn_name_offset: u64 = 0x48;
-        let kn_parent_offset: u64 = 0x10;
+        let _kn_parent_offset: u64 = 0x10;
 
         // task page
         let mut task_page = [0u8; 4096];
@@ -972,7 +959,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.pid, 1);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("init"));
     }
 }

@@ -203,7 +203,7 @@ pub fn classify_userassist(name: &str) -> bool {
 fn cell_address(hive_addr: u64, cell_index: u32) -> u64 {
     hive_addr
         .wrapping_add(HBIN_START_OFFSET)
-        .wrapping_add(cell_index as u64)
+        .wrapping_add(u64::from(cell_index))
 }
 
 /// Read cell data from a cell at `cell_vaddr`, skipping the 4-byte size header.
@@ -619,10 +619,7 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             }
             let val_cell = u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
 
-            match parse_userassist_value(reader, hive_addr, val_cell) {
-                Ok(Some(entry)) => entries.push(entry),
-                _ => continue,
-            }
+            if let Ok(Some(entry)) = parse_userassist_value(reader, hive_addr, val_cell) { entries.push(entry) }
         }
     }
 
@@ -827,9 +824,8 @@ mod tests {
         ];
         for tool in &tools {
             assert!(
-                classify_userassist(&format!("C:\\Temp\\{}.exe", tool)),
-                "Expected {} to be suspicious",
-                tool
+                classify_userassist(&format!("C:\\Temp\\{tool}.exe")),
+                "Expected {tool} to be suspicious"
             );
         }
     }
@@ -860,9 +856,8 @@ mod tests {
         ];
         for bin in &lolbins {
             assert!(
-                classify_userassist(&format!("C:\\Windows\\System32\\{}", bin)),
-                "Expected LOLBin {} to be suspicious",
-                bin
+                classify_userassist(&format!("C:\\Windows\\System32\\{bin}")),
+                "Expected LOLBin {bin} to be suspicious"
             );
         }
     }
@@ -969,7 +964,7 @@ mod tests {
         // cell_address(hive_addr, cell_index) = hive_addr + HBIN_START + cell_index
         let hive_addr: u64 = 0x1000_0000;
         let cell_index: u32 = 0x100;
-        let expected = hive_addr + HBIN_START_OFFSET + cell_index as u64;
+        let expected = hive_addr + HBIN_START_OFFSET + u64::from(cell_index);
         assert_eq!(cell_address(hive_addr, cell_index), expected);
     }
 
@@ -1016,7 +1011,7 @@ mod tests {
         let hive_paddr: u64 = 0x0010_0000;
 
         // Build a 4096-byte page for the hive block with RootCell = 0 at offset 0x24.
-        let mut hive_page = [0u8; 4096];
+        let hive_page = [0u8; 4096];
         // RootCell at offset 0x24 stays 0 (default zero-init).
         let _ = hive_page; // used below
 
@@ -1281,7 +1276,7 @@ mod tests {
         let hive_addr: u64 = 0x0500_0000;
         // subkeys_list_cell = 0x100; cell_address = hive_addr + 0x1000 + 0x100
         let list_cell: u32 = 0x100;
-        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_vaddr = hive_addr + 0x1000 + u64::from(list_cell);
         let list_paddr: u64 = 0x0060_0000;
 
         // Build the nk_data for a subkey list pointing to list_cell.
@@ -1322,7 +1317,7 @@ mod tests {
 
         let hive_addr: u64 = 0x0510_0000;
         let list_cell: u32 = 0x200;
-        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_vaddr = hive_addr + 0x1000 + u64::from(list_cell);
         let list_paddr: u64 = 0x0061_0000;
 
         let mut nk_data = vec![0u8; 0x40];
@@ -1358,7 +1353,7 @@ mod tests {
 
         let hive_addr: u64 = 0x0520_0000;
         let list_cell: u32 = 0x300;
-        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_vaddr = hive_addr + 0x1000 + u64::from(list_cell);
         let list_paddr: u64 = 0x0062_0000;
 
         let mut nk_data = vec![0u8; 0x40];
@@ -1396,7 +1391,7 @@ mod tests {
         // Use cell index 0 so list_vaddr = hive_addr + 0x1000 (page-aligned).
         let hive_addr: u64 = 0x0530_0000;
         let list_cell: u32 = 0x0;
-        let list_vaddr = hive_addr + 0x1000 + list_cell as u64; // 0x0531_0000
+        let list_vaddr = hive_addr + 0x1000 + u64::from(list_cell); // 0x0531_0000
         let list_paddr: u64 = 0x0063_0000;
 
         let mut nk_data = vec![0u8; 0x40];
@@ -1442,7 +1437,7 @@ mod tests {
 
         let hive_addr: u64 = 0x0540_0000;
         let list_cell: u32 = 0x0; // cell at hive_addr+0x1000
-        let list_vaddr = hive_addr + 0x1000 + list_cell as u64; // 0x0541_0000
+        let list_vaddr = hive_addr + 0x1000 + u64::from(list_cell); // 0x0541_0000
         let list_paddr: u64 = 0x0064_0000;
 
         let mut nk_data = vec![0u8; 0x40];
@@ -1482,7 +1477,7 @@ mod tests {
 
         let hive_addr: u64 = 0x0550_0000;
         let list_cell: u32 = 0x600;
-        let list_vaddr = hive_addr + 0x1000 + list_cell as u64;
+        let list_vaddr = hive_addr + 0x1000 + u64::from(list_cell);
         let list_paddr: u64 = 0x0065_0000;
 
         let mut nk_data = vec![0u8; 0x40];
@@ -1537,9 +1532,9 @@ mod tests {
         let lf_cell: u32 = 0x1000;
         let nk_cell: u32 = 0x2000;
 
-        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64; // 0x0561_0000
-        let lf_vaddr = hive_addr + 0x1000 + lf_cell as u64; // 0x0562_0000
-        let nk_vaddr = hive_addr + 0x1000 + nk_cell as u64; // 0x0563_0000
+        let ri_vaddr = hive_addr + 0x1000 + u64::from(ri_cell); // 0x0561_0000
+        let lf_vaddr = hive_addr + 0x1000 + u64::from(lf_cell); // 0x0562_0000
+        let nk_vaddr = hive_addr + 0x1000 + u64::from(nk_cell); // 0x0563_0000
 
         let ri_paddr: u64 = 0x0068_0000;
         let lf_paddr: u64 = 0x0069_0000;
@@ -1606,8 +1601,8 @@ mod tests {
         let ri_cell: u32 = 0x0000;
         let sub_cell: u32 = 0x1000;
 
-        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64;
-        let sub_vaddr = hive_addr + 0x1000 + sub_cell as u64;
+        let ri_vaddr = hive_addr + 0x1000 + u64::from(ri_cell);
+        let sub_vaddr = hive_addr + 0x1000 + u64::from(sub_cell);
 
         let ri_paddr: u64 = 0x006B_0000;
         let sub_paddr: u64 = 0x006C_0000;
@@ -1658,8 +1653,8 @@ mod tests {
         let ri_cell: u32 = 0x0000;
         let li_cell: u32 = 0x1000;
 
-        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64;
-        let li_vaddr = hive_addr + 0x1000 + li_cell as u64;
+        let ri_vaddr = hive_addr + 0x1000 + u64::from(ri_cell);
+        let li_vaddr = hive_addr + 0x1000 + u64::from(li_cell);
 
         let ri_paddr: u64 = 0x006D_0000;
         let li_paddr: u64 = 0x006E_0000;
@@ -1713,8 +1708,8 @@ mod tests {
         let ri_cell: u32 = 0x0000;
         let bad_cell: u32 = 0x1000;
 
-        let ri_vaddr = hive_addr + 0x1000 + ri_cell as u64;
-        let bad_vaddr = hive_addr + 0x1000 + bad_cell as u64;
+        let ri_vaddr = hive_addr + 0x1000 + u64::from(ri_cell);
+        let bad_vaddr = hive_addr + 0x1000 + u64::from(bad_cell);
 
         let ri_paddr: u64 = 0x006F_0000;
         let bad_paddr: u64 = 0x0070_0000;
@@ -1763,7 +1758,7 @@ mod tests {
         let hive_addr: u64 = 0x05A0_0000;
         let val_cell: u32 = 0x0000; // cell at hive_addr + 0x1000
 
-        let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
+        let cell_vaddr = hive_addr + 0x1000 + u64::from(val_cell);
         let cell_paddr: u64 = 0x0071_0000;
 
         // abs_size=10 → data_len=6, but VK_NAME_OFFSET=0x14=20, so 6 < 20 → Ok(None).
@@ -1792,7 +1787,7 @@ mod tests {
 
         let hive_addr: u64 = 0x05B0_0000;
         let val_cell: u32 = 0x0000;
-        let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
+        let cell_vaddr = hive_addr + 0x1000 + u64::from(val_cell);
         let cell_paddr: u64 = 0x0072_0000;
 
         // abs_size=60 → data_len=56 ≥ VK_NAME_OFFSET(20); sig = 0xDEAD (not vk).
@@ -1822,7 +1817,7 @@ mod tests {
 
         let hive_addr: u64 = 0x05C0_0000;
         let val_cell: u32 = 0x0000;
-        let cell_vaddr = hive_addr + 0x1000 + val_cell as u64;
+        let cell_vaddr = hive_addr + 0x1000 + u64::from(val_cell);
         let cell_paddr: u64 = 0x0073_0000;
 
         // Large vk cell but data_length field = 10 (< 72 = USERASSIST_DATA_SIZE).
@@ -1864,8 +1859,8 @@ mod tests {
         // data cell at cell index 0x400 → vaddr = hive_addr + 0x1000 + 0x400
         let data_cell: u32 = 0x0400;
 
-        let vk_vaddr = hive_addr + 0x1000 + val_cell as u64;
-        let data_vaddr = hive_addr + 0x1000 + data_cell as u64;
+        let vk_vaddr = hive_addr + 0x1000 + u64::from(val_cell);
+        let _data_vaddr = hive_addr + 0x1000 + u64::from(data_cell);
         // Both fit on the same 4K page (0x400 bytes apart, data offset < 4096).
         let page_paddr: u64 = 0x0074_0000;
 
@@ -2053,7 +2048,7 @@ mod tests {
         const VK_IDX: u32 = 0x5C0;
         const DATA_IDX: u32 = 0x1000; // on second HBIN page
 
-        let data_vaddr = hive_vaddr + HBIN_START_OFFSET + DATA_IDX as u64;
+        let data_vaddr = hive_vaddr + HBIN_START_OFFSET + u64::from(DATA_IDX);
 
         // Helper: write an allocated cell at `off` in buf.
         // Writes: i32 size (negative), then `payload` bytes.
@@ -2194,7 +2189,7 @@ mod tests {
         //   run_count=5 at [4], focus_count=2 at [8], focus_time_ms=3000 at [12],
         //   last_run_time=132_111_000_000 at [60]
         let mut data_page = vec![0u8; 0x1000];
-        let data_abs = (USERASSIST_DATA_SIZE as i32 + 4) as i32;
+        let data_abs = USERASSIST_DATA_SIZE as i32 + 4;
         data_page[0..4].copy_from_slice(&(-data_abs).to_le_bytes());
         data_page[4 + 4..4 + 8].copy_from_slice(&5u32.to_le_bytes()); // run_count
         data_page[4 + 8..4 + 12].copy_from_slice(&2u32.to_le_bytes()); // focus_count

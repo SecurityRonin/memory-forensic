@@ -328,7 +328,7 @@ mod tests {
     fn parse_ipt_entries_empty_data_returns_empty() {
         // data_len = 0 → read_bytes will return empty, parse returns Ok([])
         let entry_vaddr: u64 = 0xFFFF_8000_0030_0000;
-        let entry_paddr: u64 = 0x00A0_0000;
+        let _entry_paddr: u64 = 0x00A0_0000;
         let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
@@ -579,7 +579,7 @@ mod tests {
     // Exercises line 153: target_off == 0 → target_name = ""
     #[test]
     fn parse_ipt_entries_zero_target_offset_empty_target_name() {
-        let mut data = vec![0u8; 256];
+        let data = vec![0u8; 256];
         // target_offset at 0x58 = 0 → condition `target_off > 0` is false → empty name
         // next_offset at 0x5A = 0 → terminates
         let entry_vaddr: u64 = 0xFFFF_8000_0090_0000;
@@ -806,7 +806,7 @@ mod tests {
         let cloned = rule.clone();
         assert_eq!(cloned.table, "filter");
         assert_eq!(cloned.target, "DROP");
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("DROP"));
         assert!(dbg.contains("1.2.3.4"));
     }

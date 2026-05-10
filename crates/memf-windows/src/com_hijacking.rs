@@ -170,7 +170,7 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
 fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
     hive_addr
         .wrapping_add(HBIN_START)
-        .wrapping_add(cell_index as u64)
+        .wrapping_add(u64::from(cell_index))
 }
 
 /// Read raw cell payload (skipping the 4-byte size header).
@@ -404,7 +404,7 @@ fn read_default_value_string<P: PhysicalMemoryProvider>(
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .take_while(|&w| w != 0)
             .collect();
-        return Some(String::from_utf16_lossy(&words).into());
+        return Some(String::from_utf16_lossy(&words));
     }
     None
 }
@@ -421,6 +421,7 @@ mod tests {
     // ── Registry hive layout constants (mirrors run_keys.rs helpers) ─────
 
     const HBIN_START: u64 = 0x1000;
+    #[allow(dead_code)]
     const ROOT_CELL_OFFSET: u64 = 0x24;
     const NK_SIG: u16 = 0x6B6E;
     const VK_SIG: u16 = 0x6B76;
@@ -517,6 +518,7 @@ mod tests {
     }
 
     /// Build a data cell containing a UTF-16LE string.
+    #[allow(dead_code)]
     fn build_utf16_data_cell(s: &str) -> Vec<u8> {
         let utf16: Vec<u8> = s
             .encode_utf16()

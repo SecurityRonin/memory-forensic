@@ -2086,9 +2086,9 @@ mod tests {
     /// succeeds with real timestamps and UAC flags.
     #[test]
     fn walk_sam_users_extended_chain_with_names_and_f_value() {
-        let hive_vaddr: u64 = 0x00A0_0000; // reusing address space not taken by earlier tests
-                                           // NOTE: 0x00A0_0000 was used in walk_sam_users_lh_list_sam_found_domains_missing
-                                           // Use a fresh address range.
+        let _hive_vaddr: u64 = 0x00A0_0000; // reusing address space not taken by earlier tests
+                                            // NOTE: 0x00A0_0000 was used in walk_sam_users_lh_list_sam_found_domains_missing
+                                            // Use a fresh address range.
         let hive_vaddr: u64 = 0x0045_0000;
         let hive_paddr: u64 = 0x0045_0000;
         let base_block: u64 = 0x0046_0000;
