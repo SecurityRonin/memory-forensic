@@ -13,7 +13,88 @@ pub struct DpapiBlob {
 }
 
 pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
-    todo!()
+    // Minimum fixed header: 4 (version) + 16 (provider GUID) + 16 (mk GUID)
+    //                      + 4 (flags) + 4 (desc len) = 44 bytes
+    if data.len() < 44 {
+        return Err(DpapiError::TooShort { needed: 44, got: data.len() });
+    }
+
+    let mut pos = 0usize;
+
+    let version = read_u32(data, &mut pos);
+    if version != 1 && version != 2 {
+        return Err(DpapiError::UnsupportedVersion(version));
+    }
+    pos += 16; // skip provider GUID
+    let master_key_guid: [u8; 16] = data[pos..pos + 16].try_into().unwrap();
+    pos += 16;
+    let _flags = read_u32(data, &mut pos);
+    let desc_len = read_u32(data, &mut pos) as usize;
+
+    if pos + desc_len > data.len() {
+        return Err(DpapiError::TooShort { needed: pos + desc_len, got: data.len() });
+    }
+    let desc_bytes = &data[pos..pos + desc_len];
+    pos += desc_len;
+
+    let description = if desc_len >= 2 {
+        let words: Vec<u16> = desc_bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&words)
+            .trim_end_matches('\0')
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    // Need 20 more bytes: algIdEncrypt(4) + algIdHash(4) + dataLen(4) + hmacKeyLen(4) + algIdHash2(4)
+    if pos + 20 > data.len() {
+        return Err(DpapiError::TooShort { needed: pos + 20, got: data.len() });
+    }
+    let alg_id_encrypt = read_u32(data, &mut pos);
+    let alg_id_hash = read_u32(data, &mut pos);
+    let _data_len = read_u32(data, &mut pos);
+    let hmac_key_len = read_u32(data, &mut pos) as usize;
+    pos += 4; // skip repeated algIdHash
+
+    if pos + hmac_key_len > data.len() {
+        return Err(DpapiError::TooShort { needed: pos + hmac_key_len, got: data.len() });
+    }
+    let hmac_key = data[pos..pos + hmac_key_len].to_vec();
+    pos += hmac_key_len;
+
+    // HMAC digest size depends on hash algorithm
+    let digest_len: usize = match alg_id_hash {
+        0x8004 => 20, // SHA1
+        0x800C => 64, // SHA512
+        _ => 20,      // default to SHA1 digest size
+    };
+
+    if data.len() < pos + digest_len {
+        return Err(DpapiError::TooShort { needed: pos + digest_len, got: data.len() });
+    }
+    let hmac = data[data.len() - digest_len..].to_vec();
+    let ciphertext = data[pos..data.len() - digest_len].to_vec();
+
+    Ok(DpapiBlob {
+        version,
+        master_key_guid,
+        description,
+        alg_id_encrypt,
+        alg_id_hash,
+        hmac_key,
+        ciphertext,
+        hmac,
+    })
+}
+
+#[inline]
+fn read_u32(data: &[u8], pos: &mut usize) -> u32 {
+    let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
+    *pos += 4;
+    v
 }
 
 #[cfg(test)]

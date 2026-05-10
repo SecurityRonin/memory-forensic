@@ -15,7 +15,29 @@ pub enum ChromeCookieEncoding {
 
 /// Detect the encoding of a raw `encrypted_value` blob from Chrome's Cookies DB.
 pub fn detect_chrome_cookie_encoding(data: &[u8]) -> ChromeCookieEncoding {
-    todo!()
+    // v10/v20 require at least 3 (prefix) + 12 (nonce) = 15 bytes
+    if data.len() > 15 {
+        if data.starts_with(b"v20") {
+            let mut nonce = [0u8; 12];
+            nonce.copy_from_slice(&data[3..15]);
+            return ChromeCookieEncoding::V20 {
+                nonce,
+                ciphertext: data[15..].to_vec(),
+            };
+        }
+        if data.starts_with(b"v10") {
+            let mut nonce = [0u8; 12];
+            nonce.copy_from_slice(&data[3..15]);
+            return ChromeCookieEncoding::V10 {
+                nonce,
+                ciphertext: data[15..].to_vec(),
+            };
+        }
+    }
+    if data.starts_with(b"DPAPI") {
+        return ChromeCookieEncoding::DpapiBlob(data[5..].to_vec());
+    }
+    ChromeCookieEncoding::Raw
 }
 
 /// Decrypt a v10/v20 AES-256-GCM cookie value.
@@ -25,7 +47,15 @@ pub fn decrypt_v10_cookie(
     ciphertext: &[u8],
     key: &[u8; 32],
 ) -> Result<Vec<u8>, DpapiError> {
-    todo!()
+    use aes_gcm::{
+        Aes256Gcm, KeyInit,
+        aead::{Aead, generic_array::GenericArray},
+    };
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| DpapiError::InvalidKeyLength)?;
+    let nonce_ga = GenericArray::from_slice(nonce);
+    cipher
+        .decrypt(nonce_ga, ciphertext)
+        .map_err(|_| DpapiError::DecryptionFailed)
 }
 
 #[cfg(test)]
