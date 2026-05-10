@@ -1233,7 +1233,7 @@ pub struct WdigestCredentialInfo {
 pub struct CloudCredentialInfo {
     /// PID of the process containing this credential.
     pub pid: u64,
-    /// Image name of the process.
+    // JSON key is "image_name" (changed from "process_name" in v0.x; intentional — consistent with all other walker types).
     pub image_name: String,
     /// Cloud provider or service name.
     pub provider: String,  // "AWS", "GCP", "Azure", "Stripe", "Twilio", "Generic"
@@ -1254,7 +1254,7 @@ pub struct CloudCredentialInfo {
 pub struct SshAgentKeyInfo {
     /// PID of the agent process containing this key.
     pub pid: u64,
-    /// Process image name ("ssh-agent.exe" or "pageant.exe").
+    // JSON key is "image_name" (changed from "process_name" in v0.x; intentional — consistent with all other walker types).
     pub image_name: String,
     /// SSH key type string (e.g., "ssh-rsa", "ssh-ed25519", "ecdsa-sha2-nistp256").
     /// "pem-rsa", "pem-ec", "pem-openssh", "pem-dsa" for PEM-format finds.
@@ -1295,7 +1295,7 @@ pub struct BrowserCookieInfo {
 pub struct SessionTokenInfo {
     /// PID of the process containing this token.
     pub pid: u64,
-    /// Image name of the process.
+    // JSON key is "image_name" (changed from "process_name" in v0.x; intentional — consistent with all other walker types).
     pub image_name: String,
     /// Classification of the token (e.g. `"Jwt"`, `"GitHub"`, `"Slack"`).
     pub token_type: String,

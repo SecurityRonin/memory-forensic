@@ -95,7 +95,7 @@ pub fn walk_ssh_agent_keys<P: PhysicalMemoryProvider + Clone>(
 
 /// Scan a raw byte slice for SSH private key material.
 ///
-/// Returns `SshAgentKeyInfo` items with `pid: 0` and `process_name` empty;
+/// Returns `SshAgentKeyInfo` items with `pid: 0` and `image_name` empty;
 /// the caller (`walk_ssh_agent_keys`) fills those in after the call.
 pub(crate) fn scan_ssh_agent_region(data: &[u8]) -> Vec<SshAgentKeyInfo> {
     let mut results = Vec::new();
