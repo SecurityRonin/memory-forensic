@@ -10,6 +10,7 @@ members = [
     "crates/forensic-hashdb",
     "crates/memf-correlate",
     "crates/memf-framebuffer",
+    "crates/memf-dpapi",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ memf-linux   = { path = "crates/memf-linux" }
 memf-windows = { path = "crates/memf-windows" }
 memf-correlate    = { path = "crates/memf-correlate" }
 memf-framebuffer  = { path = "crates/memf-framebuffer" }
+memf-dpapi        = { path = "crates/memf-dpapi" }
 aes            = "0.8"
 aes-gcm        = "0.10"
 aho-corasick = "1"
@@ -38,6 +40,7 @@ block-padding  = "0.3"
 bzip2 = "0.6"
 bytemuck = { version = "1", features = ["derive"] }
 cbc            = { version = "0.1", features = ["alloc"] }
+cipher         = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"

@@ -1,0 +1,18 @@
+[package]
+name = "memf-dpapi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+aes.workspace = true
+aes-gcm.workspace = true
+cbc.workspace = true
+des.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+digest.workspace = true
+cipher.workspace = true
