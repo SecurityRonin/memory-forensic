@@ -39,46 +39,39 @@ cargo build --release
 
 ---
 
-## Three Things You Do With This
-
-### Hunt hidden processes — what the rootkit doesn't want you to see
+## Quick Reference
 
 ```bash
-# Cross-view analysis: task_struct list vs scheduler runqueue vs PID namespace
-memf check memdump.lime --symbols linux.json --hidden-procs
+# Show dump format and physical memory ranges
+memf info memdump.dmp
+
+# Process tree with threads and DLLs
+memf ps memdump.dmp --symbols ntkrnlmp.json --tree --threads --dlls
+
+# Network connections (json / csv / table)
+memf net memdump.dmp --symbols ntkrnlmp.json --output json
+
+# Kernel integrity checks (SSDT, IDT, callbacks, hooks)
+memf check memdump.dmp --symbols ntkrnlmp.json --ssdt --callbacks
+
+# Linux syscall hook and malfind scan
+memf check memdump.lime --symbols linux.json --hooks --malfind
+
+# String extraction with YARA rules
+memf strings memdump.dmp --rules ./yara-rules/ --min-length 8
+
+# Hash lookup against NSRL (known-good) and MalwareBazaar (known-bad)
+memf hash memdump.dmp --lookup
+
+# Extract framebuffer screenshot from live memory dump
+memf framebuffer memdump.dmp --symbols linux.json --png screen.png
 ```
 
-```
-[HIDDEN]  PID 977  "top"   ppid=941  seen: task_list  missing: /proc, sched_runqueue
-[HIDDEN]  PID 939  "sh"    ppid=937  seen: task_list  missing: /proc
-[HIDDEN]  PID 941  "bash"  ppid=940  seen: task_list  missing: /proc
-```
+Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
 
-Three processes hidden by the rootkit — all children of the attacker's SSH shell. The cross-view discrepancy is the finding. No manual grep, no Python diff.
+---
 
-### Detect injected code — RWX regions not backed by a file
-
-```bash
-# Private RWX memory cross-referenced against the PEB module list
-memf malfind memdump.dmp --symbols ntkrnlmp.json --output json \
-  | jq '.[] | select(.score > 0.7)'
-```
-
-```json
-{
-  "pid": 1234, "process": "svchost.exe",
-  "vad_start": "0x7fff4a000000", "size": 4096,
-  "protection": "PAGE_EXECUTE_READWRITE",
-  "mapped_file": null,
-  "mz_header": true,
-  "score": 0.92,
-  "note": "private RWX region with MZ header — no backing file"
-}
-```
-
-False positives are suppressed by cross-referencing the PEB's `InMemoryOrderModuleList` — if the region is a known module, it is not flagged.
-
-### Verify kernel integrity — hooks invisible from the OS
+## Verify kernel integrity — hooks invisible from the OS
 
 ```bash
 # SSDT, IDT, ftrace, LSM, and kernel callback checks in one pass
@@ -92,6 +85,64 @@ memf check memdump.lime --symbols linux.json --hooks --idt --syscalls
 ```
 
 Three hook types — syscall table, ftrace, and LSM — all resolving into the same kernel module. Cross-referencing the module list confirms it is not in the known-good set.
+
+---
+
+## LD_PRELOAD rootkit behavioral analysis
+
+Name-pattern matching misses recompiled or renamed rootkit variants. ELF dynamic symbol analysis catches them regardless of name:
+
+```bash
+memf check memdump.lime --symbols linux.json --elf-hooks
+```
+
+```
+[ROOTKIT] /tmp/.x/libhider.so  signals=[elf.hooks.process_hiding, elf.hooks.pam_credential_theft]
+  exports: readdir64, getdents64, pam_get_item, pam_authenticate
+  MITRE: T1014 (Rootkit), T1556.003 (Modify Authentication Process)
+  loaded in 100% of processes (23/23)
+
+[ROOTKIT] /tmp/.x/libhider.so  .rodata match: "UID:%d:" (Father PAM hook format string, weight=90)
+```
+
+`memf-linux` scans every library mapped in process memory for:
+- **Hook table matching** — 17 libc/syscall symbols known to be intercepted by rootkits (readdir64, getdents64, pam_get_item, write, …) classified against the forensicnomicon signal taxonomy
+- **Libc shadow exports** — libraries that export a function with the same name as a libc symbol intercept all callers at link time
+- **Father-class string artifacts** — format strings baked into `.rodata` (e.g. `UID:%d:`, `silly.txt`) that survive binary stripping and name changes
+- **Global prevalence** — libraries loaded in ≥90% of processes are flagged as likely LD_PRELOAD injections
+
+---
+
+## DPAPI secrets and credential extraction
+
+```bash
+# Extract DPAPI master keys from LSASS g_MasterKeyCache linked list
+memf creds memdump.dmp --symbols ntkrnlmp.json --dpapi-keys
+
+# Decrypt Chrome cookies using recovered master key material
+memf creds memdump.dmp --symbols ntkrnlmp.json --browser-cookies
+```
+
+```
+[DPAPI] GUID={A1B2C3D4-...}  blob_len=680  source=lsass.exe
+[COOKIE] msedge.exe  domain=.github.com  name=user_session  value=secretvalue...
+[COOKIE] chrome.exe  (v10-encrypted)  — key material required for decryption
+```
+
+The Windows credential walkers cover:
+- **DPAPI master keys** — walks `g_MasterKeyCache` linked list in LSASS, extracts GUID + encrypted blob for every cached master key
+- **Chrome v10/v20 cookies** — binary scan of Chromium heap for AES-GCM encrypted cookie blobs (prefix `v10`/`v20` + 12-byte nonce); decrypted when key material is available
+- **SAM/NTLM hashes**, **Kerberos tickets**, **BitLocker keys**, **LSA secrets** — full credential suite
+
+---
+
+## Framebuffer screenshot extraction
+
+```bash
+memf framebuffer memdump.dmp --symbols ntkrnlmp.json --png screen.png
+```
+
+Extracts the framebuffer from a live or hibernation memory dump and writes it as a PNG. Works on both Linux (DRM/KMS `drm_framebuffer` walker) and Windows (session framebuffer via `win32k` pool scan). Useful for capturing the screen state at the moment of acquisition without booting the image.
 
 ---
 
@@ -124,37 +175,9 @@ Every alternative either requires Python, is Windows-only, or is unmaintained.
 | ISF symbol pack compatible | ✓ | ✓ | — | — |
 | Library API (use in your tools) | ✓ | — | ✓ | — |
 | Linux + Windows walkers | ✓ | ✓ | Windows-first | ✓ |
+| ELF behavioral rootkit analysis | ✓ | — | — | — |
 | Actively maintained | ✓ | ✓ | ✓ | — |
 | Free & open source | ✓ | ✓ | ✓ | ✓ |
-
----
-
-## Quick Reference
-
-```bash
-# Show dump format and physical memory ranges
-memf info memdump.dmp
-
-# Process tree with threads and DLLs
-memf ps memdump.dmp --symbols ntkrnlmp.json --tree --threads --dlls
-
-# Network connections (json / csv / table)
-memf net memdump.dmp --symbols ntkrnlmp.json --output json
-
-# Kernel integrity checks (SSDT, IDT, callbacks, hooks)
-memf check memdump.dmp --symbols ntkrnlmp.json --ssdt --callbacks
-
-# Linux syscall hook and malfind scan
-memf check memdump.lime --symbols linux.json --hooks --malfind
-
-# String extraction with YARA rules
-memf strings memdump.dmp --rules ./yara-rules/ --min-length 8
-
-# Hash lookup against NSRL (known-good) and MalwareBazaar (known-bad)
-memf hash memdump.dmp --lookup
-```
-
-Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
 
 ---
 
@@ -191,8 +214,10 @@ for proc in reader.eprocess_list()? {
 |---|---|
 | [`memf-format`](crates/memf-format/) | Format detection and physical memory providers. Parsers for LiME, AVML, ELF Core, Windows Crash Dump, hiberfil.sys, VMware state, kdump, and raw flat images. |
 | [`memf-core`](crates/memf-core/) | Page table walking (x86_64 4-level/5-level, AArch64, x86 PAE/non-PAE), high-level `ObjectReader` for kernel struct traversal, pagefile access, LZO decompression. |
-| [`memf-linux`](crates/memf-linux/) | Linux kernel walkers: `task_struct` process list, network connections, kernel modules, open files, eBPF programs, ftrace/IDT/syscall hook detection, namespace and cgroup enumeration, DKOM-hidden process detection, container escape indicators, and ~40 additional walkers. |
-| [`memf-windows`](crates/memf-windows/) | Windows NT kernel walkers: `EPROCESS`/`ETHREAD` enumeration, DLL and driver lists, handle tables, network sockets, pool tag scanning, callback tables, SSDT, ETW, clipboard, DNS cache, Kerberos tickets, DPAPI keys, BitLocker keys, SAM/NTLM hashes, injected memory detection, and ~50 additional walkers. |
+| [`memf-linux`](crates/memf-linux/) | Linux kernel walkers: `task_struct` process list, network connections, kernel modules, open files, eBPF programs, ftrace/IDT/syscall hook detection, namespace and cgroup enumeration, DKOM-hidden process detection, container escape indicators, **ELF dynamic symbol analysis and LD_PRELOAD rootkit behavioral fingerprinting**, **library global prevalence detection**, and ~45 additional walkers. |
+| [`memf-windows`](crates/memf-windows/) | Windows NT kernel walkers: `EPROCESS`/`ETHREAD` enumeration, DLL and driver lists, handle tables, network sockets, pool tag scanning, callback tables, SSDT, ETW, clipboard, DNS cache, Kerberos tickets, **DPAPI master key extraction from LSASS `g_MasterKeyCache`**, **Chrome v10/v20 AES-GCM encrypted cookie detection**, BitLocker keys, SAM/NTLM hashes, injected memory detection, and ~55 additional walkers. |
+| [`memf-dpapi`](crates/memf-dpapi/) | Windows DPAPI decryption: master key blob parsing, Chrome `Local State` key decryption, v10/v20 AES-GCM cookie value decryption. |
+| [`memf-framebuffer`](crates/memf-framebuffer/) | Framebuffer screenshot extraction: Linux DRM/KMS `drm_framebuffer` walker and Windows session framebuffer scanner, output as PNG. |
 | [`memf-strings`](crates/memf-strings/) | String extraction (ASCII, UTF-8, UTF-16LE) with regex classification into IoC categories: URLs, IP addresses, domains, registry keys, crypto wallet addresses, private keys, shell commands. |
 | [`memf-symbols`](crates/memf-symbols/) | Symbol resolution from ISF JSON, BTF (Linux), and PDB files. Includes a symbol server client for on-demand PDB retrieval. |
 | [`memf-correlate`](crates/memf-correlate/) | Cross-artifact correlation with MITRE ATT&CK technique tagging, process tree reconstruction, anomaly scoring, and timeline generation. |
