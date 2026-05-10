@@ -398,7 +398,7 @@ mod tests {
         let result = walk_kernel_threads(&reader, &processes).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].is_suspicious, "hex-looking name → suspicious");
-        assert_eq!(result[0].reason.as_deref().unwrap_or("").len() > 0, true);
+        assert!(!result[0].reason.as_deref().unwrap_or("").is_empty());
     }
 
     // KernelThreadInfo: Clone + Serialize coverage.

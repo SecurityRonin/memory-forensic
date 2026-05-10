@@ -62,7 +62,7 @@ pub fn task_state_name(state: u64) -> String {
         64 => "Wakekill".to_string(),
         128 => "Waking".to_string(),
         256 => "Parked".to_string(),
-        _ => format!("Unknown({})", state),
+        _ => format!("Unknown({state})"),
     }
 }
 
@@ -115,6 +115,7 @@ fn read_psaux_info<P: PhysicalMemoryProvider>(
     let pid: u32 = reader.read_field(task_addr, "task_struct", "pid")?;
     let comm = reader.read_field_string(task_addr, "task_struct", "comm", 16)?;
 
+    #[allow(clippy::cast_sign_loss)]
     let state: u64 = reader
         .read_field::<i64>(task_addr, "task_struct", "state")
         .map(|v| v as u64)
@@ -392,7 +393,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.pid, 1);
-        let debug_str = format!("{:?}", cloned);
+        let debug_str = format!("{cloned:?}");
         assert!(debug_str.contains("systemd"));
     }
 

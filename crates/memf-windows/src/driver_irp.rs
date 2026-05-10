@@ -217,10 +217,7 @@ pub fn check_driver_irp_hooks<P: PhysicalMemoryProvider>(
     let mut results = Vec::new();
     let limit = driver_obj_addrs.len().min(MAX_DRIVERS);
     for &addr in driver_obj_addrs.iter().take(limit) {
-        match check_driver_object(reader, addr, known_modules) {
-            Ok(entries) => results.extend(entries),
-            Err(_) => continue,
-        }
+        if let Ok(entries) = check_driver_object(reader, addr, known_modules) { results.extend(entries) }
     }
     Ok(results)
 }

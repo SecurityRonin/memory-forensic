@@ -317,7 +317,7 @@ mod tests {
         let name_text = "NT Kernel Logger";
         let name_utf16: Vec<u8> = name_text
             .encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
+            .flat_map(u16::to_le_bytes)
             .collect();
         let name_len = name_utf16.len() as u16;
         ctx_data[0x10..0x12].copy_from_slice(&name_len.to_le_bytes());

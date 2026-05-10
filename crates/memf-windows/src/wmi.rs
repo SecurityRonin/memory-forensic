@@ -107,7 +107,7 @@ pub fn walk_wmi_subscriptions<P: PhysicalMemoryProvider>(
         .field_offset("_WMI_BINDING", "Query")
         .unwrap_or(0x30);
 
-    let binding_size = reader.symbols().struct_size("_WMI_BINDING").unwrap_or(0x80) as u64;
+    let binding_size = reader.symbols().struct_size("_WMI_BINDING").unwrap_or(0x80);
 
     let mut subscriptions = Vec::new();
 
@@ -293,7 +293,7 @@ mod tests {
 
         // Encode a Rust string as UTF-16LE bytes.
         fn utf16le(s: &str) -> Vec<u8> {
-            s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+            s.encode_utf16().flat_map(u16::to_le_bytes).collect()
         }
 
         let filter_name = utf16le("MalFilter");

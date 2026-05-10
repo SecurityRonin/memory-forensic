@@ -151,7 +151,7 @@ fn walk_idr_entries<P: PhysicalMemoryProvider>(
             }
             walk_idr_entries(reader, slot_val, programs)?;
         }
-    } else if node_ptr & 0x3 == 0 && node_ptr > 0x1000 {
+    } else if node_ptr.trailing_zeros() >= 2 && node_ptr > 0x1000 {
         // Leaf pointer — this should be a bpf_prog struct.
         if let Ok(info) = read_bpf_prog(reader, node_ptr) {
             programs.push(info);
@@ -231,25 +231,7 @@ fn read_bpf_prog<P: PhysicalMemoryProvider>(
 ///
 /// Note: XDP UID-based checks require external context and are done at the
 /// caller level when `loaded_by_uid` is available on `BpfProgramInfo`.
-pub fn classify_bpf_program(prog_type: &str, name: &str) -> bool {
-    match prog_type {
-        // kprobe can hook arbitrary kernel functions — always suspicious.
-        "kprobe" => true,
-
-        // Unnamed tracing/raw_tracepoint programs suggest evasion.
-        "tracing" | "raw_tracepoint" => name.is_empty(),
-
-        // raw_tracepoint_writable can modify tracepoint arguments — always suspicious.
-        "raw_tracepoint_writable" => true,
-
-        // LSM programs can override security decisions.
-        "lsm" => true,
-
-        // Everything else (socket_filter, xdp, tracepoint, etc.) is
-        // considered benign by default at the type level.
-        _ => false,
-    }
-}
+pub use crate::heuristics::classify_bpf_program;
 
 #[cfg(test)]
 mod tests {

@@ -47,16 +47,7 @@ pub fn socket_type_name(sk_type: u32) -> &'static str {
 /// - It is an abstract socket (empty path or path starts with `@`) owned by
 ///   a non-system PID (pid >= 1000), or
 /// - Its path is under `/tmp` or `/dev/shm` (common malware staging areas).
-pub fn classify_unix_socket(path: &str, owner_pid: u32) -> bool {
-    let is_abstract = path.is_empty() || path.starts_with('@');
-    if is_abstract && owner_pid >= 1000 {
-        return true;
-    }
-    if path.starts_with("/tmp") || path.starts_with("/dev/shm") {
-        return true;
-    }
-    false
-}
+pub use crate::heuristics::classify_unix_socket;
 
 /// Safety limit: maximum number of Unix sockets to enumerate.
 const MAX_UNIX_SOCKETS: usize = 65536;
@@ -137,7 +128,7 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
             let sk_type: u32 = reader
                 .read_bytes(sock_addr + sk_type_off, 2)
                 .ok()
-                .and_then(|b| Some(u16::from_le_bytes(b[..2].try_into().ok()?) as u32))
+                .and_then(|b| Some(u32::from(u16::from_le_bytes(b[..2].try_into().ok()?))))
                 .unwrap_or(0);
             let sk_state: u8 = reader
                 .read_bytes(sock_addr + sk_state_off, 1)
@@ -178,7 +169,7 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
                     if inner.is_empty() {
                         String::new()
                     } else {
-                        format!("@{}", inner)
+                        format!("@{inner}")
                     }
                 } else {
                     path_bytes
@@ -350,7 +341,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.inode, 1);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("abstract"));
     }
 

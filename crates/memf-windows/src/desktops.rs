@@ -171,37 +171,37 @@ pub fn walk_desktops<P: PhysicalMemoryProvider>(
     let ws_name_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "Name")
-        .unwrap_or(0x10) as u64;
+        .unwrap_or(0x10);
     let ws_session_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "dwSessionId")
-        .unwrap_or(0x20) as u64;
+        .unwrap_or(0x20);
     let ws_next_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "rpwinstaNext")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let ws_desk_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "rpdeskList")
-        .unwrap_or(0x30) as u64;
+        .unwrap_or(0x30);
 
     // Field offsets for tagDESKTOP
     let desk_name_off = reader
         .symbols()
         .field_offset("tagDESKTOP", "Name")
-        .unwrap_or(0x10) as u64;
+        .unwrap_or(0x10);
     let desk_heap_off = reader
         .symbols()
         .field_offset("tagDESKTOP", "pheapDesktop")
-        .unwrap_or(0x20) as u64;
+        .unwrap_or(0x20);
     let desk_next_off = reader
         .symbols()
         .field_offset("tagDESKTOP", "rpdeskNext")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let desk_thread_count_off = reader
         .symbols()
         .field_offset("tagDESKTOP", "dwThreadCount")
-        .unwrap_or(0x30) as u64;
+        .unwrap_or(0x30);
 
     let mut stations = Vec::new();
     let mut all_desktops = Vec::new();
@@ -448,7 +448,7 @@ mod tests {
         str_off: usize,
         base_vaddr: u64,
     ) {
-        let utf16: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let byte_len = utf16.len() as u16;
         let buf_vaddr = base_vaddr + str_off as u64;
         page[off..off + 2].copy_from_slice(&byte_len.to_le_bytes());

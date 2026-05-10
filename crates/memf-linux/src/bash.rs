@@ -322,7 +322,7 @@ mod tests {
 
         // HIST_ENTRY structs (24 bytes each: line ptr, timestamp ptr, data ptr)
         let entries: &[(u64, u64)] = &[
-            (heap_vaddr + 0x000, heap_vaddr + 0x010), // ls -la
+            (heap_vaddr, heap_vaddr + 0x010), // ls -la
             (heap_vaddr + 0x020, heap_vaddr + 0x030), // whoami
             (heap_vaddr + 0x040, heap_vaddr + 0x050), // cat /etc/shadow
         ];

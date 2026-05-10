@@ -104,20 +104,6 @@ pub fn classify_amcache_entry(path: &str, publisher: &str) -> bool {
     false
 }
 
-/// Walk the Amcache registry hive from kernel memory.
-///
-/// Takes the virtual address of the Amcache hive's `_CMHIVE` structure.
-/// Reads the `_HHIVE.BaseBlock` to locate the `_HBASE_BLOCK`, then
-/// navigates to `Root\InventoryApplicationFile` and reads each child
-/// key's value cells.
-///
-/// Returns an empty `Vec` if the required symbols are not present
-/// (graceful degradation).
-///
-/// # Errors
-///
-/// Returns an error if memory reads fail after the hive has been
-/// located and validated.
 // ── Registry cell layout constants (same as registry_keys.rs) ────────
 
 /// Offset of `RootCell` (u32) within `_HBASE_BLOCK`.
@@ -173,7 +159,7 @@ fn read_cell_data<P: PhysicalMemoryProvider>(
     }
     let cell_vaddr = hive_base
         .wrapping_add(HBIN_START_OFFSET)
-        .wrapping_add(cell_index as u64);
+        .wrapping_add(u64::from(cell_index));
 
     // Read the 4-byte size field first.
     let size_bytes = reader.read_bytes(cell_vaddr, 4).ok()?;
@@ -354,7 +340,7 @@ fn read_value_u64<P: PhysicalMemoryProvider>(
     match value_type {
         REG_QWORD if raw.len() >= 8 => u64::from_le_bytes(raw[..8].try_into().unwrap_or([0; 8])),
         REG_DWORD if raw.len() >= 4 => {
-            u32::from_le_bytes(raw[..4].try_into().unwrap_or([0; 4])) as u64
+            u64::from(u32::from_le_bytes(raw[..4].try_into().unwrap_or([0; 4])))
         }
         _ => 0,
     }
@@ -573,12 +559,10 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
             .to_string();
 
         let file_size = find_value(reader, hive_base, &child_data, "Size")
-            .map(|vk| read_value_u64(reader, hive_base, &vk))
-            .unwrap_or(0);
+            .map_or(0, |vk| read_value_u64(reader, hive_base, &vk));
 
         let link_timestamp = find_value(reader, hive_base, &child_data, "LinkDate")
-            .map(|vk| read_value_u64(reader, hive_base, &vk))
-            .unwrap_or(0);
+            .map_or(0, |vk| read_value_u64(reader, hive_base, &vk));
 
         let publisher = find_value(reader, hive_base, &child_data, "Publisher")
             .map(|vk| read_value_string(reader, hive_base, &vk))
@@ -971,7 +955,7 @@ mod tests {
         // root_cell = 0x20; cell lives at hive_base + HBIN_START_OFFSET + 0x20
         // = base_block + 0x1000 + 0x20 = 0x0032_0020
         let root_cell_index: u32 = 0x20;
-        let cell_vaddr: u64 = base_block + HBIN_START_OFFSET + root_cell_index as u64;
+        let cell_vaddr: u64 = base_block + HBIN_START_OFFSET + u64::from(root_cell_index);
         let cell_paddr: u64 = cell_vaddr; // identity map
 
         let mut hive_page = vec![0u8; 0x1000];
@@ -1116,7 +1100,7 @@ mod tests {
         let hive_base: u64 = 0x0050_0000;
         let hive_paddr: u64 = 0x0050_0000;
         let cell_index: u32 = 0x100;
-        let cell_vaddr = hive_base + HBIN_START_OFFSET + cell_index as u64;
+        let cell_vaddr = hive_base + HBIN_START_OFFSET + u64::from(cell_index);
 
         // Allocate a page at hive_base (needed) and cell page.
         let mut hbin_page = vec![0u8; 0x1000];
@@ -1145,7 +1129,7 @@ mod tests {
         let hive_base: u64 = 0x0060_0000;
         let hive_paddr: u64 = 0x0060_0000;
         let cell_index: u32 = 0x100;
-        let cell_vaddr = hive_base + HBIN_START_OFFSET + cell_index as u64;
+        let cell_vaddr = hive_base + HBIN_START_OFFSET + u64::from(cell_index);
 
         let mut hbin_page = vec![0u8; 0x1000];
         let cell_off = (cell_index as usize) % 0x1000;
@@ -1192,7 +1176,7 @@ mod tests {
         let reader = make_empty_reader();
         let mut vk = vec![0u8; 0x20];
         // value_type = REG_DWORD (4) at VK_TYPE_OFFSET (0x0C)
-        vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&(REG_DWORD as u32).to_le_bytes());
+        vk[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].copy_from_slice(&REG_DWORD.to_le_bytes());
         // data_length = 0x8000_0004 (inline, 4 bytes) at VK_DATA_LENGTH_OFFSET (0x04)
         let inline_len: u32 = 0x8000_0004;
         vk[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
@@ -1483,7 +1467,7 @@ mod tests {
         // data cell
         let mut data_page = vec![0u8; 0x1000];
         let cell_off = data_cell_index as usize;
-        let cell_size: i32 = -((4 + 8) as i32);
+        let cell_size: i32 = -((4 + 8));
         data_page[cell_off..cell_off + 4].copy_from_slice(&cell_size.to_le_bytes());
         data_page[cell_off + 4..cell_off + 12].copy_from_slice(&qword_bytes);
 
@@ -1527,13 +1511,13 @@ mod tests {
         let mut list_page = vec![0u8; 0x1000];
         // list cell at offset 0x100
         let list_off = list_cell_index as usize;
-        let list_size: i32 = -((4 + 4) as i32);
+        let list_size: i32 = -((4 + 4));
         list_page[list_off..list_off + 4].copy_from_slice(&list_size.to_le_bytes());
         list_page[list_off + 4..list_off + 8].copy_from_slice(&vk_cell_index.to_le_bytes());
 
         // vk cell at offset 0x200 with bad sig
         let vk_off = vk_cell_index as usize;
-        let vk_size: i32 = -((4 + 0x20) as i32);
+        let vk_size: i32 = -((4 + 0x20));
         list_page[vk_off..vk_off + 4].copy_from_slice(&vk_size.to_le_bytes());
         // sig = 0x0000 (bad), rest zeros
 
@@ -1793,7 +1777,7 @@ mod tests {
         // Make cell big enough: NK_NAME_OFFSET + 4 bytes of name
         // child NK has no values (value_count=0 at NK_VALUE_COUNT_OFFSET)
 
-        (root_cell_off as u64, root_cell_off)
+        (u64::from(root_cell_off), root_cell_off)
     }
 
     /// walk_amcache: IAF found directly under root, IAF has one child with bad NK sig

@@ -37,6 +37,7 @@ pub struct KeyboardNotifierInfo {
 pub fn walk_keyboard_notifiers<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<KeyboardNotifierInfo>> {
+    const MAX_NOTIFIERS: usize = 1_000;
     let Some(head_addr) = reader.symbols().symbol_address("keyboard_notifier_list") else {
         return Ok(Vec::new());
     };
@@ -53,7 +54,6 @@ pub fn walk_keyboard_notifiers<P: PhysicalMemoryProvider>(
         _ => return Ok(Vec::new()),
     };
 
-    const MAX_NOTIFIERS: usize = 1_000;
     let mut notifiers = Vec::new();
     let mut current = first_nb;
 
@@ -96,9 +96,7 @@ pub fn walk_keyboard_notifiers<P: PhysicalMemoryProvider>(
 }
 
 /// Classify a notifier_call pointer as suspicious if outside kernel text.
-pub fn classify_notifier(notifier_call: u64, stext: u64, etext: u64) -> bool {
-    notifier_call < stext || notifier_call >= etext
-}
+pub use crate::heuristics::classify_notifier;
 
 #[cfg(test)]
 mod tests {

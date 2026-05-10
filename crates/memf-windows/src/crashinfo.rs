@@ -80,8 +80,7 @@ pub fn walk_crashinfo<P: PhysicalMemoryProvider>(
             .read_bytes(kd_addr.wrapping_add(0x14), 8)
             .ok()
             .and_then(|b| b.try_into().ok())
-            .map(u64::from_le_bytes)
-            .unwrap_or(0)
+            .map_or(0, u64::from_le_bytes)
     } else {
         0
     };

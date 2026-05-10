@@ -11,6 +11,7 @@ struct PatternEntry {
     confidence: f32,
 }
 
+#[allow(clippy::too_many_lines)]
 fn patterns() -> &'static [PatternEntry] {
     static PATTERNS: OnceLock<Vec<PatternEntry>> = OnceLock::new();
     PATTERNS.get_or_init(|| {

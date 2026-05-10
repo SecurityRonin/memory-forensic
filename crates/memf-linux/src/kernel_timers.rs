@@ -36,13 +36,7 @@ pub struct KernelTimerInfo {
 /// - `function == 0` → not suspicious (unset timer, no callback).
 /// - `function` inside `[kernel_start, kernel_end]` → benign (in kernel text).
 /// - `function` outside that range → suspicious (possible rootkit callback).
-pub fn classify_kernel_timer(function: u64, kernel_start: u64, kernel_end: u64) -> bool {
-    if function == 0 {
-        return false;
-    }
-    // Suspicious if outside kernel text range
-    !(function >= kernel_start && function <= kernel_end)
-}
+pub use crate::heuristics::classify_kernel_timer;
 
 /// Walk kernel timer wheels and enumerate all registered timers.
 ///
@@ -142,7 +136,7 @@ pub fn walk_kernel_timers<P: PhysicalMemoryProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;

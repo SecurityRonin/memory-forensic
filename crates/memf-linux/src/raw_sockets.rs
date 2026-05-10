@@ -680,7 +680,7 @@ mod tests {
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"pid\":99"));
         assert!(json.contains("AF_PACKET"));
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("sniffer"));
     }
 

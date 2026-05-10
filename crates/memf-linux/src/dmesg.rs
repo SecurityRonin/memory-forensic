@@ -224,7 +224,7 @@ mod tests {
         let text_len = message.len() as u16; // 17
         let dict_len: u16 = 0;
         // Total record length: header(16) + text(17) + dict(0) = 33, aligned to 4 -> 36
-        let record_len: u16 = ((16 + text_len + dict_len + 3) / 4 * 4) as u16;
+        let record_len: u16 = (16 + text_len + dict_len).div_ceil(4) * 4;
         let ts_nsec: u64 = 1_000_000_000; // 1 second
         let facility: u8 = 0; // kern
         let level: u8 = 6; // info

@@ -329,7 +329,7 @@ mod tests {
         };
         let b = a.clone();
         assert_eq!(a, b);
-        let dbg = format!("{:?}", a);
+        let dbg = format!("{a:?}");
         assert!(dbg.contains("bash"));
     }
 

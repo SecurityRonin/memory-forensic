@@ -60,8 +60,7 @@ pub fn classify_typed_url(url: &str) -> bool {
             return true;
         }
     }
-    if lower.starts_with("file://") {
-        let path_part = &lower[7..];
+    if let Some(path_part) = lower.strip_prefix("file://") {
         if path_part.starts_with("\\\\") || path_part.starts_with("//") {
             return true;
         }
@@ -82,7 +81,7 @@ pub fn classify_typed_url(url: &str) -> bool {
 fn cell_address(hive_addr: u64, cell_index: u32) -> u64 {
     hive_addr
         .wrapping_add(HBIN_START_OFFSET)
-        .wrapping_add(cell_index as u64)
+        .wrapping_add(u64::from(cell_index))
 }
 
 fn read_cell_data<P: PhysicalMemoryProvider>(
@@ -331,21 +330,15 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                 let mut cur = root_nk2;
                 let mut ok = true;
                 for component in TYPED_URLS_TIME_PATH {
-                    match find_subkey(reader, hive_addr, &cur, component) {
-                        Ok(Some(cell_idx)) => {
-                            let va = cell_address(hive_addr, cell_idx);
-                            match read_cell_data(reader, va) {
-                                Ok(d) => cur = d,
-                                Err(_) => {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {
+                    if let Ok(Some(cell_idx)) = find_subkey(reader, hive_addr, &cur, component) {
+                        let va = cell_address(hive_addr, cell_idx);
+                        if let Ok(d) = read_cell_data(reader, va) { cur = d } else {
                             ok = false;
                             break;
                         }
+                    } else {
+                        ok = false;
+                        break;
                     }
                 }
                 if ok {
@@ -530,9 +523,8 @@ mod tests {
     fn classify_all_suspicious_domains() {
         for domain in SUSPICIOUS_DOMAINS {
             assert!(
-                classify_typed_url(&format!("https://{}/x", domain)),
-                "{} should be suspicious",
-                domain
+                classify_typed_url(&format!("https://{domain}/x")),
+                "{domain} should be suspicious"
             );
         }
     }
@@ -778,7 +770,7 @@ mod tests {
         builder = builder.write_phys(hive_paddr, &hive_page);
 
         // Cell page: write size_header=-64 (allocated, 64 bytes) + wrong sig
-        let cell_paddr = hive_paddr + HBIN_START_OFFSET as u64;
+        let cell_paddr = hive_paddr + HBIN_START_OFFSET;
         let mut cell_page = vec![0u8; 0x1000];
         let raw_size: i32 = -64;
         cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
@@ -813,7 +805,7 @@ mod tests {
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
         builder = builder.write_phys(hive_paddr, &hive_page);
 
-        let cell_paddr = hive_paddr + HBIN_START_OFFSET as u64;
+        let cell_paddr = hive_paddr + HBIN_START_OFFSET;
         let mut cell_page = vec![0u8; 0x1000];
         // size = -128 (allocated), nk_sig = 0x6B6E, subkey_count = 0
         let raw_size: i32 = -128;
@@ -851,7 +843,7 @@ mod tests {
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
         builder = builder.write_phys(hive_paddr, &hive_page);
 
-        let cell_paddr = hive_paddr + HBIN_START_OFFSET as u64;
+        let cell_paddr = hive_paddr + HBIN_START_OFFSET;
         let mut cell_page = vec![0u8; 0x2000];
         // Root nk cell at offset 0 in cell page
         let raw_size: i32 = -256;
@@ -867,7 +859,7 @@ mod tests {
 
         // List cell at cell_address(hive, 0x100) = hive_vaddr + HBIN_START_OFFSET + 0x100
         // = hive_paddr + 0x1000 + 0x100
-        let list_paddr = hive_paddr + HBIN_START_OFFSET as u64 + 0x100;
+        let list_paddr = hive_paddr + HBIN_START_OFFSET + 0x100;
         let mut list_page = vec![0u8; 0x1000];
         let list_size: i32 = -64;
         list_page[0..4].copy_from_slice(&list_size.to_le_bytes());
@@ -954,7 +946,7 @@ mod tests {
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
         builder = builder.write_phys(hive_paddr, &hive_page);
 
-        let cell_paddr = hive_paddr + HBIN_START_OFFSET as u64;
+        let cell_paddr = hive_paddr + HBIN_START_OFFSET;
         let mut cell_page = vec![0u8; 0x1000];
         let raw_size: i32 = -128;
         cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());
@@ -989,7 +981,7 @@ mod tests {
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
         builder = builder.write_phys(hive_paddr, &hive_page);
 
-        let base = hive_paddr + HBIN_START_OFFSET as u64;
+        let base = hive_paddr + HBIN_START_OFFSET;
         let mut pg = vec![0u8; 0x4000];
 
         // Root nk at offset 0: sig=nk, subkey_count=1, list_cell=0x200
@@ -1050,7 +1042,7 @@ mod tests {
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
         builder = builder.write_phys(hive_paddr, &hive_page);
 
-        let base = hive_paddr + HBIN_START_OFFSET as u64;
+        let base = hive_paddr + HBIN_START_OFFSET;
         let mut pg = vec![0u8; 0x2000];
 
         // Root nk: sig=nk, subkey_count=1, list_cell=0x200
@@ -1187,7 +1179,7 @@ mod tests {
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
         builder = builder.write_phys(hive_paddr, &hive_page);
 
-        let base = hive_paddr + HBIN_START_OFFSET as u64;
+        let base = hive_paddr + HBIN_START_OFFSET;
         let mut pg = vec![0u8; 0x2000];
 
         // Root nk: sig=nk, subkey_count=1, list_cell=0x200
@@ -1239,7 +1231,7 @@ mod tests {
             );
         }
 
-        let base = hive_paddr + HBIN_START_OFFSET as u64;
+        let base = hive_paddr + HBIN_START_OFFSET;
         let mut pg = vec![0u8; 0x2000];
 
         // child_cell = 0x300
@@ -1629,7 +1621,7 @@ mod tests {
         hive_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
         builder = builder.write_phys(hive_paddr, &hive_page);
 
-        let cell_paddr = hive_paddr + HBIN_START_OFFSET as u64;
+        let cell_paddr = hive_paddr + HBIN_START_OFFSET;
         let mut cell_page = vec![0u8; 0x1000];
         let raw_size: i32 = -64;
         cell_page[0..4].copy_from_slice(&raw_size.to_le_bytes());

@@ -47,13 +47,7 @@ pub fn perf_type_name(t: u32) -> &'static str {
 ///   a known pattern used in cache-timing / Spectre attacks.
 /// - `PERF_TYPE_RAW` (4) gives direct PMU counter access from userspace and is
 ///   always considered suspicious.
-pub fn classify_perf_event(event_type: u32, config: u64) -> bool {
-    match event_type {
-        3 => (config & 0xFF) <= 2, // L1D (0) or LL (2) cache events
-        4 => true,                 // RAW PMU access always suspicious from userspace
-        _ => false,
-    }
-}
+pub use crate::heuristics::classify_perf_event;
 
 /// Walk all perf_events across all processes and return structured info.
 ///
@@ -98,7 +92,7 @@ pub fn walk_perf_events<P: PhysicalMemoryProvider>(
             if cursor == 0 || guard > 65536 {
                 break;
             }
-            let task_addr = cursor.saturating_sub(tasks_offset as u64);
+            let task_addr = cursor.saturating_sub(tasks_offset);
             if task_addr == init_task_addr {
                 break;
             }
@@ -112,7 +106,7 @@ pub fn walk_perf_events<P: PhysicalMemoryProvider>(
     }
 
     // Include init_task itself.
-    let all_tasks = std::iter::once(init_task_addr).chain(task_addrs.into_iter());
+    let all_tasks = std::iter::once(init_task_addr).chain(task_addrs);
 
     for task_addr in all_tasks {
         let pid: u32 = reader
@@ -127,7 +121,7 @@ pub fn walk_perf_events<P: PhysicalMemoryProvider>(
             .to_string();
 
         // Read perf_event_ctxp[0]: pointer stored at task_addr + ctxp_offset.
-        let ctx_ptr_addr = task_addr + ctxp_offset as u64;
+        let ctx_ptr_addr = task_addr + ctxp_offset;
         let ctx_ptr: u64 = match reader.read_bytes(ctx_ptr_addr, 8) {
             Ok(bytes) => u64::from_le_bytes(bytes.try_into().unwrap_or([0u8; 8])),
             Err(_) => continue,
@@ -142,7 +136,7 @@ pub fn walk_perf_events<P: PhysicalMemoryProvider>(
                 .symbols()
                 .field_offset("perf_event_context", group_field)
             {
-                Some(off) => ctx_ptr + off as u64,
+                Some(off) => ctx_ptr + off,
                 None => continue,
             };
 
@@ -163,40 +157,34 @@ pub fn walk_perf_events<P: PhysicalMemoryProvider>(
                 if cursor == 0 || cursor == head_addr || guard > 4096 {
                     break;
                 }
-                let event_addr = cursor.saturating_sub(event_group_node_offset as u64);
+                let event_addr = cursor.saturating_sub(event_group_node_offset);
 
                 // perf_event.attr is embedded at ~0x20; type at attr+0, config at attr+8.
                 let attr_offset: u64 = reader
                     .symbols()
                     .field_offset("perf_event", "attr")
-                    .map(|o| o as u64)
-                    .unwrap_or(0x20);
+                    .map_or(0x20, |o| o);
 
-                let event_type: u32 = match reader.read_bytes(event_addr + attr_offset, 4) {
-                    Ok(b) => u32::from_le_bytes(b.try_into().unwrap_or([0u8; 4])),
-                    Err(_) => {
-                        cursor = match reader.read_bytes(cursor, 8) {
-                            Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
-                            Err(_) => break,
-                        };
-                        guard += 1;
-                        continue;
-                    }
+                let event_type: u32 = if let Ok(b) = reader.read_bytes(event_addr + attr_offset, 4) { u32::from_le_bytes(b.try_into().unwrap_or([0u8; 4])) } else {
+                    cursor = match reader.read_bytes(cursor, 8) {
+                        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                        Err(_) => break,
+                    };
+                    guard += 1;
+                    continue;
                 };
 
                 let config: u64 = reader
                     .read_bytes(event_addr + attr_offset + 8, 8)
                     .ok()
                     .and_then(|b| b.try_into().ok())
-                    .map(u64::from_le_bytes)
-                    .unwrap_or(0);
+                    .map_or(0, u64::from_le_bytes);
 
                 let sample_period: u64 = reader
                     .read_bytes(event_addr + attr_offset + 16, 8)
                     .ok()
                     .and_then(|b| b.try_into().ok())
-                    .map(u64::from_le_bytes)
-                    .unwrap_or(0);
+                    .map_or(0, u64::from_le_bytes);
 
                 let is_suspicious = classify_perf_event(event_type, config);
                 results.push(PerfEventInfo {

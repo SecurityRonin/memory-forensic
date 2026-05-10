@@ -5,6 +5,7 @@ mod os_detect;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tracing::instrument;
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -408,6 +409,12 @@ enum PsSortField {
 
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_env("RUST_LOG"),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     let cli = Cli::parse();
 
     match cli.command {
@@ -521,18 +528,20 @@ fn main() -> Result<()> {
                 symbols.as_deref(),
                 output,
                 cr3,
-                syscalls,
-                hooks,
-                irp,
-                ssdt,
-                callbacks,
-                malfind,
-                psxview,
-                tty,
-                modules,
-                ldrmodules,
-                hollowing,
-                all,
+                CheckFlags {
+                    syscalls,
+                    hooks,
+                    irp,
+                    ssdt,
+                    callbacks,
+                    malfind,
+                    psxview,
+                    tty,
+                    modules,
+                    ldrmodules,
+                    hollowing,
+                    all,
+                },
                 pid,
                 resolved.is_extracted(),
             )
@@ -783,6 +792,7 @@ fn cmd_info(dump: &Path, raw_fallback: bool) -> Result<()> {
     clippy::fn_params_excessive_bools,
     clippy::too_many_lines
 )]
+#[instrument(skip_all)]
 fn cmd_ps(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1081,6 +1091,7 @@ fn cmd_ps(
 // cmd_net — network connections
 // ---------------------------------------------------------------------------
 
+#[instrument(skip_all)]
 fn cmd_net(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -1151,6 +1162,7 @@ fn cmd_net(
 // cmd_strings
 // ---------------------------------------------------------------------------
 
+#[instrument(skip_all)]
 fn cmd_strings(
     dump: Option<&Path>,
     from_file: Option<PathBuf>,
@@ -2961,6 +2973,7 @@ fn print_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: OutputF
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+#[instrument(skip_all)]
 fn cmd_system(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -3002,16 +3015,8 @@ fn cmd_system(
 // cmd_check — integrity and tampering detection
 // ---------------------------------------------------------------------------
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::fn_params_excessive_bools,
-    clippy::too_many_lines
-)]
-fn cmd_check(
-    dump: &Path,
-    symbols_path: Option<&Path>,
-    output: OutputFormat,
-    cr3_override: Option<u64>,
+#[derive(Default)]
+struct CheckFlags {
     syscalls: bool,
     hooks: bool,
     irp: bool,
@@ -3024,9 +3029,33 @@ fn cmd_check(
     ldrmodules: bool,
     hollowing: bool,
     all: bool,
+}
+
+#[allow(clippy::too_many_lines)]
+#[instrument(skip_all)]
+fn cmd_check(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    flags: CheckFlags,
     pid_filter: Option<u64>,
     raw_fallback: bool,
 ) -> Result<()> {
+    let CheckFlags {
+        syscalls,
+        hooks,
+        irp,
+        ssdt,
+        callbacks,
+        malfind,
+        psxview,
+        tty,
+        modules,
+        ldrmodules,
+        hollowing,
+        all,
+    } = flags;
     if !(all
         || syscalls
         || hooks
@@ -3279,6 +3308,7 @@ fn cmd_check(
 // cmd_handles — open handles (Linux FDs, Windows handle table)
 // ---------------------------------------------------------------------------
 
+#[instrument(skip_all)]
 fn cmd_handles(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -4400,6 +4430,7 @@ fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[instrument(skip_all)]
 fn cmd_timeline(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -4559,6 +4590,7 @@ fn dump_process_memory<W: std::io::Write>(
     Ok(total)
 }
 
+#[instrument(skip_all)]
 fn cmd_procdump(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -4630,6 +4662,7 @@ fn cmd_procdump(
 // Framebuffer
 // ---------------------------------------------------------------------------
 
+#[instrument(skip_all)]
 fn cmd_framebuffer(
     dump: &Path,
     symbols_path: Option<&Path>,
@@ -5238,18 +5271,7 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            true,  // syscalls
-            false, // hooks
-            false, // irp
-            false, // ssdt
-            false, // callbacks
-            false, // malfind
-            false, // psxview
-            false, // tty
-            false, // modules
-            false, // ldrmodules
-            false, // hollowing
-            false, // all
+            CheckFlags { syscalls: true, ..Default::default() },
             None,  // pid
             false, // raw_fallback
         );
@@ -5312,18 +5334,7 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false,
-            false,
-            false,
-            false,
-            false, // syscalls, hooks, irp, ssdt, callbacks
-            true,  // malfind
-            false,
-            false,
-            false, // psxview, tty, modules
-            false, // ldrmodules
-            false, // hollowing
-            false, // all
+            CheckFlags { malfind: true, ..Default::default() },
             None,  // pid
             false, // raw_fallback
         );
@@ -5344,18 +5355,7 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            true, // syscalls
-            false,
-            false,
-            false,
-            false, // hooks, irp, ssdt, callbacks
-            false,
-            false,
-            false,
-            false, // malfind, psxview, tty, modules
-            false, // ldrmodules
-            false, // hollowing
-            false, // all
+            CheckFlags { syscalls: true, ..Default::default() },
             None,  // pid
             false, // raw_fallback
         );
@@ -5380,18 +5380,7 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false, // syscalls
-            false, // hooks
-            false, // irp
-            false, // ssdt
-            false, // callbacks
-            false, // malfind
-            false, // psxview
-            false, // tty
-            false, // modules
-            false, // ldrmodules
-            false, // hollowing
-            true,  // all
+            CheckFlags { all: true, ..Default::default() },
             None,  // pid
             false, // raw_fallback
         );

@@ -72,14 +72,13 @@ pub fn classify_scheduled_task(name: &str, action: &str) -> bool {
 
     // Task in non-standard path with script execution
     let name_lower = name.to_ascii_lowercase();
-    if !name_lower.starts_with("\\microsoft\\") && !name_lower.starts_with("microsoft\\") {
-        if action_lower.contains("powershell")
+    if !name_lower.starts_with("\\microsoft\\") && !name_lower.starts_with("microsoft\\")
+        && (action_lower.contains("powershell")
             || action_lower.contains("wscript")
-            || action_lower.contains("cscript")
+            || action_lower.contains("cscript"))
         {
             return true;
         }
-    }
 
     false
 }

@@ -168,10 +168,11 @@ fn scan_module_patterns(
     indicators: &mut Vec<SkeletonKeyIndicator>,
 ) {
     match module {
-        "msv1_0.dll" => scan_nop_sled(module, "auth_patch", text_vaddr, text_bytes, indicators),
+        "msv1_0.dll" | "lsasrv.dll" => {
+            scan_nop_sled(module, "auth_patch", text_vaddr, text_bytes, indicators);
+        }
         "kdcsvc.dll" => scan_kdc_patterns(module, text_vaddr, text_bytes, indicators),
         "cryptdll.dll" => scan_nop_sled(module, "rc4_patch", text_vaddr, text_bytes, indicators),
-        "lsasrv.dll" => scan_nop_sled(module, "auth_patch", text_vaddr, text_bytes, indicators),
         _ => {}
     }
 }

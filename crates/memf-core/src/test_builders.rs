@@ -364,6 +364,24 @@ impl crate::pagefile::PagefileSource for MockPagefileSource {
     }
 }
 
+/// Build an `ObjectReader` from a pre-built ISF JSON value and an empty page table.
+///
+/// Eliminates the four-line setup boilerplate that repeats across every walker test:
+/// resolver construction, page table build, VAS construction, and reader assembly.
+pub fn make_reader(
+    isf: &memf_symbols::test_builders::IsfBuilder,
+) -> crate::object_reader::ObjectReader<SyntheticPhysMem> {
+    let json = isf.build_json();
+    let resolver = memf_symbols::isf::IsfResolver::from_value(&json).unwrap();
+    let (cr3, mem) = PageTableBuilder::new().build();
+    let vas = crate::vas::VirtualAddressSpace::new(
+        mem,
+        cr3,
+        crate::vas::TranslationMode::X86_64FourLevel,
+    );
+    crate::object_reader::ObjectReader::new(vas, Box::new(resolver))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

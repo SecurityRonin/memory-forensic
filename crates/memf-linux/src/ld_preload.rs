@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn scan_ld_preload_empty() {
         // Empty process list should return empty Vec.
-        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::test_builders::PageTableBuilder;
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;

@@ -190,9 +190,8 @@ mod tests {
     fn cross_network_private_ip_172_range() {
         for oct in 16u8..=31 {
             assert!(
-                is_cross_network_private_ip(&format!("172.{}.1.1", oct)),
-                "172.{} should be cross-network",
-                oct
+                is_cross_network_private_ip(&format!("172.{oct}.1.1")),
+                "172.{oct} should be cross-network"
             );
         }
         assert!(!is_cross_network_private_ip("172.15.0.1"));

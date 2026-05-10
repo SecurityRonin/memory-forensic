@@ -42,13 +42,7 @@ pub struct TmpfsFileInfo {
 /// - Its name starts with `.` and has more than one character (hidden file).
 ///
 /// Directories (type bits 0o040000) with execute bits are normal and not flagged.
-pub fn classify_tmpfs_file(filename: &str, mode: u32) -> bool {
-    // S_IFREG = 0o100000; S_IFMT = 0o170000
-    let is_regular_file = (mode & 0o170_000) == 0o100_000;
-    let is_exec = is_regular_file && (mode & 0o111) != 0;
-    let is_hidden = filename.starts_with('.') && filename.len() > 1;
-    is_exec || is_hidden
-}
+pub use crate::heuristics::classify_tmpfs_file;
 
 /// Walk all tmpfs/ramfs inodes across all superblocks in memory.
 ///
@@ -84,19 +78,16 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
             break;
         }
         // Recover super_block base from s_list offset.
-        let sb_addr = sb_cursor.saturating_sub(sb_list_offset as u64);
+        let sb_addr = sb_cursor.saturating_sub(sb_list_offset);
 
         // Read s_type pointer → file_system_type → name string.
-        let s_type_ptr: u64 = match reader.read_field(sb_addr, "super_block", "s_type") {
-            Ok(v) => v,
-            Err(_) => {
-                sb_cursor = match reader.read_bytes(sb_cursor, 8) {
-                    Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
-                    Err(_) => break,
-                };
-                sb_guard += 1;
-                continue;
-            }
+        let s_type_ptr: u64 = if let Ok(v) = reader.read_field(sb_addr, "super_block", "s_type") { v } else {
+            sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                Err(_) => break,
+            };
+            sb_guard += 1;
+            continue;
         };
 
         let is_tmpfs = if s_type_ptr != 0 {
@@ -105,8 +96,7 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
                 .read_bytes(s_type_ptr, 8)
                 .ok()
                 .and_then(|b| b.try_into().ok())
-                .map(u64::from_le_bytes)
-                .unwrap_or(0);
+                .map_or(0, u64::from_le_bytes);
             if name_ptr != 0 {
                 let name_bytes: Vec<u8> = reader.read_bytes(name_ptr, 8).unwrap_or_default();
                 let fs_name = std::str::from_utf8(&name_bytes)
@@ -124,37 +114,30 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
 
         if is_tmpfs {
             // Walk s_inodes list: inode.i_sb_list list_head.
-            let s_inodes_offset = match reader.symbols().field_offset("super_block", "s_inodes") {
-                Some(off) => off,
-                None => {
-                    sb_cursor = match reader.read_bytes(sb_cursor, 8) {
-                        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
-                        Err(_) => break,
-                    };
-                    sb_guard += 1;
-                    continue;
-                }
+            let s_inodes_offset = if let Some(off) = reader.symbols().field_offset("super_block", "s_inodes") { off } else {
+                sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                    Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                    Err(_) => break,
+                };
+                sb_guard += 1;
+                continue;
             };
 
-            let inode_sb_list_offset = match reader.symbols().field_offset("inode", "i_sb_list") {
-                Some(off) => off,
-                None => {
-                    sb_cursor = match reader.read_bytes(sb_cursor, 8) {
-                        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
-                        Err(_) => break,
-                    };
-                    sb_guard += 1;
-                    continue;
-                }
+            let inode_sb_list_offset = if let Some(off) = reader.symbols().field_offset("inode", "i_sb_list") { off } else {
+                sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                    Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                    Err(_) => break,
+                };
+                sb_guard += 1;
+                continue;
             };
 
-            let inode_list_head = sb_addr + s_inodes_offset as u64;
+            let inode_list_head = sb_addr + s_inodes_offset;
             let first_inode_list: u64 = reader
                 .read_bytes(inode_list_head, 8)
                 .ok()
                 .and_then(|b| b.try_into().ok())
-                .map(u64::from_le_bytes)
-                .unwrap_or(0);
+                .map_or(0, u64::from_le_bytes);
 
             let mut inode_cursor = first_inode_list;
             let mut inode_guard = 0usize;
@@ -162,7 +145,7 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
                 if inode_cursor == 0 || inode_cursor == inode_list_head || inode_guard > 65536 {
                     break;
                 }
-                let inode_addr = inode_cursor.saturating_sub(inode_sb_list_offset as u64);
+                let inode_addr = inode_cursor.saturating_sub(inode_sb_list_offset);
 
                 let i_ino: u64 = reader.read_field(inode_addr, "inode", "i_ino").unwrap_or(0);
                 let i_size: u64 = reader
@@ -1296,7 +1279,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.inode_number, 42);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("evil"));
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"inode_number\":42"));

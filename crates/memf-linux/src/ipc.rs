@@ -390,7 +390,7 @@ mod tests {
         // shm_ids present but in_use == 0 → return empty immediately
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
-        let mut data = vec![0u8; 4096];
+        let data = vec![0u8; 4096];
         // in_use at offset 0 = 0 (already zeroed)
         let _ = data[0]; // keep lint happy
 
@@ -722,7 +722,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.key, 0xDEAD);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("shmid"));
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"key\":57005"));
@@ -739,7 +739,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.semid, 7);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("num_sems"));
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"semid\":7"));
@@ -1010,7 +1010,7 @@ mod tests {
 
         // Collect keys for order-independent comparison
         let mut keys: Vec<u32> = result.iter().map(|s| s.key).collect();
-        keys.sort();
+        keys.sort_unstable();
         assert_eq!(keys, vec![0x1001, 0x1002, 0x1003]);
     }
 
@@ -1089,7 +1089,7 @@ mod tests {
         );
 
         let mut keys: Vec<u32> = result.iter().map(|s| s.key).collect();
-        keys.sort();
+        keys.sort_unstable();
         assert_eq!(keys, vec![0x2001, 0x2002, 0x2003]);
     }
 

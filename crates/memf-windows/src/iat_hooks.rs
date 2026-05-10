@@ -417,6 +417,7 @@ fn parse_import_descriptors<P: PhysicalMemoryProvider>(
     results
 }
 
+#[allow(clippy::ref_option)]
 fn read_import_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ilt_bytes: &Option<Vec<u8>>,
@@ -1121,7 +1122,7 @@ mod tests {
         // The "kernel32.dll" module range.
         let k32_base: u64 = 0x7FF8_0000_0000u64;
         let k32_size: u32 = 0x10_0000;
-        let k32_end: u64 = k32_base + k32_size as u64;
+        let k32_end: u64 = k32_base + u64::from(k32_size);
 
         // IAT entry that IS inside kernel32.dll range.
         let iat_entry: u64 = k32_base + 0x1234;
@@ -1175,23 +1176,23 @@ mod tests {
             .map_4k(image_base, image_base, flags::WRITABLE)
             .write_phys(image_base, &header)
             .map_4k(
-                image_base + import_rva as u64,
-                image_base + import_rva as u64,
+                image_base + u64::from(import_rva),
+                image_base + u64::from(import_rva),
                 flags::WRITABLE,
             )
-            .write_phys(image_base + import_rva as u64, &import_table)
+            .write_phys(image_base + u64::from(import_rva), &import_table)
             .map_4k(
-                image_base + iat_rva as u64,
-                image_base + iat_rva as u64,
+                image_base + u64::from(iat_rva),
+                image_base + u64::from(iat_rva),
                 flags::WRITABLE,
             )
-            .write_phys(image_base + iat_rva as u64, &iat_data)
+            .write_phys(image_base + u64::from(iat_rva), &iat_data)
             .map_4k(
-                image_base + name_rva as u64,
-                image_base + name_rva as u64,
+                image_base + u64::from(name_rva),
+                image_base + u64::from(name_rva),
                 flags::WRITABLE,
             )
-            .write_phys(image_base + name_rva as u64, &name_page)
+            .write_phys(image_base + u64::from(name_rva), &name_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
@@ -1226,7 +1227,7 @@ mod tests {
 
         let k32_base: u64 = 0x7FF8_0000_0000u64;
         let k32_size: u32 = 0x10_0000;
-        let k32_end: u64 = k32_base + k32_size as u64;
+        let k32_end: u64 = k32_base + u64::from(k32_size);
 
         // Hook target is OUTSIDE kernel32.dll range (will trigger suspicious).
         let hook_target: u64 = 0xDEAD_BEEF_1234u64;
@@ -1270,23 +1271,23 @@ mod tests {
             .map_4k(image_base, image_base, flags::WRITABLE)
             .write_phys(image_base, &header)
             .map_4k(
-                image_base + import_rva as u64,
-                image_base + import_rva as u64,
+                image_base + u64::from(import_rva),
+                image_base + u64::from(import_rva),
                 flags::WRITABLE,
             )
-            .write_phys(image_base + import_rva as u64, &import_table)
+            .write_phys(image_base + u64::from(import_rva), &import_table)
             .map_4k(
-                image_base + iat_rva as u64,
-                image_base + iat_rva as u64,
+                image_base + u64::from(iat_rva),
+                image_base + u64::from(iat_rva),
                 flags::WRITABLE,
             )
-            .write_phys(image_base + iat_rva as u64, &iat_data)
+            .write_phys(image_base + u64::from(iat_rva), &iat_data)
             .map_4k(
-                image_base + name_rva as u64,
-                image_base + name_rva as u64,
+                image_base + u64::from(name_rva),
+                image_base + u64::from(name_rva),
                 flags::WRITABLE,
             )
-            .write_phys(image_base + name_rva as u64, &name_page)
+            .write_phys(image_base + u64::from(name_rva), &name_page)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));

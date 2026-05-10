@@ -68,7 +68,7 @@ pub fn handler_type(handler: u64) -> String {
     match handler {
         0 => "SIG_DFL".to_string(),
         1 => "SIG_IGN".to_string(),
-        _ => format!("0x{:016x}", handler),
+        _ => format!("0x{handler:016x}"),
     }
 }
 
@@ -81,17 +81,7 @@ pub fn handler_type(handler: u64) -> String {
 ///   self-healing malware that catches segfaults to restart or re-inject.
 /// - SIGKILL (9) has been tampered with (any non-default handler) --
 ///   impossible under normal circumstances, indicates kernel-level rootkit.
-pub fn classify_signal_handler(signal: u32, handler: u64) -> bool {
-    match signal {
-        // SIGTERM or SIGHUP ignored -> anti-termination
-        15 | 1 => handler == 1,
-        // SIGSEGV with custom handler -> self-healing malware
-        11 => handler != 0 && handler != 1,
-        // SIGKILL tampered -> kernel rootkit (normally impossible)
-        9 => handler != 0,
-        _ => false,
-    }
-}
+pub use crate::heuristics::classify_signal_handler;
 
 /// Walk signal handlers for all processes found via the `init_task` list.
 ///
@@ -297,7 +287,7 @@ mod tests {
             result.starts_with("0x"),
             "custom handler must be hex-formatted"
         );
-        assert_eq!(result, format!("0x{:016x}", addr));
+        assert_eq!(result, format!("0x{addr:016x}"));
     }
 
     // -----------------------------------------------------------------------

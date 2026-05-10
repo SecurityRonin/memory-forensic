@@ -387,7 +387,7 @@ mod tests {
         // ASCII string at offset 0x00
         data[0x00..0x05].copy_from_slice(b"ASCII");
         // UTF-16LE string "HI" at offset 0x40 (each char is 2 bytes, null-separated)
-        let utf16: Vec<u8> = "HI!".encode_utf16().flat_map(|w| w.to_le_bytes()).collect();
+        let utf16: Vec<u8> = "HI!".encode_utf16().flat_map(u16::to_le_bytes).collect();
         data[0x40..0x40 + utf16.len()].copy_from_slice(&utf16);
 
         let provider = RawProvider::from_bytes(&data);
@@ -419,7 +419,7 @@ mod tests {
         // "OK\0" as UTF-16LE at offset 0x10
         let ok_utf16: Vec<u8> = "OKAY"
             .encode_utf16()
-            .flat_map(|w| w.to_le_bytes())
+            .flat_map(u16::to_le_bytes)
             .collect();
         data[0x10..0x10 + ok_utf16.len()].copy_from_slice(&ok_utf16);
 

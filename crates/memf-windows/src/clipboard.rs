@@ -106,12 +106,11 @@ fn contains_ip_url(text: &str) -> bool {
             if after
                 .chars()
                 .next()
-                .map(|c| c.is_ascii_digit())
-                .unwrap_or(false)
+                .is_some_and(|c| c.is_ascii_digit())
             {
                 // Verify it looks like an IP: at least two dots in the host part
                 let host_end = after
-                    .find(|c: char| c == '/' || c == ':' || c == ' ' || c == '\n')
+                    .find(['/', ':', ' ', '\n'])
                     .unwrap_or(after.len());
                 let host = &after[..host_end];
                 if host.chars().filter(|&c| c == '.').count() >= 1
@@ -126,8 +125,7 @@ fn contains_ip_url(text: &str) -> bool {
                     && host
                         .chars()
                         .next()
-                        .map(|c| c.is_ascii_digit())
-                        .unwrap_or(false)
+                        .is_some_and(|c| c.is_ascii_digit())
                 {
                     return true;
                 }
@@ -163,26 +161,26 @@ pub fn walk_clipboard<P: PhysicalMemoryProvider>(
     let ws_next_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "rpwinstaNext")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let ws_num_formats_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "cNumClipFormats")
-        .unwrap_or(0x40) as u64;
+        .unwrap_or(0x40);
     let ws_clip_base_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "pClipBase")
-        .unwrap_or(0x48) as u64;
+        .unwrap_or(0x48);
     let ws_owner_pid_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "dwClipOwnerPid")
-        .unwrap_or(0x50) as u64;
+        .unwrap_or(0x50);
 
     // Field offsets for _CLIP entry
     // _CLIP { fmt: u32, hData: u64, size: u64 }
-    let clip_fmt_off = reader.symbols().field_offset("_CLIP", "fmt").unwrap_or(0) as u64;
-    let clip_hdata_off = reader.symbols().field_offset("_CLIP", "hData").unwrap_or(8) as u64;
-    let clip_size_off = reader.symbols().field_offset("_CLIP", "size").unwrap_or(16) as u64;
-    let clip_entry_size = reader.symbols().struct_size("_CLIP").unwrap_or(24) as u64;
+    let clip_fmt_off = reader.symbols().field_offset("_CLIP", "fmt").unwrap_or(0);
+    let clip_hdata_off = reader.symbols().field_offset("_CLIP", "hData").unwrap_or(8);
+    let clip_size_off = reader.symbols().field_offset("_CLIP", "size").unwrap_or(16);
+    let clip_entry_size = reader.symbols().struct_size("_CLIP").unwrap_or(24);
 
     let mut results = Vec::new();
 
@@ -219,7 +217,7 @@ pub fn walk_clipboard<P: PhysicalMemoryProvider>(
             .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))
             .unwrap_or(0);
 
-        for i in 0..num_formats as u64 {
+        for i in 0..u64::from(num_formats) {
             let entry_addr = clip_base + i * clip_entry_size;
 
             let fmt: u32 = reader
@@ -564,7 +562,7 @@ mod tests {
         const VADDR: u64 = 0xFFFF_8000_0062_0000;
         const PADDR: u64 = 0x0062_0000;
         let text = "Hi";
-        let utf16: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let mut page = vec![0u8; 4096];
         page[..utf16.len()].copy_from_slice(&utf16);
         // null terminator at utf16.len() (2 bytes of 0) already there
@@ -865,7 +863,7 @@ mod tests {
 
         // "Hello" as UTF-16LE
         let text = "Hello";
-        let utf16: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let mut data_page = vec![0u8; 4096];
         data_page[..utf16.len()].copy_from_slice(&utf16);
 

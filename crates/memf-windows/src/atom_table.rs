@@ -120,29 +120,29 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
     let buckets_off = reader
         .symbols()
         .field_offset("_RTL_ATOM_TABLE", "Buckets")
-        .unwrap_or(8) as u64;
+        .unwrap_or(8);
 
     // Field offsets for _RTL_ATOM_TABLE_ENTRY
     let entry_hash_link_off = reader
         .symbols()
         .field_offset("_RTL_ATOM_TABLE_ENTRY", "HashLink")
-        .unwrap_or(0) as u64;
+        .unwrap_or(0);
     let entry_atom_off = reader
         .symbols()
         .field_offset("_RTL_ATOM_TABLE_ENTRY", "Atom")
-        .unwrap_or(0x0c) as u64;
+        .unwrap_or(0x0c);
     let entry_ref_count_off = reader
         .symbols()
         .field_offset("_RTL_ATOM_TABLE_ENTRY", "ReferenceCount")
-        .unwrap_or(0x08) as u64;
+        .unwrap_or(0x08);
     let entry_name_len_off = reader
         .symbols()
         .field_offset("_RTL_ATOM_TABLE_ENTRY", "NameLength")
-        .unwrap_or(0x0e) as u64;
+        .unwrap_or(0x0e);
     let entry_name_off = reader
         .symbols()
         .field_offset("_RTL_ATOM_TABLE_ENTRY", "Name")
-        .unwrap_or(0x10) as u64;
+        .unwrap_or(0x10);
 
     let mut results = Vec::new();
     let mut atom_count = 0;
@@ -308,7 +308,7 @@ mod tests {
 
         // entry page
         let name = "Hello";
-        let name_utf16: Vec<u8> = name.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let name_utf16: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let mut entry_page = vec![0u8; 4096];
         entry_page[0..8].copy_from_slice(&0u64.to_le_bytes()); // HashLink = null
         entry_page[8..12].copy_from_slice(&2u32.to_le_bytes()); // ReferenceCount = 2

@@ -99,10 +99,8 @@ pub fn walk_capabilities<P: PhysicalMemoryProvider>(
     let mut results = Vec::with_capacity(processes.len());
 
     for proc in processes {
-        match read_process_caps(reader, proc) {
-            Ok(caps) => results.push(caps),
-            // Skip processes whose cred is unreadable (e.g., zombie/dead).
-            Err(_) => continue,
+        if let Ok(caps) = read_process_caps(reader, proc) {
+            results.push(caps);
         }
     }
 

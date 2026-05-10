@@ -60,7 +60,7 @@ pub fn pool_type_name(pool_type: u32) -> String {
         4 => "NonPagedPoolCacheAligned".into(),
         5 => "PagedPoolCacheAligned".into(),
         512 => "NonPagedPoolNx".into(),
-        other => format!("Unknown({})", other),
+        other => format!("Unknown({other})"),
     }
 }
 
@@ -149,6 +149,7 @@ pub fn walk_bigpools<P: PhysicalMemoryProvider>(
     //   Key:           u32 @ 0x08
     //   PoolType:      u32 @ 0x0C
     //   NumberOfBytes: u64 @ 0x10
+    #[allow(clippy::items_after_statements)]
     const ENTRY_SIZE: u64 = 24;
 
     let total_bytes = entry_count * ENTRY_SIZE;

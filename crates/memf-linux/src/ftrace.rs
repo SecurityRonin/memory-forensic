@@ -37,6 +37,7 @@ pub struct FtraceHookInfo {
 pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<FtraceHookInfo>> {
+    const MAX_HOOKS: usize = 1_000;
     let Some(list_head_addr) = reader.symbols().symbol_address("ftrace_ops_list") else {
         return Ok(Vec::new());
     };
@@ -69,7 +70,6 @@ pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
         .field_offset("list_head", "next")
         .unwrap_or(0);
 
-    const MAX_HOOKS: usize = 1_000;
     let mut hooks = Vec::new();
 
     let first_ptr = match reader.read_bytes(list_head_addr + next_field_offset, 8) {
@@ -120,9 +120,7 @@ pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
 }
 
 /// Classify whether a `func` pointer is suspicious given the kernel text range.
-pub fn classify_ftrace_hook(func: u64, stext: u64, etext: u64) -> bool {
-    func < stext || func >= etext
-}
+pub use crate::heuristics::classify_ftrace_hook;
 
 #[cfg(test)]
 mod tests {

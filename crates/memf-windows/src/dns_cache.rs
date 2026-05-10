@@ -174,7 +174,11 @@ fn read_record_data<P: PhysicalMemoryProvider>(
                 return Ok(String::new());
             }
             let bytes = reader.read_bytes(data_ptr, read_len)?;
-            Ok(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            Ok(bytes.iter().fold(String::new(), |mut s, b| {
+                use std::fmt::Write;
+                let _ = write!(s, "{b:02x}");
+                s
+            }))
         }
     }
 }

@@ -87,8 +87,7 @@ fn extract_kb(line: &str, label: &str) -> u64 {
     };
     let end = line[pos..]
         .find(|c: char| !c.is_ascii_digit())
-        .map(|e| pos + e)
-        .unwrap_or(line.len());
+        .map_or(line.len(), |e| pos + e);
     line[pos..end].trim().parse::<u64>().unwrap_or(0)
 }
 
@@ -529,7 +528,7 @@ mod tests {
         };
         let cloned = ev.clone();
         assert_eq!(cloned.victim_pid, 7);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("sshd"));
     }
 

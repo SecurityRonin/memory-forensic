@@ -620,7 +620,7 @@ mod tests {
         // eproc page
         let mut eproc_page = vec![0u8; 0x1000];
         // _KPROCESS.DirectoryTableBase at +0x28
-        eproc_page[0x28..0x30].copy_from_slice(&(eproc_paddr as u64).to_le_bytes());
+        eproc_page[0x28..0x30].copy_from_slice(&eproc_paddr.to_le_bytes());
         // _KPROCESS.ThreadListHead.Flink at +0x30 → kthread+0x2F8
         eproc_page[0x30..0x38].copy_from_slice(&kthread_entry_vaddr.to_le_bytes());
         eproc_page[0x38..0x40].copy_from_slice(&kthread_entry_vaddr.to_le_bytes());

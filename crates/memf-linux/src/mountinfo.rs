@@ -36,23 +36,7 @@ pub struct MountEntry {
 /// Suspicious criteria:
 /// - `tmpfs` or `ramfs` at a non-standard path (not `/tmp`, `/run`, `/dev/shm`)
 /// - `overlay` or `overlayfs` outside `/var/lib/docker` / `/var/lib/containerd`
-pub fn classify_mount(fs_type: &str, dev_name: &str, mnt_root: &str) -> bool {
-    let _ = dev_name;
-    match fs_type {
-        "tmpfs" | "ramfs" => {
-            !matches!(
-                mnt_root,
-                "/tmp" | "/run" | "/dev/shm" | "/run/lock" | "/run/user" | "/" // rootfs tmpfs is normal in containers
-            ) && !mnt_root.starts_with("/run/")
-                && !mnt_root.starts_with("/tmp/")
-                && !mnt_root.starts_with("/dev/")
-        }
-        "overlay" | "overlayfs" => {
-            !mnt_root.starts_with("/var/lib/docker") && !mnt_root.starts_with("/var/lib/containerd")
-        }
-        _ => false,
-    }
-}
+pub use crate::heuristics::classify_mount;
 
 /// Walk mount list and return all mounted filesystems.
 ///
@@ -201,7 +185,7 @@ mod tests {
             is_suspicious: false,
         };
         let cloned = info.clone();
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("ext4"));
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"mnt_id\":1"));

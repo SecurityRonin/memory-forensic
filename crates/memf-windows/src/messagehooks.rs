@@ -130,57 +130,57 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
     let ws_next_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "rpwinstaNext")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let ws_desk_off = reader
         .symbols()
         .field_offset("_WINSTATION_OBJECT", "rpdeskList")
-        .unwrap_or(0x30) as u64;
+        .unwrap_or(0x30);
 
     // Field offsets for tagDESKTOP
     let desk_next_off = reader
         .symbols()
         .field_offset("tagDESKTOP", "rpdeskNext")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let desk_aphk_off = reader
         .symbols()
         .field_offset("tagDESKTOP", "aphkStart")
-        .unwrap_or(0x38) as u64;
+        .unwrap_or(0x38);
 
     // Field offsets for _HOOK
     let hook_next_off = reader
         .symbols()
         .field_offset("_HOOK", "phkNext")
-        .unwrap_or(0x00) as u64;
+        .unwrap_or(0x00);
     let hook_type_off = reader
         .symbols()
         .field_offset("_HOOK", "iHook")
-        .unwrap_or(0x08) as u64;
+        .unwrap_or(0x08);
     let hook_proc_off = reader
         .symbols()
         .field_offset("_HOOK", "pfn")
-        .unwrap_or(0x10) as u64;
+        .unwrap_or(0x10);
     let hook_ihmod_off = reader
         .symbols()
         .field_offset("_HOOK", "ihmod")
-        .unwrap_or(0x18) as u64;
+        .unwrap_or(0x18);
     let hook_pti_off = reader
         .symbols()
         .field_offset("_HOOK", "pti")
-        .unwrap_or(0x20) as u64;
+        .unwrap_or(0x20);
 
     // Field offsets for PID chain from tagTHREADINFO
     let threadinfo_eprocess_off = reader
         .symbols()
         .field_offset("tagTHREADINFO", "pEThread")
-        .unwrap_or(0x00) as u64;
+        .unwrap_or(0x00);
     let ethread_process_off = reader
         .symbols()
         .field_offset("_ETHREAD", "ThreadsProcess")
-        .unwrap_or(0x220) as u64;
+        .unwrap_or(0x220);
     let pid_off = reader
         .symbols()
         .field_offset("_EPROCESS", "UniqueProcessId")
-        .unwrap_or(0x440) as u64;
+        .unwrap_or(0x440);
 
     let mut results = Vec::new();
     let mut hook_count = 0usize;

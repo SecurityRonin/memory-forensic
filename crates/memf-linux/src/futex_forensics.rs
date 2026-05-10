@@ -30,9 +30,7 @@ pub struct FutexInfo {
 /// - `waiter_count > 1000` (potential DoS via futex starvation), or
 /// - `key_address > 0x7FFF_FFFF_FFFF && owner_pid > 0` (kernel-space key
 ///   from userspace owner — futex confusion / privilege escalation indicator).
-pub fn classify_futex(key_address: u64, owner_pid: u32, waiter_count: u32) -> bool {
-    waiter_count > 1000 || (key_address > 0x7FFF_FFFF_FFFF && owner_pid > 0)
-}
+pub use crate::heuristics::classify_futex;
 
 /// Walk the kernel futex hash table and return all pending futex entries.
 ///
@@ -66,7 +64,7 @@ pub fn walk_futex_table<P: PhysicalMemoryProvider>(
 
     for i in 0..bucket_count.min(4096) {
         let bucket_addr = fq_addr + i * bucket_size;
-        let chain_head = bucket_addr + chain_offset as u64;
+        let chain_head = bucket_addr + chain_offset;
 
         // Read hlist_head.first pointer.
         let first_q: u64 = match reader.read_bytes(chain_head, 8) {
@@ -86,14 +84,12 @@ pub fn walk_futex_table<P: PhysicalMemoryProvider>(
             let key_offset: u64 = reader
                 .symbols()
                 .field_offset("futex_q", "key")
-                .map(|o| o as u64)
-                .unwrap_or(16);
+                .map_or(16, |o| o);
 
             let task_offset: u64 = reader
                 .symbols()
                 .field_offset("futex_q", "task")
-                .map(|o| o as u64)
-                .unwrap_or(8);
+                .map_or(8, |o| o);
 
             if waiter_count == 0 {
                 // Read the futex key (first 8 bytes of union futex_key).
@@ -101,16 +97,14 @@ pub fn walk_futex_table<P: PhysicalMemoryProvider>(
                     .read_bytes(q_ptr + key_offset, 8)
                     .ok()
                     .and_then(|b| b.try_into().ok())
-                    .map(u64::from_le_bytes)
-                    .unwrap_or(0);
+                    .map_or(0, u64::from_le_bytes);
 
                 // Determine shared vs private from key.both.offset bit 1.
                 let key_offset_field: u64 = reader
                     .read_bytes(q_ptr + key_offset + 8, 8)
                     .ok()
                     .and_then(|b| b.try_into().ok())
-                    .map(u64::from_le_bytes)
-                    .unwrap_or(0);
+                    .map_or(0, u64::from_le_bytes);
                 first_type = if key_offset_field & 1 == 0 {
                     "private".to_string()
                 } else {
@@ -122,8 +116,7 @@ pub fn walk_futex_table<P: PhysicalMemoryProvider>(
                     .read_bytes(q_ptr + task_offset, 8)
                     .ok()
                     .and_then(|b| b.try_into().ok())
-                    .map(u64::from_le_bytes)
-                    .unwrap_or(0);
+                    .map_or(0, u64::from_le_bytes);
                 if task_ptr != 0 {
                     first_pid = reader
                         .read_field::<u32>(task_ptr, "task_struct", "pid")
@@ -138,8 +131,7 @@ pub fn walk_futex_table<P: PhysicalMemoryProvider>(
                 .read_bytes(q_ptr, 8)
                 .ok()
                 .and_then(|b| b.try_into().ok())
-                .map(u64::from_le_bytes)
-                .unwrap_or(0);
+                .map_or(0, u64::from_le_bytes);
             guard += 1;
         }
 
@@ -318,7 +310,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.owner_pid, 42);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("private"));
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"owner_pid\":42"));

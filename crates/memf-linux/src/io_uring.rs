@@ -236,7 +236,7 @@ mod tests {
             seccomp_active: true,
         };
         let cloned = entry.clone();
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("curing"));
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"pid\":1234"));

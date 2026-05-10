@@ -113,12 +113,9 @@ pub fn scan_pool_for_tag<P: PhysicalMemoryProvider>(
     let mut addr = start;
     while addr + 8 <= end {
         // Read 8 bytes for the pool header
-        let bytes = match reader.read_bytes(addr, 8) {
-            Ok(b) => b,
-            Err(_) => {
-                addr += 16;
-                continue;
-            }
+        let bytes = if let Ok(b) = reader.read_bytes(addr, 8) { b } else {
+            addr += 16;
+            continue;
         };
 
         // Check if bytes 4–7 match the pool tag

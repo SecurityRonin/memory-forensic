@@ -32,18 +32,7 @@ const SYSTEM_LIB_PREFIXES: &[&str] =
 ///
 /// Returns `true` if the path contains "pam" (case-insensitive) AND does
 /// not start with a known system library directory.
-pub fn classify_pam_hook(path: &str) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-    let lower = path.to_lowercase();
-    if !lower.contains("pam") {
-        return false;
-    }
-    !SYSTEM_LIB_PREFIXES
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
-}
+pub use crate::heuristics::classify_pam_hook;
 
 /// Walk all process VMAs and report PAM libraries loaded from non-system paths.
 ///
@@ -103,14 +92,11 @@ fn scan_process_pam<P: PhysicalMemoryProvider>(
 
     let mut vma_addr = mmap_ptr;
     while vma_addr != 0 {
-        let vm_file: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_file") {
-            Ok(v) => v,
-            Err(_) => {
-                vma_addr = reader
-                    .read_field(vma_addr, "vm_area_struct", "vm_next")
-                    .unwrap_or(0);
-                continue;
-            }
+        let vm_file: u64 = if let Ok(v) = reader.read_field(vma_addr, "vm_area_struct", "vm_file") { v } else {
+            vma_addr = reader
+                .read_field(vma_addr, "vm_area_struct", "vm_next")
+                .unwrap_or(0);
+            continue;
         };
 
         if vm_file != 0 {

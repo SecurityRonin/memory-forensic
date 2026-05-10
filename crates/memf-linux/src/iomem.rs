@@ -41,27 +41,7 @@ pub struct IoMemRegion {
 /// - The name contains unusual characters (control chars, non-ASCII).
 /// - The region overlaps kernel text (`0xffffffff81000000..0xffffffff82000000`)
 ///   but is not named "Kernel code".
-pub fn classify_iomem(name: &str, start: u64, end: u64) -> bool {
-    // Empty name on a large region (> 1 MiB) is suspicious.
-    let size = end.saturating_sub(start);
-    if name.is_empty() && size > 1024 * 1024 {
-        return true;
-    }
-
-    // Name with unusual characters (control chars or non-ASCII) is suspicious.
-    if name.chars().any(|c| c.is_control() || !c.is_ascii()) {
-        return true;
-    }
-
-    // Region overlapping kernel text range but not named "Kernel code".
-    const KERNEL_TEXT_START: u64 = 0xffff_ffff_8100_0000;
-    const KERNEL_TEXT_END: u64 = 0xffff_ffff_8200_0000;
-    if start < KERNEL_TEXT_END && end > KERNEL_TEXT_START && name != "Kernel code" {
-        return true;
-    }
-
-    false
-}
+pub use crate::heuristics::classify_iomem;
 
 /// Walk I/O memory resource regions from the `iomem_resource` kernel structure.
 ///
@@ -620,7 +600,7 @@ mod tests {
         let cloned = region.clone();
         assert_eq!(cloned.start, 0x1000);
         assert_eq!(cloned.depth, 0);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("System RAM"));
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"start\":4096"));

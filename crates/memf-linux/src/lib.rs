@@ -32,6 +32,7 @@ pub mod ebpf_progs;
 pub mod elf_analysis;
 pub mod elfinfo;
 pub mod preload_scanner;
+pub mod vma_walker;
 pub mod envvars;
 pub mod files;
 pub mod framebuffer;

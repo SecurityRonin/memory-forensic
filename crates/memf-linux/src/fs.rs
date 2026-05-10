@@ -455,7 +455,7 @@ mod tests {
             fs_type: "ext4".to_string(),
         };
         let cloned = m.clone();
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("ext4"));
     }
 }

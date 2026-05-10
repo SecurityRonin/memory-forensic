@@ -145,7 +145,7 @@ fn walk_map_idr_entries<P: PhysicalMemoryProvider>(
             }
             walk_map_idr_entries(reader, slot_val, maps)?;
         }
-    } else if node_ptr & 0x3 == 0 && node_ptr > 0x1000 {
+    } else if node_ptr.trailing_zeros() >= 2 && node_ptr > 0x1000 {
         // Leaf pointer — attempt to read a bpf_map struct.
         if let Ok(info) = read_bpf_map(reader, node_ptr) {
             maps.push(info);

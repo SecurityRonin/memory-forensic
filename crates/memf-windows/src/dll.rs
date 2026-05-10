@@ -817,7 +817,7 @@ mod tests {
         let paddr_page2 = paddr_base + 0x1000;
 
         let mut page1 = vec![0u8; 4096];
-        let mut page2 = vec![0u8; 4096];
+        let page2 = vec![0u8; 4096];
 
         let peb_vaddr = vaddr_page1;
         let ldr_vaddr = vaddr_page1 + 2048;
@@ -855,7 +855,7 @@ mod tests {
         };
         let json = serde_json::to_string(&dll).unwrap();
         assert!(json.contains("ntdll.dll"));
-        assert!(json.contains("0"));
+        assert!(json.contains('0'));
     }
 
     /// walk_ldr_modules: ldr_addr non-null, lf list with zero DllBase entries (skipped).

@@ -90,27 +90,27 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
     let port_list_entry_off: u64 = reader
         .symbols()
         .field_offset("_ALPC_PORT", "PortListEntry")
-        .unwrap_or(0x00) as u64;
+        .unwrap_or(0x00);
     let owner_process_off: u64 = reader
         .symbols()
         .field_offset("_ALPC_PORT", "OwnerProcess")
-        .unwrap_or(0x08) as u64;
+        .unwrap_or(0x08);
     let connection_port_off: u64 = reader
         .symbols()
         .field_offset("_ALPC_PORT", "ConnectionPort")
-        .unwrap_or(0x10) as u64;
+        .unwrap_or(0x10);
     let port_name_off: u64 = reader
         .symbols()
         .field_offset("_ALPC_PORT", "PortName")
-        .unwrap_or(0x18) as u64;
+        .unwrap_or(0x18);
     let connection_count_off: u64 = reader
         .symbols()
         .field_offset("_ALPC_PORT", "ConnectionCount")
-        .unwrap_or(0x28) as u64;
+        .unwrap_or(0x28);
     let pid_off: u64 = reader
         .symbols()
         .field_offset("_EPROCESS", "UniqueProcessId")
-        .unwrap_or(0x440) as u64;
+        .unwrap_or(0x440);
 
     let mut results = Vec::new();
     let mut current = flink;
@@ -143,19 +143,17 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
             reader
                 .read_bytes(port_addr + connection_port_off, 8)
                 .ok()
-                .map(|b| {
+                .is_some_and(|b| {
                     let ptr = u64::from_le_bytes(b[..8].try_into().expect("8"));
                     ptr == port_addr || ptr == 0
                 })
-                .unwrap_or(false)
         };
 
         // Read connection count (u32)
         let connection_count = reader
             .read_bytes(port_addr + connection_count_off, 4)
             .ok()
-            .map(|b| u32::from_le_bytes(b[..4].try_into().expect("4")))
-            .unwrap_or(0);
+            .map_or(0, |b| u32::from_le_bytes(b[..4].try_into().expect("4")));
 
         let is_suspicious = classify_alpc_port(&name);
 
@@ -370,7 +368,7 @@ mod tests {
         let name_str = "Port1";
         let name_utf16: Vec<u8> = name_str
             .encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
+            .flat_map(u16::to_le_bytes)
             .collect();
         let name_len = name_utf16.len() as u16;
 

@@ -188,7 +188,7 @@ mod tests {
 
     /// Encode a Rust &str as UTF-16LE bytes.
     fn encode_utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     // ── No symbol → empty Vec ───────────────────────────────────────

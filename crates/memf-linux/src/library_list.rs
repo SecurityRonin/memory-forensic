@@ -42,43 +42,7 @@ pub struct SharedLibraryInfo {
 /// - Path does not end in `.so` and does not contain `.so.` (non-standard shared library name)
 /// - Path ends with `(deleted)` (unlinked but still mapped -- common malware technique)
 /// - Basename starts with `.` (hidden file)
-pub fn classify_library(lib_path: &str) -> bool {
-    let path = lib_path.trim();
-
-    // Unlinked libraries still mapped in memory.
-    if path.ends_with("(deleted)") {
-        return true;
-    }
-
-    // Strip " (deleted)" suffix for remaining checks so path-based rules
-    // still fire on deleted files from suspicious locations.
-    let clean = path.strip_suffix(" (deleted)").unwrap_or(path);
-
-    // World-writable staging directories.
-    if clean.starts_with("/tmp/")
-        || clean == "/tmp"
-        || clean.starts_with("/dev/shm/")
-        || clean == "/dev/shm"
-        || clean.starts_with("/var/tmp/")
-        || clean == "/var/tmp"
-    {
-        return true;
-    }
-
-    // Hidden file (basename starts with '.').
-    if let Some(basename) = clean.rsplit('/').next() {
-        if basename.starts_with('.') && !basename.is_empty() {
-            return true;
-        }
-    }
-
-    // Not a standard shared library name.
-    if !clean.ends_with(".so") && !clean.contains(".so.") {
-        return true;
-    }
-
-    false
-}
+pub use crate::heuristics::classify_library;
 
 /// Walk the VMA list for a single process and enumerate shared libraries.
 ///
@@ -770,7 +734,7 @@ mod tests {
             is_suspicious: false,
         };
         let cloned = info.clone();
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("libfoo"));
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"pid\":1"));

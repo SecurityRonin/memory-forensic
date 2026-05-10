@@ -165,7 +165,7 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
 
     // Scan all values, looking for NL$1..NL$10 by name.
     for v in 0..val_count.min(MAX_CACHED_CREDS as u32) {
-        let val_off: u32 = match reader.read_bytes(val_list_addr + (v as u64) * 4, 4) {
+        let val_off: u32 = match reader.read_bytes(val_list_addr + u64::from(v) * 4, 4) {
             Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
             _ => continue,
         };
@@ -260,14 +260,14 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
 
         // Domain follows username (aligned to 2-byte boundary, but typically
         // directly after username_len bytes from offset 96).
-        let domain_offset = 96 + username_len as u64;
+        let domain_offset = 96 + u64::from(username_len);
         let domain = match reader.read_bytes(data_addr + domain_offset, domain_len as usize) {
             Ok(bytes) => decode_utf16le(&bytes),
             _ => continue,
         };
 
         // Hash data length is the total data minus the header and string data.
-        let strings_total = username_len as u32 + domain_len as u32;
+        let strings_total = u32::from(username_len) + u32::from(domain_len);
         let hash_data_length = data_len.saturating_sub(96 + strings_total);
 
         let is_suspicious = classify_cached_credential(&username, &domain, iteration_count);
@@ -293,8 +293,7 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
 fn is_nl_entry(name: &str) -> bool {
     name.strip_prefix("NL$")
         .and_then(|s| s.parse::<usize>().ok())
-        .map(|n| n > 0 && n <= 50)
-        .unwrap_or(false)
+        .is_some_and(|n| n > 0 && n <= 50)
 }
 
 /// Decode a UTF-16LE byte slice into a String.
@@ -312,7 +311,7 @@ fn read_cell_addr<P: PhysicalMemoryProvider>(
     cell_off: u32,
 ) -> u64 {
     // Cell data starts 4 bytes after the cell offset (cell size header).
-    let addr = flat_base + (cell_off as u64) + 4;
+    let addr = flat_base + u64::from(cell_off) + 4;
     // Verify we can read from this address.
     match reader.read_bytes(addr, 2) {
         Ok(bytes) if bytes.len() == 2 => addr,
@@ -358,15 +357,15 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+            [b'l', b'f' | b'h'] => {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                 Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => continue,
             },
@@ -530,9 +529,8 @@ mod tests {
     fn is_nl_entry_valid() {
         for i in 1..=10 {
             assert!(
-                is_nl_entry(&format!("NL${}", i)),
-                "NL${} should be valid",
-                i
+                is_nl_entry(&format!("NL${i}")),
+                "NL${i} should be valid"
             );
         }
     }
@@ -650,7 +648,7 @@ mod tests {
     fn cached_credential_info_serialization() {
         let info = CachedCredentialInfo {
             username: "attacker".to_string(),
-            domain: "".to_string(),
+            domain: String::new(),
             domain_sid: String::new(),
             iteration_count: 1024,
             hash_data_length: 32,
@@ -1129,7 +1127,7 @@ mod tests {
         let dc = 0x604usize;
         let username_utf16: Vec<u8> = "alice".encode_utf16().flat_map(u16::to_le_bytes).collect(); // 10 bytes
         let domain_utf16: Vec<u8> = "CORP".encode_utf16().flat_map(u16::to_le_bytes).collect(); // 8 bytes
-        w16(&mut flat_page, dc + 0x00, username_utf16.len() as u16); // username_len
+        w16(&mut flat_page, dc, username_utf16.len() as u16); // username_len
         w16(&mut flat_page, dc + 0x04, domain_utf16.len() as u16); // domain_len
         w32(&mut flat_page, dc + 0x28, 10240); // iteration_count=10240
                                                // Username at data_addr + 96 = dc + 96 = dc + 0x60
@@ -1150,9 +1148,9 @@ mod tests {
             .map_4k(bb_vaddr, bb_paddr, flags::WRITABLE)
             .write_phys(bb_paddr, &bb_page)
             .map_4k(flat_vaddr, flat_paddr, flags::WRITABLE)
-            .write_phys(flat_paddr, &flat_page[..0x1000].to_vec())
+            .write_phys(flat_paddr, &flat_page[..0x1000])
             .map_4k(flat_page2_vaddr, flat_page2_paddr, flags::WRITABLE)
-            .write_phys(flat_page2_paddr, &flat_page[0x1000..].to_vec())
+            .write_phys(flat_page2_paddr, &flat_page[0x1000..])
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));

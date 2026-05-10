@@ -39,7 +39,7 @@ pub fn classify_etw_patch(bytes: &[u8]) -> Option<&'static str> {
         return None;
     }
     match &bytes[..3] {
-        [0x31, 0xC0, 0xC3] | [0x33, 0xC0, 0xC3] => Some("xor_eax_ret"),
+        [0x31 | 0x33, 0xC0, 0xC3] => Some("xor_eax_ret"),
         [0xB8, _, _] if bytes.get(5) == Some(&0xC3) => Some("mov_eax_ret"),
         [0xEB, _, _] => Some("jmp_stub"),
         [0xCC, _, _] => Some("int3_patch"),

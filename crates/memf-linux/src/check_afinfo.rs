@@ -48,12 +48,7 @@ pub struct AfInfoHookInfo {
 /// - Address of `0` is not considered hooked (null/unset pointer).
 /// - Address within `[kernel_start, kernel_end]` is benign (kernel text).
 /// - Address outside that range is suspicious (hooked).
-pub fn classify_afinfo_hook(hook_addr: u64, kernel_start: u64, kernel_end: u64) -> bool {
-    if hook_addr == 0 {
-        return false;
-    }
-    !(kernel_start <= hook_addr && hook_addr <= kernel_end)
-}
+pub use crate::heuristics::classify_afinfo_hook;
 
 /// Walk network protocol handler structs and check for hooks.
 ///
@@ -130,7 +125,7 @@ pub fn walk_check_afinfo<P: PhysicalMemoryProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memf_core::test_builders::{flags as ptflags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags as ptflags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;

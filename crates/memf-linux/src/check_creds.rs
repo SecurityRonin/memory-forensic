@@ -312,7 +312,7 @@ mod tests {
         };
         let cloned = info.clone();
         assert_eq!(cloned.pid, 42);
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("evil"));
         let json = serde_json::to_string(&cloned).unwrap();
         assert!(json.contains("\"pid\":42"));

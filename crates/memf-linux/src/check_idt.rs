@@ -48,12 +48,7 @@ pub struct IdtEntryInfo {
 /// - Address of `0` is not considered hooked (null/unused entry).
 /// - Address within `[kernel_start, kernel_end]` is benign (kernel text).
 /// - Address outside that range is suspicious (hooked).
-pub fn classify_idt_entry(handler_addr: u64, kernel_start: u64, kernel_end: u64) -> bool {
-    if handler_addr == 0 {
-        return false;
-    }
-    !(kernel_start <= handler_addr && handler_addr <= kernel_end)
-}
+pub use crate::heuristics::classify_idt_entry;
 
 /// Map a gate type nibble to a human-readable name.
 ///
@@ -120,7 +115,7 @@ pub fn walk_check_idt<P: PhysicalMemoryProvider>(
         let offset_high = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
 
         let handler_addr =
-            (offset_high as u64) << 32 | (offset_mid as u64) << 16 | offset_low as u64;
+            u64::from(offset_high) << 32 | u64::from(offset_mid) << 16 | u64::from(offset_low);
 
         // Skip unused entries (handler == 0).
         if handler_addr == 0 {
@@ -436,7 +431,7 @@ mod tests {
             is_hooked: false,
         };
         let cloned = entry.clone();
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("Interrupt Gate"));
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"vector\":33"));

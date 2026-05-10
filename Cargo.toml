@@ -70,6 +70,8 @@ snap = "1"
 tar = "0.4"
 tempfile = "3"
 thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = "3"
 yara-x = "0.12"
 zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
@@ -119,6 +121,8 @@ tar.workspace = true
 flate2.workspace = true
 bzip2.workspace = true
 tempfile.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
