@@ -47,12 +47,11 @@ pub fn decrypt_v10_cookie(
     ciphertext: &[u8],
     key: &[u8; 32],
 ) -> Result<Vec<u8>, DpapiError> {
-    use aes_gcm::{
-        Aes256Gcm, KeyInit,
-        aead::{Aead, generic_array::GenericArray},
-    };
+    #[allow(deprecated)] // from_slice deprecated in generic-array 1.x; aes-gcm 0.10 still uses 0.14
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::{Aead, Nonce}};
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| DpapiError::InvalidKeyLength)?;
-    let nonce_ga = GenericArray::from_slice(nonce);
+    #[allow(deprecated)]
+    let nonce_ga = Nonce::<Aes256Gcm>::from_slice(nonce);
     cipher
         .decrypt(nonce_ga, ciphertext)
         .map_err(|_| DpapiError::DecryptionFailed)
@@ -92,12 +91,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn decrypt_v10_roundtrip() {
         use aes_gcm::{Aes256Gcm, KeyInit, aead::{Aead, Nonce}};
         let key = [0x42u8; 32];
         let nonce_bytes = [0x11u8; 12];
         let plaintext = b"session_token_value";
         let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        #[allow(deprecated)]
         let nonce = Nonce::<Aes256Gcm>::from_slice(&nonce_bytes);
         let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).unwrap();
         let recovered = decrypt_v10_cookie(&nonce_bytes, &ciphertext, &key).expect("ok");
