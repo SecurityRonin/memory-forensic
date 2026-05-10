@@ -651,4 +651,59 @@ mod tests {
         assert!(json.contains("\"is_suspicious\":true"));
         assert!(json.contains("\"in_init\":false"));
     }
+
+    // RED: missing _PEB_LDR_DATA.InLoadOrderModuleList → MissingField
+    #[test]
+    fn walk_ldrmodules_missing_in_load_order_returns_missing_field() {
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // walk_ldrmodules(eprocess_addr, ...) reads _EPROCESS.Peb first (offset 0x550).
+        // Must build a proper _EPROCESS with non-zero Peb, then a _PEB with non-zero Ldr.
+        let eproc_paddr: u64 = 0x0010_0000;
+        let peb_paddr: u64 = 0x0011_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_7000_0000;
+        let peb_vaddr: u64 = 0xFFFF_8000_7100_0000;
+        let ldr_vaddr: u64 = 0xFFFF_8000_7200_0000;
+
+        // _EPROCESS.Peb at offset 0x550
+        let mut eproc_page = vec![0u8; 4096];
+        eproc_page[0x550..0x558].copy_from_slice(&peb_vaddr.to_le_bytes());
+
+        // _PEB.Ldr at offset 0x18
+        let mut peb_page = vec![0u8; 4096];
+        peb_page[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(ldr) = user_types.get_mut("_PEB_LDR_DATA") {
+                if let Some(fields) = ldr["fields"].as_object_mut() {
+                    fields.remove("InLoadOrderModuleList");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+        let ptb = PageTableBuilder::new()
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(peb_vaddr, peb_paddr, flags::WRITABLE)
+            .write_phys(eproc_paddr, &eproc_page)
+            .write_phys(peb_paddr, &peb_page);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_ldrmodules(&reader, eproc_vaddr, 1, "test.exe");
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_PEB_LDR_DATA" && field_name == "InLoadOrderModuleList"
+            ),
+            "expected MissingField(_PEB_LDR_DATA.InLoadOrderModuleList), got {:?}",
+            result
+        );
+    }
 }

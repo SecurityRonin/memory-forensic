@@ -243,4 +243,64 @@ mod tests {
         assert_eq!(results[0].pid, 500);
         assert!(results[0].cmdline.is_empty());
     }
+
+    // RED: missing _RTL_USER_PROCESS_PARAMETERS.CommandLine → MissingField
+    #[test]
+    fn walk_cmdlines_missing_command_line_returns_missing_field() {
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(params) = user_types.get_mut("_RTL_USER_PROCESS_PARAMETERS") {
+                if let Some(fields) = params["fields"].as_object_mut() {
+                    fields.remove("CommandLine");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        const HEAD_VADDR: u64 = 0xFFFF_8000_AA00_0000;
+        const EPROC_VADDR: u64 = 0xFFFF_8000_AA10_0000;
+        const PEB_VADDR: u64 = 0xFFFF_8000_AA20_0000;
+        const PARAMS_VADDR: u64 = 0xFFFF_8000_AA30_0000;
+        const HEAD_PADDR: u64 = 0x0088_0000;
+        const EPROC_PADDR: u64 = 0x0089_0000;
+        const PEB_PADDR: u64 = 0x008A_0000;
+        const PARAMS_PADDR: u64 = 0x008B_0000;
+        let eproc_links = EPROC_VADDR + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(HEAD_VADDR, HEAD_PADDR, flags::WRITABLE)
+            .map_4k(EPROC_VADDR, EPROC_PADDR, flags::WRITABLE)
+            .map_4k(EPROC_VADDR + 0x1000, EPROC_PADDR + 0x1000, flags::WRITABLE)
+            .map_4k(PEB_VADDR, PEB_PADDR, flags::WRITABLE)
+            .map_4k(PARAMS_VADDR, PARAMS_PADDR, flags::WRITABLE)
+            .write_phys_u64(HEAD_PADDR, eproc_links)
+            .write_phys_u64(HEAD_PADDR + 8, eproc_links)
+            .write_phys_u64(EPROC_PADDR + KPROCESS_DTB, 0x1000)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_CREATE_TIME, 132_800_000_000_000_000)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_PID, 999)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_LINKS, HEAD_VADDR)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_LINKS + 8, HEAD_VADDR)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_PPID, 0)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_PEB, PEB_VADDR)
+            .write_phys(EPROC_PADDR + EPROCESS_IMAGE_NAME, b"test.exe\0")
+            // PEB.ProcessParameters at offset 0x20
+            .write_phys_u64(PEB_PADDR + PEB_PROCESS_PARAMETERS as u64, PARAMS_VADDR);
+        let (cr3, mem) = ptb.build();
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        use memf_core::object_reader::ObjectReader;
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_cmdlines(&reader, HEAD_VADDR);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_RTL_USER_PROCESS_PARAMETERS" && field_name == "CommandLine"
+            ),
+            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.CommandLine), got {:?}",
+            result
+        );
+    }
 }

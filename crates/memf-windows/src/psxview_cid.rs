@@ -195,4 +195,56 @@ mod tests {
         assert!(classify_hidden_process(false));
         assert!(!classify_hidden_process(true));
     }
+
+    // RED: missing _HANDLE_TABLE_ENTRY size → WalkFailed
+    #[test]
+    fn walk_psp_cid_table_missing_handle_table_entry_size_returns_walk_failed() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // Use windows_kernel_preset (has _HANDLE_TABLE.TableCode etc.) but remove
+        // _HANDLE_TABLE_ENTRY so struct_size returns None.
+        // Set up: PspCidTable → ht_vaddr; ht.TableCode = entries_vaddr (level 0);
+        // ht.NextHandleNeedingPool = 8 so num_entries = 2.
+        let psp_cid_paddr: u64 = 0x0010_0000;
+        let ht_paddr: u64 = 0x0020_0000;
+        let entries_paddr: u64 = 0x0030_0000;
+        let psp_cid_vaddr: u64 = 0xFFFFF805_5A500000;
+        let ht_vaddr: u64 = 0xFFFFF805_5A600000;
+        let entries_vaddr: u64 = 0xFFFFF805_5A700000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(psp_cid_vaddr, psp_cid_paddr, flags::WRITABLE)
+            .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
+            .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
+            // PspCidTable pointer → ht_vaddr
+            .write_phys_u64(psp_cid_paddr, ht_vaddr)
+            // _HANDLE_TABLE.TableCode at preset offset 0x08 = entries_vaddr (level 0)
+            .write_phys_u64(ht_paddr + 0x08, entries_vaddr)
+            // _HANDLE_TABLE.NextHandleNeedingPool at preset offset 0x3C = 8 (num_entries=2)
+            .write_phys(ht_paddr + 0x3C, &8u32.to_le_bytes());
+
+        let mut isf_json = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PspCidTable", psp_cid_vaddr)
+            .build_json();
+        // Remove _HANDLE_TABLE_ENTRY so struct_size returns None
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            user_types.remove("_HANDLE_TABLE_ENTRY");
+        }
+        let resolver = memf_symbols::isf::IsfResolver::from_value(&isf_json).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = memf_core::object_reader::ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_psp_cid_table(&reader);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "psxview_cid"
+            ),
+            "expected WalkFailed(psxview_cid), got {:?}",
+            result
+        );
+    }
 }

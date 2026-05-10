@@ -570,4 +570,41 @@ mod tests {
         assert_eq!(drivers[0].size, 0x0004_0000);
         assert_eq!(drivers[0].vaddr, entry_vaddr);
     }
+
+    // RED: check_irp_hooks missing _DRIVER_OBJECT.DriverName → MissingField
+    #[test]
+    fn check_irp_hooks_missing_driver_name_returns_missing_field() {
+        let isf = IsfBuilder::new();
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = check_irp_hooks(&reader, 0, &[]);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_DRIVER_OBJECT" && field_name == "DriverName"
+            ),
+            "expected MissingField(_DRIVER_OBJECT.DriverName), got {:?}",
+            result
+        );
+    }
+
+    // RED: check_irp_hooks missing _DRIVER_OBJECT.MajorFunction → MissingField
+    #[test]
+    fn check_irp_hooks_missing_major_function_returns_missing_field() {
+        // Need _DRIVER_OBJECT.DriverName present so we pass the first check.
+        let isf = IsfBuilder::new()
+            .add_struct("_DRIVER_OBJECT", 0x200)
+            .add_field("_DRIVER_OBJECT", "DriverName", 0x58, "pointer");
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = check_irp_hooks(&reader, 0, &[]);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_DRIVER_OBJECT" && field_name == "MajorFunction"
+            ),
+            "expected MissingField(_DRIVER_OBJECT.MajorFunction), got {:?}",
+            result
+        );
+    }
 }

@@ -475,4 +475,70 @@ mod tests {
         let results = walk_malfind(&reader, head_vaddr).unwrap();
         assert!(results.is_empty());
     }
+
+    // RED: missing _EPROCESS.VadRoot field → MissingField
+    #[test]
+    fn walk_malfind_missing_eprocess_vad_root_returns_missing_field() {
+        // ISF with no _EPROCESS at all → walk_processes will fail first.
+        // We need walk_processes to succeed (empty list is OK — walk_malfind
+        // skips the VadRoot check when there are no processes). So we need
+        // at least one process with peb_addr != 0 to trigger the VadRoot lookup.
+        // Build minimal ISF with process walk fields + one process entry, but
+        // without _EPROCESS.VadRoot.
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(eprocess) = user_types.get_mut("_EPROCESS") {
+                if let Some(fields) = eprocess["fields"].as_object_mut() {
+                    fields.remove("VadRoot");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        // Build a minimal process list with peb_addr != 0 to trigger the VadRoot lookup.
+        const EPROCESS_PID: u64 = 0x440;
+        const EPROCESS_LINKS: u64 = 0x448;
+        const EPROCESS_PPID: u64 = 0x540;
+        const EPROCESS_PEB: u64 = 0x550;
+        const EPROCESS_IMAGE_NAME: u64 = 0x5A8;
+        const EPROCESS_CREATE_TIME: u64 = 0x430;
+        const EPROCESS_EXIT_TIME: u64 = 0x438;
+        const KPROCESS_DTB: u64 = 0x28;
+
+        let eproc_paddr: u64 = 0x0080_0000;
+        let head_paddr: u64 = 0x0070_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let eproc_links = eproc_vaddr + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_links)
+            .write_phys_u64(head_paddr + 8, eproc_links)
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132_800_000_000_000_000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 1234)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0x7FFF_0000_0000) // non-zero PEB
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"notepad.exe\0");
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_malfind(&reader, head_vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_EPROCESS" && field_name == "VadRoot"
+            ),
+            "expected MissingField(_EPROCESS.VadRoot), got {:?}",
+            result
+        );
+    }
 }

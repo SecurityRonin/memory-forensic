@@ -585,4 +585,21 @@ mod tests {
         assert!(ports.contains(&8080));
         assert!(ports.contains(&443));
     }
+
+    // RED: missing _TCP_ENDPOINT.HashEntry field → MissingField
+    #[test]
+    fn walk_tcp_endpoints_missing_hash_entry_returns_missing_field() {
+        let isf = IsfBuilder::new();
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = walk_tcp_endpoints(&reader, 0, 1);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_TCP_ENDPOINT" && field_name == "HashEntry"
+            ),
+            "expected MissingField(_TCP_ENDPOINT.HashEntry), got {:?}",
+            result
+        );
+    }
 }

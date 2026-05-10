@@ -485,4 +485,75 @@ mod tests {
         assert_eq!(handles[0].object_type, "Mutant");
         assert_eq!(handles[0].pid, 500);
     }
+
+    // RED: missing _HANDLE_TABLE_ENTRY size → WalkFailed
+    #[test]
+    fn walk_handles_missing_handle_table_entry_size_returns_walk_failed() {
+        // walk_handles calls walk_processes first (succeeds with empty list if head → itself),
+        // then checks _HANDLE_TABLE_ENTRY size. Use windows_kernel_preset minus _HANDLE_TABLE_ENTRY.
+        let head_paddr: u64 = 0x0050_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0050_0000;
+
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            user_types.remove("_HANDLE_TABLE_ENTRY");
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        // Empty circular list: head.Flink = head.Blink = head_vaddr
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, head_vaddr)
+            .write_phys_u64(head_paddr + 8, head_vaddr);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = memf_core::object_reader::ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_handles(&reader, head_vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "handles"
+            ),
+            "expected WalkFailed(handles), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing ObTypeIndexTable symbol → MissingKernelSymbol
+    #[test]
+    fn walk_handles_missing_ob_type_index_table_returns_missing_kernel_symbol() {
+        // Use windows_kernel_preset (has _HANDLE_TABLE_ENTRY) but remove ObTypeIndexTable symbol.
+        let head_paddr: u64 = 0x0051_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0051_0000;
+
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        // Remove ObTypeIndexTable from the symbols section.
+        if let Some(syms) = isf_json["symbols"].as_object_mut() {
+            syms.remove("ObTypeIndexTable");
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, head_vaddr)
+            .write_phys_u64(head_paddr + 8, head_vaddr);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = memf_core::object_reader::ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_handles(&reader, head_vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingKernelSymbol { ref name }) if name == "ObTypeIndexTable"
+            ),
+            "expected MissingKernelSymbol(ObTypeIndexTable), got {:?}",
+            result
+        );
+    }
 }

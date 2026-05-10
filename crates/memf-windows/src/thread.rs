@@ -344,4 +344,90 @@ mod tests {
 
         assert!(threads.is_empty());
     }
+
+    // RED: missing _EPROCESS.Pcb field → MissingField
+    #[test]
+    fn walk_threads_missing_eprocess_pcb_returns_missing_field() {
+        let isf = IsfBuilder::new();
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = walk_threads(&reader, 0, 0);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_EPROCESS" && field_name == "Pcb"
+            ),
+            "expected MissingField(_EPROCESS.Pcb), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing _KPROCESS.ThreadListHead field → MissingField
+    #[test]
+    fn walk_threads_missing_kprocess_thread_list_head_returns_missing_field() {
+        // ISF with _EPROCESS.Pcb but no _KPROCESS.ThreadListHead
+        let isf = IsfBuilder::new()
+            .add_struct("_EPROCESS", 0x800)
+            .add_field("_EPROCESS", "Pcb", 0, "pointer");
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = walk_threads(&reader, 0, 0);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_KPROCESS" && field_name == "ThreadListHead"
+            ),
+            "expected MissingField(_KPROCESS.ThreadListHead), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing _ETHREAD.Cid field → MissingField
+    #[test]
+    fn walk_threads_missing_ethread_cid_returns_missing_field() {
+        // Need _EPROCESS.Pcb and _KPROCESS.ThreadListHead present so the walk
+        // proceeds past those checks, and also a non-empty thread list so
+        // read_thread_info is called. Use windows_kernel_preset which has all
+        // the required fields but remove _ETHREAD.Cid.
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(ethread) = user_types.get_mut("_ETHREAD") {
+                if let Some(fields) = ethread["fields"].as_object_mut() {
+                    fields.remove("Cid");
+                }
+            }
+        }
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+        let eproc_paddr: u64 = 0x0080_0000;
+        let kthread_paddr: u64 = 0x0080_1000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let kthread_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let thread_list_head_vaddr = eproc_vaddr + KPROCESS_THREAD_LIST_HEAD;
+        let kthread_list_entry_vaddr = kthread_vaddr + KTHREAD_THREAD_LIST_ENTRY;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
+            .write_phys_u64(eproc_paddr + KPROCESS_THREAD_LIST_HEAD, kthread_list_entry_vaddr)
+            .write_phys_u64(eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8, kthread_list_entry_vaddr);
+        let ptb = write_kthread(ptb, kthread_paddr, 8, 4, 0, 0, 0, thread_list_head_vaddr, thread_list_head_vaddr);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_threads(&reader, eproc_vaddr, 4);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_ETHREAD" && field_name == "Cid"
+            ),
+            "expected MissingField(_ETHREAD.Cid), got {:?}",
+            result
+        );
+    }
 }

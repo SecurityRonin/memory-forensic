@@ -934,4 +934,95 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Ldr"));
     }
+
+    // RED: walk_dlls with Ldr = NULL → WalkFailed
+    #[test]
+    fn walk_dlls_null_ldr_returns_walk_failed() {
+        // Build a _PEB with Ldr = 0.
+        let vaddr: u64 = 0xFFFF_8000_0000_0000;
+        let paddr: u64 = 0x10_0000;
+        let page = vec![0u8; 4096]; // All zeros → PEB.Ldr = 0
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_dlls(&reader, vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::WalkFailed { ref walker, ref reason })
+                if *walker == "dll" && reason == "PEB.Ldr is NULL"
+            ),
+            "expected WalkFailed(dll, PEB.Ldr is NULL), got {:?}",
+            result
+        );
+    }
+
+    // RED: walk_ldr_modules with Ldr = NULL → WalkFailed
+    #[test]
+    fn walk_ldr_modules_null_ldr_returns_walk_failed() {
+        let vaddr: u64 = 0xFFFF_8000_0000_1000;
+        let paddr: u64 = 0x11_0000;
+        let page = vec![0u8; 4096];
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_ldr_modules(&reader, vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::WalkFailed { ref walker, ref reason })
+                if *walker == "dll" && reason == "PEB.Ldr is NULL"
+            ),
+            "expected WalkFailed(dll, PEB.Ldr is NULL), got {:?}",
+            result
+        );
+    }
+
+    // RED: walk_ldr_modules missing _PEB_LDR_DATA.InLoadOrderModuleList → MissingField
+    #[test]
+    fn walk_ldr_modules_missing_in_load_order_returns_missing_field() {
+        // Need Ldr != 0 so we get past the NULL check.
+        let vaddr: u64 = 0xFFFF_8000_0000_2000;
+        let paddr: u64 = 0x12_0000;
+        let ldr_vaddr: u64 = 0xFFFF_8000_0001_0000;
+        let mut page = vec![0u8; 4096];
+        // PEB.Ldr at offset 0x18 = ldr_vaddr
+        page[0x18..0x20].copy_from_slice(&ldr_vaddr.to_le_bytes());
+
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(ldr) = user_types.get_mut("_PEB_LDR_DATA") {
+                if let Some(fields) = ldr["fields"].as_object_mut() {
+                    fields.remove("InLoadOrderModuleList");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let result = walk_ldr_modules(&reader, vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_PEB_LDR_DATA" && field_name == "InLoadOrderModuleList"
+            ),
+            "expected MissingField(_PEB_LDR_DATA.InLoadOrderModuleList), got {:?}",
+            result
+        );
+    }
 }

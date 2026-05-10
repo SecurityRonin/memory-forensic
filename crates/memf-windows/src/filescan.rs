@@ -481,4 +481,46 @@ mod tests {
             "device_name should be resolved from driver"
         );
     }
+
+    // RED: walk_file_objects missing _OBJECT_HEADER.Body → MissingField
+    #[test]
+    fn walk_file_objects_missing_object_header_body_returns_missing_field() {
+        let isf = IsfBuilder::new();
+        let reader = memf_core::test_builders::make_reader(&isf);
+        // Pass a dummy File handle to trigger the body_offset lookup.
+        let handles = vec![WinHandleInfo {
+            pid: 4,
+            image_name: "System".into(),
+            object_addr: 0x1000,
+            object_type: "File".into(),
+            handle_value: 4,
+            granted_access: 0,
+        }];
+        let result = walk_file_objects(&reader, &handles);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_OBJECT_HEADER" && field_name == "Body"
+            ),
+            "expected MissingField(_OBJECT_HEADER.Body), got {:?}",
+            result
+        );
+    }
+
+    // RED: scan_file_objects missing PsActiveProcessHead symbol → MissingKernelSymbol
+    #[test]
+    fn scan_file_objects_missing_ps_active_process_head_returns_missing_kernel_symbol() {
+        let isf = IsfBuilder::new();
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = scan_file_objects(&reader);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingKernelSymbol { ref name }) if name == "PsActiveProcessHead"
+            ),
+            "expected MissingKernelSymbol(PsActiveProcessHead), got {:?}",
+            result
+        );
+    }
 }

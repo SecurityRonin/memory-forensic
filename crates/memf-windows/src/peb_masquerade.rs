@@ -436,4 +436,104 @@ mod tests {
         assert_eq!(result.peb_image_path, image_path);
         assert!(!result.is_masquerading);
     }
+
+    // RED: missing _RTL_USER_PROCESS_PARAMETERS.ImagePathName → MissingField
+    #[test]
+    fn walk_peb_masquerade_missing_image_path_name_returns_missing_field() {
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        // ISF with _EPROCESS.Peb and _PEB.ProcessParameters but without
+        // _RTL_USER_PROCESS_PARAMETERS.ImagePathName.
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(params) = user_types.get_mut("_RTL_USER_PROCESS_PARAMETERS") {
+                if let Some(fields) = params["fields"].as_object_mut() {
+                    fields.remove("ImagePathName");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        // Build minimal _EPROCESS + _PEB with non-zero ProcessParameters.
+        // _EPROCESS.Peb at offset 0x550 (preset), _PEB.ProcessParameters at 0x20.
+        let eproc_paddr: u64 = 0x0080_0000;
+        let peb_paddr: u64 = 0x0081_0000;
+        let params_paddr: u64 = 0x0082_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_1000_0000;
+        let peb_vaddr: u64 = 0xFFFF_8000_2000_0000;
+        let params_vaddr: u64 = 0xFFFF_8000_3000_0000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(eproc_vaddr, eproc_paddr, memf_core::test_builders::flags::WRITABLE)
+            .map_4k(peb_vaddr, peb_paddr, memf_core::test_builders::flags::WRITABLE)
+            .map_4k(params_vaddr, params_paddr, memf_core::test_builders::flags::WRITABLE)
+            // _EPROCESS.Peb at 0x550
+            .write_phys_u64(eproc_paddr + 0x550, peb_vaddr)
+            // _PEB.ProcessParameters at 0x20
+            .write_phys_u64(peb_paddr + 0x20, params_vaddr);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_peb_masquerade(&reader, eproc_vaddr, 4, "svchost.exe");
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_RTL_USER_PROCESS_PARAMETERS" && field_name == "ImagePathName"
+            ),
+            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.ImagePathName), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing _RTL_USER_PROCESS_PARAMETERS.CommandLine → MissingField
+    #[test]
+    fn walk_peb_masquerade_missing_command_line_returns_missing_field() {
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(params) = user_types.get_mut("_RTL_USER_PROCESS_PARAMETERS") {
+                if let Some(fields) = params["fields"].as_object_mut() {
+                    fields.remove("CommandLine");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        let eproc_paddr: u64 = 0x0083_0000;
+        let peb_paddr: u64 = 0x0084_0000;
+        let params_paddr: u64 = 0x0085_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_4000_0000;
+        let peb_vaddr: u64 = 0xFFFF_8000_5000_0000;
+        let params_vaddr: u64 = 0xFFFF_8000_6000_0000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(eproc_vaddr, eproc_paddr, memf_core::test_builders::flags::WRITABLE)
+            .map_4k(peb_vaddr, peb_paddr, memf_core::test_builders::flags::WRITABLE)
+            .map_4k(params_vaddr, params_paddr, memf_core::test_builders::flags::WRITABLE)
+            .write_phys_u64(eproc_paddr + 0x550, peb_vaddr)
+            .write_phys_u64(peb_paddr + 0x20, params_vaddr);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_peb_masquerade(&reader, eproc_vaddr, 4, "svchost.exe");
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_RTL_USER_PROCESS_PARAMETERS" && field_name == "CommandLine"
+            ),
+            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.CommandLine), got {:?}",
+            result
+        );
+    }
 }

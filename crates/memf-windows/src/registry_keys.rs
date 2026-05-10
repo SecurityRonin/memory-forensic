@@ -1655,4 +1655,79 @@ mod tests {
             "expected RILIChild"
         );
     }
+
+    // RED: read_registry_values with wrong nk signature → WalkFailed
+    #[test]
+    fn read_registry_values_invalid_nk_signature_returns_walk_failed() {
+        // Build a hive with a root cell that has an invalid signature (not 0x6B6E).
+        // cell_address(hive_addr, cell_offset) = hive_addr + HBIN_START_OFFSET + cell_offset + 4
+        // We'll use key_cell_offset = 0x20 (a typical value).
+        // Layout: hive_page at vaddr_base; nk cell starts at hive_addr + 0x1000 + 0x20 + 4
+        let hive_paddr: u64 = 0x0090_0000;
+        let hive_vaddr: u64 = 0xFFFF_8000_C000_0000;
+        let mut hive_page = vec![0u8; 8192]; // 2 pages
+
+        let key_cell_offset: u32 = 0x20;
+        // cell data starts at: HBIN_START_OFFSET(0x1000) + key_cell_offset + 4 (skip size)
+        // = 0x1000 + 0x20 + 4 = 0x1024
+        let cell_data_start: usize = 0x1000 + 0x20 + 4;
+        // Allocated cell: size = -64 (0xFFFFFFC0 as i32 LE)
+        let cell_size: i32 = -64;
+        hive_page[0x1000 + 0x20..0x1000 + 0x20 + 4]
+            .copy_from_slice(&cell_size.to_le_bytes());
+        // Write wrong signature: 0xDEAD instead of NK_SIGNATURE (0x6B6E)
+        hive_page[cell_data_start..cell_data_start + 2]
+            .copy_from_slice(&0xDEADu16.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hive_vaddr + 0x1000, hive_paddr + 0x1000, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page[..4096])
+            .write_phys(hive_paddr + 0x1000, &hive_page[4096..]);
+        let reader = make_reader(ptb);
+
+        let result = read_registry_values(&reader, hive_vaddr, key_cell_offset);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "registry_keys"
+            ),
+            "expected WalkFailed(registry_keys) for invalid nk signature, got {:?}",
+            result
+        );
+    }
+
+    // RED: read_single_value with vk cell too small → WalkFailed
+    // Call read_single_value directly (private fn accessible from mod tests).
+    #[test]
+    fn read_single_value_vk_cell_too_small_returns_walk_failed() {
+        let hive_paddr: u64 = 0x0091_0000;
+        let hive_vaddr: u64 = 0xFFFF_8000_D000_0000;
+        let mut hive_page = vec![0u8; 8192];
+
+        // VK cell at cell index 0x100 (physical: 0x1000 + 0x100)
+        // cell_address(hive_addr, 0x100) = hive_addr + 0x1000 + 0x100
+        let vk_cell_start: usize = 0x1000 + 0x100;
+        // Cell size = -2 (allocated, too small for vk data: only 2 bytes < VK_NAME_OFFSET=0x14)
+        let vk_size: i32 = -2;
+        hive_page[vk_cell_start..vk_cell_start + 4].copy_from_slice(&vk_size.to_le_bytes());
+        // vk data: 2 bytes of zeros
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .map_4k(hive_vaddr + 0x1000, hive_paddr + 0x1000, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page[..4096])
+            .write_phys(hive_paddr + 0x1000, &hive_page[4096..]);
+        let reader = make_reader(ptb);
+
+        let result = read_single_value(&reader, hive_vaddr, 0x100u32, "HKLM\\test");
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "registry_keys"
+            ),
+            "expected WalkFailed(registry_keys) for vk cell too small, got {:?}",
+            result
+        );
+    }
 }

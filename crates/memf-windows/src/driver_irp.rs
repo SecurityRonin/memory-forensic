@@ -564,4 +564,49 @@ mod tests {
         assert!(json.contains("evil.sys"));
         assert!(json.contains("\"is_hooked\":true"));
     }
+
+    // RED: check_driver_object missing _DRIVER_OBJECT.DriverName → MissingField
+    #[test]
+    fn check_driver_object_missing_driver_name_returns_missing_field() {
+        use memf_symbols::test_builders::IsfBuilder; // needed here even though outer tests use it
+        // Need _DRIVER_OBJECT.DriverStart and .DriverSize present so the first
+        // read_field calls succeed. The ISF with only those fields, not DriverName.
+        let isf = IsfBuilder::new()
+            .add_struct("_DRIVER_OBJECT", 0x200)
+            .add_field("_DRIVER_OBJECT", "DriverStart", 0x28, "pointer")
+            .add_field("_DRIVER_OBJECT", "DriverSize", 0x30, "unsigned int");
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = check_driver_object(&reader, 0, &[]);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_DRIVER_OBJECT" && field_name == "DriverName"
+            ),
+            "expected MissingField(_DRIVER_OBJECT.DriverName), got {:?}",
+            result
+        );
+    }
+
+    // RED: check_driver_object missing _DRIVER_OBJECT.MajorFunction → MissingField
+    #[test]
+    fn check_driver_object_missing_major_function_returns_missing_field() {
+        use memf_symbols::test_builders::IsfBuilder;
+        let isf = IsfBuilder::new()
+            .add_struct("_DRIVER_OBJECT", 0x200)
+            .add_field("_DRIVER_OBJECT", "DriverStart", 0x28, "pointer")
+            .add_field("_DRIVER_OBJECT", "DriverSize", 0x30, "unsigned int")
+            .add_field("_DRIVER_OBJECT", "DriverName", 0x58, "pointer");
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = check_driver_object(&reader, 0, &[]);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_DRIVER_OBJECT" && field_name == "MajorFunction"
+            ),
+            "expected MissingField(_DRIVER_OBJECT.MajorFunction), got {:?}",
+            result
+        );
+    }
 }

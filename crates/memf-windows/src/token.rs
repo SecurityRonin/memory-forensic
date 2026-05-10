@@ -577,4 +577,173 @@ mod tests {
         assert_eq!(results[0].pid, 4);
         assert_eq!(results[0].user_sid, "S-1-5-18");
     }
+
+    // RED: missing _TOKEN.Privileges field → MissingField
+    #[test]
+    fn walk_tokens_missing_token_privileges_returns_missing_field() {
+        // ISF with all process-walk fields but no _TOKEN.Privileges
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(token) = user_types.get_mut("_TOKEN") {
+                if let Some(fields) = token["fields"].as_object_mut() {
+                    fields.remove("Privileges");
+                }
+            }
+        }
+        let resolver = memf_symbols::isf::IsfResolver::from_value(&isf_json).unwrap();
+
+        // Build a minimal process list with one process that has a non-zero Token.
+        let eproc_paddr: u64 = 0x0080_0000;
+        let head_paddr: u64 = 0x0070_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let token_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let eproc_links = eproc_vaddr + EPROCESS_LINKS;
+
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
+            // head -> eproc_links (circular)
+            .write_phys_u64(head_paddr, eproc_links)
+            .write_phys_u64(head_paddr + 8, eproc_links)
+            // eproc fields
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132_800_000_000_000_000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_TOKEN, token_vaddr)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"System\0");
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tokens(&reader, head_vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_TOKEN" && field_name == "Privileges"
+            ),
+            "expected MissingField(_TOKEN.Privileges), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing _SEP_TOKEN_PRIVILEGES.Present field → MissingField
+    #[test]
+    fn walk_tokens_missing_sep_token_privileges_present_returns_missing_field() {
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(sep) = user_types.get_mut("_SEP_TOKEN_PRIVILEGES") {
+                if let Some(fields) = sep["fields"].as_object_mut() {
+                    fields.remove("Present");
+                }
+            }
+        }
+        let resolver = memf_symbols::isf::IsfResolver::from_value(&isf_json).unwrap();
+
+        let eproc_paddr: u64 = 0x0080_0000;
+        let head_paddr: u64 = 0x0070_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let token_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let eproc_links = eproc_vaddr + EPROCESS_LINKS;
+
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_links)
+            .write_phys_u64(head_paddr + 8, eproc_links)
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132_800_000_000_000_000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_TOKEN, token_vaddr)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"System\0");
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tokens(&reader, head_vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_SEP_TOKEN_PRIVILEGES" && field_name == "Present"
+            ),
+            "expected MissingField(_SEP_TOKEN_PRIVILEGES.Present), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing _SEP_TOKEN_PRIVILEGES.Enabled field → MissingField
+    #[test]
+    fn walk_tokens_missing_sep_token_privileges_enabled_returns_missing_field() {
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(sep) = user_types.get_mut("_SEP_TOKEN_PRIVILEGES") {
+                if let Some(fields) = sep["fields"].as_object_mut() {
+                    fields.remove("Enabled");
+                }
+            }
+        }
+        let resolver = memf_symbols::isf::IsfResolver::from_value(&isf_json).unwrap();
+
+        let eproc_paddr: u64 = 0x0080_0000;
+        let head_paddr: u64 = 0x0070_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let head_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let token_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let eproc_links = eproc_vaddr + EPROCESS_LINKS;
+
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr + 0x1000, eproc_paddr + 0x1000, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_links)
+            .write_phys_u64(head_paddr + 8, eproc_links)
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132_800_000_000_000_000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_TOKEN, token_vaddr)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"System\0");
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_tokens(&reader, head_vaddr);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_SEP_TOKEN_PRIVILEGES" && field_name == "Enabled"
+            ),
+            "expected MissingField(_SEP_TOKEN_PRIVILEGES.Enabled), got {:?}",
+            result
+        );
+    }
 }

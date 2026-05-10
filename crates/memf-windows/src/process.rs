@@ -841,4 +841,71 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(!results[0].suspicious);
     }
+
+    // RED: check_peb_masquerade missing _RTL_USER_PROCESS_PARAMETERS.ImagePathName → MissingField
+    #[test]
+    fn check_peb_masquerade_missing_image_path_name_returns_missing_field() {
+        use memf_core::test_builders::PageTableBuilder;
+        use memf_symbols::isf::IsfResolver;
+
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(params) = user_types.get_mut("_RTL_USER_PROCESS_PARAMETERS") {
+                if let Some(fields) = params["fields"].as_object_mut() {
+                    fields.remove("ImagePathName");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        const HEAD_VADDR: u64 = 0xFFFF_8001_AA00_0000;
+        const EPROC_VADDR: u64 = 0xFFFF_8001_AA10_0000;
+        const PEB_VADDR: u64 = 0xFFFF_8001_AA20_0000;
+        const PARAMS_VADDR: u64 = 0xFFFF_8001_AA30_0000;
+        const HEAD_PADDR: u64 = 0x0070_0000;
+        const EPROC_PADDR: u64 = 0x0071_0000;
+        const PEB_PADDR: u64 = 0x0072_0000;
+        const PARAMS_PADDR: u64 = 0x0073_0000;
+        let eproc_links = EPROC_VADDR + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(HEAD_VADDR, HEAD_PADDR, flags::WRITABLE)
+            .map_4k(EPROC_VADDR, EPROC_PADDR, flags::WRITABLE)
+            .map_4k(EPROC_VADDR + 0x1000, EPROC_PADDR + 0x1000, flags::WRITABLE)
+            .map_4k(PEB_VADDR, PEB_PADDR, flags::WRITABLE)
+            .map_4k(PARAMS_VADDR, PARAMS_PADDR, flags::WRITABLE)
+            .write_phys_u64(HEAD_PADDR, eproc_links)
+            .write_phys_u64(HEAD_PADDR + 8, eproc_links)
+            .write_phys_u64(EPROC_PADDR + KPROCESS_DTB, 0x1000)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_CREATE_TIME, 132_800_000_000_000_000)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_PID, 1234)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_LINKS, HEAD_VADDR)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_LINKS + 8, HEAD_VADDR)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_PPID, 0)
+            .write_phys_u64(EPROC_PADDR + EPROCESS_PEB, PEB_VADDR)
+            .write_phys(EPROC_PADDR + EPROCESS_IMAGE_NAME, b"svchost.exe\0")
+            // PEB.ProcessParameters at offset 0x20
+            .write_phys_u64(PEB_PADDR + 0x20, PARAMS_VADDR);
+        let isf_full = IsfBuilder::windows_kernel_preset();
+        use memf_core::object_reader::ObjectReader;
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        let reader = {
+            let (cr3, mem) = ptb.build();
+            let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+            let _ = isf_full; // not used here
+            ObjectReader::new(vas, Box::new(resolver))
+        };
+
+        let result = check_peb_masquerade(&reader, HEAD_VADDR);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_RTL_USER_PROCESS_PARAMETERS" && field_name == "ImagePathName"
+            ),
+            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.ImagePathName), got {:?}",
+            result
+        );
+    }
 }

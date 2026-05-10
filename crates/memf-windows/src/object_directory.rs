@@ -343,4 +343,104 @@ mod tests {
         let driver_addrs = walk_driver_objects(&reader, vaddr).unwrap();
         assert!(driver_addrs.is_empty());
     }
+
+    // RED: missing _OBJECT_HEADER.Body field → MissingField
+    #[test]
+    fn read_object_name_missing_object_header_body_returns_missing_field() {
+        let isf = IsfBuilder::new();
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = read_object_name(&reader, 0x1000);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_OBJECT_HEADER" && field_name == "Body"
+            ),
+            "expected MissingField(_OBJECT_HEADER.Body), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing _OBJECT_HEADER_NAME_INFO size → WalkFailed
+    #[test]
+    fn read_object_name_missing_object_header_name_info_size_returns_walk_failed() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        // Need _OBJECT_HEADER.Body present (so we pass the first check),
+        // and _OBJECT_HEADER.InfoMask readable. Use windows_kernel_preset
+        // but remove _OBJECT_HEADER_NAME_INFO struct entirely.
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            user_types.remove("_OBJECT_HEADER_NAME_INFO");
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        // Map a page with InfoMask bit 1 set (NAME_INFO present) so we reach the size check.
+        // _OBJECT_HEADER.InfoMask at offset 0x1a in the preset.
+        let paddr: u64 = 0x0010_0000;
+        let vaddr: u64 = 0xFFFF_8000_1000_0000;
+        let mut page = vec![0u8; 0x1000];
+        // object_body_addr = vaddr + 0x30 (Body offset = 0x30 from preset)
+        // header_addr = vaddr
+        // InfoMask at header_addr + 0x1a
+        page[0x1a] = 0x02; // NAME_INFO present
+        let ptb = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // object_body_addr = vaddr + 0x30 (Body is at offset 0x30 per preset)
+        let result = read_object_name(&reader, vaddr + 0x30);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "object_directory"
+            ),
+            "expected WalkFailed(object_directory), got {:?}",
+            result
+        );
+    }
+
+    // RED: missing _OBJECT_HEADER_NAME_INFO.Name field → MissingField
+    #[test]
+    fn read_object_name_missing_name_info_name_returns_missing_field() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+
+        // Use windows_kernel_preset but remove _OBJECT_HEADER_NAME_INFO.Name field.
+        let mut isf_json = IsfBuilder::windows_kernel_preset().build_json();
+        if let Some(user_types) = isf_json["user_types"].as_object_mut() {
+            if let Some(ni) = user_types.get_mut("_OBJECT_HEADER_NAME_INFO") {
+                if let Some(fields) = ni["fields"].as_object_mut() {
+                    fields.remove("Name");
+                }
+            }
+        }
+        let resolver = IsfResolver::from_value(&isf_json).unwrap();
+
+        let paddr: u64 = 0x0010_0000;
+        let vaddr: u64 = 0xFFFF_8000_1000_0000;
+        let mut page = vec![0u8; 0x1000];
+        page[0x1a] = 0x02; // NAME_INFO present
+        let ptb = PageTableBuilder::new()
+            .map_4k(vaddr, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = read_object_name(&reader, vaddr + 0x30);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingField { ref struct_name, ref field_name })
+                if struct_name == "_OBJECT_HEADER_NAME_INFO" && field_name == "Name"
+            ),
+            "expected MissingField(_OBJECT_HEADER_NAME_INFO.Name), got {:?}",
+            result
+        );
+    }
 }

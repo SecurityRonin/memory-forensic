@@ -68,6 +68,7 @@ pub fn psxview<P: PhysicalMemoryProvider>(
 }
 
 /// Process info extracted from a single enumeration source.
+#[derive(Debug)]
 struct RawProcInfo {
     pid: u64,
     image_name: String,
@@ -467,5 +468,24 @@ mod tests {
         let results = psxview(&reader, head_vaddr).unwrap();
 
         assert!(results.is_empty());
+    }
+
+    // RED: walk_cid_table missing PspCidTable symbol → MissingKernelSymbol
+    #[test]
+    fn walk_cid_table_missing_psp_cid_table_returns_missing_kernel_symbol() {
+        // psxview calls walk_active_list first, then walk_cid_table.
+        // To isolate walk_cid_table, call it directly (private fn is accessible in mod tests).
+        // Use windows_kernel_preset which has all _EPROCESS fields but no PspCidTable symbol.
+        let isf = IsfBuilder::windows_kernel_preset(); // no PspCidTable symbol
+        let reader = memf_core::test_builders::make_reader(&isf);
+        let result = walk_cid_table(&reader);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::MissingKernelSymbol { ref name }) if name == "PspCidTable"
+            ),
+            "expected MissingKernelSymbol(PspCidTable), got {:?}",
+            result
+        );
     }
 }
