@@ -117,10 +117,10 @@ memf check memdump.lime --symbols linux.json --elf-hooks
 
 ```bash
 # Extract DPAPI master keys from LSASS g_MasterKeyCache linked list
-memf creds memdump.dmp --symbols ntkrnlmp.json --dpapi-keys
+memf check memdump.dmp --symbols ntkrnlmp.json --dpapi-keys
 
-# Decrypt Chrome cookies using recovered master key material
-memf creds memdump.dmp --symbols ntkrnlmp.json --browser-cookies
+# Detect Chrome cookies (v10/v20 encrypted blobs) from heap memory
+memf check memdump.dmp --symbols ntkrnlmp.json --browser-cookies
 ```
 
 ```
