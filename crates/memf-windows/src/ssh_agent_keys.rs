@@ -80,7 +80,7 @@ pub fn walk_ssh_agent_keys<P: PhysicalMemoryProvider + Clone>(
                 .into_iter()
                 .map(|mut item| {
                     item.pid = proc.pid;
-                    item.process_name.clone_from(&proc.image_name);
+                    item.image_name.clone_from(&proc.image_name);
                     item
                 })
                 .collect()
@@ -112,7 +112,7 @@ pub(crate) fn scan_ssh_agent_region(data: &[u8]) -> Vec<SshAgentKeyInfo> {
                 let blob_end = (blob_start + MAX_WIRE_BLOB).min(data.len());
                 results.push(SshAgentKeyInfo {
                     pid: 0,
-                    process_name: String::new(),
+                    image_name: String::new(),
                     key_type: name.to_string(),
                     key_blob: data[blob_start..blob_end].to_vec(),
                     region_offset: window_start,
@@ -132,7 +132,7 @@ pub(crate) fn scan_ssh_agent_region(data: &[u8]) -> Vec<SshAgentKeyInfo> {
                 let blob_end = (window_start + MAX_PEM_BLOB).min(data.len());
                 results.push(SshAgentKeyInfo {
                     pid: 0,
-                    process_name: String::new(),
+                    image_name: String::new(),
                     key_type: name.to_string(),
                     key_blob: data[window_start..blob_end].to_vec(),
                     region_offset: window_start,

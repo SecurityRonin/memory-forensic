@@ -86,7 +86,7 @@ pub(crate) fn scan_cloud_region(data: &[u8], pid: u64, process_name: &str) -> Ve
                     if seen_values.insert(value.clone()) {
                         out.push(CloudCredentialInfo {
                             pid,
-                            process_name: process_name.to_owned(),
+                            image_name: process_name.to_owned(),
                             provider: $provider.to_owned(),
                             credential_type: $cred_type.to_owned(),
                             value,
@@ -103,7 +103,7 @@ pub(crate) fn scan_cloud_region(data: &[u8], pid: u64, process_name: &str) -> Ve
                         if seen_values.insert(value.clone()) {
                             out.push(CloudCredentialInfo {
                                 pid,
-                                process_name: process_name.to_owned(),
+                                image_name: process_name.to_owned(),
                                 provider: $provider.to_owned(),
                                 credential_type: $cred_type.to_owned(),
                                 value,
@@ -122,7 +122,7 @@ pub(crate) fn scan_cloud_region(data: &[u8], pid: u64, process_name: &str) -> Ve
             if seen_values.insert(value.clone()) {
                 out.push(CloudCredentialInfo {
                     pid,
-                    process_name: process_name.to_owned(),
+                    image_name: process_name.to_owned(),
                     provider: "AWS".to_owned(),
                     credential_type: "AccessKeyId".to_owned(),
                     value,

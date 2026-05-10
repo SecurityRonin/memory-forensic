@@ -156,7 +156,7 @@ pub(crate) fn scan_for_tokens(data: &[u8], pid: u64, process_name: &str) -> Vec<
             if seen.insert(token_value.clone()) {
                 out.push(SessionTokenInfo {
                     pid,
-                    process_name: process_name.to_string(),
+                    image_name: process_name.to_string(),
                     token_type: tp.label.to_string(),
                     token_value,
                 });
