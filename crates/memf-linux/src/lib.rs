@@ -32,6 +32,7 @@ pub mod ebpf_progs;
 pub mod elfinfo;
 pub mod envvars;
 pub mod files;
+pub mod framebuffer;
 pub mod fs;
 pub mod ftrace;
 pub mod heuristics;
