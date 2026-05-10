@@ -101,9 +101,7 @@ pub fn walk_peb_masquerade<P: PhysicalMemoryProvider>(
     let image_path_offset = reader
         .symbols()
         .field_offset("_RTL_USER_PROCESS_PARAMETERS", "ImagePathName")
-        .ok_or_else(|| {
-            Error::Walker("missing _RTL_USER_PROCESS_PARAMETERS.ImagePathName offset".into())
-        })?;
+        .ok_or_else(|| Error::MissingField { struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(), field_name: "ImagePathName".into() })?;
     let image_path_ustr_addr = params_ptr.wrapping_add(image_path_offset);
     let peb_image_path = read_unicode_string(reader, image_path_ustr_addr)?;
 
@@ -111,9 +109,7 @@ pub fn walk_peb_masquerade<P: PhysicalMemoryProvider>(
     let cmdline_offset = reader
         .symbols()
         .field_offset("_RTL_USER_PROCESS_PARAMETERS", "CommandLine")
-        .ok_or_else(|| {
-            Error::Walker("missing _RTL_USER_PROCESS_PARAMETERS.CommandLine offset".into())
-        })?;
+        .ok_or_else(|| Error::MissingField { struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(), field_name: "CommandLine".into() })?;
     let cmdline_ustr_addr = params_ptr.wrapping_add(cmdline_offset);
     let peb_command_line = read_unicode_string(reader, cmdline_ustr_addr)?;
 

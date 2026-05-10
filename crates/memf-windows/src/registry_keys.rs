@@ -177,9 +177,10 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
     // Validate nk signature
     let sig = u16::from_le_bytes(nk_data[0..2].try_into().unwrap());
     if sig != NK_SIGNATURE {
-        return Err(crate::Error::Walker(format!(
-            "expected nk signature 0x{NK_SIGNATURE:04X}, got 0x{sig:04X} at cell offset 0x{key_cell_offset:08X}"
-        )));
+        return Err(crate::Error::WalkFailed {
+            walker: "registry_keys",
+            reason: format!("expected nk signature 0x{NK_SIGNATURE:04X}, got 0x{sig:04X} at cell offset 0x{key_cell_offset:08X}"),
+        });
     }
 
     let value_count = u32::from_le_bytes(
@@ -469,14 +470,15 @@ fn read_single_value<P: PhysicalMemoryProvider>(
     let vk_data = read_cell_data(reader, vk_vaddr)?;
 
     if vk_data.len() < VK_NAME_OFFSET {
-        return Err(crate::Error::Walker("vk cell too small".into()));
+        return Err(crate::Error::WalkFailed { walker: "registry_keys", reason: "vk cell too small".into() });
     }
 
     let sig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
     if sig != VK_SIGNATURE {
-        return Err(crate::Error::Walker(format!(
-            "expected vk signature 0x{VK_SIGNATURE:04X}, got 0x{sig:04X}"
-        )));
+        return Err(crate::Error::WalkFailed {
+            walker: "registry_keys",
+            reason: format!("expected vk signature 0x{VK_SIGNATURE:04X}, got 0x{sig:04X}"),
+        });
     }
 
     let name_length = u16::from_le_bytes(

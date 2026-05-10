@@ -22,13 +22,13 @@ pub fn walk_threads<P: PhysicalMemoryProvider>(
     let pcb_offset = reader
         .symbols()
         .field_offset("_EPROCESS", "Pcb")
-        .ok_or_else(|| Error::Walker("missing _EPROCESS.Pcb offset".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "_EPROCESS".into(), field_name: "Pcb".into() })?;
 
     // ThreadListHead is within _KPROCESS.
     let thread_list_head_offset = reader
         .symbols()
         .field_offset("_KPROCESS", "ThreadListHead")
-        .ok_or_else(|| Error::Walker("missing _KPROCESS.ThreadListHead offset".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "_KPROCESS".into(), field_name: "ThreadListHead".into() })?;
 
     let thread_list_head_vaddr = eproc_addr
         .wrapping_add(pcb_offset)
@@ -73,7 +73,7 @@ fn read_thread_info<P: PhysicalMemoryProvider>(
     let cid_offset = reader
         .symbols()
         .field_offset("_ETHREAD", "Cid")
-        .ok_or_else(|| Error::Walker("missing _ETHREAD.Cid offset".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "_ETHREAD".into(), field_name: "Cid".into() })?;
 
     let tid: u64 = reader.read_field(
         ethread_addr.wrapping_add(cid_offset),

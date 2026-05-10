@@ -29,13 +29,13 @@ pub fn walk_handles<P: PhysicalMemoryProvider>(
     let entry_size = reader
         .symbols()
         .struct_size("_HANDLE_TABLE_ENTRY")
-        .ok_or_else(|| crate::Error::Walker("missing _HANDLE_TABLE_ENTRY size".into()))?;
+        .ok_or_else(|| crate::Error::WalkFailed { walker: "handles", reason: "missing _HANDLE_TABLE_ENTRY size".into() })?;
 
     // Resolve ObTypeIndexTable symbol for type name lookup
     let ob_type_table_addr = reader
         .symbols()
         .symbol_address("ObTypeIndexTable")
-        .ok_or_else(|| crate::Error::Walker("missing ObTypeIndexTable symbol".into()))?;
+        .ok_or_else(|| crate::Error::MissingKernelSymbol { name: "ObTypeIndexTable".into() })?;
 
     let mut results = Vec::new();
 

@@ -33,7 +33,7 @@ pub fn read_object_name<P: PhysicalMemoryProvider>(
     let body_offset = reader
         .symbols()
         .field_offset("_OBJECT_HEADER", "Body")
-        .ok_or_else(|| crate::Error::Walker("missing _OBJECT_HEADER.Body offset".into()))?;
+        .ok_or_else(|| crate::Error::MissingField { struct_name: "_OBJECT_HEADER".into(), field_name: "Body".into() })?;
     let header_addr = object_body_addr.wrapping_sub(body_offset);
 
     let info_mask: u8 = reader.read_field(header_addr, "_OBJECT_HEADER", "InfoMask")?;
@@ -44,7 +44,7 @@ pub fn read_object_name<P: PhysicalMemoryProvider>(
     let mut name_info_dist = reader
         .symbols()
         .struct_size("_OBJECT_HEADER_NAME_INFO")
-        .ok_or_else(|| crate::Error::Walker("missing _OBJECT_HEADER_NAME_INFO size".into()))?;
+        .ok_or_else(|| crate::Error::WalkFailed { walker: "object_directory", reason: "missing _OBJECT_HEADER_NAME_INFO size".into() })?;
     if info_mask & 0x01 != 0 {
         name_info_dist += CREATOR_INFO_SIZE;
     }
@@ -53,9 +53,7 @@ pub fn read_object_name<P: PhysicalMemoryProvider>(
     let name_offset = reader
         .symbols()
         .field_offset("_OBJECT_HEADER_NAME_INFO", "Name")
-        .ok_or_else(|| {
-            crate::Error::Walker("missing _OBJECT_HEADER_NAME_INFO.Name offset".into())
-        })?;
+        .ok_or_else(|| crate::Error::MissingField { struct_name: "_OBJECT_HEADER_NAME_INFO".into(), field_name: "Name".into() })?;
 
     Ok(read_unicode_string(reader, name_info_addr.wrapping_add(name_offset)).unwrap_or_default())
 }

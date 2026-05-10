@@ -55,7 +55,7 @@ pub fn walk_psp_cid_table<P: PhysicalMemoryProvider>(
         u64::from_le_bytes(
             bytes
                 .try_into()
-                .map_err(|_| crate::Error::Walker("failed to read PspCidTable pointer".into()))?,
+                .map_err(|_| crate::Error::WalkFailed { walker: "psxview_cid", reason: "failed to read PspCidTable pointer".into() })?,
         )
     };
 
@@ -76,15 +76,16 @@ pub fn walk_psp_cid_table<P: PhysicalMemoryProvider>(
 
     // Only support level-0 (flat) tables for now
     if level != 0 {
-        return Err(crate::Error::Walker(format!(
-            "PspCidTable level-{level} not yet supported; results incomplete"
-        )));
+        return Err(crate::Error::WalkFailed {
+            walker: "psxview_cid",
+            reason: format!("PspCidTable level-{level} not yet supported; results incomplete"),
+        });
     }
 
     let entry_size = reader
         .symbols()
         .struct_size("_HANDLE_TABLE_ENTRY")
-        .ok_or_else(|| crate::Error::Walker("missing _HANDLE_TABLE_ENTRY size".into()))?;
+        .ok_or_else(|| crate::Error::WalkFailed { walker: "psxview_cid", reason: "missing _HANDLE_TABLE_ENTRY size".into() })?;
 
     // Read NextHandleNeedingPool to determine entry count
     let next_handle: u32 = reader.read_field(ht_addr, "_HANDLE_TABLE", "NextHandleNeedingPool")?;

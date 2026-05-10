@@ -163,9 +163,7 @@ pub fn check_peb_masquerade<P: PhysicalMemoryProvider>(
         let image_path_offset = reader
             .symbols()
             .field_offset("_RTL_USER_PROCESS_PARAMETERS", "ImagePathName")
-            .ok_or_else(|| {
-                Error::Walker("missing _RTL_USER_PROCESS_PARAMETERS.ImagePathName offset".into())
-            })?;
+            .ok_or_else(|| Error::MissingField { struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(), field_name: "ImagePathName".into() })?;
         let image_ustr_addr = params_ptr.wrapping_add(image_path_offset);
         let peb_image_path = read_unicode_string(reader, image_ustr_addr)?;
 

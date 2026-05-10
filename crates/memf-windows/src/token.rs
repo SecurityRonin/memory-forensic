@@ -167,21 +167,17 @@ pub fn walk_tokens<P: PhysicalMemoryProvider>(
     let priv_offset = reader
         .symbols()
         .field_offset("_TOKEN", "Privileges")
-        .ok_or_else(|| crate::Error::Walker("missing _TOKEN.Privileges offset".into()))?;
+        .ok_or_else(|| crate::Error::MissingField { struct_name: "_TOKEN".into(), field_name: "Privileges".into() })?;
 
     let present_off = reader
         .symbols()
         .field_offset("_SEP_TOKEN_PRIVILEGES", "Present")
-        .ok_or_else(|| {
-            crate::Error::Walker("missing _SEP_TOKEN_PRIVILEGES.Present offset".into())
-        })?;
+        .ok_or_else(|| crate::Error::MissingField { struct_name: "_SEP_TOKEN_PRIVILEGES".into(), field_name: "Present".into() })?;
 
     let enabled_off = reader
         .symbols()
         .field_offset("_SEP_TOKEN_PRIVILEGES", "Enabled")
-        .ok_or_else(|| {
-            crate::Error::Walker("missing _SEP_TOKEN_PRIVILEGES.Enabled offset".into())
-        })?;
+        .ok_or_else(|| crate::Error::MissingField { struct_name: "_SEP_TOKEN_PRIVILEGES".into(), field_name: "Enabled".into() })?;
 
     for proc in &procs {
         // Read _EPROCESS.Token (_EX_FAST_REF)

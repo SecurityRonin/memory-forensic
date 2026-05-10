@@ -112,7 +112,7 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
     let driver_name_offset = reader
         .symbols()
         .field_offset("_DRIVER_OBJECT", "DriverName")
-        .ok_or_else(|| crate::Error::Walker("missing _DRIVER_OBJECT.DriverName offset".into()))?;
+        .ok_or_else(|| crate::Error::MissingField { struct_name: "_DRIVER_OBJECT".into(), field_name: "DriverName".into() })?;
     let driver_name = crate::unicode::read_unicode_string(
         reader,
         driver_obj_addr.wrapping_add(driver_name_offset),
@@ -122,9 +122,7 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
     let mf_offset = reader
         .symbols()
         .field_offset("_DRIVER_OBJECT", "MajorFunction")
-        .ok_or_else(|| {
-            crate::Error::Walker("missing _DRIVER_OBJECT.MajorFunction offset".into())
-        })?;
+        .ok_or_else(|| crate::Error::MissingField { struct_name: "_DRIVER_OBJECT".into(), field_name: "MajorFunction".into() })?;
     let mf_base = driver_obj_addr.wrapping_add(mf_offset);
     let mf_bytes = reader.read_bytes(mf_base, IRP_MJ_COUNT * 8)?;
 
@@ -568,15 +566,30 @@ mod tests {
     // RED: check_driver_object missing _DRIVER_OBJECT.DriverName → MissingField
     #[test]
     fn check_driver_object_missing_driver_name_returns_missing_field() {
-        use memf_symbols::test_builders::IsfBuilder; // needed here even though outer tests use it
-        // Need _DRIVER_OBJECT.DriverStart and .DriverSize present so the first
-        // read_field calls succeed. The ISF with only those fields, not DriverName.
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::test_builders::IsfBuilder;
+
+        let drv_vaddr: u64 = 0xFFFF_8000_0060_0000;
+        let drv_paddr: u64 = 0x0060_0000;
+        let page = vec![0u8; 4096];
+
+        // ISF has DriverStart and DriverSize but NOT DriverName.
         let isf = IsfBuilder::new()
             .add_struct("_DRIVER_OBJECT", 0x200)
             .add_field("_DRIVER_OBJECT", "DriverStart", 0x28, "pointer")
-            .add_field("_DRIVER_OBJECT", "DriverSize", 0x30, "unsigned int");
-        let reader = memf_core::test_builders::make_reader(&isf);
-        let result = check_driver_object(&reader, 0, &[]);
+            .add_field("_DRIVER_OBJECT", "DriverSize", 0x30, "unsigned int")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(drv_vaddr, drv_paddr, flags::WRITABLE)
+            .write_phys(drv_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_driver_object(&reader, drv_vaddr, &[]);
         assert!(
             matches!(
                 result,
@@ -591,14 +604,35 @@ mod tests {
     // RED: check_driver_object missing _DRIVER_OBJECT.MajorFunction → MissingField
     #[test]
     fn check_driver_object_missing_major_function_returns_missing_field() {
+        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
+
+        let drv_vaddr: u64 = 0xFFFF_8000_0061_0000;
+        let drv_paddr: u64 = 0x0061_0000;
+        let mut page = vec![0u8; 4096];
+        // Write a valid DriverName unicode string pointer (non-zero but points to zero = empty string)
+        // DriverName is a UNICODE_STRING at 0x58: Length(2) MaxLength(2) pad(4) Buffer(8)
+        // Leave it all zeros so read_unicode_string gracefully returns "".
+        page[0x58] = 0; // Length = 0
+
+        // ISF has DriverStart, DriverSize, DriverName but NOT MajorFunction.
         let isf = IsfBuilder::new()
             .add_struct("_DRIVER_OBJECT", 0x200)
             .add_field("_DRIVER_OBJECT", "DriverStart", 0x28, "pointer")
             .add_field("_DRIVER_OBJECT", "DriverSize", 0x30, "unsigned int")
-            .add_field("_DRIVER_OBJECT", "DriverName", 0x58, "pointer");
-        let reader = memf_core::test_builders::make_reader(&isf);
-        let result = check_driver_object(&reader, 0, &[]);
+            .add_field("_DRIVER_OBJECT", "DriverName", 0x58, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(drv_vaddr, drv_paddr, flags::WRITABLE)
+            .write_phys(drv_paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = check_driver_object(&reader, drv_vaddr, &[]);
         assert!(
             matches!(
                 result,

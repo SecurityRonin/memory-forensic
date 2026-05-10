@@ -108,7 +108,7 @@ fn walk_active_list<P: PhysicalMemoryProvider>(
 fn walk_cid_table<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<RawProcInfo>> {
     // Require PspCidTable symbol; if absent, treat as error (psxview needs it).
     if reader.symbols().symbol_address("PspCidTable").is_none() {
-        return Err(Error::Walker("symbol 'PspCidTable' not found".into()));
+        return Err(Error::MissingKernelSymbol { name: "PspCidTable".into() });
     }
 
     let entries = crate::psxview_cid::walk_psp_cid_table(reader)?;
