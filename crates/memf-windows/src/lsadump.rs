@@ -416,7 +416,7 @@ fn read_currval_data<P: PhysicalMemoryProvider>(
     (data_length, data)
 }
 
-/// Kept for backwards-compatibility with tests that call `read_currval_length` directly.
+#[cfg(test)]
 fn read_currval_length<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     flat_base: u64,
