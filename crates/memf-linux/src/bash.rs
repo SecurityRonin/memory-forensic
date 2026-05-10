@@ -337,6 +337,7 @@ mod tests {
         heap
     }
 
+    // regression guard: anonymous RW VMA selected as heap candidate, file-backed skipped
     #[test]
     fn recovers_bash_history_from_heap() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
@@ -407,6 +408,7 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    // regression guard: mm==0 kernel thread produces no history entries
     #[test]
     fn skips_kernel_threads() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;

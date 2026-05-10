@@ -193,6 +193,7 @@ mod tests {
         hdr
     }
 
+    // regression guard: VMA with ELF magic at vm_start produces ElfInfo entry
     #[test]
     fn detects_elf_in_process_vma() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;

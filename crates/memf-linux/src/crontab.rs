@@ -281,6 +281,7 @@ mod tests {
         heap
     }
 
+    // regression guard: readable VMA region scanned for crontab entries
     #[test]
     fn recovers_crontab_from_crond_heap() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
@@ -353,6 +354,7 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    // regression guard: mm==0 kernel thread produces no crontab entries
     #[test]
     fn skips_kernel_threads() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;

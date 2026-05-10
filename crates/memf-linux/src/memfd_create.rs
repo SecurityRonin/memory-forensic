@@ -765,6 +765,7 @@ mod tests {
         assert!(entries.is_empty(), "unmapped task2 → no memfd entries");
     }
 
+    // regression guard: file-backed VMA with memfd: dentry name detected and classified
     // --- full path: memfd VMA found → MemfdInfo created (lines 154-165, 199-220, 233-244) ---
     #[test]
     fn walk_memfd_full_path_memfd_vma_detected() {

@@ -180,6 +180,7 @@ mod tests {
         ObjectReader::new(vas, Box::new(resolver))
     }
 
+    // regression guard: anonymous rwx VMA flagged as suspicious
     #[test]
     fn detects_rwx_anonymous_region() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
@@ -244,6 +245,7 @@ mod tests {
         assert!(findings[0].reason.contains("anonymous"));
     }
 
+    // regression guard: file-backed rwx VMA not flagged (file_ptr != 0 means benign)
     #[test]
     fn ignores_file_backed_rwx() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;

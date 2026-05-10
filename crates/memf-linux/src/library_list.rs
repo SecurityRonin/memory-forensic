@@ -348,6 +348,7 @@ mod tests {
         assert!(result.is_empty(), "kernel thread should have no libraries");
     }
 
+    // regression guard: file-backed VMA with .so name produces library entry
     #[test]
     fn walk_single_so_library() {
         // Process with one VMA mapping libc.so.6
@@ -454,6 +455,7 @@ mod tests {
         assert!(!libs[0].is_suspicious);
     }
 
+    // regression guard: anonymous VMA (vm_file==0) not included in library list
     #[test]
     fn walk_skips_non_file_backed_vmas() {
         // Anonymous VMAs (vm_file == 0) should be skipped.
