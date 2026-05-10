@@ -47,11 +47,13 @@ pub const COOKIE_BROWSERS: &[&str] = &[
 
 /// Scan raw bytes from one heap region for browser cookie records.
 ///
-/// Returns `(domain, name, value, path)` tuples.
-pub(crate) fn scan_cookie_region(data: &[u8]) -> Vec<(String, String, String, Option<String>)> {
+/// Returns `(domain, name, value, path, encrypted)` tuples. The `encrypted`
+/// flag is `true` for Chrome v10/v20 AES-GCM blobs whose value is not yet
+/// decrypted (key material unavailable at scan time).
+pub(crate) fn scan_cookie_region(data: &[u8]) -> Vec<(String, String, String, Option<String>, bool)> {
     let text = String::from_utf8_lossy(data);
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
-    let mut out: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut out: Vec<(String, String, String, Option<String>, bool)> = Vec::new();
 
     // Pattern 1: HTTP Set-Cookie header (case-insensitive)
     let set_cookie_re = match Regex::new(
@@ -87,7 +89,7 @@ pub(crate) fn scan_cookie_region(data: &[u8]) -> Vec<(String, String, String, Op
 
         let key = (domain.clone(), name.clone(), value.clone());
         if seen.insert(key) {
-            out.push((domain, name, value, path));
+            out.push((domain, name, value, path, false));
         }
     }
 
@@ -107,7 +109,24 @@ pub(crate) fn scan_cookie_region(data: &[u8]) -> Vec<(String, String, String, Op
 
         let key = (domain.clone(), name.clone(), value.clone());
         if seen.insert(key) {
-            out.push((domain, name, value, path));
+            out.push((domain, name, value, path, false));
+        }
+    }
+
+    // Pattern 3: Chrome v10/v20 AES-GCM encrypted cookie blobs (binary scan).
+    // Wire format: prefix(3) + nonce(12) + ciphertext — minimum 16 bytes.
+    let mut i = 0;
+    while i + 15 < data.len() {
+        let prefix = &data[i..i + 3];
+        if prefix == b"v10" || prefix == b"v20" {
+            let tag = if prefix == b"v10" { "(v10-encrypted)" } else { "(v20-encrypted)" };
+            let key = (String::new(), "(encrypted)".to_string(), tag.to_string());
+            if seen.insert(key) {
+                out.push((String::new(), "(encrypted)".to_string(), tag.to_string(), None, true));
+            }
+            i += 15; // step past prefix + nonce
+        } else {
+            i += 1;
         }
     }
 
@@ -126,13 +145,14 @@ pub fn walk_browser_cookies<P: PhysicalMemoryProvider + Clone>(
         |bytes, proc| {
             scan_cookie_region(bytes)
                 .into_iter()
-                .map(|(domain, name, value, path)| BrowserCookieInfo {
+                .map(|(domain, name, value, path, encrypted)| BrowserCookieInfo {
                     pid: proc.pid,
                     image_name: proc.image_name.clone(),
                     domain,
                     name,
                     value,
                     path,
+                    encrypted,
                 })
                 .collect()
         },
@@ -166,7 +186,7 @@ mod tests {
         let data = b"Set-Cookie: session_id=abc123xyz; Path=/; HttpOnly\r\n";
         let results = scan_cookie_region(data);
         assert_eq!(results.len(), 1, "expected 1 cookie match");
-        let (_, name, value, _) = &results[0];
+        let (_, name, value, _, _) = &results[0];
         assert_eq!(name, "session_id");
         assert_eq!(value, "abc123xyz");
     }
@@ -176,7 +196,7 @@ mod tests {
         let data = b"Set-Cookie: auth=tok789; Domain=.example.com; Path=/api; Secure\r\n";
         let results = scan_cookie_region(data);
         assert_eq!(results.len(), 1, "expected 1 cookie match");
-        let (domain, name, value, _) = &results[0];
+        let (domain, name, value, _, _) = &results[0];
         assert_eq!(domain, ".example.com");
         assert_eq!(name, "auth");
         assert_eq!(value, "tok789");
@@ -188,7 +208,7 @@ mod tests {
             b".github.com\tTRUE\t/\tFALSE\t9999999999\tuser_session\tsecretvalue999\n";
         let results = scan_cookie_region(data);
         assert_eq!(results.len(), 1, "expected 1 netscape cookie match");
-        let (domain, name, value, path) = &results[0];
+        let (domain, name, value, path, _) = &results[0];
         assert_eq!(domain, ".github.com");
         assert_eq!(name, "user_session");
         assert_eq!(value, "secretvalue999");
@@ -202,7 +222,7 @@ mod tests {
         buf.extend_from_slice(b"Set-Cookie: token_b=val2; Path=/api\r\n");
         let results = scan_cookie_region(&buf);
         assert_eq!(results.len(), 2, "expected 2 cookie matches");
-        let names: Vec<_> = results.iter().map(|(_, n, _, _)| n.as_str()).collect();
+        let names: Vec<_> = results.iter().map(|(_, n, _, _, _)| n.as_str()).collect();
         assert!(names.contains(&"token_a"));
         assert!(names.contains(&"token_b"));
     }

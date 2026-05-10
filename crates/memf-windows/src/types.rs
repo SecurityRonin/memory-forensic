@@ -1286,6 +1286,10 @@ pub struct BrowserCookieInfo {
     pub value: String,
     /// Cookie path if recoverable (e.g. `/`).
     pub path: Option<String>,
+    /// `true` if the cookie value is AES-GCM encrypted (Chrome v10/v20) and
+    /// was not decrypted due to missing key material.
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 /// Recovered by scanning private writable VAD regions of all processes for
