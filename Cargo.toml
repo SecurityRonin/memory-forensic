@@ -28,7 +28,8 @@ memf-symbols = { path = "crates/memf-symbols" }
 memf-core    = { path = "crates/memf-core" }
 memf-linux   = { path = "crates/memf-linux" }
 memf-windows = { path = "crates/memf-windows" }
-memf-correlate = { path = "crates/memf-correlate" }
+memf-correlate    = { path = "crates/memf-correlate" }
+memf-framebuffer  = { path = "crates/memf-framebuffer" }
 aes            = "0.8"
 aes-gcm        = "0.10"
 aho-corasick = "1"

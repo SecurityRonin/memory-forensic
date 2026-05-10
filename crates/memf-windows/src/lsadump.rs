@@ -182,9 +182,9 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(MAX_SECRETS as u16) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
+            [b'l', b'f' | b'h'] => {
                 // lf/lh: 8-byte entries (offset + hash) starting at +4
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
@@ -193,7 +193,7 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
             }
             [b'l', b'i'] => {
                 // li: 4-byte entries (offset only) starting at +4
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
@@ -246,7 +246,7 @@ fn read_cell_addr<P: PhysicalMemoryProvider>(
     cell_off: u32,
 ) -> u64 {
     // Cell data starts 4 bytes after the cell offset (cell size header).
-    let addr = flat_base + (cell_off as u64) + 4;
+    let addr = flat_base + u64::from(cell_off) + 4;
     // Verify we can read from this address.
     match reader.read_bytes(addr, 2) {
         Ok(bytes) if bytes.len() == 2 => addr,
@@ -292,15 +292,15 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f'] | [b'l', b'h'] => {
-                match reader.read_bytes(list_addr + 4 + (i as u64) * 8, 4) {
+            [b'l', b'f' | b'h'] => {
+                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     }
                     _ => continue,
                 }
             }
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + (i as u64) * 4, 4) {
+            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                 Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
                 _ => continue,
             },
@@ -748,7 +748,7 @@ mod tests {
         let flat_base: u64 = 0x0070_0000;
         let cell_off: u32 = 0x100;
         // cell data starts at flat_base + cell_off + 4
-        let cell_data_addr = flat_base + cell_off as u64 + 4;
+        let cell_data_addr = flat_base + u64::from(cell_off) + 4;
 
         let mut page = vec![0u8; 0x1000];
         // Write 2 readable bytes at cell_data_addr offset within the page
@@ -803,7 +803,7 @@ mod tests {
         let flat_base: u64 = 0x0085_0000;
         let list_cell_off: u32 = 0x100;
         // list_addr = flat_base + list_cell_off + 4
-        let list_data_addr = flat_base + list_cell_off as u64 + 4;
+        let list_data_addr = flat_base + u64::from(list_cell_off) + 4;
 
         let mut parent_page = vec![0u8; 0x1000];
         // subkey_count = 1 at +0x18
@@ -904,7 +904,7 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
 
-        let expected_key_addr = flat_base + entry_off as u64 + 4;
+        let expected_key_addr = flat_base + u64::from(entry_off) + 4;
         let result = find_subkey_by_name(&reader, flat_base, parent_addr, "Policy");
         assert_eq!(
             result, expected_key_addr,
@@ -1153,5 +1153,159 @@ mod tests {
         assert_eq!(secret.name, "_SC_test");
         assert_eq!(secret.secret_type, "service_password");
         assert!(!secret.is_suspicious, "_SC_ secrets are not suspicious");
+    }
+
+    // ── DPAPI Task 2: data field tests ────────────────────────────────
+
+    /// Compile-time check: LsaSecretInfo must expose a `data: Option<Vec<u8>>` field.
+    #[test]
+    fn lsa_secret_info_has_data_field() {
+        let info = LsaSecretInfo {
+            name: "test".into(),
+            secret_type: "generic".into(),
+            length: 0,
+            is_suspicious: false,
+            data: None, // This line must compile
+        };
+        assert!(info.data.is_none());
+    }
+
+    /// walk_lsa_secrets must carry data bytes for a secret whose CurrVal
+    /// value cell contains 40 known bytes (DPAPI_SYSTEM pattern).
+    #[test]
+    fn lsa_secret_dpapi_system_carries_data_bytes() {
+        // Layout mirrors walk_lsa_secrets_full_traversal_finds_service_password.
+        // We extend the _SC_test secret's CurrVal subkey to hold a value cell
+        // with 40 known data bytes.
+        let hive_vaddr: u64 = 0x00A4_0000;
+        let hive_paddr: u64 = 0x00A4_0000;
+        let bb_vaddr: u64 = 0x00A5_0000;
+        let bb_paddr: u64 = 0x00A5_0000;
+        let flat_vaddr: u64 = 0x00A6_0000;
+        let flat_paddr: u64 = 0x00A6_0000;
+        // Second flat page for data bytes (data cell lives at flat_vaddr+0x1000).
+        // We keep everything in one 0x2000 flat page.
+
+        let mut hive_page = vec![0u8; 0x1000];
+        hive_page[0x10..0x18].copy_from_slice(&bb_vaddr.to_le_bytes());
+        hive_page[0x30..0x38].copy_from_slice(&flat_vaddr.to_le_bytes());
+
+        let mut bb_page = vec![0u8; 0x1000];
+        bb_page[0x24..0x28].copy_from_slice(&0x100u32.to_le_bytes()); // root_cell_off
+
+        let mut flat_page = vec![0u8; 0x2000];
+
+        fn w32(page: &mut Vec<u8>, off: usize, val: u32) {
+            page[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        fn w16(page: &mut Vec<u8>, off: usize, val: u16) {
+            page[off..off + 2].copy_from_slice(&val.to_le_bytes());
+        }
+
+        // root nk at 0x104
+        let ro = 0x104usize;
+        w32(&mut flat_page, ro + 0x18, 1);   // subkey_count=1
+        w32(&mut flat_page, ro + 0x20, 0x200); // list_cell_off
+
+        // lf1 at 0x204 → Policy nk
+        let l1 = 0x204usize;
+        flat_page[l1] = b'l'; flat_page[l1 + 1] = b'f';
+        w16(&mut flat_page, l1 + 2, 1);
+        w32(&mut flat_page, l1 + 4, 0x300);
+        w32(&mut flat_page, l1 + 8, 0);
+
+        // Policy nk at 0x304
+        let po = 0x304usize;
+        w32(&mut flat_page, po + 0x18, 1);
+        w32(&mut flat_page, po + 0x20, 0x400);
+        w16(&mut flat_page, po + 0x4A, 6);
+        flat_page[po + 0x4C..po + 0x52].copy_from_slice(b"Policy");
+
+        // lf2 at 0x404 → Secrets nk
+        let l2 = 0x404usize;
+        flat_page[l2] = b'l'; flat_page[l2 + 1] = b'f';
+        w16(&mut flat_page, l2 + 2, 1);
+        w32(&mut flat_page, l2 + 4, 0x500);
+        w32(&mut flat_page, l2 + 8, 0);
+
+        // Secrets nk at 0x504
+        let se = 0x504usize;
+        w32(&mut flat_page, se + 0x18, 1);
+        w32(&mut flat_page, se + 0x20, 0x600);
+        w16(&mut flat_page, se + 0x4A, 7);
+        flat_page[se + 0x4C..se + 0x53].copy_from_slice(b"Secrets");
+
+        // lf3 at 0x604 → DPAPI_SYSTEM nk
+        let l3 = 0x604usize;
+        flat_page[l3] = b'l'; flat_page[l3 + 1] = b'f';
+        w16(&mut flat_page, l3 + 2, 1);
+        w32(&mut flat_page, l3 + 4, 0x700);
+        w32(&mut flat_page, l3 + 8, 0);
+
+        // DPAPI_SYSTEM nk at 0x704
+        let sc = 0x704usize;
+        // CurrVal is a subkey: subkey_count=1, list at 0x800
+        w32(&mut flat_page, sc + 0x18, 1);
+        w32(&mut flat_page, sc + 0x20, 0x800);
+        w16(&mut flat_page, sc + 0x4A, 12);
+        flat_page[sc + 0x4C..sc + 0x58].copy_from_slice(b"DPAPI_SYSTEM");
+
+        // lf4 at 0x804 → CurrVal nk
+        let l4 = 0x804usize;
+        flat_page[l4] = b'l'; flat_page[l4 + 1] = b'f';
+        w16(&mut flat_page, l4 + 2, 1);
+        w32(&mut flat_page, l4 + 4, 0x900);
+        w32(&mut flat_page, l4 + 8, 0);
+
+        // CurrVal nk at 0x904: val_count=1, val_list_off=0xA00
+        let cv = 0x904usize;
+        w32(&mut flat_page, cv + 0x28, 1);       // val_count
+        w32(&mut flat_page, cv + 0x2C, 0xA00);   // val_list_cell_off
+        w16(&mut flat_page, cv + 0x4A, 7);
+        flat_page[cv + 0x4C..cv + 0x53].copy_from_slice(b"CurrVal");
+
+        // Value list cell at 0xA04: one entry at 0xB00
+        let vl = 0xA04usize;
+        w32(&mut flat_page, vl, 0xB00);
+
+        // Value cell (_CM_KEY_VALUE) at 0xB04:
+        //   +0x08 DataLength = 40
+        //   +0x0C DataOffset (cell_off) = 0xC00  → data at flat_base+0xC04
+        let vk = 0xB04usize;
+        w32(&mut flat_page, vk + 0x08, 40);    // DataLength (no MSB = non-inline)
+        w32(&mut flat_page, vk + 0x0C, 0xC00); // DataOffset
+
+        // Data cell at 0xC04: 40 bytes = (0u8..40)
+        let dc = 0xC04usize;
+        for i in 0u8..40 {
+            flat_page[dc + i as usize] = i;
+        }
+
+        let isf = make_lsa_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
+            .write_phys(hive_paddr, &hive_page)
+            .map_4k(bb_vaddr, bb_paddr, flags::WRITABLE)
+            .write_phys(bb_paddr, &bb_page)
+            .map_4k(flat_vaddr, flat_paddr, flags::WRITABLE)
+            .write_phys(flat_paddr, &flat_page[..0x1000])
+            .map_4k(flat_vaddr + 0x1000, flat_paddr + 0x1000, flags::WRITABLE)
+            .write_phys(flat_paddr + 0x1000, &flat_page[0x1000..])
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = walk_lsa_secrets(&reader, hive_vaddr).unwrap();
+        assert!(!result.is_empty(), "should find DPAPI_SYSTEM secret");
+        let secret = &result[0];
+        assert_eq!(secret.name, "DPAPI_SYSTEM");
+        assert_eq!(secret.length, 40);
+        let expected: Vec<u8> = (0u8..40).collect();
+        assert_eq!(
+            secret.data,
+            Some(expected),
+            "DPAPI_SYSTEM secret must carry its 40 raw data bytes"
+        );
     }
 }
