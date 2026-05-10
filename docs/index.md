@@ -7,7 +7,11 @@
 ```bash
 cargo install memory-forensic
 memf ps memdump.lime --symbols linux.json --tree
+memf framebuffer memdump.lime --symbols linux.json --png screen.png
+memf creds memdump.dmp --symbols ntkrnlmp.json --dpapi-keys --browser-cookies
 ```
+
+Highlights: ELF dynamic symbol analysis for LD_PRELOAD rootkit behavioral fingerprinting, DPAPI master key extraction from LSASS `g_MasterKeyCache`, Chrome v10/v20 AES-GCM cookie detection, and framebuffer screenshot extraction.
 
 **[GitHub Repository →](https://github.com/SecurityRonin/memory-forensic)** · **[API Docs →](memf_core/index.html)**
 
