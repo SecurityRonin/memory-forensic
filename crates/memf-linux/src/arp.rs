@@ -20,7 +20,7 @@ pub fn walk_arp_cache<P: PhysicalMemoryProvider>(
     let arp_tbl_addr = reader
         .symbols()
         .symbol_address("arp_tbl")
-        .ok_or_else(|| Error::Walker("symbol 'arp_tbl' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "arp_tbl".into() })?;
 
     // neigh_table.nht → pointer to neigh_hash_table
     let nht_ptr: u64 = reader.read_field(arp_tbl_addr, "neigh_table", "nht")?;
@@ -51,8 +51,12 @@ pub fn walk_arp_cache<P: PhysicalMemoryProvider>(
         let mut current = neigh_ptr;
         let mut chain_len = 0;
         while current != 0 && chain_len < 1000 {
-            if let Ok(entry) = read_neighbour(reader, current) {
-                entries.push(entry);
+            match read_neighbour(reader, current) {
+                Ok(entry) => entries.push(entry),
+                Err(e @ (Error::MissingField { .. } | Error::MissingKernelSymbol { .. })) => {
+                    return Err(e);
+                }
+                Err(_) => {}
             }
 
             // Follow neighbour.next pointer
@@ -83,7 +87,7 @@ fn read_neighbour<P: PhysicalMemoryProvider>(
     let ha_offset = reader
         .symbols()
         .field_offset("neighbour", "ha")
-        .ok_or_else(|| Error::Walker("neighbour.ha field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "neighbour".into(), field_name: "ha".into() })?;
     let mac_bytes = reader.read_bytes(neigh_addr + ha_offset, 6)?;
     let mac_addr = format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -355,26 +359,46 @@ mod tests {
 
     #[test]
     fn missing_neighbour_ha_field_returns_missing_field() {
-        // arp_tbl symbol present, but neighbour.ha field missing
+        // arp_tbl present, chain leads to a neighbour, but neighbour.ha is absent from ISF
         let arp_tbl_vaddr: u64 = 0xFFFF_8000_0010_0000;
         let arp_tbl_paddr: u64 = 0x0080_0000;
-        let data = vec![0u8; 4096];
+        let nht_vaddr: u64 = 0xFFFF_8000_0020_0000;
+        let nht_paddr: u64 = 0x0090_0000;
+        let neigh_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let neigh_paddr: u64 = 0x00A0_0000;
+        let bucket_array_vaddr: u64 = nht_vaddr + 0x100;
 
         let isf = IsfBuilder::new()
             .add_symbol("arp_tbl", arp_tbl_vaddr)
             .add_struct("neigh_table", 256)
             .add_field("neigh_table", "nht", 0, "pointer")
-            // neighbour.ha intentionally omitted
             .add_struct("neighbour", 128)
             .add_field("neighbour", "next", 0, "pointer")
+            .add_field("neighbour", "primary_key", 8, "unsigned int")
+            // neighbour.ha intentionally omitted
             .add_struct("neigh_hash_table", 64)
             .add_field("neigh_hash_table", "hash_buckets", 0, "pointer")
             .add_field("neigh_hash_table", "hash_shift", 8, "int")
             .build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let mut arp_data = vec![0u8; 4096];
+        arp_data[0..8].copy_from_slice(&nht_vaddr.to_le_bytes());
+
+        let mut nht_data = vec![0u8; 4096];
+        nht_data[0..8].copy_from_slice(&bucket_array_vaddr.to_le_bytes());
+        nht_data[8..12].copy_from_slice(&0u32.to_le_bytes()); // hash_shift=0 → 1 bucket
+        nht_data[0x100..0x108].copy_from_slice(&neigh_vaddr.to_le_bytes());
+
+        let neigh_data = vec![0u8; 4096]; // neighbour.next=0, primary_key=0; ha absent in ISF
+
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(arp_tbl_vaddr, arp_tbl_paddr, flags::WRITABLE)
-            .write_phys(arp_tbl_paddr, &data)
+            .write_phys(arp_tbl_paddr, &arp_data)
+            .map_4k(nht_vaddr, nht_paddr, flags::WRITABLE)
+            .write_phys(nht_paddr, &nht_data)
+            .map_4k(neigh_vaddr, neigh_paddr, flags::WRITABLE)
+            .write_phys(neigh_paddr, &neigh_data)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
