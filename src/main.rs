@@ -6494,4 +6494,49 @@ mod tests {
             png: None,
         };
     }
+
+    #[test]
+    fn browser_sessions_subcommand_parses() {
+        let cli = Cli::try_parse_from([
+            "memf", "browser-sessions", "test.dmp",
+            "--symbols", "ntkrnlmp.json",
+        ]);
+        assert!(cli.is_ok(), "browser-sessions subcommand must parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn browser_sessions_pid_filter_parses() {
+        let cli = Cli::try_parse_from([
+            "memf", "browser-sessions", "test.dmp",
+            "--pid", "1234",
+        ]);
+        assert!(cli.is_ok(), "browser-sessions --pid must parse");
+    }
+
+    #[test]
+    fn browser_cookies_subcommand_parses() {
+        let cli = Cli::try_parse_from([
+            "memf", "browser-cookies", "test.dmp",
+            "--symbols", "ntkrnlmp.json",
+        ]);
+        assert!(cli.is_ok(), "browser-cookies subcommand must parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn browser_creds_subcommand_parses() {
+        let cli = Cli::try_parse_from([
+            "memf", "browser-creds", "test.dmp",
+            "--symbols", "ntkrnlmp.json",
+        ]);
+        assert!(cli.is_ok(), "browser-creds subcommand must parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn browser_sessions_output_json_parses() {
+        let cli = Cli::try_parse_from([
+            "memf", "browser-sessions", "test.dmp",
+            "--output", "json",
+        ]);
+        assert!(cli.is_ok(), "browser-sessions --output json must parse");
+    }
 }
