@@ -384,7 +384,7 @@ memf-windows = "0.1"
 
 ## Used By
 
-[RapidTriage](https://github.com/SecurityRonin/RapidTriage) — the `rt memf` subcommand drives memory acquisition and triage reporting directly from this workspace.
+[issen](https://github.com/SecurityRonin/issen) — the `issen memf` subcommand drives memory acquisition and triage reporting directly from this workspace.
 
 ---
 
