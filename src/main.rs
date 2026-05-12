@@ -372,6 +372,60 @@ enum Commands {
         #[arg(long)]
         png: Option<PathBuf>,
     },
+    /// Extract open-tab URLs from browser process heap memory (Windows only).
+    #[command(name = "browser-sessions", alias = "tabs")]
+    BrowserSessions {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+        /// Output format: table, json, csv, ndjson.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+        /// Filter results by process ID.
+        #[arg(long)]
+        pid: Option<u64>,
+    },
+    /// Extract session cookies from browser process heap memory (Windows only).
+    #[command(name = "browser-cookies")]
+    BrowserCookies {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+        /// Output format: table, json, csv, ndjson.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+        /// Filter results by process ID.
+        #[arg(long)]
+        pid: Option<u64>,
+    },
+    /// Extract saved browser credentials from heap memory (Windows only).
+    #[command(name = "browser-creds")]
+    BrowserCreds {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+        /// Output format: table, json, csv, ndjson.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+        /// Filter results by process ID.
+        #[arg(long)]
+        pid: Option<u64>,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -624,6 +678,57 @@ fn main() -> Result<()> {
                 symbols.as_deref(),
                 output,
                 png.as_deref(),
+                resolved.is_extracted(),
+            )
+        }
+        Commands::BrowserSessions {
+            dump,
+            symbols,
+            output,
+            cr3,
+            pid,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_browser_sessions(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                pid,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::BrowserCookies {
+            dump,
+            symbols,
+            output,
+            cr3,
+            pid,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_browser_cookies(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                pid,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::BrowserCreds {
+            dump,
+            symbols,
+            output,
+            cr3,
+            pid,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_browser_creds(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                pid,
                 resolved.is_extracted(),
             )
         }
@@ -4718,6 +4823,221 @@ fn memf_framebuffer_windows<P: memf_format::PhysicalMemoryProvider>(
 ) -> anyhow::Result<memf_framebuffer::FramebufferResult> {
     memf_windows::framebuffer::walk_framebuffer_windows(provider)
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Browser forensics handlers (Windows-only heap-scan commands)
+// ---------------------------------------------------------------------------
+
+fn cmd_browser_sessions(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    pid_filter: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    match ctx.os {
+        OsProfile::Linux | OsProfile::MacOs => {
+            anyhow::bail!("browser-sessions requires a Windows memory dump");
+        }
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead; browser-sessions requires symbols")?;
+            let mut entries =
+                memf_windows::browser_sessions::walk_browser_sessions(&reader, ps_head)
+                    .context("failed to walk browser session URLs")?;
+            if let Some(pid) = pid_filter {
+                entries.retain(|e| e.pid == pid);
+                if entries.is_empty() {
+                    eprintln!("warning: no browser session URLs found for PID {pid}");
+                }
+            }
+            print_browser_sessions(&entries, output);
+        }
+    }
+    Ok(())
+}
+
+fn print_browser_sessions(
+    entries: &[memf_windows::types::BrowserSessionEntry],
+    output: OutputFormat,
+) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "URL"]);
+            for e in entries {
+                table.add_row(vec![
+                    e.pid.to_string(),
+                    e.image_name.clone(),
+                    e.url.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} URLs", entries.len());
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            for e in entries {
+                println!("{}", serde_json::to_string(e).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,process,url");
+            for e in entries {
+                println!("{},{},{}", e.pid, e.image_name, e.url);
+            }
+        }
+    }
+}
+
+fn cmd_browser_cookies(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    pid_filter: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    match ctx.os {
+        OsProfile::Linux | OsProfile::MacOs => {
+            anyhow::bail!("browser-cookies requires a Windows memory dump");
+        }
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead; browser-cookies requires symbols")?;
+            let mut cookies =
+                memf_windows::browser_cookies::walk_browser_cookies(&reader, ps_head)
+                    .context("failed to walk browser cookies")?;
+            if let Some(pid) = pid_filter {
+                cookies.retain(|c| c.pid == pid);
+                if cookies.is_empty() {
+                    eprintln!("warning: no browser cookies found for PID {pid}");
+                }
+            }
+            print_browser_cookies(&cookies, output);
+        }
+    }
+    Ok(())
+}
+
+fn print_browser_cookies(
+    cookies: &[memf_windows::types::BrowserCookieInfo],
+    output: OutputFormat,
+) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "Domain", "Name", "Value", "Enc"]);
+            for c in cookies {
+                table.add_row(vec![
+                    c.pid.to_string(),
+                    c.image_name.clone(),
+                    c.domain.clone(),
+                    c.name.clone(),
+                    c.value.clone(),
+                    if c.encrypted { "Y" } else { "N" }.to_string(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} cookies", cookies.len());
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            for c in cookies {
+                println!("{}", serde_json::to_string(c).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,process,domain,name,value,encrypted");
+            for c in cookies {
+                println!(
+                    "{},{},{},{},{},{}",
+                    c.pid,
+                    c.image_name,
+                    c.domain,
+                    c.name,
+                    c.value,
+                    c.encrypted,
+                );
+            }
+        }
+    }
+}
+
+fn cmd_browser_creds(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    pid_filter: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    match ctx.os {
+        OsProfile::Linux | OsProfile::MacOs => {
+            anyhow::bail!("browser-creds requires a Windows memory dump");
+        }
+        OsProfile::Windows => {
+            let ps_head = ctx
+                .ps_active_process_head
+                .context("missing PsActiveProcessHead; browser-creds requires symbols")?;
+            let mut creds =
+                memf_windows::browser_credentials::walk_browser_credentials(&reader, ps_head)
+                    .context("failed to walk browser credentials")?;
+            if let Some(pid) = pid_filter {
+                creds.retain(|c| c.pid == pid);
+                if creds.is_empty() {
+                    eprintln!("warning: no browser credentials found for PID {pid}");
+                }
+            }
+            print_browser_creds(&creds, output);
+        }
+    }
+    Ok(())
+}
+
+fn print_browser_creds(
+    creds: &[memf_windows::types::BrowserCredentialInfo],
+    output: OutputFormat,
+) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "URL", "Username", "Password"]);
+            for c in creds {
+                table.add_row(vec![
+                    c.pid.to_string(),
+                    c.image_name.clone(),
+                    c.url.clone(),
+                    c.username.clone(),
+                    c.password.clone(),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} credentials", creds.len());
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            for c in creds {
+                println!("{}", serde_json::to_string(c).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,process,url,username,password");
+            for c in creds {
+                println!(
+                    "{},{},{},{},{}",
+                    c.pid, c.image_name, c.url, c.username, c.password,
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
