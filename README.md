@@ -7,9 +7,7 @@
 
 # memory-forensic
 
-**Walk any memory dump. Find what's hidden. No Python required.**
-
-Volatility works. It also needs Python, a virtual environment, a compatible plugin version, and ISF symbol files in the right directory. Every examiner knows the setup tax.
+**Walk any memory dump. Find what's hidden. One binary, zero setup.**
 
 `memory-forensic` is a Rust library and toolkit that reads LiME, AVML, Windows crash dumps, and six other formats, then walks processes, threads, modules, network connections, and injected memory — from a single static binary you compile once and copy anywhere.
 
@@ -313,7 +311,6 @@ Every alternative either requires Python, is Windows-only, or is unmaintained.
 | | memory-forensic | Volatility 3 | MemProcFS | Rekall |
 |--|:-:|:-:|:-:|:-:|
 | Runs on Linux / macOS | ✅ | ✅ | partial | ✅ |
-| No Python runtime | ✅ | — | ✅ | — |
 | Single static binary | ✅ | — | — | — |
 | ISF symbol pack compatible | ✅ | ✅ | — | — |
 | Library API (use in your tools) | ✅ | — | ✅ | — |
