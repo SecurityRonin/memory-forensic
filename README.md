@@ -312,22 +312,22 @@ Every alternative either requires Python, is Windows-only, or is unmaintained.
 
 | | memory-forensic | Volatility 3 | MemProcFS | Rekall |
 |--|:-:|:-:|:-:|:-:|
-| Runs on Linux / macOS | ✓ | ✓ | partial | ✓ |
-| No Python runtime | ✓ | — | ✓ | — |
-| Single static binary | ✓ | — | — | — |
-| ISF symbol pack compatible | ✓ | ✓ | — | — |
-| Library API (use in your tools) | ✓ | — | ✓ | — |
-| Linux + Windows walkers | ✓ | ✓ | Windows-first | ✓ |
-| ELF behavioral rootkit analysis | ✓ | — | — | — |
-| tmpfs / ramfs file recovery | ✓ | — | — | — |
-| memfd fileless execution detection | ✓ | — | — | — |
-| Direct syscall / EDR bypass detection | ✓ | — | — | — |
-| ETW / AMSI / DSE bypass detection | ✓ | — | — | — |
-| io_uring / netfilter / perf\_event abuse | ✓ | — | — | — |
-| Container escape indicators | ✓ | — | — | — |
-| Cross-artifact ATT&CK correlation | ✓ | — | — | — |
-| Actively maintained | ✓ | ✓ | ✓ | — |
-| Free & open source | ✓ | ✓ | ✓ | ✓ |
+| Runs on Linux / macOS | ✅ | ✅ | partial | ✅ |
+| No Python runtime | ✅ | — | ✅ | — |
+| Single static binary | ✅ | — | — | — |
+| ISF symbol pack compatible | ✅ | ✅ | — | — |
+| Library API (use in your tools) | ✅ | — | ✅ | — |
+| Linux + Windows walkers | ✅ | ✅ | Windows-first | ✅ |
+| ELF behavioral rootkit analysis | ✅ | — | — | — |
+| tmpfs / ramfs file recovery | ✅ | — | — | — |
+| memfd fileless execution detection | ✅ | — | — | — |
+| Direct syscall / EDR bypass detection | ✅ | — | — | — |
+| ETW / AMSI / DSE bypass detection | ✅ | — | — | — |
+| io_uring / netfilter / perf\_event abuse | ✅ | — | — | — |
+| Container escape indicators | ✅ | — | — | — |
+| Cross-artifact ATT&CK correlation | ✅ | — | — | — |
+| Actively maintained | ✅ | ✅ | ✅ | — |
+| Free & open source | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
