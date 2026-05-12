@@ -1292,6 +1292,22 @@ pub struct BrowserCookieInfo {
     pub encrypted: bool,
 }
 
+/// Recovered by scanning committed heap pages of browser processes for URL
+/// strings representing currently open tab navigation entries.  Lost on
+/// browser exit or system reboot.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BrowserSessionEntry {
+    /// PID of the browser process.
+    pub pid: u64,
+    /// Image name (e.g. `chrome.exe`, `firefox.exe`).
+    pub image_name: String,
+    /// The full URL found in heap memory.
+    pub url: String,
+    /// Internal hint describing which scan pattern yielded this entry
+    /// (always `"url-scan"` in the current implementation).
+    pub source_hint: String,
+}
+
 /// Recovered by scanning private writable VAD regions of all processes for
 /// token patterns including JWTs, OAuth Bearer tokens, and provider-specific
 /// formats such as GitHub PATs, GitLab PATs, Slack tokens, and AWS STS tokens.

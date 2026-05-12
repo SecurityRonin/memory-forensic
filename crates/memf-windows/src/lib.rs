@@ -16,6 +16,7 @@ pub mod bigpools;
 pub mod bitlocker_keys;
 pub mod browser_cookies;
 pub mod browser_credentials;
+pub mod browser_sessions;
 pub mod cachedump;
 pub mod callbacks;
 pub mod clipboard;
