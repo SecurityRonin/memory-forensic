@@ -65,6 +65,18 @@ memf hash memdump.dmp --lookup
 
 # Extract framebuffer screenshot from live memory dump
 memf framebuf memdump.dmp --symbols linux.json --png screen.png
+
+# Recover files from tmpfs mounts + detect memfd fileless ELF execution
+memf check memdump.lime --symbols linux.json --tmpfs-recovery --memfd
+
+# Detect EDR bypass: direct syscalls, ETW patching, AMSI/DSE bypass
+memf check memdump.dmp --symbols ntkrnlmp.json --direct-syscalls --etw-patch --amsi-bypass
+
+# Novel kernel interface abuse: io_uring, netfilter hooks, perf_event
+memf check memdump.lime --symbols linux.json --io-uring --netfilter --perf-event
+
+# Cross-artifact ATT&CK correlation across all walkers
+memf correlate memdump.dmp --symbols ntkrnlmp.json --output json
 ```
 
 Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
@@ -146,6 +158,137 @@ Extracts the framebuffer from a live or hibernation memory dump and writes it as
 
 ---
 
+## Recover files that never touched disk
+
+Attackers using tmpfs or `memfd_create(2)` leave no filesystem artifacts — the binary exists only in RAM.
+
+```bash
+# Recover inodes and file content from Linux tmpfs/ramfs mounts
+memf check memdump.lime --symbols linux.json --tmpfs-recovery
+
+# Detect ELF binaries running from anonymous memfd file descriptors
+memf check memdump.lime --symbols linux.json --memfd
+```
+
+```
+[TMPFS] /tmp/.x (dev=tmpfs)  3 inodes recovered
+  inode 12: ELF x86_64  size=847KB  sha256=deadbeef...  (no disk copy)
+  inode 13: config.sh   size=1.2KB  content recovered
+  inode 14: keys.txt    size=512B   content recovered
+
+[MEMFD] pid=2341 (python3)  fd=4  name=""  size=3.4MB  ELF x86_64
+  No path on disk — binary executed entirely from anonymous memory.
+  MITRE: T1620 (Reflective Code Loading)
+```
+
+tmpfs recovery walks the kernel `vfsmount` table and reconstructs inode content from page-cache pages. memfd detection walks every process's open file descriptor table and flags anonymous inodes created with `memfd_create(2)`.
+
+---
+
+## Detect EDR evasion and log suppression
+
+Modern offensive tooling patches Windows security instrumentation in memory to evade detection without touching disk.
+
+```bash
+# Direct syscalls — Syswhispers/Hell's Gate bypass Win32 API entirely
+memf check memdump.dmp --symbols ntkrnlmp.json --direct-syscalls
+
+# ETW patching — log suppression via ret/xor at ETW write functions
+memf check memdump.dmp --symbols ntkrnlmp.json --etw-patch
+
+# AMSI bypass — script-scanning suppression via amsi.dll patch
+memf check memdump.dmp --symbols ntkrnlmp.json --amsi-bypass
+
+# DSE bypass — Driver Signature Enforcement disabled for unsigned drivers
+memf check memdump.dmp --symbols ntkrnlmp.json --dse-bypass
+```
+
+```
+[DIRECT-SYSCALL] powershell.exe (PID 4412)  stub at 0x7ff800a1000
+  mov r10,rcx / mov eax,0x3c / syscall  — NtCreateThreadEx bypassing ntdll
+  MITRE: T1055.012 (Process Injection: Process Hollowing)
+
+[ETW-PATCH] svchost.exe (PID 1200)  EtwEventWrite → ret at offset +0
+  Expected: 4C 8B DC  Got: C3 90 90  (patched to immediate return)
+  MITRE: T1562.006 (Impair Defenses: Indicator Blocking)
+
+[AMSI-BYPASS] powershell.exe (PID 4412)  AmsiScanBuffer → xor eax,eax / ret
+  MITRE: T1562.001 (Impair Defenses: Disable or Modify Tools)
+
+[DSE-BYPASS] g_CiEnabled=0  CipInitialize patch detected
+  MITRE: T1014 (Rootkit), T1553.006 (Subvert Trust Controls)
+```
+
+---
+
+## Novel Linux kernel interface abuse
+
+Beyond classic syscall hooks, modern rootkits abuse newer kernel subsystems. `memory-forensic` covers all three:
+
+```bash
+memf check memdump.lime --symbols linux.json --io-uring --netfilter --perf-event
+```
+
+```
+[IO_URING] pid=3311 (malware)  ring at 0x7f0000000000  ops=1024 pending
+  SQPOLL thread pinned to cpu=0  — I/O continues without process context
+  MITRE: T1071 (Application Layer Protocol)
+
+[NETFILTER] NF_INET_PRE_ROUTING hook[0] → 0xffffffffc0b31240 (outside kernel text)
+  Module not in module list — DKOM-hidden or manually unmapped
+  MITRE: T1014 (Rootkit)
+
+[PERF-EVENT] pid=1 (systemd)  type=HARDWARE  cpu=-1  overflow_handler patched
+  → 0xffffffffc0b31500
+  MITRE: T1056 (Input Capture)
+```
+
+---
+
+## Container escape indicators
+
+```bash
+memf check memdump.lime --symbols linux.json --container-escape
+```
+
+```
+[CONTAINER-ESCAPE] pid=8801 (bash)  shares host user namespace
+  uid_map: 0 0 4294967295  (full host UID range — privileged mapping)
+  cgroup: /  (host root cgroup, not namespaced)
+  mount ns: host  (same as pid 1)
+  MITRE: T1611 (Escape to Host)
+```
+
+Walks user, mount, PID, net, and cgroup namespaces for every process and flags processes that should be isolated but share host-level namespaces — the structural signature of a container escape regardless of how it was achieved.
+
+---
+
+## Cross-artifact ATT&CK correlation
+
+`memf-correlate` joins findings from all walkers into a timeline, scores anomalies by severity, and maps each to MITRE ATT&CK techniques without running walkers one at a time:
+
+```bash
+memf correlate memdump.dmp --symbols ntkrnlmp.json --output json > findings.json
+```
+
+```json
+{
+  "technique": "T1055.012",
+  "name": "Process Hollowing",
+  "severity": "critical",
+  "evidence": [
+    { "source": "vad",       "detail": "svchost.exe VAD 0x140000–0x160000 RWX, no backing file" },
+    { "source": "ldrmodules","detail": "module in VAD but absent from InLoadOrderList" },
+    { "source": "iat_hooks", "detail": "CreateRemoteThread IAT entry patched → 0x14001a30" }
+  ],
+  "process": { "name": "svchost.exe", "pid": 1200, "ppid": 508 }
+}
+```
+
+No other open-source memory forensics tool produces ATT&CK-tagged cross-artifact findings from raw memory. Process, network, module, hook, and credential walker results are correlated by process and time before scoring.
+
+---
+
 ## Supported Memory Formats
 
 | Format | Source | Auto-detected |
@@ -176,6 +319,13 @@ Every alternative either requires Python, is Windows-only, or is unmaintained.
 | Library API (use in your tools) | ✓ | — | ✓ | — |
 | Linux + Windows walkers | ✓ | ✓ | Windows-first | ✓ |
 | ELF behavioral rootkit analysis | ✓ | — | — | — |
+| tmpfs / ramfs file recovery | ✓ | — | — | — |
+| memfd fileless execution detection | ✓ | — | — | — |
+| Direct syscall / EDR bypass detection | ✓ | — | — | — |
+| ETW / AMSI / DSE bypass detection | ✓ | — | — | — |
+| io_uring / netfilter / perf\_event abuse | ✓ | — | — | — |
+| Container escape indicators | ✓ | — | — | — |
+| Cross-artifact ATT&CK correlation | ✓ | — | — | — |
 | Actively maintained | ✓ | ✓ | ✓ | — |
 | Free & open source | ✓ | ✓ | ✓ | ✓ |
 
