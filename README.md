@@ -390,11 +390,13 @@ memf-windows = "0.1"
 
 ## Acknowledgements
 
-**Andrew Case** and the Volatility Foundation whose ISF format and plugin architecture this project is symbol-compatible with.
+**[Andrew Case](https://www.linkedin.com/in/andrewcase)** and the **[Volatility Foundation](https://volatilityfoundation.org/)** whose ISF format and plugin architecture this project is symbol-compatible with.
 
-**Brendan Dolan-Gavitt** whose research on DKOM and VAD-based process hiding informed the hidden process detection walkers.
+**[Brendan Dolan-Gavitt](https://www.cs.columbia.edu/~brendan/)** whose research on DKOM and VAD-based process hiding informed the hidden process detection walkers.
 
-The Rust [binrw](https://github.com/jam1garner/binrw) team for making binary format parsing declarative and safe.
+**[Ulf Frisk / MemProcFS](https://github.com/ufrisk/MemProcFS)** whose filesystem-as-memory-interface model and forensic mode design influenced how this library surfaces recovered artefacts.
+
+**[jam1garner](https://github.com/jam1garner)** for [binrw](https://github.com/jam1garner/binrw) — declarative binary format parsing that makes the format layer safe and readable.
 
 ---
 
