@@ -73,9 +73,10 @@ fn read_core_layout<P: PhysicalMemoryProvider>(
         return Ok((base, u64::from(size)));
     }
 
-    Err(Error::Walker(
-        "cannot determine module core layout: no core_layout or module_core field".into(),
-    ))
+    Err(Error::WalkFailed {
+        walker: "get_module_core_layout",
+        reason: "cannot determine module core layout: no core_layout or module_core field".into(),
+    })
 }
 
 #[cfg(test)]

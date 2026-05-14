@@ -98,10 +98,10 @@ fn read_namespace_info<P: PhysicalMemoryProvider>(
     let nsproxy_ptr: u64 = reader.read_pointer(proc.vaddr, "task_struct", "nsproxy")?;
 
     if nsproxy_ptr == 0 {
-        return Err(crate::Error::Walker(format!(
-            "PID {} has null nsproxy (zombie/dead process)",
-            proc.pid
-        )));
+        return Err(crate::Error::WalkFailed {
+            walker: "read_namespace_info",
+            reason: format!("PID {} has null nsproxy (zombie/dead process)", proc.pid),
+        });
     }
 
     let uts_ns_addr: u64 = reader.read_pointer(nsproxy_ptr, "nsproxy", "uts_ns")?;

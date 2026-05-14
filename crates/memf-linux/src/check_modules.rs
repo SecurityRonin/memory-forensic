@@ -53,12 +53,12 @@ pub fn check_hidden_modules<P: PhysicalMemoryProvider>(
     let modules_addr = reader
         .symbols()
         .symbol_address("modules")
-        .ok_or_else(|| Error::Walker("symbol 'modules' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "modules".into() })?;
 
     let _list_offset = reader
         .symbols()
         .field_offset("module", "list")
-        .ok_or_else(|| Error::Walker("module.list field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "module".into(), field_name: "list".into() })?;
 
     // Walk the modules linked list
     let module_addrs = reader.walk_list(modules_addr, "module", "list")?;

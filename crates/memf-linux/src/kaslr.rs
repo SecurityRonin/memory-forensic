@@ -24,7 +24,7 @@ pub fn detect_kaslr_offset(
 ) -> Result<u64> {
     let banner_symbol_vaddr = symbols
         .symbol_address("linux_banner")
-        .ok_or_else(|| Error::Walker("symbol 'linux_banner' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "linux_banner".into() })?;
 
     let banner_phys = scan_for_banner(physical)?;
 
@@ -44,7 +44,7 @@ fn scan_for_banner(physical: &dyn PhysicalMemoryProvider) -> Result<u64> {
             let to_read = ((range.end - addr) as usize).min(buf.len());
             let n = physical
                 .read_phys(addr, &mut buf[..to_read])
-                .map_err(|e| Error::Walker(format!("physical read error: {e}")))?;
+                .map_err(|e| Error::WalkFailed { walker: "scan_for_banner", reason: format!("physical read error: {e}") })?;
             if n == 0 {
                 break;
             }
@@ -62,9 +62,10 @@ fn scan_for_banner(physical: &dyn PhysicalMemoryProvider) -> Result<u64> {
         }
     }
 
-    Err(Error::Walker(
-        "Linux banner string not found in physical memory".into(),
-    ))
+    Err(Error::WalkFailed {
+        walker: "scan_for_banner",
+        reason: "Linux banner string not found in physical memory".into(),
+    })
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {

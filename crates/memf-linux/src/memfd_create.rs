@@ -11,7 +11,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 use serde::Serialize;
 
-use crate::Result;
+use crate::{vma_walker::for_each_task_vma, Result};
 
 /// VM flag bit: region is executable.
 const VM_EXEC: u64 = 0x4;
@@ -92,43 +92,22 @@ fn collect_memfd_for_task<P: PhysicalMemoryProvider>(
         .read_field_string(task_addr, "task_struct", "comm", 16)
         .unwrap_or_default();
 
-    // Kernel threads have mm == NULL.
-    let mm_ptr: u64 = match reader.read_field(task_addr, "task_struct", "mm") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    if mm_ptr == 0 {
-        return;
-    }
-
-    // Walk the VMA list via mm_struct.mmap.
-    let mmap_ptr: u64 = match reader.read_field(mm_ptr, "mm_struct", "mmap") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    let mut vma_addr = mmap_ptr;
-    while vma_addr != 0 {
-        if let Some(info) = try_read_memfd_vma(reader, pid, &comm, vma_addr) {
+    // Walk VMAs via the shared abstraction (handles mm==0 kernel threads internally).
+    for_each_task_vma(reader, task_addr, &mut |e| {
+        if let Some(info) = try_read_memfd_vma(reader, pid, &comm, e.vma_addr) {
             // Merge with existing entry for same (pid, memfd_name) if present.
             let existing = out
                 .iter_mut()
-                .find(|e| e.pid == info.pid && e.memfd_name == info.memfd_name);
-            if let Some(e) = existing {
-                e.size_bytes += info.size_bytes;
-                e.is_executable |= info.is_executable;
-                e.is_suspicious = classify_memfd(&e.memfd_name, e.is_executable);
+                .find(|entry| entry.pid == info.pid && entry.memfd_name == info.memfd_name);
+            if let Some(existing) = existing {
+                existing.size_bytes += info.size_bytes;
+                existing.is_executable |= info.is_executable;
+                existing.is_suspicious = classify_memfd(&existing.memfd_name, existing.is_executable);
             } else {
                 out.push(info);
             }
         }
-
-        // Advance via vm_area_struct.vm_next.
-        vma_addr = match reader.read_field(vma_addr, "vm_area_struct", "vm_next") {
-            Ok(v) => v,
-            Err(_) => break,
-        };
-    }
+    });
 }
 
 /// Attempt to read memfd information from a single VMA.

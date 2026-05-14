@@ -184,7 +184,7 @@ fn read_bpf_prog<P: PhysicalMemoryProvider>(
     let tag_offset = reader
         .symbols()
         .field_offset("bpf_prog", "tag")
-        .ok_or_else(|| Error::Walker("bpf_prog.tag field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "bpf_prog".into(), field_name: "tag".into() })?;
     if let Ok(bytes) = reader.read_bytes(prog_addr + tag_offset, 8) {
         tag.copy_from_slice(&bytes[..8]);
     }

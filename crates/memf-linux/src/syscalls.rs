@@ -23,17 +23,17 @@ pub fn check_syscall_table<P: PhysicalMemoryProvider>(
     let table_addr = reader
         .symbols()
         .symbol_address("sys_call_table")
-        .ok_or_else(|| Error::Walker("symbol 'sys_call_table' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "sys_call_table".into() })?;
 
     let stext = reader
         .symbols()
         .symbol_address("_stext")
-        .ok_or_else(|| Error::Walker("symbol '_stext' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "_stext".into() })?;
 
     let etext = reader
         .symbols()
         .symbol_address("_etext")
-        .ok_or_else(|| Error::Walker("symbol '_etext' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "_etext".into() })?;
 
     // Determine number of syscalls: prefer __NR_syscall_max + 1, else default
     let nr_syscalls = reader

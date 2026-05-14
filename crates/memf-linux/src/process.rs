@@ -125,7 +125,7 @@ fn read_parent_pid<P: PhysicalMemoryProvider>(
 fn read_cr3<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, task_addr: u64) -> Result<u64> {
     let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
     if mm_ptr == 0 {
-        return Err(Error::Walker("mm is NULL (kernel thread)".into()));
+        return Err(Error::WalkFailed { walker: "read_cr3", reason: "mm is NULL (kernel thread)".into() });
     }
     let pgd: u64 = reader.read_field(mm_ptr, "mm_struct", "pgd")?;
     Ok(pgd)

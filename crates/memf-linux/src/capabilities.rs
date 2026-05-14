@@ -115,7 +115,7 @@ fn read_process_caps<P: PhysicalMemoryProvider>(
     // task_struct.cred -> pointer to cred struct
     let cred_ptr: u64 = reader.read_field(proc.vaddr, "task_struct", "cred")?;
     if cred_ptr == 0 {
-        return Err(Error::Walker("cred pointer is NULL".into()));
+        return Err(Error::WalkFailed { walker: "read_process_caps", reason: "cred pointer is NULL".into() });
     }
 
     // cred.uid (kuid_t, effectively u32)

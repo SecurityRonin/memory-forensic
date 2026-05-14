@@ -29,7 +29,7 @@ pub fn walk_threads<P: PhysicalMemoryProvider>(
     let thread_group_offset = reader
         .symbols()
         .field_offset("task_struct", "thread_group")
-        .ok_or_else(|| Error::Walker("task_struct.thread_group field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "task_struct".into(), field_name: "thread_group".into() })?;
 
     let head_vaddr = leader_task_addr + thread_group_offset;
     let sibling_addrs = reader.walk_list(head_vaddr, "task_struct", "thread_group")?;

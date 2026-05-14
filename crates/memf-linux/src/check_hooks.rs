@@ -38,11 +38,11 @@ pub fn check_inline_hooks<P: PhysicalMemoryProvider>(
     let stext = reader
         .symbols()
         .symbol_address("_stext")
-        .ok_or_else(|| Error::Walker("symbol '_stext' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "_stext".into() })?;
     let etext = reader
         .symbols()
         .symbol_address("_etext")
-        .ok_or_else(|| Error::Walker("symbol '_etext' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "_etext".into() })?;
 
     let mut results = Vec::new();
 

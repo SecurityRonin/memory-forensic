@@ -21,12 +21,12 @@ pub fn walk_files<P: PhysicalMemoryProvider>(
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "init_task".into() })?;
 
     let tasks_offset = reader
         .symbols()
         .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "task_struct".into(), field_name: "tasks".into() })?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
@@ -72,9 +72,10 @@ pub fn walk_process_files<P: PhysicalMemoryProvider>(
     let files_ptr: u64 = reader.read_field(task_addr, "task_struct", "files")?;
 
     if files_ptr == 0 {
-        return Err(Error::Walker(format!(
-            "task {comm} (PID {pid}) has NULL files pointer"
-        )));
+        return Err(Error::WalkFailed {
+            walker: "walk_process_files",
+            reason: format!("task {comm} (PID {pid}) has NULL files pointer"),
+        });
     }
 
     let fdt_ptr: u64 = reader.read_field(files_ptr, "files_struct", "fdt")?;
@@ -85,15 +86,15 @@ pub fn walk_process_files<P: PhysicalMemoryProvider>(
     let f_path_offset = reader
         .symbols()
         .field_offset("file", "f_path")
-        .ok_or_else(|| Error::Walker("file.f_path field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "file".into(), field_name: "f_path".into() })?;
     let dentry_in_path_offset = reader
         .symbols()
         .field_offset("path", "dentry")
-        .ok_or_else(|| Error::Walker("path.dentry field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "path".into(), field_name: "dentry".into() })?;
     let name_in_qstr_offset = reader
         .symbols()
         .field_offset("qstr", "name")
-        .ok_or_else(|| Error::Walker("qstr.name field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "qstr".into(), field_name: "name".into() })?;
 
     // Read the entire fd pointer array as raw bytes
     let array_size = usize::try_from(max_fds).unwrap_or(0) * 8;
@@ -102,7 +103,7 @@ pub fn walk_process_files<P: PhysicalMemoryProvider>(
     let d_name_offset = reader
         .symbols()
         .field_offset("dentry", "d_name")
-        .ok_or_else(|| Error::Walker("dentry.d_name field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "dentry".into(), field_name: "d_name".into() })?;
 
     let mut fds = Vec::new();
 

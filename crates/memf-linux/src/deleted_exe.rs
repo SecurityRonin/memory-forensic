@@ -58,12 +58,12 @@ pub fn walk_deleted_exe<P: PhysicalMemoryProvider>(
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "init_task".into() })?;
 
     let tasks_offset = reader
         .symbols()
         .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "task_struct".into(), field_name: "tasks".into() })?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;

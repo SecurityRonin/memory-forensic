@@ -16,12 +16,12 @@ pub fn walk_maps<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::Walker("symbol 'init_task' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "init_task".into() })?;
 
     let tasks_offset = reader
         .symbols()
         .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::Walker("task_struct.tasks field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "task_struct".into(), field_name: "tasks".into() })?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
@@ -67,9 +67,10 @@ pub fn walk_process_maps<P: PhysicalMemoryProvider>(
     let mm_ptr: u64 = reader.read_field(task_addr, "task_struct", "mm")?;
 
     if mm_ptr == 0 {
-        return Err(Error::Walker(format!(
-            "task {comm} (PID {pid}) has NULL mm (kernel thread)"
-        )));
+        return Err(Error::WalkFailed {
+            walker: "walk_process_maps",
+            reason: format!("task {comm} (PID {pid}) has NULL mm (kernel thread)"),
+        });
     }
 
     let mmap_ptr: u64 = reader.read_field(mm_ptr, "mm_struct", "mmap")?;

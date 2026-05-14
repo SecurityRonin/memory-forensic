@@ -27,7 +27,7 @@ pub fn walk_netfilter_rules<P: PhysicalMemoryProvider>(
     let init_net_addr = reader
         .symbols()
         .symbol_address("init_net")
-        .ok_or_else(|| Error::Walker("symbol 'init_net' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "init_net".into() })?;
 
     let mut rules = Vec::new();
 
@@ -52,7 +52,7 @@ fn read_xt_table<P: PhysicalMemoryProvider>(
     let xt_offset = reader
         .symbols()
         .field_offset("net", "xt")
-        .ok_or_else(|| Error::Walker("net.xt field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "net".into(), field_name: "xt".into() })?;
     let xt_addr = init_net_addr + xt_offset;
 
     // xt contains tables_lock and tables array.
@@ -61,7 +61,7 @@ fn read_xt_table<P: PhysicalMemoryProvider>(
     let tables_offset = reader
         .symbols()
         .field_offset("netns_xt", "tables")
-        .ok_or_else(|| Error::Walker("netns_xt.tables not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "netns_xt".into(), field_name: "tables".into() })?;
 
     let list_head_size = reader.symbols().struct_size("list_head").unwrap_or(16);
     let af_inet_list = xt_addr + tables_offset + 2 * list_head_size; // AF_INET = 2

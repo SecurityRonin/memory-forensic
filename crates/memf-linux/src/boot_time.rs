@@ -32,7 +32,7 @@ pub fn extract_boot_time<P: PhysicalMemoryProvider>(
         .symbols()
         .symbol_address("tk_core")
         .or_else(|| reader.symbols().symbol_address("timekeeper"))
-        .ok_or_else(|| Error::Walker("symbol 'tk_core'/'timekeeper' not found".into()))?;
+        .ok_or_else(|| Error::MissingKernelSymbol { name: "tk_core".into() })?;
 
     // tk_core wraps timekeeper at offset 0 (or is timekeeper itself).
     // Try reading timekeeper offset within tk_core; if the field doesn't
@@ -50,7 +50,7 @@ pub fn extract_boot_time<P: PhysicalMemoryProvider>(
     let w2m_offset = reader
         .symbols()
         .field_offset("timekeeper", "wall_to_monotonic")
-        .ok_or_else(|| Error::Walker("timekeeper.wall_to_monotonic field not found".into()))?;
+        .ok_or_else(|| Error::MissingField { struct_name: "timekeeper".into(), field_name: "wall_to_monotonic".into() })?;
     let w2m_addr = timekeeper_addr + w2m_offset;
     let w2m_tv_sec: i64 = reader.read_field(w2m_addr, "timespec64", "tv_sec")?;
 
