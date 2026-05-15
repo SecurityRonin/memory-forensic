@@ -6,6 +6,7 @@
 //! - ISF JSON (Volatility 3-compatible symbol tables)
 //! - BTF (Linux BPF Type Format, kernel 5.2+)
 
+pub mod auto_profile;
 pub mod btf;
 pub mod isf;
 /// Kernel PE scanner for Windows physical memory dumps.
