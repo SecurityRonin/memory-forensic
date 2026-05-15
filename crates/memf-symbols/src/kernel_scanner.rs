@@ -20,8 +20,36 @@ const PAGE_SIZE: usize = 0x1000;
 /// AMD64 PE image whose CodeView record identifies it as an ntoskrnl variant.
 /// Returns `Error::NotFound` if no kernel PE is found in the scan window.
 pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbId> {
-    let _ = mem;
-    Err(crate::Error::NotFound("not implemented".into()))
+    let mut addr = SCAN_START;
+    while addr < SCAN_END {
+        let mut mz = [0u8; 2];
+        if mem.read_phys(addr, &mut mz).unwrap_or(0) < 2 || mz != [b'M', b'Z'] {
+            addr += PAGE_SIZE as u64;
+            continue;
+        }
+        let mut page = [0u8; PAGE_SIZE];
+        if mem.read_phys(addr, &mut page).unwrap_or(0) < PAGE_SIZE {
+            addr += PAGE_SIZE as u64;
+            continue;
+        }
+        let e_lfanew = u32::from_le_bytes(page[0x3C..0x40].try_into().unwrap()) as usize;
+        if e_lfanew + 6 > PAGE_SIZE || &page[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
+            addr += PAGE_SIZE as u64;
+            continue;
+        }
+        let machine = u16::from_le_bytes(page[e_lfanew + 4..e_lfanew + 6].try_into().unwrap());
+        if machine != 0x8664 {
+            addr += PAGE_SIZE as u64;
+            continue;
+        }
+        if let Ok(pdb_id) = crate::pe_debug::extract_pdb_id(&page) {
+            if is_kernel_pdb_name(&pdb_id.pdb_name) {
+                return Ok(pdb_id);
+            }
+        }
+        addr += PAGE_SIZE as u64;
+    }
+    Err(crate::Error::NotFound("kernel PE not found in physical memory".into()))
 }
 
 /// Check whether a PDB filename looks like an ntoskrnl variant.
