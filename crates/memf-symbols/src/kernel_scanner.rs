@@ -23,21 +23,23 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
     let mut addr = SCAN_START;
     while addr < SCAN_END {
         let mut mz = [0u8; 2];
+        // treat read errors as absent pages — providers return Ok(0) for unmapped ranges
         if mem.read_phys(addr, &mut mz).unwrap_or(0) < 2 || mz != [b'M', b'Z'] {
             addr += PAGE_SIZE as u64;
             continue;
         }
         let mut page = [0u8; PAGE_SIZE];
+        // treat read errors as absent pages — providers return Ok(0) for unmapped ranges
         if mem.read_phys(addr, &mut page).unwrap_or(0) < PAGE_SIZE {
             addr += PAGE_SIZE as u64;
             continue;
         }
-        let e_lfanew = u32::from_le_bytes(page[0x3C..0x40].try_into().unwrap()) as usize;
+        let e_lfanew = u32::from_le_bytes([page[0x3C], page[0x3D], page[0x3E], page[0x3F]]) as usize;
         if e_lfanew + 6 > PAGE_SIZE || &page[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
             addr += PAGE_SIZE as u64;
             continue;
         }
-        let machine = u16::from_le_bytes(page[e_lfanew + 4..e_lfanew + 6].try_into().unwrap());
+        let machine = u16::from_le_bytes([page[e_lfanew + 4], page[e_lfanew + 5]]);
         if machine != 0x8664 {
             addr += PAGE_SIZE as u64;
             continue;
@@ -53,7 +55,7 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
 }
 
 /// Check whether a PDB filename looks like an ntoskrnl variant.
-pub(crate) fn is_kernel_pdb_name(name: &str) -> bool {
+fn is_kernel_pdb_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("ntkrnl") || lower.contains("ntoskrnl")
 }
