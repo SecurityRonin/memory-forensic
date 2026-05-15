@@ -5,6 +5,20 @@
 //! Provides the [`SymbolResolver`] trait and concrete backends:
 //! - ISF JSON (Volatility 3-compatible symbol tables)
 //! - BTF (Linux BPF Type Format, kernel 5.2+)
+//!
+//! ## Windows auto-profile (requires `symserver` feature)
+//!
+//! ```no_run
+//! use memf_symbols::AutoProfile;
+//!
+//! # fn example() -> memf_symbols::Result<()> {
+//! // Scan a physical dump, download the matching PDB, return a resolver:
+//! // let dump = memf_format::open_dump("win10.dmp")?;
+//! // let resolver = AutoProfile::new()?.from_dump(dump.as_ref())?;
+//! // let pid_off = resolver.field_offset("_EPROCESS", "UniqueProcessId");
+//! # Ok(())
+//! # }
+//! ```
 
 pub mod auto_profile;
 pub mod btf;
@@ -15,6 +29,9 @@ pub mod pdb_resolver;
 pub mod pe_debug;
 pub mod symserver;
 pub mod test_builders;
+
+pub use auto_profile::AutoProfile;
+pub use kernel_scanner::scan_for_kernel;
 
 use std::collections::HashMap;
 
