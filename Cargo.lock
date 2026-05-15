@@ -1841,6 +1841,7 @@ name = "memf-symbols"
 version = "0.1.0"
 dependencies = [
  "goblin",
+ "memf-format",
  "pdb",
  "serde",
  "serde_json",

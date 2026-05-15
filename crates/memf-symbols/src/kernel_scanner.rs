@@ -70,45 +70,70 @@ mod tests {
         }
     }
 
-    /// Build a minimal AMD64 PE with a CodeView RSDS debug directory.
+    /// Build a valid AMD64 PE parseable by goblin, with a CodeView RSDS debug directory.
+    ///
+    /// Layout mirrors `pe_debug::build_pe_with_debug`: e_lfanew=0x80, one .rdata
+    /// section mapping RVA 0x200 → file 0x200, NumberOfRvaAndSizes=16.
+    ///
+    /// GUID bytes must be in mixed-endian format (Data1/2/3 LE, Data4 BE).
+    /// For "1B72224D-37B8-1792-…" use `[0x4D,0x22,0x72,0x1B, 0xB8,0x37, 0x92,0x17, …]`.
     fn build_kernel_pe(pdb_name: &str, guid: [u8; 16], age: u32) -> Vec<u8> {
-        let mut buf = vec![0u8; 0x400];
+        let mut buf = vec![0u8; 4096];
 
-        // DOS header: MZ signature + e_lfanew = 0x40
+        // DOS header
         buf[0] = b'M';
         buf[1] = b'Z';
-        buf[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        buf[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes()); // e_lfanew
 
-        // PE signature at 0x40
-        buf[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let mut pos = 0x80usize;
 
-        // COFF header: Machine = 0x8664 (AMD64), SizeOfOptionalHeader = 0xf0
-        buf[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
-        buf[0x46..0x48].copy_from_slice(&0u16.to_le_bytes()); // NumberOfSections
-        buf[0x4c..0x4e].copy_from_slice(&0xf0u16.to_le_bytes()); // SizeOfOptionalHeader
+        // PE signature
+        buf[pos..pos + 4].copy_from_slice(b"PE\0\0");
+        pos += 4;
 
-        // Optional header: Magic = 0x20b (PE32+)
-        buf[0x58..0x5a].copy_from_slice(&0x020bu16.to_le_bytes());
+        // COFF header (20 bytes)
+        buf[pos..pos + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // Machine: AMD64
+        buf[pos + 2..pos + 4].copy_from_slice(&1u16.to_le_bytes());  // NumberOfSections: 1
+        let opt_size: u16 = 240;
+        buf[pos + 16..pos + 18].copy_from_slice(&opt_size.to_le_bytes());
+        buf[pos + 18..pos + 20].copy_from_slice(&0x0022u16.to_le_bytes()); // Characteristics
+        pos += 20;
 
-        // DataDirectory[6] = Debug directory (RVA=0x200, size=28)
-        let dd_offset = 0x58 + 0x60 + 6 * 8;
-        buf[dd_offset..dd_offset + 4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA
-        buf[dd_offset + 4..dd_offset + 8].copy_from_slice(&28u32.to_le_bytes()); // size
+        // PE32+ optional header
+        let opt_start = pos;
+        buf[opt_start..opt_start + 2].copy_from_slice(&0x020Bu16.to_le_bytes()); // Magic
+        buf[opt_start + 32..opt_start + 36].copy_from_slice(&0x1000u32.to_le_bytes()); // SectionAlignment
+        buf[opt_start + 36..opt_start + 40].copy_from_slice(&0x200u32.to_le_bytes());  // FileAlignment
+        buf[opt_start + 56..opt_start + 60].copy_from_slice(&0x2000u32.to_le_bytes()); // SizeOfImage
+        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x200u32.to_le_bytes());  // SizeOfHeaders
+        buf[opt_start + 108..opt_start + 112].copy_from_slice(&16u32.to_le_bytes());   // NumberOfRvaAndSizes
+        // Debug directory: data dir index 6 → offset 112 + 6*8 = 160 from opt_start
+        buf[opt_start + 160..opt_start + 164].copy_from_slice(&0x200u32.to_le_bytes()); // RVA
+        buf[opt_start + 164..opt_start + 168].copy_from_slice(&28u32.to_le_bytes());    // size
 
-        // IMAGE_DEBUG_DIRECTORY at RVA 0x200
-        // Type = 2 (IMAGE_DEBUG_TYPE_CODEVIEW)
-        buf[0x200 + 12..0x200 + 16].copy_from_slice(&2u32.to_le_bytes());
-        let rsds_size = (4 + 16 + 4 + pdb_name.len() + 1) as u32;
-        buf[0x200 + 16..0x200 + 20].copy_from_slice(&rsds_size.to_le_bytes());
-        buf[0x200 + 20..0x200 + 24].copy_from_slice(&0x240u32.to_le_bytes());
-        buf[0x200 + 24..0x200 + 28].copy_from_slice(&0x240u32.to_le_bytes());
+        pos = opt_start + opt_size as usize;
 
-        // CodeView RSDS record at 0x240
-        buf[0x240..0x244].copy_from_slice(b"RSDS");
-        buf[0x244..0x254].copy_from_slice(&guid);
-        buf[0x254..0x258].copy_from_slice(&age.to_le_bytes());
-        let name_bytes = pdb_name.as_bytes();
-        buf[0x258..0x258 + name_bytes.len()].copy_from_slice(name_bytes);
+        // Section header: .rdata, RVA 0x200 → file offset 0x200
+        buf[pos..pos + 8].copy_from_slice(b".rdata\0\0");
+        buf[pos + 8..pos + 12].copy_from_slice(&0x1000u32.to_le_bytes()); // VirtualSize
+        buf[pos + 12..pos + 16].copy_from_slice(&0x200u32.to_le_bytes()); // VirtualAddress
+        buf[pos + 16..pos + 20].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfRawData
+        buf[pos + 20..pos + 24].copy_from_slice(&0x200u32.to_le_bytes()); // PointerToRawData
+
+        // IMAGE_DEBUG_DIRECTORY at file offset 0x200
+        buf[0x200 + 12..0x200 + 16].copy_from_slice(&2u32.to_le_bytes()); // Type=CODEVIEW
+        let pdb_bytes = pdb_name.as_bytes();
+        let cv_size = (24 + pdb_bytes.len() + 1) as u32;
+        buf[0x200 + 16..0x200 + 20].copy_from_slice(&cv_size.to_le_bytes());
+        buf[0x200 + 20..0x200 + 24].copy_from_slice(&0x220u32.to_le_bytes()); // AddressOfRawData
+        buf[0x200 + 24..0x200 + 28].copy_from_slice(&0x220u32.to_le_bytes()); // PointerToRawData
+
+        // CodeView RSDS record at file offset 0x220
+        buf[0x220..0x224].copy_from_slice(b"RSDS");
+        buf[0x224..0x234].copy_from_slice(&guid);
+        buf[0x234..0x238].copy_from_slice(&age.to_le_bytes());
+        buf[0x238..0x238 + pdb_bytes.len()].copy_from_slice(pdb_bytes);
+        // null terminator already zero from vec initialisation
 
         buf
     }
@@ -138,7 +163,9 @@ mod tests {
     #[test]
     fn scan_finds_kernel_pe_at_scan_start() {
         let guid = [
-            0x1B, 0x72, 0x22, 0x4D, 0x37, 0xB8, 0x17, 0x92,
+            0x4D, 0x22, 0x72, 0x1B, // Data1 LE → "1B72224D"
+            0xB8, 0x37,             // Data2 LE → "37B8"
+            0x92, 0x17,             // Data3 LE → "1792"
             0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44, 0x98, 0xB2,
         ];
         let pe = build_kernel_pe("ntkrnlmp.pdb", guid, 1);
@@ -166,7 +193,7 @@ mod tests {
         let guid = [0xBB; 16];
         let mut pe = build_kernel_pe("ntoskrnl.pdb", guid, 1);
         // Patch Machine to x86 (0x014c)
-        pe[0x44..0x46].copy_from_slice(&0x014cu16.to_le_bytes());
+        pe[0x84..0x86].copy_from_slice(&0x014cu16.to_le_bytes());
         let mem = FakeMem::new(SCAN_START, pe);
         let result = scan_for_kernel(&mem);
         assert!(matches!(result, Err(crate::Error::NotFound(_))));
