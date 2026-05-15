@@ -8,6 +8,7 @@
 
 pub mod btf;
 pub mod isf;
+pub mod kernel_scanner;
 pub mod pdb_resolver;
 pub mod pe_debug;
 pub mod symserver;

@@ -17,6 +17,7 @@ serde_json.workspace = true
 pdb.workspace = true
 goblin.workspace = true
 ureq = { workspace = true, optional = true }
+memf-format = { workspace = true }
 
 [lints]
 workspace = true
