@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use crate::pe_debug::{extract_pdb_id, PdbId};
 use crate::pdb_resolver::PdbResolver;
+#[cfg(feature = "symserver")]
 use crate::symserver::{self, SymbolServerClient};
 use crate::SymbolResolver;
 
@@ -39,6 +40,7 @@ impl AutoProfile {
     ///
     /// Checks the local cache first. If the PDB is not cached, downloads it
     /// from the Microsoft symbol server and writes it to the cache directory.
+    #[cfg(feature = "symserver")]
     pub fn from_pdb_id(&self, pdb_id: &PdbId) -> crate::Result<Box<dyn SymbolResolver>> {
         let cached = symserver::cache_path(
             &self.cache_dir,
@@ -64,6 +66,7 @@ impl AutoProfile {
     /// Extracts the PDB identity from `pe_bytes` then delegates to [`from_pdb_id`].
     ///
     /// [`from_pdb_id`]: AutoProfile::from_pdb_id
+    #[cfg(feature = "symserver")]
     pub fn from_pe_bytes(&self, pe_bytes: &[u8]) -> crate::Result<Box<dyn SymbolResolver>> {
         let pdb_id = extract_pdb_id(pe_bytes)?;
         self.from_pdb_id(&pdb_id)
@@ -75,6 +78,7 @@ impl AutoProfile {
     /// to [`from_pdb_id`].
     ///
     /// [`from_pdb_id`]: AutoProfile::from_pdb_id
+    #[cfg(feature = "symserver")]
     pub fn from_dump<P: memf_format::PhysicalMemoryProvider>(
         &self,
         mem: &P,
@@ -105,6 +109,7 @@ mod tests {
     }
 
     /// Stub returns an error when cache is empty and no network is available.
+    #[cfg(feature = "symserver")]
     #[test]
     fn from_pdb_id_returns_error_when_cache_empty_and_no_network() {
         let tmp = tempfile::tempdir().unwrap();
@@ -114,6 +119,7 @@ mod tests {
     }
 
     /// Garbage PE bytes produce a Malformed error (from extract_pdb_id).
+    #[cfg(feature = "symserver")]
     #[test]
     fn from_pe_bytes_propagates_malformed_error() {
         let tmp = tempfile::tempdir().unwrap();
@@ -129,6 +135,7 @@ mod tests {
     /// RED test: when a cached PDB file exists the real implementation should
     /// attempt to open it (yielding Pdb/Malformed on a zero-byte file), NOT
     /// NotFound.  The stub returns NotFound, so this test FAILS in RED.
+    #[cfg(feature = "symserver")]
     #[test]
     fn from_pdb_id_uses_cached_pdb_when_present() {
         let tmp = tempfile::tempdir().unwrap();
