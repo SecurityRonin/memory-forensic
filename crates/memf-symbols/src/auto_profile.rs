@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 
 use crate::pe_debug::{extract_pdb_id, PdbId};
+use crate::pdb_resolver::PdbResolver;
+use crate::symserver::{self, SymbolServerClient};
 use crate::SymbolResolver;
 
 /// Automatic symbol profile resolver for Windows kernels.
@@ -35,10 +37,26 @@ impl AutoProfile {
 
     /// Resolve a [`SymbolResolver`] for the given PDB identity.
     ///
-    /// **Stub** — always returns `Error::NotFound("not implemented")`.
-    /// Task 4 replaces this with cache-hit and download logic.
-    pub fn from_pdb_id(&self, _pdb_id: &PdbId) -> crate::Result<Box<dyn SymbolResolver>> {
-        Err(crate::Error::NotFound("not implemented".into()))
+    /// Checks the local cache first. If the PDB is not cached, downloads it
+    /// from the Microsoft symbol server and writes it to the cache directory.
+    pub fn from_pdb_id(&self, pdb_id: &PdbId) -> crate::Result<Box<dyn SymbolResolver>> {
+        let cached = symserver::cache_path(
+            &self.cache_dir,
+            &pdb_id.pdb_name,
+            &pdb_id.guid,
+            pdb_id.age,
+        );
+
+        if !cached.exists() {
+            let client = SymbolServerClient::new(
+                symserver::default_server_url(),
+                &self.cache_dir,
+            );
+            client.get_pdb(&pdb_id.pdb_name, &pdb_id.guid, pdb_id.age)?;
+        }
+
+        let resolver = PdbResolver::from_path(&cached)?;
+        Ok(Box::new(resolver))
     }
 
     /// Resolve a [`SymbolResolver`] by parsing the PDB identity from a PE binary.
