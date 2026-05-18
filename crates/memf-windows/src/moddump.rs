@@ -80,16 +80,20 @@ pub fn moddump_driver<P: PhysicalMemoryProvider>(
     moddump_inner(reader, &drv.name, drv.base_addr, drv.size as usize)
 }
 
-/// Inner implementation of module dumping — STUB.
+/// Inner implementation of module dumping.
 pub(crate) fn moddump_inner(
-    _reader: &impl MemReader,
-    _name: &str,
-    _base_addr: u64,
-    _size: usize,
+    reader: &impl MemReader,
+    name: &str,
+    base_addr: u64,
+    size: usize,
 ) -> crate::Result<ModuleDump> {
-    Err(crate::Error::WalkFailed {
-        walker: "moddump",
-        reason: "not implemented".into(),
+    let raw_bytes = reader.read_region(base_addr, size)?;
+    let reconstructed = reconstruct_pe(&raw_bytes).ok();
+    Ok(ModuleDump {
+        name: name.to_string(),
+        base_addr,
+        raw_bytes,
+        reconstructed,
     })
 }
 
@@ -102,16 +106,20 @@ pub fn procdump<P: PhysicalMemoryProvider>(
     procdump_inner(reader, process, dlls)
 }
 
-/// Inner implementation of process dumping — STUB.
+/// Inner implementation of process dumping.
 pub(crate) fn procdump_inner(
-    _reader: &impl MemReader,
-    _process: &WinProcessInfo,
-    _dlls: &[WinDllInfo],
+    reader: &impl MemReader,
+    process: &WinProcessInfo,
+    dlls: &[WinDllInfo],
 ) -> crate::Result<ModuleDump> {
-    Err(crate::Error::WalkFailed {
-        walker: "procdump",
-        reason: "not implemented".into(),
-    })
+    let exe = dlls
+        .iter()
+        .min_by_key(|d| d.load_order)
+        .ok_or_else(|| crate::Error::WalkFailed {
+            walker: "procdump",
+            reason: format!("no DLLs found for PID {}", process.pid),
+        })?;
+    moddump_inner(reader, &exe.name, exe.base_addr, exe.size as usize)
 }
 
 /// Enumerate all memory-mapped (non-private) VAD regions.
@@ -404,32 +412,38 @@ mod tests {
         assert_eq!(result, vec![0u8; 8]);
     }
 
-    // ── moddump_inner stub test (PASS in RED) ─────────────────────────────────
+    // ── moddump_inner tests (GREEN) ───────────────────────────────────────────
 
     #[test]
-    fn moddump_inner_stub_returns_error() {
-        let reader = FakeReader::new(0x1000, vec![0u8; 0x100]);
-        assert!(moddump_inner(&reader, "test.dll", 0x1000, 0x100).is_err());
+    fn moddump_inner_returns_bytes_and_reconstructed_pe() {
+        let pe = build_memory_pe();
+        let reader = FakeReader::new(0x7FF0_0000, pe.clone());
+        let result = moddump_inner(&reader, "test.dll", 0x7FF0_0000, pe.len()).unwrap();
+        assert_eq!(result.name, "test.dll");
+        assert_eq!(result.base_addr, 0x7FF0_0000);
+        assert_eq!(result.raw_bytes.len(), pe.len());
+        assert!(result.reconstructed.is_some(), "valid PE should reconstruct successfully");
     }
 
-    // ── procdump_inner stub test (PASS in RED) ────────────────────────────────
+    // ── procdump_inner tests (GREEN) ──────────────────────────────────────────
 
     #[test]
-    fn procdump_inner_stub_returns_error() {
-        let reader = FakeReader::new(0x1000, vec![0u8; 0x100]);
+    fn procdump_inner_picks_lowest_load_order_module() {
+        let pe = build_memory_pe();
+        let reader = FakeReader::new(0x4000_0000, pe.clone());
         let process = WinProcessInfo {
-            pid: 4,
-            ppid: 0,
-            image_name: "System".into(),
-            create_time: 0,
-            exit_time: 0,
-            cr3: 0,
-            peb_addr: 0,
-            vaddr: 0,
-            thread_count: 1,
-            is_wow64: false,
+            pid: 100, ppid: 4, image_name: "notepad.exe".into(),
+            create_time: 0, exit_time: 0, cr3: 0,
+            peb_addr: 0, vaddr: 0, thread_count: 2, is_wow64: false,
         };
-        assert!(procdump_inner(&reader, &process, &[]).is_err());
+        let dlls = vec![
+            WinDllInfo { name: "ntdll.dll".into(), full_path: String::new(), base_addr: 0x5000_0000, size: 0x200, load_order: 2 },
+            WinDllInfo { name: "notepad.exe".into(), full_path: String::new(), base_addr: 0x4000_0000, size: pe.len() as u64, load_order: 0 },
+        ];
+        let result = procdump_inner(&reader, &process, &dlls).unwrap();
+        assert_eq!(result.name, "notepad.exe");
+        assert_eq!(result.base_addr, 0x4000_0000);
+        assert!(result.reconstructed.is_some());
     }
 
     // ── list_mapped_files tests (PASS in RED) ─────────────────────────────────
