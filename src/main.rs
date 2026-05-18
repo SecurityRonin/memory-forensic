@@ -426,6 +426,50 @@ enum Commands {
         #[arg(long)]
         pid: Option<u64>,
     },
+    /// Read raw bytes from a physical address in a memory dump.
+    ///
+    /// Writes raw bytes to stdout. Primary interface for `volatility3-memf`.
+    #[command(name = "read-phys")]
+    ReadPhys {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Physical address (hex, e.g. 0x1000).
+        #[arg(value_parser = parse_cr3)]
+        addr: u64,
+        /// Number of bytes to read.
+        len: u64,
+    },
+    /// Translate a virtual address to a physical address.
+    ///
+    /// Prints the physical address in hex. Primary interface for `volatility3-memf`.
+    #[command(name = "translate-va")]
+    TranslateVa {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: u64,
+        /// Virtual address to translate (hex).
+        #[arg(value_parser = parse_cr3)]
+        va: u64,
+    },
+    /// Read raw bytes from a virtual address in a memory dump.
+    ///
+    /// Requires a CR3 (page table root). Writes raw bytes to stdout.
+    /// Primary interface for `volatility3-memf`.
+    #[command(name = "read-virt")]
+    ReadVirt {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: u64,
+        /// Virtual address (hex).
+        #[arg(value_parser = parse_cr3)]
+        va: u64,
+        /// Number of bytes to read.
+        len: u64,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -732,6 +776,18 @@ fn main() -> Result<()> {
                 resolved.is_extracted(),
             )
         }
+        Commands::ReadPhys { dump, addr, len } => {
+            cmd_read_phys(&dump, addr, len, &mut std::io::stdout())
+        }
+        Commands::TranslateVa { dump, cr3, va } => {
+            cmd_translate_va(&dump, cr3, va, &mut std::io::stdout())
+        }
+        Commands::ReadVirt {
+            dump,
+            cr3,
+            va,
+            len,
+        } => cmd_read_virt(&dump, cr3, va, len, &mut std::io::stdout()),
     }
 }
 
@@ -5058,6 +5114,38 @@ fn format_size(bytes: u64) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Volatility adapter low-level primitives
+// ---------------------------------------------------------------------------
+
+fn cmd_read_phys(
+    _dump: &Path,
+    _addr: u64,
+    _len: u64,
+    _out: &mut impl std::io::Write,
+) -> Result<()> {
+    anyhow::bail!("not implemented")
+}
+
+fn cmd_translate_va(
+    _dump: &Path,
+    _cr3: u64,
+    _va: u64,
+    _out: &mut impl std::io::Write,
+) -> Result<()> {
+    anyhow::bail!("not implemented")
+}
+
+fn cmd_read_virt(
+    _dump: &Path,
+    _cr3: u64,
+    _va: u64,
+    _len: u64,
+    _out: &mut impl std::io::Write,
+) -> Result<()> {
+    anyhow::bail!("not implemented")
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -6858,5 +6946,56 @@ mod tests {
             "--output", "json",
         ]);
         assert!(cli.is_ok(), "browser-sessions --output json must parse");
+    }
+
+    // -----------------------------------------------------------------------
+    // read-phys / translate-va / read-virt adapter commands
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_read_phys_reads_known_bytes() {
+        use memf_format::test_builders::LimeBuilder;
+        let data: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+        let dump = LimeBuilder::new().add_range(0x1000, data).build();
+        let path = std::env::temp_dir().join("memf_tdd_read_phys.lime");
+        std::fs::write(&path, &dump).unwrap();
+
+        let mut out: Vec<u8> = Vec::new();
+        let result = cmd_read_phys(&path, 0x1000, 8, &mut out);
+        assert!(result.is_ok(), "cmd_read_phys should succeed: {:?}", result.err());
+        assert_eq!(out, data, "output must be raw bytes from physical memory");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cmd_read_phys_fails_on_missing_dump() {
+        let mut out: Vec<u8> = Vec::new();
+        let result = cmd_read_phys(std::path::Path::new("/no/such/dump.lime"), 0x1000, 8, &mut out);
+        assert!(result.is_err(), "missing dump must return error");
+    }
+
+    #[test]
+    fn cmd_translate_va_fails_on_missing_dump() {
+        let mut out: Vec<u8> = Vec::new();
+        let result = cmd_translate_va(
+            std::path::Path::new("/no/such/dump.lime"),
+            0x0001_0000,
+            0xffff_8000_0000_0000,
+            &mut out,
+        );
+        assert!(result.is_err(), "missing dump must return error");
+    }
+
+    #[test]
+    fn cmd_read_virt_fails_on_missing_dump() {
+        let mut out: Vec<u8> = Vec::new();
+        let result = cmd_read_virt(
+            std::path::Path::new("/no/such/dump.lime"),
+            0x0001_0000,
+            0xffff_8000_0000_0000,
+            8,
+            &mut out,
+        );
+        assert!(result.is_err(), "missing dump must return error");
     }
 }
