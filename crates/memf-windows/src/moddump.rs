@@ -139,12 +139,69 @@ pub fn list_mapped_files(vads: &[WinVadInfo]) -> Vec<MappedFileRegion> {
 ///
 /// # Errors
 ///
-/// Returns `WalkFailed` until implemented.
-pub fn reconstruct_pe(_in_memory: &[u8]) -> crate::Result<Vec<u8>> {
-    Err(crate::Error::WalkFailed {
-        walker: "reconstruct_pe",
-        reason: "not implemented".into(),
-    })
+/// Returns `WalkFailed` if the input is not a valid PE image.
+pub fn reconstruct_pe(in_memory: &[u8]) -> crate::Result<Vec<u8>> {
+    if in_memory.len() < 0x40 || &in_memory[0..2] != b"MZ" {
+        return Err(crate::Error::WalkFailed {
+            walker: "reconstruct_pe",
+            reason: "not a PE image (no MZ header)".into(),
+        });
+    }
+    let e_lfanew = u32::from_le_bytes([
+        in_memory[0x3C], in_memory[0x3D], in_memory[0x3E], in_memory[0x3F],
+    ]) as usize;
+    if e_lfanew + 24 > in_memory.len() || &in_memory[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
+        return Err(crate::Error::WalkFailed {
+            walker: "reconstruct_pe",
+            reason: "not a valid PE (missing PE signature)".into(),
+        });
+    }
+
+    let num_sections = u16::from_le_bytes([in_memory[e_lfanew + 6], in_memory[e_lfanew + 7]]) as usize;
+    let opt_size = u16::from_le_bytes([in_memory[e_lfanew + 20], in_memory[e_lfanew + 21]]) as usize;
+    let sh_offset = e_lfanew + 24 + opt_size;
+
+    if sh_offset + num_sections * 40 > in_memory.len() {
+        return Err(crate::Error::WalkFailed {
+            walker: "reconstruct_pe",
+            reason: "section headers out of bounds".into(),
+        });
+    }
+
+    // Determine output size from section file extents
+    let mut out_size = sh_offset + num_sections * 40;
+    for i in 0..num_sections {
+        let s = sh_offset + i * 40;
+        let ptr_raw = u32::from_le_bytes([in_memory[s+20], in_memory[s+21], in_memory[s+22], in_memory[s+23]]) as usize;
+        let raw_sz  = u32::from_le_bytes([in_memory[s+16], in_memory[s+17], in_memory[s+18], in_memory[s+19]]) as usize;
+        out_size = out_size.max(ptr_raw + raw_sz);
+    }
+
+    // Copy headers verbatim
+    let header_sz = (sh_offset + num_sections * 40).min(in_memory.len());
+    let mut out = vec![0u8; out_size];
+    out[..header_sz].copy_from_slice(&in_memory[..header_sz]);
+
+    // Copy each section from VirtualAddress in source to PointerToRawData in output
+    for i in 0..num_sections {
+        let s = sh_offset + i * 40;
+        let virt_addr = u32::from_le_bytes([in_memory[s+12], in_memory[s+13], in_memory[s+14], in_memory[s+15]]) as usize;
+        let virt_size = u32::from_le_bytes([in_memory[s+8],  in_memory[s+9],  in_memory[s+10], in_memory[s+11]]) as usize;
+        let ptr_raw   = u32::from_le_bytes([in_memory[s+20], in_memory[s+21], in_memory[s+22], in_memory[s+23]]) as usize;
+        let raw_sz    = u32::from_le_bytes([in_memory[s+16], in_memory[s+17], in_memory[s+18], in_memory[s+19]]) as usize;
+
+        if ptr_raw == 0 || raw_sz == 0 {
+            continue;
+        }
+        let copy_len = virt_size.min(raw_sz);
+        let src_end = virt_addr.saturating_add(copy_len).min(in_memory.len());
+        let actual = src_end.saturating_sub(virt_addr);
+        if actual > 0 && ptr_raw + actual <= out.len() {
+            out[ptr_raw..ptr_raw + actual].copy_from_slice(&in_memory[virt_addr..virt_addr + actual]);
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
