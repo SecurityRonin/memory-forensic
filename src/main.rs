@@ -5118,31 +5118,49 @@ fn format_size(bytes: u64) -> String {
 // ---------------------------------------------------------------------------
 
 fn cmd_read_phys(
-    _dump: &Path,
-    _addr: u64,
-    _len: u64,
-    _out: &mut impl std::io::Write,
+    dump: &Path,
+    addr: u64,
+    len: u64,
+    out: &mut impl std::io::Write,
 ) -> Result<()> {
-    anyhow::bail!("not implemented")
+    let provider = open_dump_for(dump, false)?;
+    let mut buf = vec![0u8; len as usize];
+    let n = provider
+        .read_phys(addr, &mut buf)
+        .with_context(|| format!("failed to read {len} bytes at physical 0x{addr:x}"))?;
+    out.write_all(&buf[..n])?;
+    Ok(())
 }
 
 fn cmd_translate_va(
-    _dump: &Path,
-    _cr3: u64,
-    _va: u64,
-    _out: &mut impl std::io::Write,
+    dump: &Path,
+    cr3: u64,
+    va: u64,
+    out: &mut impl std::io::Write,
 ) -> Result<()> {
-    anyhow::bail!("not implemented")
+    let provider = open_dump_for(dump, false)?;
+    let vas = VirtualAddressSpace::new(provider, cr3, TranslationMode::X86_64FourLevel);
+    let pa = vas
+        .virt_to_phys(va)
+        .with_context(|| format!("failed to translate VA 0x{va:x} with CR3 0x{cr3:x}"))?;
+    out.write_all(format!("0x{pa:x}\n").as_bytes())?;
+    Ok(())
 }
 
 fn cmd_read_virt(
-    _dump: &Path,
-    _cr3: u64,
-    _va: u64,
-    _len: u64,
-    _out: &mut impl std::io::Write,
+    dump: &Path,
+    cr3: u64,
+    va: u64,
+    len: u64,
+    out: &mut impl std::io::Write,
 ) -> Result<()> {
-    anyhow::bail!("not implemented")
+    let provider = open_dump_for(dump, false)?;
+    let vas = VirtualAddressSpace::new(provider, cr3, TranslationMode::X86_64FourLevel);
+    let mut buf = vec![0u8; len as usize];
+    vas.read_virt(va, &mut buf)
+        .with_context(|| format!("failed to read {len} bytes at VA 0x{va:x}"))?;
+    out.write_all(&buf)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
