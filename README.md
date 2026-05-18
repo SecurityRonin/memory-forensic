@@ -406,7 +406,7 @@ memf-windows = "0.1"
 
 **[jam1garner](https://github.com/jam1garner)** for [binrw](https://github.com/jam1garner/binrw) — declarative binary format parsing that makes the format layer safe and readable.
 
-**[core-jmp.org](https://core-jmp.org/2026/05/no-more-hardcoded-kernel-offsets-turning-microsoft-pdb-symbols-into-a-runtime-byovd-superpower/)** — the writeup *"No More Hardcoded Kernel Offsets"* which documented the full chain of scanning a dump for the ntoskrnl PE, extracting the CodeView PDB GUID, and fetching the matching PDB from `msdl.microsoft.com` at runtime. This technique directly inspired the `AutoProfile` implementation in `memf-symbols`.
+**[S12](https://medium.com/@s12deff)** — the writeup *[Kernel Dynamic Offset Resolution Using PDB Symbols](https://medium.com/@s12deff/kernel-dynamic-offset-resolution-using-pdb-symbols-b0aaa499ac25)* which documented the full chain of scanning a dump for the ntoskrnl PE, extracting the CodeView PDB GUID, and fetching the matching PDB from `msdl.microsoft.com` at runtime. This technique directly inspired the `AutoProfile` implementation in `memf-symbols`.
 
 **[Microsoft Symbol Server](https://learn.microsoft.com/en-us/windows/win32/debug/using-symsrv)** (`msdl.microsoft.com`) for hosting public PDB files for every Windows kernel build, making zero-config Windows analysis possible without pre-staged symbol files.
 

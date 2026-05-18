@@ -6,8 +6,8 @@
 //!
 //! The scan-then-fetch technique — locating the kernel PE in physical memory,
 //! reading its CodeView RSDS GUID, and resolving the matching PDB from
-//! `msdl.microsoft.com` — was documented by core-jmp.org:
-//! <https://core-jmp.org/2026/05/no-more-hardcoded-kernel-offsets-turning-microsoft-pdb-symbols-into-a-runtime-byovd-superpower/>
+//! `msdl.microsoft.com` — was documented by S12:
+//! <https://medium.com/@s12deff/kernel-dynamic-offset-resolution-using-pdb-symbols-b0aaa499ac25>
 
 use memf_format::PhysicalMemoryProvider;
 
