@@ -182,7 +182,7 @@ pub fn reconstruct_pe(in_memory: &[u8]) -> crate::Result<Vec<u8>> {
         let s = sh_offset + i * 40;
         let ptr_raw = u32::from_le_bytes([in_memory[s+20], in_memory[s+21], in_memory[s+22], in_memory[s+23]]) as usize;
         let raw_sz  = u32::from_le_bytes([in_memory[s+16], in_memory[s+17], in_memory[s+18], in_memory[s+19]]) as usize;
-        out_size = out_size.max(ptr_raw + raw_sz);
+        out_size = out_size.max(ptr_raw.saturating_add(raw_sz));
     }
 
     // Copy headers verbatim
