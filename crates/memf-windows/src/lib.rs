@@ -59,6 +59,7 @@ pub mod ldrmodules;
 pub mod lsadump;
 pub mod mbr_scan;
 pub mod messagehooks;
+pub mod moddump;
 pub mod mutant;
 pub mod network;
 pub mod ntlm_ssp;
@@ -109,6 +110,7 @@ pub mod wow64_anomaly;
 pub mod testing;
 
 pub use types::*;
+pub use moddump::{ModuleDump, MappedFileRegion, dump_memory_region, moddump, moddump_driver, procdump, list_mapped_files, reconstruct_pe};
 
 /// Error type for memf-windows operations.
 #[derive(Debug, thiserror::Error)]

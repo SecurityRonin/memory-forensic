@@ -1855,6 +1855,7 @@ name = "memf-windows"
 version = "0.1.0"
 dependencies = [
  "forensicnomicon",
+ "goblin",
  "memf-core",
  "memf-correlate",
  "memf-dpapi",
