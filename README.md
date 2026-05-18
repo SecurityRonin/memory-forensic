@@ -13,8 +13,15 @@
 
 ```bash
 cargo install memory-forensic
+
+# Linux — supply an ISF symbol file
 memf ps memdump.lime --symbols linux.json --tree
+
+# Windows — no symbol file needed, PDB auto-downloaded from msdl.microsoft.com
+memf ps win10.dmp --tree
 ```
+
+> **Windows auto-profile:** `memory-forensic` scans physical pages for the ntoskrnl PE, extracts its PDB GUID via the CodeView debug directory, fetches the exact matching PDB from Microsoft's public symbol server, and parses struct layouts at runtime — all without any pre-staged symbol file. Works for every Windows build automatically.
 
 **[Full documentation →](https://securityronin.github.io/memory-forensic/)**
 
@@ -313,6 +320,7 @@ Every alternative either requires Python, is Windows-only, or is unmaintained.
 | Runs on Linux / macOS | ✅ | ✅ | partial | ✅ |
 | Single static binary | ✅ | — | — | — |
 | ISF symbol pack compatible | ✅ | ✅ | — | — |
+| Windows auto-profile (no symbol file) | ✅ | — | — | — |
 | Library API (use in your tools) | ✅ | — | ✅ | — |
 | Linux + Windows walkers | ✅ | ✅ | Windows-first | ✅ |
 | ELF behavioral rootkit analysis | ✅ | — | — | — |
@@ -366,7 +374,7 @@ for proc in reader.eprocess_list()? {
 | [`memf-dpapi`](crates/memf-dpapi/) | Windows DPAPI decryption: master key blob parsing, Chrome `Local State` key decryption, v10/v20 AES-GCM cookie value decryption. |
 | [`memf-framebuffer`](crates/memf-framebuffer/) | Framebuffer screenshot extraction: Linux DRM/KMS `drm_framebuffer` walker and Windows session framebuffer scanner, output as PNG. |
 | [`memf-strings`](crates/memf-strings/) | String extraction (ASCII, UTF-8, UTF-16LE) with regex classification into IoC categories: URLs, IP addresses, domains, registry keys, crypto wallet addresses, private keys, shell commands. |
-| [`memf-symbols`](crates/memf-symbols/) | Symbol resolution from ISF JSON, BTF (Linux), and PDB files. Includes a symbol server client for on-demand PDB retrieval. |
+| [`memf-symbols`](crates/memf-symbols/) | Symbol resolution from ISF JSON, BTF (Linux), and PDB files. Includes `AutoProfile` — zero-config Windows kernel struct resolution: scans the dump for ntoskrnl, fetches the exact PDB from `msdl.microsoft.com`, parses it, returns a `SymbolResolver`. No symbol file required. |
 | [`memf-correlate`](crates/memf-correlate/) | Cross-artifact correlation with MITRE ATT&CK technique tagging, process tree reconstruction, anomaly scoring, and timeline generation. |
 | [`forensic-hashdb`](crates/forensic-hashdb/) | Zero-FP hash databases: NSRL/CIRCL known-good lookup, MalwareBazaar/VirusShare known-bad lookup, and embedded loldrivers.io vulnerable Windows driver hashes. |
 
@@ -397,6 +405,10 @@ memf-windows = "0.1"
 **[Ulf Frisk / MemProcFS](https://github.com/ufrisk/MemProcFS)** whose filesystem-as-memory-interface model and forensic mode design influenced how this library surfaces recovered artefacts.
 
 **[jam1garner](https://github.com/jam1garner)** for [binrw](https://github.com/jam1garner/binrw) — declarative binary format parsing that makes the format layer safe and readable.
+
+**[core-jmp.org](https://core-jmp.org/2026/05/no-more-hardcoded-kernel-offsets-turning-microsoft-pdb-symbols-into-a-runtime-byovd-superpower/)** — the writeup *"No More Hardcoded Kernel Offsets"* which documented the full chain of scanning a dump for the ntoskrnl PE, extracting the CodeView PDB GUID, and fetching the matching PDB from `msdl.microsoft.com` at runtime. This technique directly inspired the `AutoProfile` implementation in `memf-symbols`.
+
+**[Microsoft Symbol Server](https://learn.microsoft.com/en-us/windows/win32/debug/using-symsrv)** (`msdl.microsoft.com`) for hosting public PDB files for every Windows kernel build, making zero-config Windows analysis possible without pre-staged symbol files.
 
 ---
 

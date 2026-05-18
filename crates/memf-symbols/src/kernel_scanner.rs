@@ -3,6 +3,11 @@
 //! Scans physical pages for the ntoskrnl.exe MZ header and extracts
 //! the PDB identification (GUID + age + filename) from its CodeView
 //! debug directory.
+//!
+//! The scan-then-fetch technique — locating the kernel PE in physical memory,
+//! reading its CodeView RSDS GUID, and resolving the matching PDB from
+//! `msdl.microsoft.com` — was documented by core-jmp.org:
+//! <https://core-jmp.org/2026/05/no-more-hardcoded-kernel-offsets-turning-microsoft-pdb-symbols-into-a-runtime-byovd-superpower/>
 
 use memf_format::PhysicalMemoryProvider;
 
