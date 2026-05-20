@@ -3,6 +3,7 @@
 mod archive;
 mod os_detect;
 mod vol_compat;
+mod symbol_dl;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
