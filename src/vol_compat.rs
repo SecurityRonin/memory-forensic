@@ -220,3 +220,95 @@ pub fn proxy_to_vol(
         Err(e) => anyhow::bail!("failed to exec vol: {e}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memf_windows::{WinConnectionInfo, WinProcessInfo, WinTcpState};
+
+    fn make_proc() -> WinProcessInfo {
+        WinProcessInfo {
+            pid: 4,
+            ppid: 0,
+            image_name: "System".into(),
+            create_time: 133_000_000_000_000_000,
+            exit_time: 0,
+            cr3: 0x1000,
+            peb_addr: 0,
+            vaddr: 0xffff808012340000,
+            thread_count: 158,
+            is_wow64: false,
+            handle_count: 2000,
+            session_id: 0,
+        }
+    }
+
+    fn make_conn() -> WinConnectionInfo {
+        WinConnectionInfo {
+            protocol: "TCPv4".into(),
+            local_addr: "192.168.1.1".into(),
+            local_port: 54321,
+            remote_addr: "8.8.8.8".into(),
+            remote_port: 443,
+            state: WinTcpState::Established,
+            pid: 1234,
+            process_name: "chrome.exe".into(),
+            create_time: 133_000_000_000_000_000,
+            offset: 0xffff80001234abcd,
+        }
+    }
+
+    #[test]
+    fn test_format_vol3_filetime_zero_is_null_str() {
+        assert_eq!(format_vol3_filetime(0), "N/A");
+    }
+
+    #[test]
+    fn test_format_vol3_filetime_has_microsecond_precision() {
+        // FILETIME 133497474451234560 ≈ 2024-01-15 10:30:45.123456 UTC
+        let s = format_vol3_filetime(133_497_474_451_234_560);
+        // Must contain a decimal point and have exactly 6 fractional digits
+        let dot_pos = s.find('.').expect("must contain '.'");
+        assert_eq!(s.len() - dot_pos - 1, 6, "must have 6 decimal places: {s}");
+    }
+
+    #[test]
+    fn test_vol3_processes_json_has_vol3_field_names() {
+        let json = vol3_processes_json(&[make_proc()]);
+        assert!(json.contains("\"ImageFileName\""), "missing ImageFileName: {json}");
+        assert!(json.contains("\"Offset(V)\""), "missing Offset(V): {json}");
+        assert!(json.contains("\"SessionId\""), "missing SessionId: {json}");
+        assert!(json.contains("\"Handles\""), "missing Handles: {json}");
+        assert!(json.contains("\"Wow64\""), "missing Wow64: {json}");
+        assert!(json.contains("\"__children\""), "missing __children: {json}");
+        assert!(json.contains("\"PPID\""), "missing PPID: {json}");
+    }
+
+    #[test]
+    fn test_vol3_processes_json_no_native_column_names() {
+        let json = vol3_processes_json(&[make_proc()]);
+        assert!(!json.contains("\"image_name\""), "must not have snake_case field: {json}");
+        assert!(!json.contains("\"eprocess\""), "must not have eprocess: {json}");
+        assert!(!json.contains("\"session_id\""), "must not have snake_case session_id: {json}");
+    }
+
+    #[test]
+    fn test_vol3_processes_text_header_has_vol3_columns() {
+        let text = vol3_processes_text(&[]);
+        assert!(text.contains("PID"), "missing PID: {text}");
+        assert!(text.contains("ImageFileName"), "missing ImageFileName: {text}");
+        assert!(text.contains("Offset(V)"), "missing Offset(V): {text}");
+        assert!(text.contains("SessionId"), "missing SessionId: {text}");
+    }
+
+    #[test]
+    fn test_vol3_connections_json_has_vol3_field_names() {
+        let json = vol3_connections_json(&[make_conn()]);
+        assert!(json.contains("\"Offset\""), "missing Offset: {json}");
+        assert!(json.contains("\"Proto\""), "missing Proto: {json}");
+        assert!(json.contains("\"ForeignAddr\""), "missing ForeignAddr: {json}");
+        assert!(json.contains("\"ForeignPort\""), "missing ForeignPort: {json}");
+        assert!(json.contains("\"LocalAddr\""), "missing LocalAddr: {json}");
+        assert!(json.contains("\"State\""), "missing State: {json}");
+    }
+}
