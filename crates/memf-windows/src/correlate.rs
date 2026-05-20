@@ -618,6 +618,8 @@ mod tests {
             vaddr: 0xFFFF_8000_0000_0000,
             thread_count: threads,
             is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
         }
     }
 
@@ -952,6 +954,7 @@ mod tests {
             pid,
             process_name: "chrome.exe".to_string(),
             create_time: 0,
+            offset: 0,
         }
     }
 

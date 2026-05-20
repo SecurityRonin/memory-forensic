@@ -563,6 +563,8 @@ mod tests {
             exit_time: 0,
             thread_count: 0,
             is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
         };
 
         // peb_addr is unmapped → read_field("_PEB", "Ldr") fails → None
@@ -611,6 +613,8 @@ mod tests {
             exit_time: 0,
             thread_count: 0,
             is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
         };
 
         let result = find_ntdll_range(&reader, &proc);
@@ -655,6 +659,8 @@ mod tests {
             exit_time: 0,
             thread_count: 0,
             is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
         };
 
         let result = find_ntdll_range(&reader, &proc);
@@ -1076,6 +1082,8 @@ mod tests {
             exit_time: 0,
             thread_count: 0,
             is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
         };
 
         // Module list has "kernel32.dll" — not ntdll.dll → returns None

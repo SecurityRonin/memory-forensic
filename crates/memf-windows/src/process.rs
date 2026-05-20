@@ -61,6 +61,17 @@ fn read_process_info<P: PhysicalMemoryProvider>(
         .map(|v| v != 0)
         .unwrap_or(false);
 
+    let session_id: u32 = reader
+        .read_field::<u32>(eproc_addr, "_EPROCESS", "SessionId")
+        .unwrap_or(0);
+
+    // HandleCount lives in _HANDLE_TABLE, reached via _EPROCESS.ObjectTable.
+    let handle_count: u32 = reader
+        .read_field::<u64>(eproc_addr, "_EPROCESS", "ObjectTable")
+        .ok()
+        .and_then(|ot| reader.read_field::<u32>(ot, "_HANDLE_TABLE", "HandleCount").ok())
+        .unwrap_or(0);
+
     Ok(WinProcessInfo {
         pid,
         ppid,
@@ -72,6 +83,8 @@ fn read_process_info<P: PhysicalMemoryProvider>(
         vaddr: eproc_addr,
         thread_count,
         is_wow64,
+        handle_count,
+        session_id,
     })
 }
 
@@ -510,6 +523,8 @@ mod tests {
             vaddr: 0,
             thread_count: 0,
             is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
         }
     }
 

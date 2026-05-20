@@ -94,6 +94,10 @@ pub struct WinProcessInfo {
     pub thread_count: u32,
     /// Whether this is a WoW64 (32-bit on 64-bit) process.
     pub is_wow64: bool,
+    /// Number of open handles (from `_HANDLE_TABLE.HandleCount`; 0 if unavailable).
+    pub handle_count: u32,
+    /// Session ID from `_EPROCESS.SessionId` (0 for kernel/session-0 processes).
+    pub session_id: u32,
 }
 
 /// Information about a Windows thread extracted from `_ETHREAD`/`_KTHREAD`.
@@ -389,6 +393,8 @@ pub struct WinConnectionInfo {
     pub process_name: String,
     /// Connection creation time as Windows FILETIME.
     pub create_time: u64,
+    /// Virtual address of this `_TCP_ENDPOINT` in kernel memory.
+    pub offset: u64,
 }
 
 /// Process SID (Security Identifier) information for privilege escalation detection.
@@ -1189,6 +1195,7 @@ mod forensic_events_tests {
             pid: 1234,
             process_name: "chrome.exe".into(),
             create_time: 0,
+            offset: 0,
         };
         let events = info.into_forensic_events();
         assert!(!events.is_empty());
@@ -1428,6 +1435,40 @@ mod tests {
         assert_eq!(DnsRecordType::Ns.to_string(), "NS");
         assert_eq!(DnsRecordType::Txt.to_string(), "TXT");
         assert_eq!(DnsRecordType::Unknown(42).to_string(), "Unknown(42)");
+    }
+
+    #[test]
+    fn win_process_info_has_handle_count_and_session_id() {
+        let p = WinProcessInfo {
+            pid: 4, ppid: 0,
+            image_name: "System".into(),
+            create_time: 0, exit_time: 0,
+            cr3: 0, peb_addr: 0,
+            vaddr: 0xffff_8000_0000_0000,
+            thread_count: 42,
+            is_wow64: false,
+            handle_count: 100,
+            session_id: 0,
+        };
+        assert_eq!(p.handle_count, 100);
+        assert_eq!(p.session_id, 0);
+    }
+
+    #[test]
+    fn win_connection_info_has_offset() {
+        let c = WinConnectionInfo {
+            protocol: "TCPv4".into(),
+            local_addr: "0.0.0.0".into(),
+            local_port: 0,
+            remote_addr: "0.0.0.0".into(),
+            remote_port: 0,
+            state: WinTcpState::Closed,
+            pid: 0,
+            process_name: String::new(),
+            create_time: 0,
+            offset: 0xffff_8000_0000_1000,
+        };
+        assert_eq!(c.offset, 0xffff_8000_0000_1000);
     }
 
 }

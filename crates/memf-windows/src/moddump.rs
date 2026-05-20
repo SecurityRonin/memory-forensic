@@ -435,6 +435,7 @@ mod tests {
             pid: 100, ppid: 4, image_name: "notepad.exe".into(),
             create_time: 0, exit_time: 0, cr3: 0,
             peb_addr: 0, vaddr: 0, thread_count: 2, is_wow64: false,
+            handle_count: 0, session_id: 0,
         };
         let dlls = vec![
             WinDllInfo { name: "ntdll.dll".into(), full_path: String::new(), base_addr: 0x5000_0000, size: 0x200, load_order: 2 },

@@ -1984,19 +1984,23 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
             table.set_header(vec![
-                "PID",
-                "PPID",
-                "Image Name",
-                "Create Time (UTC)",
-                "CR3",
+                "EPROCESS", "PID", "PPID", "Image Name",
+                "Threads", "Handles", "Session", "WoW64",
+                "Create Time (UTC)", "Exit Time (UTC)",
             ]);
             for p in procs {
+                let exit = if p.exit_time == 0 { "-".into() } else { format_filetime(p.exit_time) };
                 table.add_row(vec![
+                    format!("{:#x}", p.vaddr),
                     format!("{}", p.pid),
                     format!("{}", p.ppid),
                     p.image_name.clone(),
+                    format!("{}", p.thread_count),
+                    format!("{}", p.handle_count),
+                    format!("{}", p.session_id),
+                    if p.is_wow64 { "Yes" } else { "No" }.to_string(),
                     format_filetime(p.create_time),
-                    format!("{:#x}", p.cr3),
+                    exit,
                 ]);
             }
             println!("{table}");
@@ -2004,27 +2008,36 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
             for p in procs {
+                let exit = if p.exit_time == 0 { None } else { Some(format_filetime(p.exit_time)) };
                 let json = serde_json::json!({
+                    "eprocess": format!("{:#x}", p.vaddr),
                     "pid": p.pid,
                     "ppid": p.ppid,
                     "image_name": p.image_name,
+                    "threads": p.thread_count,
+                    "handles": p.handle_count,
+                    "session": p.session_id,
+                    "wow64": p.is_wow64,
                     "create_time": format_filetime(p.create_time),
                     "create_time_raw": p.create_time,
+                    "exit_time": exit,
+                    "exit_time_raw": p.exit_time,
                     "cr3": format!("{:#x}", p.cr3),
                 });
                 println!("{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
-            println!("pid,ppid,image_name,create_time,create_time_raw,cr3");
+            println!("eprocess,pid,ppid,image_name,threads,handles,session,wow64,create_time,create_time_raw,exit_time,exit_time_raw,cr3");
             for p in procs {
+                let exit = if p.exit_time == 0 { "-".into() } else { format_filetime(p.exit_time) };
                 println!(
-                    "{},{},{},{},{},{:#x}",
-                    p.pid,
-                    p.ppid,
-                    p.image_name,
-                    format_filetime(p.create_time),
-                    p.create_time,
+                    "{:#x},{},{},{},{},{},{},{},{},{},{},{},{:#x}",
+                    p.vaddr, p.pid, p.ppid, p.image_name,
+                    p.thread_count, p.handle_count, p.session_id,
+                    p.is_wow64,
+                    format_filetime(p.create_time), p.create_time,
+                    exit, p.exit_time,
                     p.cr3
                 );
             }
@@ -2420,15 +2433,19 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
             table.set_header(vec![
-                "Proto", "Local", "Remote", "State", "PID", "Process", "Created",
+                "Offset", "Proto",
+                "Local Addr", "Local Port",
+                "Remote Addr", "Remote Port",
+                "State", "PID", "Process", "Created",
             ]);
             for c in conns {
-                let local = format!("{}:{}", c.local_addr, c.local_port);
-                let remote = format!("{}:{}", c.remote_addr, c.remote_port);
                 table.add_row(vec![
+                    format!("{:#x}", c.offset),
                     c.protocol.clone(),
-                    local,
-                    remote,
+                    c.local_addr.clone(),
+                    format!("{}", c.local_port),
+                    c.remote_addr.clone(),
+                    format!("{}", c.remote_port),
                     format!("{}", c.state),
                     format!("{}", c.pid),
                     c.process_name.clone(),
@@ -2441,6 +2458,7 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
         OutputFormat::Json | OutputFormat::Ndjson => {
             for c in conns {
                 let json = serde_json::json!({
+                    "offset": format!("{:#x}", c.offset),
                     "protocol": c.protocol,
                     "local_addr": c.local_addr,
                     "local_port": c.local_port,
@@ -2456,15 +2474,14 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
             }
         }
         OutputFormat::Csv => {
-            println!("proto,local,remote,state,pid,process,created,created_raw");
+            println!("offset,proto,local_addr,local_port,remote_addr,remote_port,state,pid,process,created,created_raw");
             for c in conns {
                 println!(
-                    "{},{}:{},{}:{},{},{},{},{},{}",
+                    "{:#x},{},{},{},{},{},{},{},{},{},{}",
+                    c.offset,
                     c.protocol,
-                    c.local_addr,
-                    c.local_port,
-                    c.remote_addr,
-                    c.remote_port,
+                    c.local_addr, c.local_port,
+                    c.remote_addr, c.remote_port,
                     c.state,
                     c.pid,
                     c.process_name,
@@ -6220,6 +6237,8 @@ mod tests {
             vaddr: 0xFFFF_8000_0020_0000,
             thread_count: 100,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
 
         // Should not panic and should format times as UTC, not hex.
@@ -6266,6 +6285,8 @@ mod tests {
             vaddr: 0xFFFF_8000_0020_0000,
             thread_count: 100,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
 
         // connection create_time 10_000s later → Unix 1_635_536_400
@@ -6279,6 +6300,7 @@ mod tests {
             pid: 4,
             process_name: "System".into(),
             create_time: 132_800_100_000_000_000,
+        offset: 0,
         }];
 
         let events = build_windows_timeline(&procs, &conns);
@@ -6314,6 +6336,8 @@ mod tests {
             vaddr: 0xFFFF_8000_0030_0000,
             thread_count: 1,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
 
         let events = build_windows_timeline(&procs, &[]);
@@ -6529,6 +6553,8 @@ mod tests {
             vaddr: 0,
             thread_count: 1,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
         let proc_dlls: Vec<(u64, Vec<WinDllInfo>)> = vec![(
             1234,
@@ -6577,6 +6603,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 10,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
             WinProcessInfo {
                 pid: 7777,
@@ -6589,6 +6617,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 1,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &[]);
@@ -6616,6 +6646,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 5,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
             WinProcessInfo {
                 pid: 800,
@@ -6628,6 +6660,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 3,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &[]);
@@ -6657,6 +6691,8 @@ mod tests {
             vaddr: 0,
             thread_count: 1,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
         let conns = vec![WinConnectionInfo {
             pid: 3000,
@@ -6668,6 +6704,7 @@ mod tests {
             protocol: "TCP".into(),
             process_name: "notepad.exe".into(),
             create_time: 133_574_401_000_000_000,
+        offset: 0,
         }];
         let mut events = build_windows_timeline(&procs, &conns);
         tag_suspicious_windows(&mut events, &procs, &conns, &[], &[]);
@@ -6692,6 +6729,8 @@ mod tests {
             vaddr: 0,
             thread_count: 5,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
         let threads = vec![WinThreadInfo {
             tid: 5678,
@@ -6739,6 +6778,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 100,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
             WinProcessInfo {
                 pid: 400,
@@ -6751,6 +6792,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 2,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
             WinProcessInfo {
                 pid: 500,
@@ -6763,6 +6806,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 3,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
             WinProcessInfo {
                 pid: 600,
@@ -6775,6 +6820,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 10,
                 is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &[]);
@@ -6869,6 +6916,8 @@ mod tests {
             vaddr: 0,
             thread_count: 3,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
         let conns = vec![
             WinConnectionInfo {
@@ -6881,6 +6930,7 @@ mod tests {
                 protocol: "TCP".into(),
                 process_name: "suspicious.exe".into(),
                 create_time: 133_574_401_000_000_000,
+            offset: 0,
             },
             WinConnectionInfo {
                 pid: 2000,
@@ -6892,6 +6942,7 @@ mod tests {
                 protocol: "TCP".into(),
                 process_name: "suspicious.exe".into(),
                 create_time: 133_574_402_000_000_000,
+            offset: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &conns);
@@ -6922,6 +6973,8 @@ mod tests {
             vaddr: 0xFFFF_F000,
             thread_count: 50,
             is_wow64: false,
+        handle_count: 0,
+        session_id: 0,
         }];
         let conns = vec![WinConnectionInfo {
             pid: 4,
@@ -6933,6 +6986,7 @@ mod tests {
             protocol: "TCP".into(),
             process_name: "System".into(),
             create_time: 133_574_401_000_000_000,
+        offset: 0,
         }];
         let threads = vec![WinThreadInfo {
             tid: 100,

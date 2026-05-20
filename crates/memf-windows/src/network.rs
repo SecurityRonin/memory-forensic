@@ -106,6 +106,7 @@ fn read_tcp_endpoint<P: PhysicalMemoryProvider>(
         pid,
         process_name,
         create_time,
+        offset: ep_addr,
     })
 }
 
