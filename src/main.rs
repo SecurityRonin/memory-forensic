@@ -2,6 +2,7 @@
 
 mod archive;
 mod os_detect;
+mod vol_compat;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -470,6 +471,80 @@ enum Commands {
         /// Number of bytes to read.
         len: u64,
     },
+    /// Volatility3-compatible interface — drop-in replacement for `vol`.
+    ///
+    /// Maps known Windows/Linux/macOS plugins to native memf implementations;
+    /// proxies everything else to the real `vol` binary when available.
+    ///
+    /// Usage identical to vol3:
+    ///   memf vol -f dump.mem windows.pslist.PsList
+    ///   memf vol -f dump.mem -r json windows.netscan.NetScan
+    ///   memf vol -f dump.mem windows.cmdline.CmdLine --pid 1234
+    ///
+    /// To use memf as a true drop-in, symlink it as `vol`:
+    ///   ln -s $(which memf) /usr/local/bin/vol
+    #[command(
+        name = "vol",
+        override_usage = "memf vol [OPTIONS] PLUGIN [PLUGIN_ARGS...]\n       \
+                          vol [OPTIONS] PLUGIN [PLUGIN_ARGS...]  (via symlink)"
+    )]
+    Vol {
+        /// Memory dump file (vol3 -f / --file flag).
+        #[arg(short = 'f', long = "file", required = true)]
+        file: PathBuf,
+
+        /// Output renderer: text (default), json, csv, pretty, html, xlsx, dote.
+        #[arg(short = 'r', long = "renderer", default_value = "text")]
+        renderer: VolRenderer,
+
+        /// Directory for output files produced by plugins (vol3 -o flag).
+        #[arg(short = 'o', long = "output-dir")]
+        output_dir: Option<PathBuf>,
+
+        /// Suppress progress output (vol3 -q flag).
+        #[arg(short = 'q', long = "quiet")]
+        quiet: bool,
+
+        /// Increase output verbosity (repeatable: -v -v -v).
+        #[arg(short = 'v', long = "verbosity", action = clap::ArgAction::Count)]
+        verbosity: u8,
+
+        /// Semi-colon-separated symbol file directories (vol3 -s flag).
+        #[arg(short = 's', long = "symbol-dirs")]
+        symbol_dirs: Vec<PathBuf>,
+
+        /// Semi-colon-separated plugin directories (vol3 -p flag).
+        #[arg(short = 'p', long = "plugin-dirs")]
+        plugin_dirs: Vec<PathBuf>,
+
+        /// Plugin name followed by optional plugin-specific arguments.
+        /// Examples: windows.pslist.PsList
+        ///           windows.cmdline.CmdLine --pid 1234
+        ///           windows.registry.printkey.PrintKey --key "Software\\Microsoft"
+        #[arg(trailing_var_arg = true, required = true)]
+        plugin_args: Vec<String>,
+    },
+}
+
+/// Output renderer for the `vol` subcommand — mirrors vol3's `-r` flag.
+#[derive(Clone, Copy, Default, clap::ValueEnum)]
+pub enum VolRenderer {
+    /// Tab-separated text with a vol3-format header (default).
+    #[default]
+    Text,
+    /// JSON array — one object per row, field names match vol3 exactly.
+    Json,
+    /// Comma-separated values.
+    Csv,
+    /// Rich text with colour highlighting (vol3 pretty renderer).
+    Pretty,
+    /// HTML table.
+    Html,
+    /// Excel spreadsheet.
+    Xlsx,
+    /// Graphviz DOT format (vol3 "dote" renderer).
+    #[value(name = "dote")]
+    Dot,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -513,7 +588,21 @@ fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
+    // argv[0] detection: when invoked as `vol` (e.g. via symlink), prepend
+    // the "vol" subcommand so the remaining args are parsed correctly.
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let bin_stem = std::path::Path::new(&raw[0])
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("memf");
+    let effective: Vec<std::ffi::OsString> = if bin_stem == "vol" {
+        let mut a = vec![raw[0].clone(), std::ffi::OsString::from("vol")];
+        a.extend_from_slice(&raw[1..]);
+        a
+    } else {
+        raw
+    };
+    let cli = Cli::parse_from(&effective);
 
     match cli.command {
         Commands::Info { dump } => {
@@ -788,6 +877,141 @@ fn main() -> Result<()> {
             va,
             len,
         } => cmd_read_virt(&dump, cr3, va, len, &mut std::io::stdout()),
+        Commands::Vol {
+            file,
+            renderer,
+            output_dir,
+            quiet,
+            verbosity: _,
+            symbol_dirs,
+            plugin_dirs,
+            plugin_args,
+        } => {
+            if !file.exists() {
+                anyhow::bail!("dump file not found: {}", file.display());
+            }
+            let plugin = plugin_args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("no plugin specified"))?
+                .as_str();
+            let plugin_specific = &plugin_args[1..];
+            let pid_filter = vol_compat::parse_pid(plugin_specific);
+            let symbols = symbol_dirs.first().map(|p| p.as_path());
+
+            match vol_compat::find_route(plugin) {
+                Some(vol_compat::PluginRoute::Native(key)) => {
+                    println!("{}", vol_compat::VOL3_BANNER);
+                    println!();
+                    let fmt = match renderer {
+                        VolRenderer::Json => OutputFormat::Json,
+                        VolRenderer::Csv  => OutputFormat::Csv,
+                        _                 => OutputFormat::Table,
+                    };
+                    match key {
+                        "ps" | "ps:tree" => cmd_ps(
+                            &file, symbols, fmt, None,
+                            key == "ps:threads",
+                            pid_filter, key == "ps:tree",
+                            false, false, false, false, false, false, false,
+                            false, false, false, PsSortField::Pid, None, true,
+                        ),
+                        "ps:cmdline" => cmd_ps(
+                            &file, symbols, fmt, None,
+                            false, pid_filter, false, false, false, false,
+                            false, true, false, false, false, false, false,
+                            PsSortField::Pid, None, true,
+                        ),
+                        "ps:dlls" => cmd_ps(
+                            &file, symbols, fmt, None,
+                            false, pid_filter, false, false, true, false,
+                            false, false, false, false, false, false, false,
+                            PsSortField::Pid, None, true,
+                        ),
+                        "ps:envvars" => cmd_ps(
+                            &file, symbols, fmt, None,
+                            false, pid_filter, false, false, false, false,
+                            true, false, false, false, false, false, false,
+                            PsSortField::Pid, None, true,
+                        ),
+                        "ps:privileges" => cmd_ps(
+                            &file, symbols, fmt, None,
+                            false, pid_filter, false, false, false, false,
+                            false, false, false, true, false, false, false,
+                            PsSortField::Pid, None, true,
+                        ),
+                        "ps:threads" => cmd_ps(
+                            &file, symbols, fmt, None,
+                            true, pid_filter, false, false, false, false,
+                            false, false, false, false, false, false, false,
+                            PsSortField::Pid, None, true,
+                        ),
+                        "ps:vad" => cmd_ps(
+                            &file, symbols, fmt, None,
+                            false, pid_filter, false, false, false, false,
+                            false, false, true, false, false, false, false,
+                            PsSortField::Pid, None, true,
+                        ),
+                        "net" => cmd_net(&file, symbols, fmt, None, pid_filter, false, true),
+                        "sys" => cmd_system(&file, symbols, fmt, None, false, true),
+                        "handles" => cmd_handles(&file, symbols, fmt, None, pid_filter, true),
+                        "check:ssdt" => cmd_check(
+                            &file, symbols, fmt, None,
+                            CheckFlags { ssdt: true, ..CheckFlags::default() },
+                            pid_filter, true,
+                        ),
+                        "check:callbacks" => cmd_check(
+                            &file, symbols, fmt, None,
+                            CheckFlags { callbacks: true, ..CheckFlags::default() },
+                            pid_filter, true,
+                        ),
+                        "check:irp" => cmd_check(
+                            &file, symbols, fmt, None,
+                            CheckFlags { irp: true, ..CheckFlags::default() },
+                            pid_filter, true,
+                        ),
+                        "check:malfind" => cmd_check(
+                            &file, symbols, fmt, None,
+                            CheckFlags { malfind: true, ..CheckFlags::default() },
+                            pid_filter, true,
+                        ),
+                        "check:ldrmodules" => cmd_check(
+                            &file, symbols, fmt, None,
+                            CheckFlags { ldrmodules: true, ..CheckFlags::default() },
+                            pid_filter, true,
+                        ),
+                        "check:hollowing" => cmd_check(
+                            &file, symbols, fmt, None,
+                            CheckFlags { hollowing: true, ..CheckFlags::default() },
+                            pid_filter, true,
+                        ),
+                        "check:psxview" => cmd_check(
+                            &file, symbols, fmt, None,
+                            CheckFlags { psxview: true, ..CheckFlags::default() },
+                            pid_filter, true,
+                        ),
+                        "info" => cmd_info(&file, true),
+                        "strings" => cmd_strings(Some(&file), None, 4, fmt, None, true),
+                        "procdump" => {
+                            let pid = pid_filter.ok_or_else(|| {
+                                anyhow::anyhow!("windows.pedump.PEDump requires --pid <PID>")
+                            })?;
+                            let out = output_dir.as_deref().unwrap_or(std::path::Path::new("."));
+                            cmd_procdump(&file, symbols, None, pid, out)
+                        }
+                        other => anyhow::bail!("unhandled native key: {other}"),
+                    }
+                }
+                Some(vol_compat::PluginRoute::Proxy) | None => {
+                    vol_compat::proxy_to_vol(
+                        &file, renderer,
+                        output_dir.as_deref(),
+                        quiet,
+                        &symbol_dirs, &plugin_dirs,
+                        &plugin_args,
+                    )
+                }
+            }
+        }
     }
 }
 
