@@ -897,7 +897,13 @@ fn main() -> Result<()> {
                 .as_str();
             let plugin_specific = &plugin_args[1..];
             let pid_filter = vol_compat::parse_pid(plugin_specific);
-            let symbols = symbol_dirs.first().map(|p| p.as_path());
+            // Auto-download ISF when no --symbols provided.
+            let auto_isf: Option<PathBuf> = if symbol_dirs.is_empty() {
+                try_auto_download_isf(&file, quiet)
+            } else {
+                None
+            };
+            let symbols: Option<&Path> = symbol_dirs.first().map(|p| p.as_path()).or(auto_isf.as_deref());
 
             match vol_compat::find_route(plugin) {
                 Some(vol_compat::PluginRoute::Native(key)) => {
@@ -1073,12 +1079,18 @@ fn load_symbols(path: Option<&Path>) -> Result<Box<dyn memf_symbols::SymbolResol
             }
         }
     }
-    // Otherwise, existing ISF logic
-    let files = memf_symbols::isf::discover_isf_files(path);
+    // Otherwise, existing ISF logic + automatic cache-dir fallback
+    let mut files = memf_symbols::isf::discover_isf_files(path);
+    if files.is_empty() && path.is_none() {
+        // Fall back to the auto-download cache before giving up.
+        let cache = symbol_dl::default_cache_dir();
+        files = memf_symbols::isf::discover_isf_files(Some(&cache));
+    }
     if files.is_empty() {
         anyhow::bail!(
             "no symbol files found. Provide --symbols <path> or set $MEMF_SYMBOLS_PATH.\n\
-             Hint: run `memf info <dump>` first to inspect the dump format and metadata."
+             Hint: `memf vol -f <dump> <plugin>` will auto-download symbols on first run.\n\
+             Or run `memf info <dump>` first to inspect the dump format and metadata."
         );
     }
     let resolver = memf_symbols::isf::IsfResolver::from_path(&files[0])
@@ -2808,6 +2820,43 @@ fn find_kernel_pdb_in_physmem(
         }
     }
     None
+}
+
+/// Try to auto-download an ISF for the kernel found in `dump`.
+/// Returns the cached ISF path on success, `None` on any failure (with warning).
+fn try_auto_download_isf(dump: &Path, quiet: bool) -> Option<PathBuf> {
+    let cache = symbol_dl::default_cache_dir();
+
+    let provider = match open_dump_for(dump, true) {
+        Ok(p) => p,
+        Err(e) => {
+            if !quiet { eprintln!("warning: could not open dump for symbol detection: {e}"); }
+            return None;
+        }
+    };
+
+    let pdb_id = find_kernel_pdb_in_physmem(provider.as_ref())?;
+
+    if !quiet {
+        eprintln!(
+            "Detected kernel: {} (GUID {}, age {}). Checking ISF cache...",
+            pdb_id.pdb_name, pdb_id.guid, pdb_id.age
+        );
+    }
+
+    match symbol_dl::resolve_isf(&cache, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age) {
+        Ok(path) => {
+            if !quiet { eprintln!("Symbols ready: {}", path.display()); }
+            Some(path)
+        }
+        Err(e) => {
+            if !quiet {
+                eprintln!("warning: ISF auto-download failed: {e}");
+                eprintln!("Hint: run `memf symserver {dump}` to download symbols manually, then retry.", dump = dump.display());
+            }
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1685,6 +1685,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzma-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e"
+dependencies = [
+ "byteorder",
+ "crc",
+]
+
+[[package]]
 name = "lzma-rust"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1756,6 +1766,7 @@ dependencies = [
  "comfy-table",
  "flate2",
  "indicatif",
+ "lzma-rs",
  "memf-core",
  "memf-format",
  "memf-framebuffer",
@@ -1771,6 +1782,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "ureq",
  "zip",
 ]
 
