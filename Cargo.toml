@@ -32,6 +32,7 @@ memf-windows = { path = "crates/memf-windows" }
 memf-correlate    = { path = "crates/memf-correlate" }
 memf-framebuffer  = { path = "crates/memf-framebuffer" }
 memf-dpapi        = { path = "crates/memf-dpapi" }
+assert_cmd = "2"
 aes            = "0.8"
 aes-gcm        = "0.10"
 aho-corasick = "1"
@@ -123,6 +124,12 @@ bzip2.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+serde_json.workspace = true
+predicates = "3"
+tempfile.workspace = true
 
 [lints]
 workspace = true
