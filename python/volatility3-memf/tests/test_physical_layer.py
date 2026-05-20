@@ -27,6 +27,7 @@ class TestRead:
             ["memf", "read-phys", "/path/to/dump.lime", "0x1000", "4"],
             capture_output=True,
             check=True,
+            timeout=30,
         )
         assert data == b"\xDE\xAD\xBE\xEF"
 

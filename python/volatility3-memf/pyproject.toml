@@ -14,3 +14,9 @@ dev = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires real dump + memf binary (skipped in CI without them)",
+    "robustness: requires real memf binary + writes temp files",
+]

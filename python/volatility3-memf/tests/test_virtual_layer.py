@@ -35,6 +35,7 @@ class TestTranslate:
             ],
             capture_output=True,
             check=True,
+            timeout=30,
         )
         assert pa == 0xDEAD_BEEF
         assert layer_name == "MemfPhysical"
@@ -74,6 +75,7 @@ class TestReadVirt:
             ],
             capture_output=True,
             check=True,
+            timeout=30,
         )
         assert data == b"\x90\x90\x90\x90"
 

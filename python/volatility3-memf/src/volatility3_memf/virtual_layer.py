@@ -15,10 +15,12 @@ class MemfVirtualLayer:
         dump_path: str | Path,
         cr3: int,
         memf_binary: str = "memf",
+        timeout: int = 30,
     ) -> None:
         self._dump = str(dump_path)
         self._cr3 = cr3
         self._binary = memf_binary
+        self._timeout = timeout
 
     def translate(self, offset: int) -> tuple[int, str]:
         result = subprocess.run(
@@ -29,6 +31,7 @@ class MemfVirtualLayer:
             ],
             capture_output=True,
             check=True,
+            timeout=self._timeout,
         )
         pa = int(result.stdout.strip(), 16)
         return pa, "MemfPhysical"
@@ -43,6 +46,7 @@ class MemfVirtualLayer:
             ],
             capture_output=True,
             check=True,
+            timeout=self._timeout,
         )
         data = result.stdout
         if pad and len(data) < length:

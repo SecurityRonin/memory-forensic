@@ -10,15 +10,22 @@ class MemfPhysicalLayer:
 
     name: str = "MemfPhysical"
 
-    def __init__(self, dump_path: str | Path, memf_binary: str = "memf") -> None:
+    def __init__(
+        self,
+        dump_path: str | Path,
+        memf_binary: str = "memf",
+        timeout: int = 30,
+    ) -> None:
         self._dump = str(dump_path)
         self._binary = memf_binary
+        self._timeout = timeout
 
     def read(self, offset: int, length: int, pad: bool = False) -> bytes:
         result = subprocess.run(
             [self._binary, "read-phys", self._dump, f"0x{offset:x}", str(length)],
             capture_output=True,
             check=True,
+            timeout=self._timeout,
         )
         data = result.stdout
         if pad and len(data) < length:
