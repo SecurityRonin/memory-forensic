@@ -77,7 +77,7 @@ ALL_WINDOWS_PLUGINS: list[Plugin] = [
     _p("windows.mftscan.MFTScan",            slow=True, t=300),
     _p("windows.mftscan.ADS",               slow=True, t=300),
     _p("windows.mftscan.ResidentData",       slow=True, t=300),
-    _p("windows.dumpfiles.DumpFiles",        slow=True, t=300),
+    _p("windows.dumpfiles.DumpFiles",         needs_args=True),  # vol3 traceback without --dump-dir
     # ── kernel structures ─────────────────────────────────────────────────────
     _p("windows.ssdt.SSDT"),
     _p("windows.callbacks.Callbacks"),
