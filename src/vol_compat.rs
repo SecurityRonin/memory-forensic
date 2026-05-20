@@ -225,39 +225,37 @@ pub fn proxy_to_vol(
 // Vol3-compatible output formatters
 // ---------------------------------------------------------------------------
 
-/// Windows FILETIME → Unix epoch offset in 100-ns ticks.
-const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
+// FILETIME_UNIX_DIFF is defined in the parent module (crate root, main.rs).
+// Intentional: we use crate:: rather than duplicating the constant here.
+// NOTE: format_vol3_filetime returns "N/A" for zero, while the native
+// format_filetime in main.rs returns "-". Both are intentional — vol3 uses
+// "N/A" in its own text output; the native formatter uses "-" for compactness.
 
-/// Format a Windows FILETIME as `"YYYY-MM-DD HH:MM:SS.ffffff"` (vol3 style).
-/// Returns `"N/A"` for zero (unset field).
+/// Format a Windows FILETIME as `"YYYY-MM-DD HH:MM:SS.ffffff"` (vol3 style,
+/// microsecond precision). Returns `"N/A"` for zero (unset field).
 fn format_vol3_filetime(ft: u64) -> String {
     if ft == 0 {
         return "N/A".to_string();
     }
-    if ft < FILETIME_UNIX_DIFF {
+    if ft < crate::FILETIME_UNIX_DIFF {
         return format!("pre-1970 ({ft:#x})");
     }
-    let total_us = (ft - FILETIME_UNIX_DIFF) / 10; // 100-ns → microseconds
+    let total_us = (ft - crate::FILETIME_UNIX_DIFF) / 10; // 100-ns → microseconds
     let unix_secs = total_us / 1_000_000;
     let us = total_us % 1_000_000;
 
-    // Use time crate if available; otherwise fall back to manual UTC calculation.
-    // We avoid pulling in a new dependency and instead do manual calendar math.
-    let secs = unix_secs;
-    let days = secs / 86400;
-    let rem  = secs % 86400;
+    let days = unix_secs / 86400;
+    let rem  = unix_secs % 86400;
     let h = rem / 3600;
     let m = (rem % 3600) / 60;
     let s = rem % 60;
-
-    // Gregorian calendar from day count (days since 1970-01-01).
     let (y, mo, d) = days_to_ymd(days);
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}.{us:06}")
 }
 
 /// Convert days since Unix epoch (1970-01-01) to (year, month, day).
+/// Algorithm: civil_from_days (Howard Hinnant).
 fn days_to_ymd(days: u64) -> (u32, u32, u32) {
-    // Algorithm: civil_from_days (Howard Hinnant)
     let z = days as i64 + 719468;
     let era = z.div_euclid(146097);
     let doe = z.rem_euclid(146097) as u64;
@@ -271,54 +269,56 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     (y as u32, m as u32, d as u32)
 }
 
-/// Format `&[WinProcessInfo]` as a vol3-style JSON array string.
-fn vol3_processes_json(procs: &[memf_windows::WinProcessInfo]) -> String {
-    let mut out = String::from("[\n");
-    for (i, p) in procs.iter().enumerate() {
-        let create = if p.create_time == 0 {
-            "null".to_string()
-        } else {
-            format!("\"{}\"", format_vol3_filetime(p.create_time))
-        };
-        let exit = if p.exit_time == 0 {
-            "null".to_string()
-        } else {
-            format!("\"{}\"", format_vol3_filetime(p.exit_time))
-        };
-        out.push_str(&format!(
-            "  {{\"PID\": {pid}, \"PPID\": {ppid}, \"ImageFileName\": \"{name}\", \
-             \"Offset(V)\": \"{offset:#x}\", \"Threads\": {threads}, \
-             \"Handles\": {handles}, \"SessionId\": {session}, \
-             \"Wow64\": {wow64}, \"CreateTime\": {create}, \
-             \"ExitTime\": {exit}, \"__children\": []}}",
-            pid     = p.pid,
-            ppid    = p.ppid,
-            name    = p.image_name,
-            offset  = p.vaddr,
-            threads = p.thread_count,
-            handles = p.handle_count,
-            session = p.session_id,
-            wow64   = p.is_wow64,
-        ));
-        if i + 1 < procs.len() {
-            out.push(',');
-        }
-        out.push('\n');
+/// Sanitize a string field for TSV embedding: replace `\t` and `\n` with spaces.
+/// Prevents adversarial or corrupted process names from shifting column alignment.
+fn tsv_safe(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains('\t') || s.contains('\n') || s.contains('\r') {
+        std::borrow::Cow::Owned(s.replace(['\t', '\n', '\r'], " "))
+    } else {
+        std::borrow::Cow::Borrowed(s)
     }
-    out.push(']');
-    out
 }
 
-/// Format `&[WinProcessInfo]` as a vol3-style tab-separated text table string.
+/// Helper to encode a FILETIME for JSON: `null` when zero, quoted string otherwise.
+fn ft_json(ft: u64) -> serde_json::Value {
+    if ft == 0 {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(format_vol3_filetime(ft))
+    }
+}
+
+/// Format `&[WinProcessInfo]` as a vol3-exact JSON array string.
+/// Uses serde_json to guarantee correct escaping of all string fields.
+fn vol3_processes_json(procs: &[memf_windows::WinProcessInfo]) -> String {
+    let arr: Vec<serde_json::Value> = procs.iter().map(|p| {
+        serde_json::json!({
+            "PID":           p.pid,
+            "PPID":          p.ppid,
+            "ImageFileName": p.image_name,
+            "Offset(V)":     format!("{:#x}", p.vaddr),
+            "Threads":       p.thread_count,
+            "Handles":       p.handle_count,
+            "SessionId":     p.session_id,
+            "Wow64":         p.is_wow64,
+            "CreateTime":    ft_json(p.create_time),
+            "ExitTime":      ft_json(p.exit_time),
+            "__children":    serde_json::Value::Array(vec![]),
+        })
+    }).collect();
+    serde_json::to_string_pretty(&arr).unwrap_or_default()
+}
+
+/// Format `&[WinProcessInfo]` as a vol3-style TSV table string.
+/// String fields are sanitized — tabs and newlines are replaced with spaces.
 fn vol3_processes_text(procs: &[memf_windows::WinProcessInfo]) -> String {
-    let header = "PID\tPPID\tImageFileName\tOffset(V)\tThreads\tHandles\tSessionId\tWow64\tCreateTime\tExitTime\n";
-    let mut out = header.to_string();
+    let mut out = "PID\tPPID\tImageFileName\tOffset(V)\tThreads\tHandles\tSessionId\tWow64\tCreateTime\tExitTime\n".to_string();
     for p in procs {
         let create = format_vol3_filetime(p.create_time);
-        let exit = if p.exit_time == 0 { "N/A".into() } else { format_vol3_filetime(p.exit_time) };
+        let exit   = ft_json(p.exit_time).as_str().map_or_else(|| "N/A".to_string(), str::to_string);
         out.push_str(&format!(
             "{}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            p.pid, p.ppid, p.image_name, p.vaddr,
+            p.pid, p.ppid, tsv_safe(&p.image_name), p.vaddr,
             p.thread_count, p.handle_count, p.session_id,
             p.is_wow64, create, exit,
         ));
@@ -326,54 +326,92 @@ fn vol3_processes_text(procs: &[memf_windows::WinProcessInfo]) -> String {
     out
 }
 
-/// Format `&[WinConnectionInfo]` as a vol3-style JSON array string.
+/// Format `&[WinConnectionInfo]` as a vol3-exact JSON array string.
+/// Uses serde_json to guarantee correct escaping of all string fields.
 fn vol3_connections_json(conns: &[memf_windows::WinConnectionInfo]) -> String {
-    let mut out = String::from("[\n");
-    for (i, c) in conns.iter().enumerate() {
-        let created = if c.create_time == 0 {
-            "null".to_string()
-        } else {
-            format!("\"{}\"", format_vol3_filetime(c.create_time))
-        };
-        out.push_str(&format!(
-            "  {{\"Offset\": \"{offset:#x}\", \"Proto\": \"{proto}\", \
-             \"LocalAddr\": \"{la}\", \"LocalPort\": {lp}, \
-             \"ForeignAddr\": \"{fa}\", \"ForeignPort\": {fp}, \
-             \"State\": \"{state}\", \"PID\": {pid}, \
-             \"Owner\": \"{owner}\", \"Created\": {created}}}",
-            offset = c.offset,
-            proto  = c.protocol,
-            la     = c.local_addr,
-            lp     = c.local_port,
-            fa     = c.remote_addr,
-            fp     = c.remote_port,
-            state  = c.state,
-            pid    = c.pid,
-            owner  = c.process_name,
-        ));
-        if i + 1 < conns.len() {
-            out.push(',');
-        }
-        out.push('\n');
-    }
-    out.push(']');
-    out
+    let arr: Vec<serde_json::Value> = conns.iter().map(|c| {
+        serde_json::json!({
+            "Offset":      format!("{:#x}", c.offset),
+            "Proto":       c.protocol,
+            "LocalAddr":   c.local_addr,
+            "LocalPort":   c.local_port,
+            "ForeignAddr": c.remote_addr,
+            "ForeignPort": c.remote_port,
+            "State":       c.state.to_string(),
+            "PID":         c.pid,
+            "Owner":       c.process_name,
+            "Created":     ft_json(c.create_time),
+        })
+    }).collect();
+    serde_json::to_string_pretty(&arr).unwrap_or_default()
 }
 
-/// Format `&[WinConnectionInfo]` as vol3-style tab-separated text.
+/// Format `&[WinConnectionInfo]` as vol3-style TSV.
+/// String fields are sanitized — tabs and newlines replaced with spaces.
 fn vol3_connections_text(conns: &[memf_windows::WinConnectionInfo]) -> String {
-    let header = "Offset\tProto\tLocalAddr\tLocalPort\tForeignAddr\tForeignPort\tState\tPID\tOwner\tCreated\n";
-    let mut out = header.to_string();
+    let mut out = "Offset\tProto\tLocalAddr\tLocalPort\tForeignAddr\tForeignPort\tState\tPID\tOwner\tCreated\n".to_string();
     for c in conns {
         let created = if c.create_time == 0 { "N/A".into() } else { format_vol3_filetime(c.create_time) };
         out.push_str(&format!(
             "{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            c.offset, c.protocol, c.local_addr, c.local_port,
-            c.remote_addr, c.remote_port, c.state,
-            c.pid, c.process_name, created,
+            c.offset,
+            tsv_safe(&c.protocol),
+            tsv_safe(&c.local_addr),
+            c.local_port,
+            tsv_safe(&c.remote_addr),
+            c.remote_port,
+            c.state,
+            c.pid,
+            tsv_safe(&c.process_name),
+            created,
         ));
     }
     out
+}
+
+/// Format `&[WinPsTreeEntry]` as a vol3-style TSV tree (child rows prefixed with `*`).
+fn vol3_pstree_text(entries: &[memf_windows::WinPsTreeEntry]) -> String {
+    let mut out = "PID\tPPID\tImageFileName\tOffset(V)\tThreads\tHandles\tSessionId\tWow64\tCreateTime\tExitTime\n".to_string();
+    for e in entries {
+        let prefix = "*".repeat(e.depth as usize);
+        let p = &e.process;
+        let create = format_vol3_filetime(p.create_time);
+        let exit   = ft_json(p.exit_time).as_str().map_or_else(|| "N/A".to_string(), str::to_string);
+        out.push_str(&format!(
+            "{prefix}{pid}\t{ppid}\t{name}\t{offset:#x}\t{threads}\t{handles}\t{session}\t{wow64}\t{create}\t{exit}\n",
+            pid     = p.pid,
+            ppid    = p.ppid,
+            name    = tsv_safe(&p.image_name),
+            offset  = p.vaddr,
+            threads = p.thread_count,
+            handles = p.handle_count,
+            session = p.session_id,
+            wow64   = p.is_wow64,
+        ));
+    }
+    out
+}
+
+/// Format `&[WinPsTreeEntry]` as a vol3-style JSON array.
+fn vol3_pstree_json(entries: &[memf_windows::WinPsTreeEntry]) -> String {
+    let arr: Vec<serde_json::Value> = entries.iter().map(|e| {
+        let p = &e.process;
+        serde_json::json!({
+            "PID":           p.pid,
+            "PPID":          p.ppid,
+            "ImageFileName": p.image_name,
+            "Offset(V)":     format!("{:#x}", p.vaddr),
+            "Threads":       p.thread_count,
+            "Handles":       p.handle_count,
+            "SessionId":     p.session_id,
+            "Wow64":         p.is_wow64,
+            "CreateTime":    ft_json(p.create_time),
+            "ExitTime":      ft_json(p.exit_time),
+            "__depth":       e.depth,
+            "__children":    serde_json::Value::Array(vec![]),
+        })
+    }).collect();
+    serde_json::to_string_pretty(&arr).unwrap_or_default()
 }
 
 /// Print process list in vol3-compatible format (text or JSON).
@@ -381,6 +419,14 @@ pub fn print_vol3_processes(procs: &[memf_windows::WinProcessInfo], renderer: cr
     match renderer {
         crate::VolRenderer::Json => println!("{}", vol3_processes_json(procs)),
         _ => print!("{}", vol3_processes_text(procs)),
+    }
+}
+
+/// Print process tree in vol3-compatible format (text or JSON).
+pub fn print_vol3_pstree(entries: &[memf_windows::WinPsTreeEntry], renderer: crate::VolRenderer) {
+    match renderer {
+        crate::VolRenderer::Json => println!("{}", vol3_pstree_json(entries)),
+        _ => print!("{}", vol3_pstree_text(entries)),
     }
 }
 

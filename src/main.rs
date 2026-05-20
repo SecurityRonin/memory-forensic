@@ -915,7 +915,7 @@ fn main() -> Result<()> {
                         _                 => OutputFormat::Table,
                     };
                     match key {
-                        "ps" | "ps:tree" => {
+                        "ps" => {
                             let (ctx, reader) = setup_analysis(&file, symbols, None, true)?;
                             let ps_head = ctx.ps_active_process_head.context(
                                 "missing PsActiveProcessHead; provide via --symbols"
@@ -927,6 +927,17 @@ fn main() -> Result<()> {
                                 procs.retain(|p| p.pid == pid);
                             }
                             vol_compat::print_vol3_processes(&procs, renderer);
+                            Ok(())
+                        }
+                        "ps:tree" => {
+                            let (ctx, reader) = setup_analysis(&file, symbols, None, true)?;
+                            let ps_head = ctx.ps_active_process_head.context(
+                                "missing PsActiveProcessHead; provide via --symbols"
+                            )?;
+                            let procs = memf_windows::process::walk_processes(&reader, ps_head)
+                                .context("failed to walk Windows processes")?;
+                            let tree = memf_windows::process::build_pstree(&procs);
+                            vol_compat::print_vol3_pstree(&tree, renderer);
                             Ok(())
                         }
                         "ps:cmdline" => cmd_ps(

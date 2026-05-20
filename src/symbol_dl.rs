@@ -56,19 +56,32 @@ pub fn download_isf(
         .call()
         .map_err(|e| anyhow::anyhow!("ISF download failed for {url}: {e}"))?;
 
+    // Check HTTP status before reading the body — a 404 body is HTML, not XZ,
+    // and would produce a confusing "XZ decompression failed" error otherwise.
+    let status = resp.status();
+    if status != 200 {
+        anyhow::bail!("ISF server returned HTTP {status} for {url}\nHint: check the PDB GUID/age match the dump's kernel version.");
+    }
+
     let compressed = resp
         .into_body()
         .read_to_vec()
-        .map_err(|e| anyhow::anyhow!("failed to read ISF response body: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to read ISF response body from {url}: {e}"))?;
 
     // Decompress .xz stream → raw JSON bytes
     let mut json_bytes = Vec::new();
     lzma_rs::xz_decompress(&mut compressed.as_slice(), &mut json_bytes)
-        .map_err(|e| anyhow::anyhow!("XZ decompression failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("XZ decompression failed for {url}: {e}"))?;
 
     ensure_cache_dir(cache_dir)?;
     let dest = cache_dir.join(cache_filename(pdb_name, guid, age));
-    std::fs::write(&dest, &json_bytes)?;
+    // Write atomically: write to a temp file then rename, so a partial download
+    // never leaves a corrupt cache entry that would be served on the next run.
+    let tmp = dest.with_extension("json.tmp");
+    std::fs::write(&tmp, &json_bytes)
+        .map_err(|e| anyhow::anyhow!("failed to write temp ISF to {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &dest)
+        .map_err(|e| anyhow::anyhow!("failed to install ISF to {}: {e}", dest.display()))?;
     Ok(dest)
 }
 
