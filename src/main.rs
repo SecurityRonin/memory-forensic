@@ -5123,7 +5123,7 @@ fn cmd_read_phys(
     len: u64,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
-    let provider = open_dump_for(dump, false)?;
+    let provider = open_dump_for(dump, true)?;
     let mut buf = vec![0u8; len as usize];
     let n = provider
         .read_phys(addr, &mut buf)
@@ -5138,7 +5138,7 @@ fn cmd_translate_va(
     va: u64,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
-    let provider = open_dump_for(dump, false)?;
+    let provider = open_dump_for(dump, true)?;
     let vas = VirtualAddressSpace::new(provider, cr3, TranslationMode::X86_64FourLevel);
     let pa = vas
         .virt_to_phys(va)
@@ -5154,7 +5154,7 @@ fn cmd_read_virt(
     len: u64,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
-    let provider = open_dump_for(dump, false)?;
+    let provider = open_dump_for(dump, true)?;
     let vas = VirtualAddressSpace::new(provider, cr3, TranslationMode::X86_64FourLevel);
     let mut buf = vec![0u8; len as usize];
     vas.read_virt(va, &mut buf)
