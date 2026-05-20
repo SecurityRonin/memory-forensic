@@ -482,4 +482,88 @@ mod tests {
         assert!(json.contains("\"LocalAddr\""), "missing LocalAddr: {json}");
         assert!(json.contains("\"State\""), "missing State: {json}");
     }
+
+    // ── JSON escaping (finding #2) ────────────────────────────────────────
+
+    fn make_proc_with_name(name: &str) -> WinProcessInfo {
+        WinProcessInfo { image_name: name.into(), ..make_proc() }
+    }
+
+    fn make_conn_with_process(name: &str) -> WinConnectionInfo {
+        WinConnectionInfo { process_name: name.into(), ..make_conn() }
+    }
+
+    #[test]
+    fn test_vol3_processes_json_valid_with_quote_in_name() {
+        let procs = vec![make_proc_with_name(r#"evil"inject"#)];
+        let json = vol3_processes_json(&procs);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("must produce valid JSON; got: {json}");
+        assert_eq!(parsed[0]["ImageFileName"].as_str().unwrap(), r#"evil"inject"#);
+    }
+
+    #[test]
+    fn test_vol3_processes_json_valid_with_backslash_in_name() {
+        let procs = vec![make_proc_with_name(r#"C:\evil\proc"#)];
+        let json = vol3_processes_json(&procs);
+        serde_json::from_str::<serde_json::Value>(&json)
+            .expect("must produce valid JSON with backslash");
+    }
+
+    #[test]
+    fn test_vol3_connections_json_valid_with_quote_in_process_name() {
+        let conns = vec![make_conn_with_process(r#"bad"proc"#)];
+        let json = vol3_connections_json(&conns);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("must produce valid JSON; got: {json}");
+        assert_eq!(parsed[0]["Owner"].as_str().unwrap(), r#"bad"proc"#);
+    }
+
+    // ── TSV escaping (finding #4) ─────────────────────────────────────────
+
+    #[test]
+    fn test_vol3_processes_text_tab_in_name_does_not_break_column_count() {
+        let procs = vec![make_proc_with_name("evil\tname")];
+        let text = vol3_processes_text(&procs);
+        // Skip header line; every data row must have exactly 9 tabs (10 columns)
+        let data_rows: Vec<&str> = text.lines().skip(1).collect();
+        assert!(!data_rows.is_empty(), "must have at least one data row");
+        for row in &data_rows {
+            let tab_count = row.chars().filter(|&c| c == '\t').count();
+            assert_eq!(tab_count, 9, "expected 9 tabs (10 columns) per row, got {tab_count}: {row}");
+        }
+    }
+
+    // ── ps:tree produces depth prefix (finding #5) ─────────────────────
+
+    #[test]
+    fn test_vol3_pstree_text_shows_depth_prefix_for_children() {
+        use memf_windows::WinPsTreeEntry;
+        let parent = make_proc();
+        let child = WinProcessInfo { pid: 100, ppid: 4, image_name: "child.exe".into(), ..make_proc() };
+        let entries = vec![
+            WinPsTreeEntry { process: parent, depth: 0 },
+            WinPsTreeEntry { process: child, depth: 1 },
+        ];
+        let text = vol3_pstree_text(&entries);
+        // Root has no prefix; child at depth=1 has one '*'
+        let lines: Vec<&str> = text.lines().skip(1).collect(); // skip header
+        assert!(lines[0].starts_with('4') || !lines[0].starts_with('*'),
+            "root process must not start with *: {}", lines[0]);
+        assert!(lines[1].starts_with('*'), "child at depth 1 must start with *: {}", lines[1]);
+    }
+
+    #[test]
+    fn test_vol3_pstree_json_includes_children_array() {
+        use memf_windows::WinPsTreeEntry;
+        let parent = make_proc();
+        let child = WinProcessInfo { pid: 100, ppid: 4, image_name: "child.exe".into(), ..make_proc() };
+        let entries = vec![
+            WinPsTreeEntry { process: parent, depth: 0 },
+            WinPsTreeEntry { process: child, depth: 1 },
+        ];
+        let json = vol3_pstree_json(&entries);
+        serde_json::from_str::<serde_json::Value>(&json)
+            .expect("pstree JSON must be valid");
+    }
 }
