@@ -908,13 +908,20 @@ fn main() -> Result<()> {
                         _                 => OutputFormat::Table,
                     };
                     match key {
-                        "ps" | "ps:tree" => cmd_ps(
-                            &file, symbols, fmt, None,
-                            key == "ps:threads",
-                            pid_filter, key == "ps:tree",
-                            false, false, false, false, false, false, false,
-                            false, false, false, PsSortField::Pid, None, true,
-                        ),
+                        "ps" | "ps:tree" => {
+                            let (ctx, reader) = setup_analysis(&file, symbols, None, true)?;
+                            let ps_head = ctx.ps_active_process_head.context(
+                                "missing PsActiveProcessHead; provide via --symbols"
+                            )?;
+                            let mut procs = memf_windows::process::walk_processes(&reader, ps_head)
+                                .context("failed to walk Windows processes")?;
+                            procs.sort_by_key(|p| p.pid);
+                            if let Some(pid) = pid_filter {
+                                procs.retain(|p| p.pid == pid);
+                            }
+                            vol_compat::print_vol3_processes(&procs, renderer);
+                            Ok(())
+                        }
                         "ps:cmdline" => cmd_ps(
                             &file, symbols, fmt, None,
                             false, pid_filter, false, false, false, false,
@@ -951,7 +958,26 @@ fn main() -> Result<()> {
                             false, false, true, false, false, false, false,
                             PsSortField::Pid, None, true,
                         ),
-                        "net" => cmd_net(&file, symbols, fmt, None, pid_filter, false, true),
+                        "net" => {
+                            let (_ctx, reader) = setup_analysis(&file, symbols, None, true)?;
+                            let tcp_table_sym = reader.symbols().symbol_address("TcpBTable")
+                                .context("missing 'TcpBTable' symbol; Windows TCP listing requires tcpip.sys ISF")?;
+                            let ptr_bytes = reader.read_bytes(tcp_table_sym, 8)
+                                .context("failed to dereference TcpBTable")?;
+                            let table_vaddr = u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
+                            let tcp_size_sym = reader.symbols().symbol_address("TcpBTableSize")
+                                .context("missing 'TcpBTableSize' symbol")?;
+                            let size_bytes = reader.read_bytes(tcp_size_sym, 4)
+                                .context("failed to read TcpBTableSize")?;
+                            let bucket_count = u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
+                            let mut conns = memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
+                                .context("failed to walk Windows TCP endpoints")?;
+                            if let Some(pid) = pid_filter {
+                                conns.retain(|c| c.pid == pid);
+                            }
+                            vol_compat::print_vol3_connections(&conns, renderer);
+                            Ok(())
+                        }
                         "sys" => cmd_system(&file, symbols, fmt, None, false, true),
                         "handles" => cmd_handles(&file, symbols, fmt, None, pid_filter, true),
                         "check:ssdt" => cmd_check(

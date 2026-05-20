@@ -221,6 +221,177 @@ pub fn proxy_to_vol(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Vol3-compatible output formatters
+// ---------------------------------------------------------------------------
+
+/// Windows FILETIME → Unix epoch offset in 100-ns ticks.
+const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
+
+/// Format a Windows FILETIME as `"YYYY-MM-DD HH:MM:SS.ffffff"` (vol3 style).
+/// Returns `"N/A"` for zero (unset field).
+fn format_vol3_filetime(ft: u64) -> String {
+    if ft == 0 {
+        return "N/A".to_string();
+    }
+    if ft < FILETIME_UNIX_DIFF {
+        return format!("pre-1970 ({ft:#x})");
+    }
+    let total_us = (ft - FILETIME_UNIX_DIFF) / 10; // 100-ns → microseconds
+    let unix_secs = total_us / 1_000_000;
+    let us = total_us % 1_000_000;
+
+    // Use time crate if available; otherwise fall back to manual UTC calculation.
+    // We avoid pulling in a new dependency and instead do manual calendar math.
+    let secs = unix_secs;
+    let days = secs / 86400;
+    let rem  = secs % 86400;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+
+    // Gregorian calendar from day count (days since 1970-01-01).
+    let (y, mo, d) = days_to_ymd(days);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}.{us:06}")
+}
+
+/// Convert days since Unix epoch (1970-01-01) to (year, month, day).
+fn days_to_ymd(days: u64) -> (u32, u32, u32) {
+    // Algorithm: civil_from_days (Howard Hinnant)
+    let z = days as i64 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as u32, m as u32, d as u32)
+}
+
+/// Format `&[WinProcessInfo]` as a vol3-style JSON array string.
+fn vol3_processes_json(procs: &[memf_windows::WinProcessInfo]) -> String {
+    let mut out = String::from("[\n");
+    for (i, p) in procs.iter().enumerate() {
+        let create = if p.create_time == 0 {
+            "null".to_string()
+        } else {
+            format!("\"{}\"", format_vol3_filetime(p.create_time))
+        };
+        let exit = if p.exit_time == 0 {
+            "null".to_string()
+        } else {
+            format!("\"{}\"", format_vol3_filetime(p.exit_time))
+        };
+        out.push_str(&format!(
+            "  {{\"PID\": {pid}, \"PPID\": {ppid}, \"ImageFileName\": \"{name}\", \
+             \"Offset(V)\": \"{offset:#x}\", \"Threads\": {threads}, \
+             \"Handles\": {handles}, \"SessionId\": {session}, \
+             \"Wow64\": {wow64}, \"CreateTime\": {create}, \
+             \"ExitTime\": {exit}, \"__children\": []}}",
+            pid     = p.pid,
+            ppid    = p.ppid,
+            name    = p.image_name,
+            offset  = p.vaddr,
+            threads = p.thread_count,
+            handles = p.handle_count,
+            session = p.session_id,
+            wow64   = p.is_wow64,
+        ));
+        if i + 1 < procs.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push(']');
+    out
+}
+
+/// Format `&[WinProcessInfo]` as a vol3-style tab-separated text table string.
+fn vol3_processes_text(procs: &[memf_windows::WinProcessInfo]) -> String {
+    let header = "PID\tPPID\tImageFileName\tOffset(V)\tThreads\tHandles\tSessionId\tWow64\tCreateTime\tExitTime\n";
+    let mut out = header.to_string();
+    for p in procs {
+        let create = format_vol3_filetime(p.create_time);
+        let exit = if p.exit_time == 0 { "N/A".into() } else { format_vol3_filetime(p.exit_time) };
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            p.pid, p.ppid, p.image_name, p.vaddr,
+            p.thread_count, p.handle_count, p.session_id,
+            p.is_wow64, create, exit,
+        ));
+    }
+    out
+}
+
+/// Format `&[WinConnectionInfo]` as a vol3-style JSON array string.
+fn vol3_connections_json(conns: &[memf_windows::WinConnectionInfo]) -> String {
+    let mut out = String::from("[\n");
+    for (i, c) in conns.iter().enumerate() {
+        let created = if c.create_time == 0 {
+            "null".to_string()
+        } else {
+            format!("\"{}\"", format_vol3_filetime(c.create_time))
+        };
+        out.push_str(&format!(
+            "  {{\"Offset\": \"{offset:#x}\", \"Proto\": \"{proto}\", \
+             \"LocalAddr\": \"{la}\", \"LocalPort\": {lp}, \
+             \"ForeignAddr\": \"{fa}\", \"ForeignPort\": {fp}, \
+             \"State\": \"{state}\", \"PID\": {pid}, \
+             \"Owner\": \"{owner}\", \"Created\": {created}}}",
+            offset = c.offset,
+            proto  = c.protocol,
+            la     = c.local_addr,
+            lp     = c.local_port,
+            fa     = c.remote_addr,
+            fp     = c.remote_port,
+            state  = c.state,
+            pid    = c.pid,
+            owner  = c.process_name,
+        ));
+        if i + 1 < conns.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push(']');
+    out
+}
+
+/// Format `&[WinConnectionInfo]` as vol3-style tab-separated text.
+fn vol3_connections_text(conns: &[memf_windows::WinConnectionInfo]) -> String {
+    let header = "Offset\tProto\tLocalAddr\tLocalPort\tForeignAddr\tForeignPort\tState\tPID\tOwner\tCreated\n";
+    let mut out = header.to_string();
+    for c in conns {
+        let created = if c.create_time == 0 { "N/A".into() } else { format_vol3_filetime(c.create_time) };
+        out.push_str(&format!(
+            "{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            c.offset, c.protocol, c.local_addr, c.local_port,
+            c.remote_addr, c.remote_port, c.state,
+            c.pid, c.process_name, created,
+        ));
+    }
+    out
+}
+
+/// Print process list in vol3-compatible format (text or JSON).
+pub fn print_vol3_processes(procs: &[memf_windows::WinProcessInfo], renderer: crate::VolRenderer) {
+    match renderer {
+        crate::VolRenderer::Json => println!("{}", vol3_processes_json(procs)),
+        _ => print!("{}", vol3_processes_text(procs)),
+    }
+}
+
+/// Print network connections in vol3-compatible format (text or JSON).
+pub fn print_vol3_connections(conns: &[memf_windows::WinConnectionInfo], renderer: crate::VolRenderer) {
+    match renderer {
+        crate::VolRenderer::Json => println!("{}", vol3_connections_json(conns)),
+        _ => print!("{}", vol3_connections_text(conns)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
