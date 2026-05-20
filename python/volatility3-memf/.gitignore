@@ -1,0 +1,19 @@
+# vol3 dumpfiles plugin artifacts (produced during integration tests)
+file.0x*.dat
+file.0x*.vacb
+tmp_*.vol3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# mypy / coverage
+.mypy_cache/
+.coverage
+htmlcov/

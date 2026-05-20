@@ -16,6 +16,7 @@ dev = ["pytest>=8"]
 where = ["src"]
 
 [tool.pytest.ini_options]
+pythonpath = ["tests"]
 markers = [
     "integration: requires real dump + memf binary (skipped in CI without them)",
     "robustness: requires real memf binary + writes temp files",
