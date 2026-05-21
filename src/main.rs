@@ -5,7 +5,7 @@ mod os_detect;
 mod vol_compat;
 mod symbol_dl;
 
-use jsonguard::csv_field;
+use jsonguard::{csv_field, display_safe};
 use forensicnomicon::{
     processes::{
         PE_MZ_MAGIC, WINDOWS_KERNEL_PDB_PREFIXES, WINDOWS_NON_NETWORKING_PROCESSES,
@@ -588,6 +588,15 @@ enum PsSortField {
     Name,
     /// Sort by creation time (Windows only; falls back to PID on Linux).
     Time,
+}
+
+/// Sanitize a free-text string for safe display in a terminal table.
+///
+/// Strips C0/C1 control characters (including ESC, NUL, newlines) and bidi
+/// override markers (U+202E, U+2066–U+2069, etc.) that could corrupt terminal
+/// output or visually reverse/hide text. Clean strings pass through unchanged.
+fn table_cell(s: &str) -> String {
+    jsonguard::display_safe(s).value
 }
 
 #[allow(clippy::too_many_lines)]
