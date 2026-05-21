@@ -597,6 +597,47 @@ mod tests {
         assert!(lines[1].starts_with('*'), "child at depth 1 must start with *: {}", lines[1]);
     }
 
+    // ── formula injection guard (new with jsonguard) ──────────────────────
+
+    #[test]
+    fn test_vol3_processes_text_formula_injection_guarded() {
+        // A process name starting with '=' is a spreadsheet formula injection vector.
+        // tsv_safe must prefix the field with "'" to neutralise it.
+        let procs = vec![make_proc_with_name("=HYPERLINK(\"evil.com\",\"click\")")];
+        let text = vol3_processes_text(&procs);
+        let data_line = text.lines().nth(1).unwrap();
+        let name_field = data_line.split('\t').nth(2).unwrap();
+        assert!(
+            name_field.starts_with("'="),
+            "formula-prefixed name must be escaped with ': got {name_field:?}"
+        );
+    }
+
+    #[test]
+    fn test_vol3_connections_text_formula_injection_guarded() {
+        let mut conn = make_conn();
+        conn.process_name = "=cmd|'/C calc'!A0".into();
+        let text = vol3_connections_text(&[conn]);
+        let data_line = text.lines().nth(1).unwrap();
+        let owner_field = data_line.split('\t').nth(8).unwrap();
+        assert!(
+            owner_field.starts_with("'="),
+            "formula-prefixed process name must be escaped: got {owner_field:?}"
+        );
+    }
+
+    #[test]
+    fn test_vol3_processes_text_bidi_override_stripped() {
+        // U+202E (RIGHT-TO-LEFT OVERRIDE) in a process name is a bidi attack.
+        // tsv_safe must strip bidi control characters.
+        let procs = vec![make_proc_with_name("evil\u{202E}exe.scr")];
+        let text = vol3_processes_text(&procs);
+        assert!(
+            !text.contains('\u{202E}'),
+            "bidi override must be stripped from TSV output"
+        );
+    }
+
     #[test]
     fn test_vol3_pstree_json_includes_children_array() {
         use memf_windows::WinPsTreeEntry;
