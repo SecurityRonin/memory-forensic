@@ -46,29 +46,29 @@ use os_detect::{AnalysisContext, OsProfile};
         are required for process, module, and network analysis.",
     after_help = "Examples:\n  \
         memf info memdump.dmp\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --threads --output json\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --pid 4\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --tree\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --masquerade\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --dlls --pid 1234\n  \
-        memf ps memdump.lime --symbols linux.json --maps\n  \
-        memf ps memdump.lime --symbols linux.json --envvars\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --cmdline\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --vad\n  \
-        memf ps memdump.dmp --symbols ntkrnlmp.json --privileges\n  \
-        memf ps memdump.lime --symbols linux.json --elfinfo\n  \
-        memf ps memdump.lime --symbols linux.json --bash-history\n  \
-        memf sys memdump.dmp --symbols ntkrnlmp.json\n  \
-        memf sys memdump.lime --symbols linux.json --mounts\n  \
-        memf net memdump.dmp --symbols ntkrnlmp.json --output csv\n  \
-        memf check memdump.lime --symbols linux.json --syscalls\n  \
-        memf check memdump.lime --symbols linux.json --hooks\n  \
-        memf check memdump.lime --symbols linux.json --malfind\n  \
-        memf check memdump.dmp --symbols ntkrnlmp.json --ssdt\n  \
-        memf check memdump.dmp --symbols ntkrnlmp.json --callbacks\n  \
-        memf handles memdump.lime --symbols linux.json\n  \
-        memf strings memdump.dmp --rules ./yara-rules/\n  \
+        memf ps --symbols ntkrnlmp.json memdump.dmp\n  \
+        memf ps --symbols ntkrnlmp.json --threads --output json memdump.dmp\n  \
+        memf ps --symbols ntkrnlmp.json --pid 4 memdump.dmp\n  \
+        memf ps --symbols ntkrnlmp.json --tree memdump.dmp\n  \
+        memf ps --symbols ntkrnlmp.json --masquerade memdump.dmp\n  \
+        memf ps --symbols ntkrnlmp.json --dlls --pid 1234 memdump.dmp\n  \
+        memf ps --symbols linux.json --maps memdump.lime\n  \
+        memf ps --symbols linux.json --envvars memdump.lime\n  \
+        memf ps --symbols ntkrnlmp.json --cmdline memdump.dmp\n  \
+        memf ps --symbols ntkrnlmp.json --vad memdump.dmp\n  \
+        memf ps --symbols ntkrnlmp.json --privileges memdump.dmp\n  \
+        memf ps --symbols linux.json --elfinfo memdump.lime\n  \
+        memf ps --symbols linux.json --bash-history memdump.lime\n  \
+        memf sys --symbols ntkrnlmp.json memdump.dmp\n  \
+        memf sys --symbols linux.json --mounts memdump.lime\n  \
+        memf net --symbols ntkrnlmp.json --output csv memdump.dmp\n  \
+        memf check --symbols linux.json --syscalls memdump.lime\n  \
+        memf check --symbols linux.json --hooks memdump.lime\n  \
+        memf check --symbols linux.json --malfind memdump.lime\n  \
+        memf check --symbols ntkrnlmp.json --ssdt memdump.dmp\n  \
+        memf check --symbols ntkrnlmp.json --callbacks memdump.dmp\n  \
+        memf handles --symbols linux.json memdump.lime\n  \
+        memf strings --rules ./yara-rules/ memdump.dmp\n  \
         memf strings --from-file extracted.txt --min-length 8"
 )]
 struct Cli {

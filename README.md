@@ -15,10 +15,10 @@
 cargo install memory-forensic
 
 # Linux — supply an ISF symbol file
-memf ps memdump.lime --symbols linux.json --tree
+memf ps --symbols linux.json --tree memdump.lime
 
 # Windows — no symbol file needed, PDB auto-downloaded from msdl.microsoft.com
-memf ps win10.dmp --tree
+memf ps --tree win10.dmp
 ```
 
 > **Windows auto-profile:** `memory-forensic` scans physical pages for the ntoskrnl PE, extracts its PDB GUID via the CodeView debug directory, fetches the exact matching PDB from Microsoft's public symbol server, and parses struct layouts at runtime — all without any pre-staged symbol file. Works for every Windows build automatically.
@@ -51,37 +51,37 @@ cargo build --release
 memf info memdump.dmp
 
 # Process tree with threads and DLLs
-memf ps memdump.dmp --symbols ntkrnlmp.json --tree --threads --dlls
+memf ps --symbols ntkrnlmp.json --tree --threads --dlls memdump.dmp
 
 # Network connections (json / csv / table)
-memf net memdump.dmp --symbols ntkrnlmp.json --output json
+memf net --symbols ntkrnlmp.json --output json memdump.dmp
 
 # Kernel integrity checks (SSDT, IDT, callbacks, hooks)
-memf check memdump.dmp --symbols ntkrnlmp.json --ssdt --callbacks
+memf check --symbols ntkrnlmp.json --ssdt --callbacks memdump.dmp
 
 # Linux syscall hook and malfind scan
-memf check memdump.lime --symbols linux.json --hooks --malfind
+memf check --symbols linux.json --hooks --malfind memdump.lime
 
 # String extraction with YARA rules
-memf strings memdump.dmp --rules ./yara-rules/ --min-length 8
+memf strings --rules ./yara-rules/ --min-length 8 memdump.dmp
 
 # Hash lookup against NSRL (known-good) and MalwareBazaar (known-bad)
-memf hash memdump.dmp --lookup
+memf hash --lookup memdump.dmp
 
 # Extract framebuffer screenshot from live memory dump
-memf framebuf memdump.dmp --symbols linux.json --png screen.png
+memf framebuf --symbols linux.json --png screen.png memdump.dmp
 
 # Recover files from tmpfs mounts + detect memfd fileless ELF execution
-memf check memdump.lime --symbols linux.json --tmpfs-recovery --memfd
+memf check --symbols linux.json --tmpfs-recovery --memfd memdump.lime
 
 # Detect EDR bypass: direct syscalls, ETW patching, AMSI/DSE bypass
-memf check memdump.dmp --symbols ntkrnlmp.json --direct-syscalls --etw-patch --amsi-bypass
+memf check --symbols ntkrnlmp.json --direct-syscalls --etw-patch --amsi-bypass memdump.dmp
 
 # Novel kernel interface abuse: io_uring, netfilter hooks, perf_event
-memf check memdump.lime --symbols linux.json --io-uring --netfilter --perf-event
+memf check --symbols linux.json --io-uring --netfilter --perf-event memdump.lime
 
 # Cross-artifact ATT&CK correlation across all walkers
-memf correlate memdump.dmp --symbols ntkrnlmp.json --output json
+memf correlate --symbols ntkrnlmp.json --output json memdump.dmp
 ```
 
 Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
@@ -92,7 +92,7 @@ Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
 
 ```bash
 # SSDT, IDT, ftrace, LSM, and kernel callback checks in one pass
-memf check memdump.lime --symbols linux.json --hooks --idt --syscalls
+memf check --symbols linux.json --hooks --idt --syscalls memdump.lime
 ```
 
 ```
@@ -110,7 +110,7 @@ Three hook types — syscall table, ftrace, and LSM — all resolving into the s
 Name-pattern matching misses recompiled or renamed rootkit variants. ELF dynamic symbol analysis catches them regardless of name:
 
 ```bash
-memf check memdump.lime --symbols linux.json --elf-hooks
+memf check --symbols linux.json --elf-hooks memdump.lime
 ```
 
 ```
@@ -134,10 +134,10 @@ memf check memdump.lime --symbols linux.json --elf-hooks
 
 ```bash
 # Extract DPAPI master keys from LSASS g_MasterKeyCache linked list
-memf check memdump.dmp --symbols ntkrnlmp.json --dpapi-keys
+memf check --symbols ntkrnlmp.json --dpapi-keys memdump.dmp
 
 # Detect Chrome cookies (v10/v20 encrypted blobs) from heap memory
-memf check memdump.dmp --symbols ntkrnlmp.json --browser-cookies
+memf check --symbols ntkrnlmp.json --browser-cookies memdump.dmp
 ```
 
 ```
@@ -156,7 +156,7 @@ The Windows credential walkers cover:
 ## Framebuffer screenshot extraction
 
 ```bash
-memf framebuf memdump.dmp --symbols ntkrnlmp.json --png screen.png
+memf framebuf --symbols ntkrnlmp.json --png screen.png memdump.dmp
 ```
 
 Extracts the framebuffer from a live or hibernation memory dump and writes it as a PNG. Works on both Linux (DRM/KMS `drm_framebuffer` walker) and Windows (session framebuffer via `win32k` pool scan). Useful for capturing the screen state at the moment of acquisition without booting the image.
@@ -169,10 +169,10 @@ Attackers using tmpfs or `memfd_create(2)` leave no filesystem artifacts — the
 
 ```bash
 # Recover inodes and file content from Linux tmpfs/ramfs mounts
-memf check memdump.lime --symbols linux.json --tmpfs-recovery
+memf check --symbols linux.json --tmpfs-recovery memdump.lime
 
 # Detect ELF binaries running from anonymous memfd file descriptors
-memf check memdump.lime --symbols linux.json --memfd
+memf check --symbols linux.json --memfd memdump.lime
 ```
 
 ```
@@ -196,16 +196,16 @@ Modern offensive tooling patches Windows security instrumentation in memory to e
 
 ```bash
 # Direct syscalls — Syswhispers/Hell's Gate bypass Win32 API entirely
-memf check memdump.dmp --symbols ntkrnlmp.json --direct-syscalls
+memf check --symbols ntkrnlmp.json --direct-syscalls memdump.dmp
 
 # ETW patching — log suppression via ret/xor at ETW write functions
-memf check memdump.dmp --symbols ntkrnlmp.json --etw-patch
+memf check --symbols ntkrnlmp.json --etw-patch memdump.dmp
 
 # AMSI bypass — script-scanning suppression via amsi.dll patch
-memf check memdump.dmp --symbols ntkrnlmp.json --amsi-bypass
+memf check --symbols ntkrnlmp.json --amsi-bypass memdump.dmp
 
 # DSE bypass — Driver Signature Enforcement disabled for unsigned drivers
-memf check memdump.dmp --symbols ntkrnlmp.json --dse-bypass
+memf check --symbols ntkrnlmp.json --dse-bypass memdump.dmp
 ```
 
 ```
@@ -231,7 +231,7 @@ memf check memdump.dmp --symbols ntkrnlmp.json --dse-bypass
 Beyond classic syscall hooks, modern rootkits abuse newer kernel subsystems. `memory-forensic` covers all three:
 
 ```bash
-memf check memdump.lime --symbols linux.json --io-uring --netfilter --perf-event
+memf check --symbols linux.json --io-uring --netfilter --perf-event memdump.lime
 ```
 
 ```
@@ -253,7 +253,7 @@ memf check memdump.lime --symbols linux.json --io-uring --netfilter --perf-event
 ## Container escape indicators
 
 ```bash
-memf check memdump.lime --symbols linux.json --container-escape
+memf check --symbols linux.json --container-escape memdump.lime
 ```
 
 ```
@@ -273,7 +273,7 @@ Walks user, mount, PID, net, and cgroup namespaces for every process and flags p
 `memf-correlate` joins findings from all walkers into a timeline, scores anomalies by severity, and maps each to MITRE ATT&CK techniques without running walkers one at a time:
 
 ```bash
-memf correlate memdump.dmp --symbols ntkrnlmp.json --output json > findings.json
+memf correlate --symbols ntkrnlmp.json --output json memdump.dmp > findings.json
 ```
 
 ```json
