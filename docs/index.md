@@ -11,7 +11,7 @@ memf framebuf memdump.lime --symbols linux.json --png screen.png
 memf check memdump.dmp --symbols ntkrnlmp.json --dpapi-keys --browser-cookies
 ```
 
-Highlights: ELF dynamic symbol analysis for LD_PRELOAD rootkit behavioral fingerprinting, DPAPI master key extraction from LSASS `g_MasterKeyCache`, Chrome v10/v20 AES-GCM cookie detection, and framebuffer screenshot extraction.
+Highlights: ELF dynamic symbol analysis for LD_PRELOAD rootkit behavioral fingerprinting, DPAPI master key extraction from LSASS `g_MasterKeyCache`, Chrome v10/v20 AES-GCM cookie detection, framebuffer screenshot extraction, and injection-proof output — RFC 4180 CSV with formula-injection guard, bidi/control-character stripping on all table and terminal output.
 
 **[GitHub Repository →](https://github.com/SecurityRonin/memory-forensic)** · **[API Docs →](memf_core/index.html)**
 

@@ -9,7 +9,7 @@
 
 **Walk any memory dump. Find what's hidden. One binary, zero setup.**
 
-`memory-forensic` is a Rust library and toolkit that reads LiME, AVML, Windows crash dumps, and six other formats, then walks processes, threads, modules, network connections, and injected memory — from a single static binary you compile once and copy anywhere.
+`memory-forensic` is a Rust library and toolkit that reads LiME, AVML, Windows crash dumps, and six other formats, then walks processes, threads, modules, network connections, and injected memory — from a single static binary you compile once and copy anywhere. Every output channel (table, CSV, JSON) sanitizes free-text data: RFC 4180 CSV quoting, formula-injection guard, and bidi/control-character stripping before it reaches your terminal or pipeline.
 
 ```bash
 cargo install memory-forensic
@@ -331,6 +331,7 @@ Every alternative either requires Python, is Windows-only, or is unmaintained.
 | io_uring / netfilter / perf\_event abuse | ✅ | — | — | — |
 | Container escape indicators | ✅ | — | — | — |
 | Cross-artifact ATT&CK correlation | ✅ | — | — | — |
+| Safe output — RFC 4180 CSV, formula-injection guard, bidi-strip | ✅ | — | — | — |
 | Actively maintained | ✅ | ✅ | ✅ | — |
 | Free & open source | ✅ | ✅ | ✅ | ✅ |
 
