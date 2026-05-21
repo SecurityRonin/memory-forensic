@@ -1767,7 +1767,7 @@ fn print_linux_processes_table(
             table.add_row(vec![
                 format!("{}", p.pid),
                 format!("{}", p.ppid),
-                p.comm.clone(),
+                table_cell(&p.comm),
                 format!("{}", p.state),
                 format_boot_ns(p.start_time),
                 abs,
@@ -1777,7 +1777,7 @@ fn print_linux_processes_table(
             table.add_row(vec![
                 format!("{}", p.pid),
                 format!("{}", p.ppid),
-                p.comm.clone(),
+                table_cell(&p.comm),
                 format!("{}", p.state),
                 format_boot_ns(p.start_time),
                 format!("{:#x}", p.vaddr),
@@ -1878,7 +1878,7 @@ fn print_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat)
                     format!("{}", t.tid),
                     format!("{}", t.tgid),
                     format!("{}", t.state),
-                    t.comm.clone(),
+                    table_cell(&t.comm),
                 ]);
             }
             println!("{table}");
@@ -2012,8 +2012,8 @@ fn print_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputForm
             for c in cmdlines {
                 table.add_row(vec![
                     format!("{}", c.pid),
-                    c.comm.clone(),
-                    c.cmdline.clone(),
+                    table_cell(&c.comm),
+                    table_cell(&c.cmdline),
                 ]);
             }
             println!("{table}");
@@ -2058,7 +2058,7 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
                     format!("{:#x}", p.vaddr),
                     format!("{}", p.pid),
                     format!("{}", p.ppid),
-                    p.image_name.clone(),
+                    table_cell(&p.image_name),
                     format!("{}", p.thread_count),
                     format!("{}", p.handle_count),
                     format!("{}", p.session_id),
@@ -2121,7 +2121,7 @@ fn print_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) {
             table.set_header(vec!["Name", "Base Address", "Size"]);
             for m in mods {
                 table.add_row(vec![
-                    m.name.clone(),
+                    table_cell(&m.name),
                     format!("{:#x}", m.base_addr),
                     format_size(m.size),
                 ]);
@@ -2160,10 +2160,10 @@ fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: Output
             table.set_header(vec!["Name", "Base Address", "Size", "Path"]);
             for d in drivers {
                 table.add_row(vec![
-                    d.name.clone(),
+                    table_cell(&d.name),
                     format!("{:#x}", d.base_addr),
                     format_size(d.size),
-                    d.full_path.clone(),
+                    table_cell(&d.full_path),
                 ]);
             }
             println!("{table}");
@@ -2203,11 +2203,11 @@ fn print_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: Out
                 let cmdline_display = if c.cmdline.len() > 120 {
                     format!("{}...", &c.cmdline[..117])
                 } else {
-                    c.cmdline.clone()
+                    table_cell(&c.cmdline)
                 };
                 table.add_row(vec![
                     format!("{}", c.pid),
-                    c.image_name.clone(),
+                    table_cell(&c.image_name),
                     cmdline_display,
                 ]);
             }
@@ -2246,9 +2246,9 @@ fn print_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFor
             for v in vars {
                 table.add_row(vec![
                     format!("{}", v.pid),
-                    v.image_name.clone(),
-                    v.variable.clone(),
-                    v.value.clone(),
+                    table_cell(&v.image_name),
+                    table_cell(&v.variable),
+                    table_cell(&v.value),
                 ]);
             }
             println!("{table}");
@@ -2349,8 +2349,8 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
             for r in results {
                 table.add_row(vec![
                     format!("{}", r.pid),
-                    r.eprocess_name.clone(),
-                    r.peb_image_path.clone(),
+                    table_cell(&r.eprocess_name),
+                    table_cell(&r.peb_image_path),
                     if r.suspicious {
                         "YES".to_string()
                     } else {
@@ -2495,14 +2495,14 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
             for c in conns {
                 table.add_row(vec![
                     format!("{:#x}", c.offset),
-                    c.protocol.clone(),
-                    c.local_addr.clone(),
+                    table_cell(&c.protocol),
+                    table_cell(&c.local_addr),
                     format!("{}", c.local_port),
-                    c.remote_addr.clone(),
+                    table_cell(&c.remote_addr),
                     format!("{}", c.remote_port),
                     format!("{}", c.state),
                     format!("{}", c.pid),
-                    c.process_name.clone(),
+                    table_cell(&c.process_name),
                     format_filetime(c.create_time),
                 ]);
             }
@@ -2627,11 +2627,11 @@ fn print_libs(
             table.set_header(vec!["Name", "Base Address", "Size", "Load Order", "Path"]);
             for d in dlls {
                 table.add_row(vec![
-                    d.name.clone(),
+                    table_cell(&d.name),
                     format!("{:#x}", d.base_addr),
                     format_size(d.size),
                     format!("{}", d.load_order),
-                    d.full_path.clone(),
+                    table_cell(&d.full_path),
                 ]);
             }
             println!("{table}");
@@ -2700,7 +2700,7 @@ fn print_strings_table(strings: &[memf_strings::ClassifiedString]) {
         let value_display = if s.value.len() > 80 {
             format!("{}...", &s.value[..77])
         } else {
-            s.value.clone()
+            table_cell(&s.value)
         };
 
         table.add_row(vec![
@@ -2879,7 +2879,7 @@ fn print_vmas(vmas: &[memf_linux::VmaInfo], output: OutputFormat) {
             for v in vmas {
                 table.add_row(vec![
                     format!("{}", v.pid),
-                    v.comm.clone(),
+                    table_cell(&v.comm),
                     format!("{:#x}", v.start),
                     format!("{:#x}", v.end),
                     format!("{}", v.flags),
@@ -2928,9 +2928,9 @@ fn print_file_descriptors(fds: &[memf_linux::FileDescriptorInfo], output: Output
                 let inode_str = f.inode.map_or_else(|| "-".to_string(), |i| format!("{i}"));
                 table.add_row(vec![
                     format!("{}", f.pid),
-                    f.comm.clone(),
+                    table_cell(&f.comm),
                     format!("{}", f.fd),
-                    f.path.clone(),
+                    table_cell(&f.path),
                     inode_str,
                     format!("{}", f.pos),
                 ]);
@@ -2977,9 +2977,9 @@ fn print_envvars(vars: &[memf_linux::EnvVarInfo], output: OutputFormat) {
             for v in vars {
                 table.add_row(vec![
                     format!("{}", v.pid),
-                    v.comm.clone(),
-                    v.key.clone(),
-                    v.value.clone(),
+                    table_cell(&v.comm),
+                    table_cell(&v.key),
+                    table_cell(&v.value),
                 ]);
             }
             println!("{table}");
@@ -3018,11 +3018,11 @@ fn print_malfind(findings: &[memf_linux::MalfindInfo], output: OutputFormat) {
             for f in findings {
                 table.add_row(vec![
                     format!("{}", f.pid),
-                    f.comm.clone(),
+                    table_cell(&f.comm),
                     format!("{:#x}", f.start),
                     format!("{:#x}", f.end),
                     format!("{}", f.flags),
-                    f.reason.clone(),
+                    table_cell(&f.reason),
                 ]);
             }
             println!("{table}");
@@ -3078,9 +3078,9 @@ fn print_mounts(mounts: &[memf_linux::MountInfo], output: OutputFormat) {
             table.set_header(vec!["Device", "Mount Point", "FS Type"]);
             for m in mounts {
                 table.add_row(vec![
-                    m.dev_name.clone(),
-                    m.mount_point.clone(),
-                    m.fs_type.clone(),
+                    table_cell(&m.dev_name),
+                    table_cell(&m.mount_point),
+                    table_cell(&m.fs_type),
                 ]);
             }
             println!("{table}");
@@ -3164,11 +3164,11 @@ fn print_bash_history(entries: &[memf_linux::BashHistoryInfo], output: OutputFor
             for e in entries {
                 table.add_row(vec![
                     format!("{}", e.pid),
-                    e.comm.clone(),
+                    table_cell(&e.comm),
                     format!("{}", e.index),
                     e.timestamp
                         .map_or_else(|| "-".to_string(), |ts| ts.to_string()),
-                    e.command.clone(),
+                    table_cell(&e.command),
                 ]);
             }
             println!("{table}");
@@ -3211,7 +3211,7 @@ fn print_psxview(entries: &[memf_linux::PsxViewInfo], output: OutputFormat) {
             for e in entries {
                 table.add_row(vec![
                     format!("{}", e.pid),
-                    e.comm.clone(),
+                    table_cell(&e.comm),
                     if e.in_task_list { "YES" } else { "NO" }.to_string(),
                     if e.in_pid_hash { "YES" } else { "NO" }.to_string(),
                 ]);
@@ -3255,8 +3255,8 @@ fn print_tty_check(entries: &[memf_linux::TtyCheckInfo], output: OutputFormat) {
             table.set_header(vec!["DRIVER", "OPERATION", "HANDLER", "HOOKED"]);
             for e in entries {
                 table.add_row(vec![
-                    e.name.clone(),
-                    e.operation.clone(),
+                    table_cell(&e.name),
+                    table_cell(&e.operation),
                     format!("{:#x}", e.handler),
                     if e.hooked { "YES" } else { "NO" }.to_string(),
                 ]);
@@ -3307,9 +3307,9 @@ fn print_check_hooks(entries: &[memf_linux::KernelHookInfo], output: OutputForma
             ]);
             for e in entries {
                 table.add_row(vec![
-                    e.symbol.clone(),
+                    table_cell(&e.symbol),
                     format!("{:#x}", e.address),
-                    e.hook_type.clone(),
+                    table_cell(&e.hook_type),
                     e.target
                         .map_or_else(|| "-".to_string(), |t| format!("{t:#x}")),
                     if e.suspicious { "YES" } else { "NO" }.to_string(),
@@ -3363,7 +3363,7 @@ fn print_elfinfo(entries: &[memf_linux::ElfInfo], output: OutputFormat) {
             for e in entries {
                 table.add_row(vec![
                     format!("{}", e.pid),
-                    e.comm.clone(),
+                    table_cell(&e.comm),
                     format!("{:#x}", e.vma_start),
                     format!("{:?}", e.elf_type),
                     format!("{}", e.machine),
@@ -3410,7 +3410,7 @@ fn print_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: OutputF
             table.set_header(vec!["NAME", "BASE_ADDR", "SIZE", "MODULES_LIST", "SYSFS"]);
             for e in entries {
                 table.add_row(vec![
-                    e.name.clone(),
+                    table_cell(&e.name),
                     format!("{:#x}", e.base_addr),
                     format!("{}", e.size),
                     if e.in_modules_list { "YES" } else { "NO" }.to_string(),
@@ -3849,9 +3849,9 @@ fn print_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat) 
             for h in handles {
                 table.add_row(vec![
                     format!("{}", h.pid),
-                    h.image_name.clone(),
+                    table_cell(&h.image_name),
                     format!("{:#x}", h.handle_value),
-                    h.object_type.clone(),
+                    table_cell(&h.object_type),
                     format!("{:#018x}", h.object_addr),
                     format!("{:#010x}", h.granted_access),
                 ]);
@@ -3977,9 +3977,9 @@ fn print_irp_hooks(hooks: &[memf_windows::WinIrpHookInfo], output: OutputFormat)
                 ]);
                 for h in &suspicious {
                     table.add_row(vec![
-                        h.driver_name.clone(),
+                        table_cell(&h.driver_name),
                         format!("{}", h.irp_index),
-                        h.irp_name.clone(),
+                        table_cell(&h.irp_name),
                         format!("{:#x}", h.target_addr),
                         h.target_module
                             .as_deref()
@@ -4040,7 +4040,7 @@ fn print_callbacks(cbs: &[memf_windows::WinCallbackInfo], output: OutputFormat) 
             table.set_header(vec!["Type", "Index", "Address", "Module"]);
             for cb in cbs {
                 table.add_row(vec![
-                    cb.callback_type.clone(),
+                    table_cell(&cb.callback_type),
                     format!("{}", cb.index),
                     format!("{:#x}", cb.address),
                     cb.owning_module
@@ -4107,10 +4107,10 @@ fn print_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) {
             for v in vads {
                 table.add_row(vec![
                     format!("{}", v.pid),
-                    v.image_name.clone(),
+                    table_cell(&v.image_name),
                     format!("{:#x}", v.start_vaddr),
                     format!("{:#x}", v.end_vaddr),
-                    v.protection_str.clone(),
+                    table_cell(&v.protection_str),
                     if v.is_private { "Yes" } else { "No" }.to_string(),
                 ]);
             }
@@ -4166,10 +4166,10 @@ fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Outp
                 });
                 table.add_row(vec![
                     format!("{}", f.pid),
-                    f.image_name.clone(),
+                    table_cell(&f.image_name),
                     format!("{:#x}", f.start_vaddr),
                     format!("{:#x}", f.end_vaddr),
-                    f.protection_str.clone(),
+                    table_cell(&f.protection_str),
                     hex_header,
                 ]);
             }
@@ -4232,15 +4232,15 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
                 let flag = |b: bool| if b { "True" } else { "False" };
                 table.add_row(vec![
                     format!("{pid}"),
-                    image_name.clone(),
+                    table_cell(&image_name),
                     format!("{:#x}", m.base_addr),
                     flag(m.in_load).to_string(),
                     flag(m.in_mem).to_string(),
                     flag(m.in_init).to_string(),
                     if m.full_path.is_empty() {
-                        m.name.clone()
+                        table_cell(&m.name)
                     } else {
-                        m.full_path.clone()
+                        table_cell(&m.full_path)
                     },
                 ]);
             }
@@ -4315,7 +4315,7 @@ fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFo
                 let flag = |b: bool| if b { "Yes" } else { "No" };
                 table.add_row(vec![
                     format!("{}", f.pid),
-                    f.image_name.clone(),
+                    table_cell(&f.image_name),
                     format!("{:#x}", f.image_base),
                     flag(f.has_mz).to_string(),
                     flag(f.has_pe).to_string(),
@@ -4325,7 +4325,7 @@ fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFo
                     if f.reason.is_empty() {
                         "-".to_string()
                     } else {
-                        f.reason.clone()
+                        table_cell(&f.reason)
                     },
                 ]);
             }
@@ -4401,9 +4401,9 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
                 let sid = if t.user_sid.is_empty() {
                     "-".to_string()
                 } else {
-                    t.user_sid.clone()
+                    table_cell(&t.user_sid)
                 };
-                table.add_row(vec![format!("{}", t.pid), t.image_name.clone(), sid, privs]);
+                table.add_row(vec![format!("{}", t.pid), table_cell(&t.image_name), sid, privs]);
             }
             println!("{table}");
             let elevated: Vec<_> = tokens
@@ -5216,8 +5216,8 @@ fn print_browser_sessions(
             for e in entries {
                 table.add_row(vec![
                     e.pid.to_string(),
-                    e.image_name.clone(),
-                    e.url.clone(),
+                    table_cell(&e.image_name),
+                    table_cell(&e.url),
                 ]);
             }
             println!("{table}");
@@ -5281,10 +5281,10 @@ fn print_browser_cookies(
             for c in cookies {
                 table.add_row(vec![
                     c.pid.to_string(),
-                    c.image_name.clone(),
-                    c.domain.clone(),
-                    c.name.clone(),
-                    c.value.clone(),
+                    table_cell(&c.image_name),
+                    table_cell(&c.domain),
+                    table_cell(&c.name),
+                    table_cell(&c.value),
                     if c.encrypted { "Y" } else { "N" }.to_string(),
                 ]);
             }
@@ -5357,10 +5357,10 @@ fn print_browser_creds(
             for c in creds {
                 table.add_row(vec![
                     c.pid.to_string(),
-                    c.image_name.clone(),
-                    c.url.clone(),
-                    c.username.clone(),
-                    c.password.clone(),
+                    table_cell(&c.image_name),
+                    table_cell(&c.url),
+                    table_cell(&c.username),
+                    table_cell(&c.password),
                 ]);
             }
             println!("{table}");
