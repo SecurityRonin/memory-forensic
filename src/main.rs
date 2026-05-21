@@ -5,6 +5,7 @@ mod os_detect;
 mod vol_compat;
 mod symbol_dl;
 
+use jsonguard::csv_field;
 use forensicnomicon::{
     processes::{
         PE_MZ_MAGIC, WINDOWS_KERNEL_PDB_PREFIXES, WINDOWS_NON_NETWORKING_PROCESSES,
@@ -2173,8 +2174,7 @@ fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: Output
         OutputFormat::Csv => {
             println!("name,base_addr,size,path");
             for d in drivers {
-                let escaped = d.full_path.replace('"', "\"\"");
-                println!("{},{:#x},{},\"{}\"", d.name, d.base_addr, d.size, escaped);
+                println!("{},{:#x},{},{}", d.name, d.base_addr, d.size, csv_field(&d.full_path));
             }
         }
     }
@@ -2218,8 +2218,7 @@ fn print_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: Out
         OutputFormat::Csv => {
             println!("pid,image_name,cmdline");
             for c in cmdlines {
-                let escaped = c.cmdline.replace('"', "\"\"");
-                println!("{},{},\"{}\"", c.pid, c.image_name, escaped);
+                println!("{},{},{}", c.pid, c.image_name, csv_field(&c.cmdline));
             }
         }
     }
@@ -2260,11 +2259,7 @@ fn print_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFor
         OutputFormat::Csv => {
             println!("pid,image_name,variable,value");
             for v in vars {
-                let escaped_val = v.value.replace('"', "\"\"");
-                println!(
-                    "{},{},{},\"{}\"",
-                    v.pid, v.image_name, v.variable, escaped_val
-                );
+                println!("{},{},{},{}", v.pid, v.image_name, v.variable, csv_field(&v.value));
             }
         }
     }
@@ -2376,11 +2371,7 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
         OutputFormat::Csv => {
             println!("pid,eprocess_name,peb_image_path,suspicious");
             for r in results {
-                let escaped = r.peb_image_path.replace('"', "\"\"");
-                println!(
-                    "{},{},\"{}\",{}",
-                    r.pid, r.eprocess_name, escaped, r.suspicious
-                );
+                println!("{},{},{},{}", r.pid, r.eprocess_name, csv_field(&r.peb_image_path), r.suspicious);
             }
         }
     }
@@ -2660,16 +2651,15 @@ fn print_libs(
                 println!("name,base_addr,size,load_order,path");
             }
             for d in dlls {
-                let escaped = d.full_path.replace('"', "\"\"");
                 if let Some((pid, name)) = process_ctx {
                     println!(
-                        "{pid},{name},{},{:#x},{},{},\"{}\"",
-                        d.name, d.base_addr, d.size, d.load_order, escaped
+                        "{pid},{name},{},{:#x},{},{},{}",
+                        d.name, d.base_addr, d.size, d.load_order, csv_field(&d.full_path)
                     );
                 } else {
                     println!(
-                        "{},{:#x},{},{},\"{}\"",
-                        d.name, d.base_addr, d.size, d.load_order, escaped
+                        "{},{:#x},{},{},{}",
+                        d.name, d.base_addr, d.size, d.load_order, csv_field(&d.full_path)
                     );
                 }
             }
@@ -2739,13 +2729,12 @@ fn print_strings_csv(strings: &[memf_strings::ClassifiedString]) {
     println!("offset,encoding,categories,value");
     for s in strings {
         let cats: Vec<String> = s.categories.iter().map(|(c, _)| format!("{c:?}")).collect();
-        let escaped_value = s.value.replace('"', "\"\"");
         println!(
-            "{:#010x},{:?},{},\"{}\"",
+            "{:#010x},{:?},{},{}",
             s.physical_offset,
             s.encoding,
             cats.join(";"),
-            escaped_value
+            csv_field(&s.value)
         );
     }
 }
@@ -2957,10 +2946,9 @@ fn print_file_descriptors(fds: &[memf_linux::FileDescriptorInfo], output: Output
             println!("pid,comm,fd,path,inode,pos");
             for f in fds {
                 let inode_str = f.inode.map_or_else(|| "-".to_string(), |i| format!("{i}"));
-                let escaped = f.path.replace('"', "\"\"");
                 println!(
-                    "{},{},{},\"{}\",{},{}",
-                    f.pid, f.comm, f.fd, escaped, inode_str, f.pos
+                    "{},{},{},{},{},{}",
+                    f.pid, f.comm, f.fd, csv_field(&f.path), inode_str, f.pos
                 );
             }
         }
@@ -3002,8 +2990,7 @@ fn print_envvars(vars: &[memf_linux::EnvVarInfo], output: OutputFormat) {
         OutputFormat::Csv => {
             println!("pid,comm,key,value");
             for v in vars {
-                let escaped_val = v.value.replace('"', "\"\"");
-                println!("{},{},{},\"{}\"", v.pid, v.comm, v.key, escaped_val);
+                println!("{},{},{},{}", v.pid, v.comm, v.key, csv_field(&v.value));
             }
         }
     }
@@ -3061,10 +3048,9 @@ fn print_malfind(findings: &[memf_linux::MalfindInfo], output: OutputFormat) {
                     write!(s, "{b:02x}").unwrap();
                     s
                 });
-                let escaped = f.reason.replace('"', "\"\"");
                 println!(
-                    "{},{},{:#x},{:#x},{},\"{}\",{}",
-                    f.pid, f.comm, f.start, f.end, f.flags, escaped, hex_header
+                    "{},{},{:#x},{:#x},{},{},{}",
+                    f.pid, f.comm, f.start, f.end, f.flags, csv_field(&f.reason), hex_header
                 );
             }
         }
@@ -3104,9 +3090,7 @@ fn print_mounts(mounts: &[memf_linux::MountInfo], output: OutputFormat) {
         OutputFormat::Csv => {
             println!("dev_name,mount_point,fs_type");
             for m in mounts {
-                let escaped_dev = m.dev_name.replace('"', "\"\"");
-                let escaped_mp = m.mount_point.replace('"', "\"\"");
-                println!("\"{}\",\"{}\",{}", escaped_dev, escaped_mp, m.fs_type);
+                println!("{},{},{}", csv_field(&m.dev_name), csv_field(&m.mount_point), m.fs_type);
             }
         }
     }
@@ -4289,10 +4273,9 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
         OutputFormat::Csv => {
             println!("pid,image_name,base_addr,name,full_path,in_load,in_mem,in_init");
             for (pid, image_name, m) in mods {
-                let escaped = m.full_path.replace('"', "\"\"");
                 println!(
-                    "{},{},{:#x},{},\"{}\",{},{},{}",
-                    pid, image_name, m.base_addr, m.name, escaped, m.in_load, m.in_mem, m.in_init
+                    "{},{},{:#x},{},{},{},{},{}",
+                    pid, image_name, m.base_addr, m.name, csv_field(&m.full_path), m.in_load, m.in_mem, m.in_init
                 );
             }
         }
@@ -4373,9 +4356,8 @@ fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFo
         OutputFormat::Csv => {
             println!("pid,image_name,image_base,has_mz,has_pe,pe_size_of_image,ldr_size_of_image,suspicious,reason");
             for f in findings {
-                let escaped = f.reason.replace('"', "\"\"");
                 println!(
-                    "{},{},{:#x},{},{},{:#x},{:#x},{},\"{}\"",
+                    "{},{},{:#x},{},{},{:#x},{:#x},{},{}",
                     f.pid,
                     f.image_name,
                     f.image_base,
@@ -4384,7 +4366,7 @@ fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFo
                     f.pe_size_of_image,
                     f.ldr_size_of_image,
                     f.suspicious,
-                    escaped
+                    csv_field(&f.reason)
                 );
             }
         }
