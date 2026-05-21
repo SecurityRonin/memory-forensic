@@ -3,6 +3,7 @@
 //! Provides the dispatch table mapping vol3 plugin names to native memf
 //! command keys, plus proxy execution when no native implementation exists.
 
+use jsonguard::tsv_safe;
 use std::path::{Path, PathBuf};
 
 /// Vol3 framework version string emitted on stdout before every result set.
@@ -265,16 +266,6 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y as u32, m as u32, d as u32)
-}
-
-/// Sanitize a string field for TSV embedding: replace `\t` and `\n` with spaces.
-/// Prevents adversarial or corrupted process names from shifting column alignment.
-fn tsv_safe(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.contains('\t') || s.contains('\n') || s.contains('\r') {
-        std::borrow::Cow::Owned(s.replace(['\t', '\n', '\r'], " "))
-    } else {
-        std::borrow::Cow::Borrowed(s)
-    }
 }
 
 /// Helper to encode a FILETIME for JSON: `null` when zero, quoted string otherwise.
