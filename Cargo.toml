@@ -20,7 +20,7 @@ license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 
 [workspace.dependencies]
-forensicnomicon = { path = "../forensicnomicon" }
+forensicnomicon = { path = "../forensicnomicon", features = ["std"] }
 winevt-core = { path = "../winevt-forensic/crates/winevt-core" }
 forensic-hashdb = { path = "crates/forensic-hashdb" }
 memf-format  = { path = "crates/memf-format" }
@@ -127,6 +127,7 @@ ureq.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+forensicnomicon.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

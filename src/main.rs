@@ -5,6 +5,14 @@ mod os_detect;
 mod vol_compat;
 mod symbol_dl;
 
+use forensicnomicon::{
+    processes::{
+        PE_MZ_MAGIC, WINDOWS_KERNEL_PDB_PREFIXES, WINDOWS_NON_NETWORKING_PROCESSES,
+        WINDOWS_PARENT_RULES, WINDOWS_SINGLETON_PROCESSES,
+    },
+    temporal::FILETIME_EPOCH_OFFSET,
+};
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::instrument;
@@ -1681,21 +1689,17 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
     (yr, month, day)
 }
 
-/// FILETIME epoch is 1601-01-01. Unix epoch is 1970-01-01.
-/// Difference: 11644473600 seconds = 116444736000000000 in 100ns ticks.
-const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
-
 /// Convert a Windows FILETIME (100-nanosecond intervals since 1601-01-01)
 /// to "YYYY-MM-DD HH:MM:SS UTC". Returns "-" for zero (unset).
 fn format_filetime(ft: u64) -> String {
     if ft == 0 {
         return "-".to_string();
     }
-    if ft < FILETIME_UNIX_DIFF {
+    if ft < FILETIME_EPOCH_OFFSET {
         // Pre-Unix-epoch date; rare in forensics but handle gracefully.
         return format!("pre-1970 ({ft:#x})");
     }
-    let unix_secs = (ft - FILETIME_UNIX_DIFF) / 10_000_000;
+    let unix_secs = (ft - FILETIME_EPOCH_OFFSET) / 10_000_000;
     format_epoch(i64::try_from(unix_secs).unwrap_or(i64::MAX))
 }
 
@@ -2778,14 +2782,8 @@ fn try_auto_download_symbols(
     Ok(Box::new(resolver))
 }
 
-/// MZ magic bytes (PE header signature).
-const MZ_MAGIC: [u8; 2] = [0x4D, 0x5A];
-
 /// Maximum bytes to read when probing a PE candidate.
 const PE_PROBE_SIZE: usize = 4096;
-
-/// Known kernel PDB name prefixes.
-const KERNEL_PDB_PREFIXES: &[&str] = &["ntkrnl", "ntoskrnl"];
 
 /// Scan physical memory for a Windows kernel PE and extract its PDB identification.
 ///
@@ -2803,7 +2801,7 @@ fn find_kernel_pdb_in_physmem(
         while addr + 2 <= range.end {
             // Quick check: read MZ magic (2 bytes).
             let mut magic = [0u8; 2];
-            if provider.read_phys(addr, &mut magic).ok() != Some(2) || magic != MZ_MAGIC {
+            if provider.read_phys(addr, &mut magic).ok() != Some(2) || magic != PE_MZ_MAGIC {
                 addr += 4096;
                 continue;
             }
@@ -2819,7 +2817,7 @@ fn find_kernel_pdb_in_physmem(
             // Try to extract PDB info from this PE candidate.
             if let Ok(pdb_id) = memf_symbols::pe_debug::extract_pdb_id(&buf[..n]) {
                 let name_lower = pdb_id.pdb_name.to_lowercase();
-                if KERNEL_PDB_PREFIXES
+                if WINDOWS_KERNEL_PDB_PREFIXES
                     .iter()
                     .any(|prefix| name_lower.starts_with(prefix))
                 {
@@ -4489,10 +4487,10 @@ struct TimelineEvent {
 /// Convert a Windows FILETIME to Unix epoch seconds.
 /// Returns `None` for zero or pre-1970 values.
 fn filetime_to_unix(ft: u64) -> Option<i64> {
-    if ft == 0 || ft < FILETIME_UNIX_DIFF {
+    if ft == 0 || ft < FILETIME_EPOCH_OFFSET {
         return None;
     }
-    Some(i64::try_from((ft - FILETIME_UNIX_DIFF) / 10_000_000).unwrap_or(i64::MAX))
+    Some(i64::try_from((ft - FILETIME_EPOCH_OFFSET) / 10_000_000).unwrap_or(i64::MAX))
 }
 
 /// Build timeline events from Windows process and connection data.
@@ -4652,36 +4650,6 @@ fn build_windows_dll_events(
     events
 }
 
-/// Windows processes that must have exactly one instance (singleton check).
-const WIN_SINGLETONS: &[&str] = &[
-    "lsass.exe",
-    "services.exe",
-    "wininit.exe",
-    "csrss.exe",
-    "smss.exe",
-    "lsm.exe",
-];
-
-/// Parent-child invariant rules: (child_name, required parent_name).
-const WIN_PARENT_RULES: &[(&str, &str)] = &[
-    ("svchost.exe", "services.exe"),
-    ("lsass.exe", "wininit.exe"),
-    ("services.exe", "wininit.exe"),
-    ("wininit.exe", "smss.exe"),
-];
-
-/// Processes that should never have network connections.
-const WIN_NON_NETWORKING: &[&str] = &[
-    "notepad.exe",
-    "calc.exe",
-    "mspaint.exe",
-    "write.exe",
-    "wordpad.exe",
-    "snippingtool.exe",
-    "osk.exe",
-    "magnify.exe",
-    "narrator.exe",
-];
 
 /// Collect PID sets for suspicious Windows patterns.
 ///
@@ -4707,7 +4675,7 @@ fn collect_suspicious_pid_sets(
         name_counts.entry(lower).or_default().push(p.pid);
     }
     let mut singleton_dup_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    for &name in WIN_SINGLETONS {
+    for &name in WINDOWS_SINGLETON_PROCESSES {
         if let Some(pids) = name_counts.get(name) {
             if pids.len() > 1 {
                 singleton_dup_pids.extend(pids);
@@ -4724,7 +4692,7 @@ fn collect_suspicious_pid_sets(
         std::collections::HashSet::new();
     for p in procs {
         let child_lower = p.image_name.to_lowercase();
-        for &(child_name, parent_name) in WIN_PARENT_RULES {
+        for &(child_name, parent_name) in WINDOWS_PARENT_RULES {
             if child_lower == child_name {
                 let parent_lower = pid_to_name.get(&(p.ppid)).map_or("", String::as_str);
                 if parent_lower != parent_name {
@@ -4738,7 +4706,7 @@ fn collect_suspicious_pid_sets(
     let mut networking_pids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     for c in conns {
         let proc_lower = c.process_name.to_lowercase();
-        if WIN_NON_NETWORKING.contains(&proc_lower.as_str()) {
+        if WINDOWS_NON_NETWORKING_PROCESSES.contains(&proc_lower.as_str()) {
             networking_pids.insert(c.pid);
         }
     }
@@ -6339,9 +6307,7 @@ mod tests {
     #[test]
     fn filetime_to_unix_epoch_2000() {
         // 2000-01-01 00:00:00 UTC = Unix 946_684_800
-        // FILETIME = FILETIME_UNIX_DIFF + 946_684_800 * 10_000_000
-        const FILETIME_UNIX_DIFF: u64 = 116_444_736_000_000_000;
-        let ft_2000 = FILETIME_UNIX_DIFF + 946_684_800 * 10_000_000;
+        let ft_2000 = FILETIME_EPOCH_OFFSET + 946_684_800 * 10_000_000;
         assert_eq!(filetime_to_unix(ft_2000), Some(946_684_800));
     }
 

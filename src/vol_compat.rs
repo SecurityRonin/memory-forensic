@@ -225,8 +225,6 @@ pub fn proxy_to_vol(
 // Vol3-compatible output formatters
 // ---------------------------------------------------------------------------
 
-// FILETIME_UNIX_DIFF is defined in the parent module (crate root, main.rs).
-// Intentional: we use crate:: rather than duplicating the constant here.
 // NOTE: format_vol3_filetime returns "N/A" for zero, while the native
 // format_filetime in main.rs returns "-". Both are intentional — vol3 uses
 // "N/A" in its own text output; the native formatter uses "-" for compactness.
@@ -237,10 +235,10 @@ fn format_vol3_filetime(ft: u64) -> String {
     if ft == 0 {
         return "N/A".to_string();
     }
-    if ft < crate::FILETIME_UNIX_DIFF {
+    if ft < forensicnomicon::temporal::FILETIME_EPOCH_OFFSET {
         return format!("pre-1970 ({ft:#x})");
     }
-    let total_us = (ft - crate::FILETIME_UNIX_DIFF) / 10; // 100-ns → microseconds
+    let total_us = (ft - forensicnomicon::temporal::FILETIME_EPOCH_OFFSET) / 10; // 100-ns → microseconds
     let unix_secs = total_us / 1_000_000;
     let us = total_us % 1_000_000;
 

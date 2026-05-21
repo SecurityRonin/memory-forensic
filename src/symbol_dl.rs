@@ -1,12 +1,12 @@
 //! ISF symbol auto-download from the community server.
 //!
 //! Cache directory: `~/.cache/memf/symbols/`
-//! Server: `https://isf-server.code.digitalpolice.ca/`
+//! Server: see [`forensicnomicon::toolchain::VOLATILITY3_VOLATILITY3_ISF_SERVER`]
 //! URL pattern: `<server>/windows/<pdb_name>/<GUID><AGE>.json.xz`
 
 use std::path::{Path, PathBuf};
 
-const ISF_SERVER: &str = "https://isf-server.code.digitalpolice.ca";
+use forensicnomicon::toolchain::VOLATILITY3_ISF_SERVER;
 
 /// Returns the default ISF cache directory (`~/.cache/memf/symbols/`).
 pub fn default_cache_dir() -> PathBuf {
@@ -29,7 +29,7 @@ pub fn ensure_cache_dir(dir: &Path) -> anyhow::Result<()> {
 /// `guid` must be an uppercase hex string without hyphens (32 chars).
 /// `age` is the PDB age (decimal).
 pub fn build_isf_url(pdb_name: &str, guid: &str, age: u32) -> String {
-    format!("{ISF_SERVER}/windows/{pdb_name}/{guid}{age}.json.xz")
+    format!("{VOLATILITY3_ISF_SERVER}/windows/{pdb_name}/{guid}{age}.json.xz")
 }
 
 /// Returns the filename used to cache an ISF for a given pdb+guid+age.
