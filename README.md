@@ -290,7 +290,7 @@ memf correlate --symbols ntkrnlmp.json --output json memdump.dmp > findings.json
 }
 ```
 
-No other open-source memory forensics tool produces ATT&CK-tagged cross-artifact findings from raw memory. Process, network, module, hook, and credential walker results are correlated by process and time before scoring.
+Process, network, module, hook, and credential walker results are correlated by process and time before scoring — producing ATT&CK-tagged findings rather than per-walker output that an analyst must join manually.
 
 ---
 
@@ -313,27 +313,40 @@ Format is detected from file headers — no flags required.
 
 ## What's Different
 
-Every alternative either requires Python, is Windows-only, or is unmaintained.
+The nearest alternatives are **Volatility 3** (Python, plugin architecture), **MemProcFS** (Rust, primarily Windows), and **Rekall** (Python, unmaintained). The comparison below reflects each tool's official core and known plugin repository.
+
+### Parity — capabilities shared with mature tools
 
 | | memory-forensic | Volatility 3 | MemProcFS | Rekall |
 |--|:-:|:-:|:-:|:-:|
-| Runs on Linux / macOS | ✅ | ✅ | partial | ✅ |
-| Single static binary | ✅ | — | — | — |
+| Linux + Windows kernel walkers | ✅ | ✅ | Windows-first | ✅ |
+| Process, module, network enumeration | ✅ | ✅ | ✅ | ✅ |
+| Injected memory detection | ✅ | ✅ | ✅ | ✅ |
 | ISF symbol pack compatible | ✅ | ✅ | — | — |
-| Windows auto-profile (no symbol file) | ✅ | — | — | — |
-| Library API (use in your tools) | ✅ | — | ✅ | — |
-| Linux + Windows walkers | ✅ | ✅ | Windows-first | ✅ |
-| ELF behavioral rootkit analysis | ✅ | — | — | — |
-| tmpfs / ramfs file recovery | ✅ | — | — | — |
-| memfd fileless execution detection | ✅ | — | — | — |
-| Direct syscall / EDR bypass detection | ✅ | — | — | — |
-| ETW / AMSI / DSE bypass detection | ✅ | — | — | — |
-| io_uring / netfilter / perf\_event abuse | ✅ | — | — | — |
-| Container escape indicators | ✅ | — | — | — |
-| Cross-artifact ATT&CK correlation | ✅ | — | — | — |
-| Safe output — RFC 4180 CSV, formula-injection guard, bidi-strip | ✅ | — | — | — |
+| Runs on Linux / macOS | ✅ | ✅ | partial | ✅ |
 | Actively maintained | ✅ | ✅ | ✅ | — |
 | Free & open source | ✅ | ✅ | ✅ | ✅ |
+
+### Capabilities absent from other tools' official distributions
+
+| | memory-forensic | Volatility 3 | MemProcFS | Rekall |
+|--|:-:|:-:|:-:|:-:|
+| Single static binary — no Python, no runtime | ✅ | — | — | — |
+| Windows auto-profile (no symbol file needed) | ✅ | — | — | — |
+| Library API for embedding in Rust tools | ✅ | — | ✅ | — |
+| ELF behavioral rootkit fingerprinting | ✅ | — | — | — |
+| tmpfs / ramfs file recovery | ✅ | — | — | — |
+| memfd fileless execution detection | ✅ | — | — | — |
+| Direct syscall / EDR bypass detection | ✅ | plugin? | — | — |
+| ETW / AMSI / DSE bypass detection | ✅ | plugin? | — | — |
+| io_uring / netfilter / perf\_event abuse | ✅ | — | — | — |
+| Container escape indicators | ✅ | — | — | — |
+| DPAPI keys + Chrome cookie extraction | ✅ | plugin? | — | — |
+| Framebuffer screenshot | ✅ | plugin? | — | — |
+| Cross-artifact ATT&CK correlation | ✅ | — | — | — |
+| Safe output — RFC 4180, formula-injection guard, bidi-strip | ✅ | — | — | — |
+
+> **`plugin?`** — Capability may exist in the Volatility 3 community ecosystem but is absent from the official core and plugin repository at time of writing. Verify before concluding.
 
 ---
 
