@@ -7329,4 +7329,51 @@ mod tests {
         );
         assert!(result.is_err(), "missing dump must return error");
     }
+
+    // -------------------------------------------------------------------------
+    // table_cell — sanitize free-text strings for terminal table display
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn table_cell_passthrough_clean_ascii() {
+        assert_eq!(table_cell("svchost.exe"), "svchost.exe");
+    }
+
+    #[test]
+    fn table_cell_passthrough_windows_path() {
+        assert_eq!(
+            table_cell("C:\\Windows\\System32\\ntdll.dll"),
+            "C:\\Windows\\System32\\ntdll.dll"
+        );
+    }
+
+    #[test]
+    fn table_cell_strips_bidi_rlo() {
+        assert_eq!(table_cell("hello\u{202E}world"), "helloworld");
+    }
+
+    #[test]
+    fn table_cell_strips_bidi_lri() {
+        assert_eq!(table_cell("\u{2066}payload\u{2069}"), "payload");
+    }
+
+    #[test]
+    fn table_cell_strips_esc_prefix() {
+        assert_eq!(table_cell("name\x1B[31m"), "name[31m");
+    }
+
+    #[test]
+    fn table_cell_strips_c0_controls() {
+        assert_eq!(table_cell("a\x01\x08b"), "ab");
+    }
+
+    #[test]
+    fn table_cell_strips_null_byte() {
+        assert_eq!(table_cell("cmd\x00line"), "cmdline");
+    }
+
+    #[test]
+    fn table_cell_strips_newline_in_field() {
+        assert_eq!(table_cell("line1\nline2"), "line1line2");
+    }
 }
