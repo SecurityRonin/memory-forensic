@@ -67,6 +67,8 @@ pub mod object_directory;
 pub mod pe_version_info;
 pub mod peb_masquerade;
 pub mod pipes;
+/// PPID spoofing detection (MITRE ATT&CK T1134.004).
+pub mod ppid_spoof;
 pub mod pool_scan;
 pub mod pool_tag;
 pub mod prefetch;

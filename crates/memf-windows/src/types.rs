@@ -1330,6 +1330,39 @@ pub struct SessionTokenInfo {
     pub token_value: String,
 }
 
+/// A Windows process whose actual parent doesn't match the expected parent for
+/// that process name (PPID spoofing / parent masquerade, MITRE T1134.004).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WinPpidSpoofInfo {
+    /// PID of the suspicious process.
+    pub pid: u64,
+    /// Claimed parent PID (from `_EPROCESS.InheritedFromUniqueProcessId`).
+    pub ppid: u64,
+    /// `_EPROCESS.ImageFileName` of the suspicious process.
+    pub name: String,
+    /// Resolved name of the actual parent (`"UNKNOWN"` if ppid not in active list).
+    pub parent_name: String,
+    /// Process names that are legitimate parents for this process type.
+    pub expected_parents: Vec<String>,
+}
+
+/// A YARA rule match in a process's virtual memory region.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WinYaraHit {
+    /// PID of the process containing the match.
+    pub pid: u64,
+    /// `_EPROCESS.ImageFileName`.
+    pub image_name: String,
+    /// Start virtual address of the VAD region where the match was found.
+    pub start_vaddr: u64,
+    /// End virtual address of the VAD region.
+    pub end_vaddr: u64,
+    /// Human-readable page protection (e.g., `PAGE_EXECUTE_READWRITE`).
+    pub protection_str: String,
+    /// YARA rule identifier that matched.
+    pub rule_name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

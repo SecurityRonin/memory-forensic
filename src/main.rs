@@ -5,7 +5,7 @@ mod os_detect;
 mod vol_compat;
 mod symbol_dl;
 
-use jsonguard::{csv_field, display_safe};
+use jsonguard::csv_field;
 use forensicnomicon::{
     processes::{
         PE_MZ_MAGIC, WINDOWS_KERNEL_PDB_PREFIXES, WINDOWS_NON_NETWORKING_PROCESSES,
