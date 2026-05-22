@@ -7,12 +7,63 @@
 
 use crate::{WinPpidSpoofInfo, WinProcessInfo};
 
+/// `(child_name_lower, &[allowed_parent_names_lower])` pairs.
+///
+/// Sources: Windows Internals 7th ed., MITRE ATT&CK T1134.004, Elastic
+/// Security "Suspicious Parent Process" detection rules.
+const EXPECTED_PARENTS: &[(&str, &[&str])] = &[
+    ("lsass.exe",     &["wininit.exe"]),
+    ("services.exe",  &["wininit.exe"]),
+    ("winlogon.exe",  &["smss.exe"]),
+    ("csrss.exe",     &["smss.exe"]),
+    ("smss.exe",      &["system"]),
+    ("svchost.exe",   &["services.exe"]),
+    ("taskhost.exe",  &["services.exe"]),
+    ("taskhostw.exe", &["services.exe"]),
+    ("spoolsv.exe",   &["services.exe"]),
+    ("dllhost.exe",   &["svchost.exe", "services.exe"]),
+];
+
 /// Detect PPID spoofing by comparing each process's actual parent against
 /// the expected parent list for known system processes.
 ///
 /// Returns one entry per suspicious process (parent name not in allowed set).
-pub fn check_ppid_spoof(_procs: &[WinProcessInfo]) -> Vec<WinPpidSpoofInfo> {
-    vec![] // RED: not implemented
+pub fn check_ppid_spoof(procs: &[WinProcessInfo]) -> Vec<WinPpidSpoofInfo> {
+    let pid_to_name: std::collections::HashMap<u64, &str> =
+        procs.iter().map(|p| (p.pid, p.image_name.as_str())).collect();
+
+    let mut results = Vec::new();
+
+    for proc in procs {
+        let name_lower = proc.image_name.to_ascii_lowercase();
+
+        let Some((_child, allowed)) = EXPECTED_PARENTS
+            .iter()
+            .find(|(child, _)| *child == name_lower)
+        else {
+            continue;
+        };
+
+        let parent_lower = pid_to_name
+            .get(&proc.ppid)
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        if !allowed.iter().any(|a| *a == parent_lower.as_str()) {
+            results.push(WinPpidSpoofInfo {
+                pid: proc.pid,
+                ppid: proc.ppid,
+                name: proc.image_name.clone(),
+                parent_name: pid_to_name
+                    .get(&proc.ppid)
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| "UNKNOWN".to_string()),
+                expected_parents: allowed.iter().map(|s| (*s).to_string()).collect(),
+            });
+        }
+    }
+
+    results
 }
 
 #[cfg(test)]
@@ -69,10 +120,12 @@ mod tests {
 
     #[test]
     fn lsass_wrong_parent_flagged() {
+        // services.exe must be correctly parented so it doesn't pollute the result.
         let procs = vec![
             proc(4, 0, "System"),
-            proc(600, 4, "services.exe"),
-            proc(700, 600, "lsass.exe"),
+            proc(500, 4, "wininit.exe"),
+            proc(600, 500, "services.exe"),
+            proc(700, 600, "lsass.exe"), // lsass under services.exe → spoof
         ];
         let hits = check_ppid_spoof(&procs);
         assert_eq!(hits.len(), 1, "lsass.exe with services.exe parent must be flagged");
@@ -137,17 +190,21 @@ mod tests {
 
     #[test]
     fn dllhost_allows_both_svchost_and_services_parents() {
+        // Full chain: System → wininit → services → svchost → dllhost
         let procs_via_svchost = vec![
             proc(4, 0, "System"),
-            proc(600, 4, "services.exe"),
+            proc(500, 4, "wininit.exe"),
+            proc(600, 500, "services.exe"),
             proc(700, 600, "svchost.exe"),
             proc(1400, 700, "dllhost.exe"),
         ];
         assert!(check_ppid_spoof(&procs_via_svchost).is_empty());
 
+        // Full chain: System → wininit → services → dllhost
         let procs_via_services = vec![
             proc(4, 0, "System"),
-            proc(600, 4, "services.exe"),
+            proc(500, 4, "wininit.exe"),
+            proc(600, 500, "services.exe"),
             proc(1400, 600, "dllhost.exe"),
         ];
         assert!(check_ppid_spoof(&procs_via_services).is_empty());
@@ -167,10 +224,12 @@ mod tests {
 
     #[test]
     fn case_insensitive_matching() {
+        // Mixed-case names must still match the expected-parent table correctly.
         let procs = vec![
             proc(4, 0, "System"),
-            proc(600, 4, "Services.EXE"),
-            proc(1200, 600, "SvcHost.exe"),
+            proc(500, 4, "WinInit.EXE"),   // wininit.exe (not in EXPECTED_PARENTS as child)
+            proc(600, 500, "Services.EXE"), // services.exe child of wininit → clean
+            proc(1200, 600, "SvcHost.exe"), // svchost.exe child of services.exe → clean
         ];
         let hits = check_ppid_spoof(&procs);
         assert!(hits.is_empty(), "case-insensitive parent match must not flag");
