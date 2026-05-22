@@ -18,12 +18,65 @@ pub const MAX_REGION_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
 /// `P` must be `Clone` because `reader.with_cr3` clones the physical memory
 /// provider to create a per-process virtual address space.
 pub fn scan_yara<P: PhysicalMemoryProvider + Clone>(
-    _reader: &ObjectReader<P>,
-    _ps_head_vaddr: u64,
-    _rules: &yara_x::Rules,
-    _max_region_bytes: usize,
+    reader: &ObjectReader<P>,
+    ps_head_vaddr: u64,
+    rules: &yara_x::Rules,
+    max_region_bytes: usize,
 ) -> Result<Vec<WinYaraHit>> {
-    Ok(vec![]) // RED: not implemented
+    let procs = crate::process::walk_processes(reader, ps_head_vaddr)?;
+
+    let vad_root_offset = reader
+        .symbols()
+        .field_offset("_EPROCESS", "VadRoot")
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_EPROCESS".into(),
+            field_name: "VadRoot".into(),
+        })?;
+
+    let mut results = Vec::new();
+
+    for proc in &procs {
+        if proc.peb_addr == 0 {
+            continue; // skip kernel/System processes — PEB absence is the canonical indicator
+        }
+
+        let proc_reader = reader.with_cr3(proc.cr3);
+        let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
+        let vads = crate::vad::walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name)?;
+
+        let mut scanner = yara_x::Scanner::new(rules);
+
+        for vad in &vads {
+            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) as usize)
+                .min(max_region_bytes);
+            if region_size == 0 {
+                continue;
+            }
+
+            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
+                Ok(b) => b,
+                Err(_) => continue, // page not present / paged out — skip gracefully
+            };
+
+            let scan_result = match scanner.scan(&bytes) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            for rule in scan_result.matching_rules() {
+                results.push(WinYaraHit {
+                    pid: proc.pid,
+                    image_name: proc.image_name.clone(),
+                    start_vaddr: vad.start_vaddr,
+                    end_vaddr: vad.end_vaddr,
+                    protection_str: vad.protection_str.clone(),
+                    rule_name: rule.identifier().to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -231,4 +284,5 @@ mod tests {
         let hits = scan_yara(&reader, HEAD_VADDR, &rules, 1).unwrap();
         assert!(hits.is_empty(), "empty list + tiny cap → no hits, no panic");
     }
+
 }
