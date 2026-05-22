@@ -218,4 +218,64 @@ mod tests {
         let hits = check_ppid_spoof(&procs);
         assert!(hits.is_empty(), "case-insensitive parent match must not flag");
     }
+
+    #[test]
+    fn svchost_spoof_has_high_confidence() {
+        use forensicnomicon::processes::SpoofConfidence;
+        let procs = vec![
+            proc(4, 0, "System"),
+            proc(800, 4, "explorer.exe"),
+            proc(1200, 800, "svchost.exe"),
+        ];
+        let hits = check_ppid_spoof(&procs);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].confidence, SpoofConfidence::High);
+    }
+
+    #[test]
+    fn lsass_spoof_has_high_confidence() {
+        use forensicnomicon::processes::SpoofConfidence;
+        let procs = vec![
+            proc(4, 0, "System"),
+            proc(500, 4, "wininit.exe"),
+            proc(600, 500, "services.exe"),
+            proc(700, 600, "lsass.exe"),
+        ];
+        let hits = check_ppid_spoof(&procs);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].confidence, SpoofConfidence::High);
+    }
+
+    #[test]
+    fn dllhost_unknown_parent_has_low_confidence() {
+        // dllhost.exe spawned by an arbitrary user app → Low confidence alert,
+        // not silently ignored. This is the COM Surrogate case.
+        use forensicnomicon::processes::SpoofConfidence;
+        let procs = vec![
+            proc(4, 0, "System"),
+            proc(800, 4, "notepad.exe"),
+            proc(1400, 800, "dllhost.exe"),
+        ];
+        let hits = check_ppid_spoof(&procs);
+        assert_eq!(hits.len(), 1, "dllhost with unknown parent must emit a low-confidence hit");
+        assert_eq!(hits[0].confidence, SpoofConfidence::Low);
+    }
+
+    #[test]
+    fn dllhost_known_parents_not_flagged() {
+        // explorer.exe and mmc.exe are legitimate COM Surrogate spawners.
+        let procs_explorer = vec![
+            proc(4, 0, "System"),
+            proc(800, 4, "explorer.exe"),
+            proc(1400, 800, "dllhost.exe"),
+        ];
+        assert!(check_ppid_spoof(&procs_explorer).is_empty());
+
+        let procs_mmc = vec![
+            proc(4, 0, "System"),
+            proc(800, 4, "mmc.exe"),
+            proc(1400, 800, "dllhost.exe"),
+        ];
+        assert!(check_ppid_spoof(&procs_mmc).is_empty());
+    }
 }
