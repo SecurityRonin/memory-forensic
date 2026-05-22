@@ -19,6 +19,7 @@ serde.workspace = true
 thiserror.workspace = true
 regex.workspace = true
 goblin = { workspace = true }
+yara-x.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

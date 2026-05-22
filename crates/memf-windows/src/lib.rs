@@ -103,6 +103,8 @@ pub mod types;
 pub mod unicode;
 pub mod userassist;
 pub mod vad;
+/// YARA rule scanning of process virtual memory regions.
+pub mod yara_scan;
 pub mod wdigest;
 pub mod wmi;
 pub mod wmi_persistence;
