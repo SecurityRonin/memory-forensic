@@ -4,25 +4,12 @@
 //! process names. When `svchost.exe` is not a child of `services.exe`, or
 //! `lsass.exe` is not a child of `wininit.exe`, it is a strong signal of
 //! process injection via PPID spoofing.
+//!
+//! The parent-process rule table lives in `forensicnomicon::processes` so it
+//! can be reused across crates without duplication.
 
 use crate::{WinPpidSpoofInfo, WinProcessInfo};
-
-/// `(child_name_lower, &[allowed_parent_names_lower])` pairs.
-///
-/// Sources: Windows Internals 7th ed., MITRE ATT&CK T1134.004, Elastic
-/// Security "Suspicious Parent Process" detection rules.
-const EXPECTED_PARENTS: &[(&str, &[&str])] = &[
-    ("lsass.exe",     &["wininit.exe"]),
-    ("services.exe",  &["wininit.exe"]),
-    ("winlogon.exe",  &["smss.exe"]),
-    ("csrss.exe",     &["smss.exe"]),
-    ("smss.exe",      &["system"]),
-    ("svchost.exe",   &["services.exe"]),
-    ("taskhost.exe",  &["services.exe"]),
-    ("taskhostw.exe", &["services.exe"]),
-    ("spoolsv.exe",   &["services.exe"]),
-    ("dllhost.exe",   &["svchost.exe", "services.exe"]),
-];
+use forensicnomicon::processes;
 
 /// Detect PPID spoofing by comparing each process's actual parent against
 /// the expected parent list for known system processes.
@@ -36,13 +23,10 @@ pub fn check_ppid_spoof(procs: &[WinProcessInfo]) -> Vec<WinPpidSpoofInfo> {
 
     for proc in procs {
         let name_lower = proc.image_name.to_ascii_lowercase();
-
-        let Some((_child, allowed)) = EXPECTED_PARENTS
-            .iter()
-            .find(|(child, _)| *child == name_lower)
-        else {
+        let allowed = processes::expected_parents(&name_lower);
+        if allowed.is_empty() {
             continue;
-        };
+        }
 
         let parent_lower = pid_to_name
             .get(&proc.ppid)
