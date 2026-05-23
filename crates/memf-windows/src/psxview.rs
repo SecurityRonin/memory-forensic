@@ -488,4 +488,137 @@ mod tests {
             result
         );
     }
+
+    // Pool scan test virtual addresses (must not collide with existing test constants)
+    const POOL_REGION_VADDR: u64 = 0xFFFF_F805_5C00_0000;
+    const MM_POOL_START_PTR_VADDR: u64 = 0xFFFF_F805_5D00_0000;
+    const MM_POOL_END_PTR_VADDR: u64 = 0xFFFF_F805_5D10_0000;
+
+    /// Build a reader with PspCidTable + MmNonPagedPoolStart/End symbols.
+    /// The caller must map and write the pool pointer pages and pool data page.
+    fn make_reader_with_pool(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PspCidTable", PSP_CID_TABLE_VADDR)
+            .add_symbol("MmNonPagedPoolStart", MM_POOL_START_PTR_VADDR)
+            .add_symbol("MmNonPagedPoolEnd", MM_POOL_END_PTR_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// Write a 16-byte _POOL_HEADER with pool tag "Proc" at pool_paddr.
+    /// _OBJECT_HEADER (0x30 bytes, zeros) follows immediately.
+    /// _EPROCESS body starts at pool_paddr + 0x40.
+    fn write_pool_header(ptb: PageTableBuilder, pool_paddr: u64) -> PageTableBuilder {
+        ptb.write_phys(
+            pool_paddr,
+            &[0x08, 0x00, 0x00, 0x00, b'P', b'r', b'o', b'c', 0, 0, 0, 0, 0, 0, 0, 0],
+        )
+    }
+
+    /// Build the standard active list + CID table layout used by pool scan tests.
+    ///
+    /// Returns a `PageTableBuilder` with System (pid=4) in active list + CID,
+    /// plus the pool pointer pages mapping `POOL_REGION_VADDR` as the pool bounds.
+    fn build_pool_test_base(
+        pool_page_paddr: u64,
+        mm_start_ptr_paddr: u64,
+        mm_end_ptr_paddr: u64,
+    ) -> PageTableBuilder {
+        let head_paddr: u64 = 0x0010_0000;
+        let eproc1_paddr: u64 = 0x0020_0000;
+        let cid_ptr_paddr: u64 = 0x0030_0000;
+        let ht_paddr: u64 = 0x0040_0000;
+        let entries_paddr: u64 = 0x0050_0000;
+
+        let head_vaddr = PS_ACTIVE_HEAD_VADDR;
+        let eproc1_vaddr: u64 = 0xFFFF_F805_5B00_0000;
+        let ht_vaddr: u64 = 0xFFFF_F805_5B10_0000;
+        let entries_vaddr: u64 = 0xFFFF_F805_5B20_0000;
+        let pool_end_vaddr = POOL_REGION_VADDR + 0x1000;
+
+        let eproc1_links = eproc1_vaddr + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
+            .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
+            .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
+            .map_4k(POOL_REGION_VADDR, pool_page_paddr, flags::WRITABLE)
+            .map_4k(MM_POOL_START_PTR_VADDR, mm_start_ptr_paddr, flags::WRITABLE)
+            .map_4k(MM_POOL_END_PTR_VADDR, mm_end_ptr_paddr, flags::WRITABLE);
+
+        // Active list: head → System → head (circular)
+        let ptb = ptb
+            .write_phys_u64(head_paddr, eproc1_links)
+            .write_phys_u64(head_paddr + 8, eproc1_links);
+        let ptb = write_eprocess(ptb, eproc1_paddr, 4, "System", head_vaddr, head_vaddr);
+
+        // CID table for System
+        let ptb = ptb
+            .write_phys_u64(cid_ptr_paddr, ht_vaddr)
+            .write_phys_u64(ht_paddr + HANDLE_TABLE_CODE, entries_vaddr)
+            .write_phys(ht_paddr + HANDLE_TABLE_NEXT_HANDLE, &8u32.to_le_bytes());
+        let ptb = write_cid_entry(ptb, entries_paddr, 4, eproc1_vaddr);
+
+        // Pool pointer pages: MmNonPagedPoolStart → POOL_REGION_VADDR, End → +0x1000
+        ptb.write_phys_u64(mm_start_ptr_paddr, POOL_REGION_VADDR)
+            .write_phys_u64(mm_end_ptr_paddr, pool_end_vaddr)
+    }
+
+    /// RED: process visible in active list + CID + pool scan → in_pool_scan = true.
+    #[test]
+    fn psxview_pool_scan_sets_in_pool_scan_true() {
+        let pool_page_paddr: u64 = 0x0060_0000;
+        let mm_start_ptr_paddr: u64 = 0x0070_0000;
+        let mm_end_ptr_paddr: u64 = 0x0080_0000;
+
+        // Standard layout + pool header + _EPROCESS for pid=4 at pool page offset 0x40
+        let ptb = build_pool_test_base(pool_page_paddr, mm_start_ptr_paddr, mm_end_ptr_paddr);
+        let ptb = write_pool_header(ptb, pool_page_paddr);
+        // _EPROCESS body at pool_page_paddr + 0x40 (behind _POOL_HEADER + _OBJECT_HEADER)
+        let ptb = write_eprocess(ptb, pool_page_paddr + 0x40, 4, "System", 0, 0);
+
+        let reader = make_reader_with_pool(ptb);
+        let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
+
+        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        assert!(
+            system.in_pool_scan,
+            "System visible in pool must have in_pool_scan=true"
+        );
+        assert!(system.in_active_list);
+        assert!(system.in_cid_table);
+        assert!(!system.is_hidden);
+    }
+
+    /// RED: process visible ONLY in pool scan → in_pool_scan=true, is_hidden=true.
+    #[test]
+    fn psxview_pool_scan_only_process_is_hidden() {
+        let pool_page_paddr: u64 = 0x0060_0000;
+        let mm_start_ptr_paddr: u64 = 0x0070_0000;
+        let mm_end_ptr_paddr: u64 = 0x0080_0000;
+
+        // Standard layout (System pid=4 in active list + CID)
+        let ptb = build_pool_test_base(pool_page_paddr, mm_start_ptr_paddr, mm_end_ptr_paddr);
+        // Pool contains malware.exe (pid=100) — NOT in active list, NOT in CID table
+        let ptb = write_pool_header(ptb, pool_page_paddr);
+        let ptb = write_eprocess(ptb, pool_page_paddr + 0x40, 100, "malware.exe", 0, 0);
+
+        let reader = make_reader_with_pool(ptb);
+        let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
+
+        let malware = results
+            .iter()
+            .find(|e| e.pid == 100)
+            .expect("malware.exe must be discovered via pool scan");
+        assert!(malware.in_pool_scan, "pool-only process must have in_pool_scan=true");
+        assert!(!malware.in_active_list, "pool-only process must not be in active list");
+        assert!(!malware.in_cid_table, "pool-only process must not be in CID table");
+        assert!(malware.is_hidden, "pool-only process must be flagged hidden");
+    }
 }
