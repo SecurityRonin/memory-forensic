@@ -130,6 +130,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 forensicnomicon.workspace = true
 jsonguard.workspace = true
+yara-x.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

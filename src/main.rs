@@ -312,6 +312,31 @@ enum Commands {
         #[arg(long)]
         pid: Option<u64>,
     },
+    /// Scan process virtual memory with YARA rules (Windows only, MITRE ATT&CK T1001).
+    Yara {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+
+        /// Path to a compiled or source YARA rules file.
+        #[arg(long)]
+        rules: PathBuf,
+
+        /// Output format: table, json, csv.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+
+        /// Maximum bytes to read per VAD region.
+        #[arg(long, default_value_t = memf_windows::yara_scan::MAX_REGION_BYTES)]
+        max_region_bytes: usize,
+    },
     /// Extract and classify strings from a memory dump or strings file.
     Strings {
         /// Path to the memory dump file (mutually exclusive with --from-file).
@@ -774,6 +799,25 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 pid,
+                resolved.is_extracted(),
+            )
+        }
+        Commands::Yara {
+            dump,
+            symbols,
+            rules,
+            output,
+            cr3,
+            max_region_bytes,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_yara(
+                resolved.path(),
+                symbols.as_deref(),
+                output,
+                cr3,
+                &rules,
+                max_region_bytes,
                 resolved.is_extracted(),
             )
         }
@@ -1630,6 +1674,39 @@ fn cmd_net(
 }
 
 // ---------------------------------------------------------------------------
+// cmd_yara
+// ---------------------------------------------------------------------------
+
+#[instrument(skip_all)]
+fn cmd_yara(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    rules_path: &Path,
+    max_region_bytes: usize,
+    raw_fallback: bool,
+) -> Result<()> {
+    let source = std::fs::read_to_string(rules_path)
+        .with_context(|| format!("failed to read YARA rules from {}", rules_path.display()))?;
+    let rules = yara_x::compile(source.as_str())
+        .map_err(|e| anyhow::anyhow!("failed to compile YARA rules: {e}"))?;
+
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if !matches!(ctx.os, OsProfile::Windows) {
+        anyhow::bail!("memf yara is only supported for Windows dumps");
+    }
+    let ps_head = ctx
+        .ps_active_process_head
+        .context("missing PsActiveProcessHead; provide via --symbols")?;
+
+    let hits = memf_windows::yara_scan::scan_yara(&reader, ps_head, &rules, max_region_bytes)
+        .context("YARA process scan failed")?;
+    print_yara_hits(&hits, output);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // cmd_strings
 // ---------------------------------------------------------------------------
 
@@ -2470,6 +2547,62 @@ fn print_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputFo
                     csv_field(&r.parent_name),
                     conf,
                     csv_field(&r.expected_parents.join("|")),
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — YARA scan hits
+// ---------------------------------------------------------------------------
+
+fn print_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Process", "Rule", "Start VA", "End VA", "Protection"]);
+            for r in results {
+                table.add_row(vec![
+                    format!("{}", r.pid),
+                    table_cell(&r.image_name),
+                    table_cell(&r.rule_name),
+                    format!("0x{:016x}", r.start_vaddr),
+                    format!("0x{:016x}", r.end_vaddr),
+                    table_cell(&r.protection_str),
+                ]);
+            }
+            println!("{table}");
+            println!("\nTotal: {} YARA hits across {} processes",
+                results.len(),
+                results.iter().map(|r| r.pid).collect::<std::collections::HashSet<_>>().len(),
+            );
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            for r in results {
+                let json = serde_json::json!({
+                    "pid":            r.pid,
+                    "image_name":     r.image_name,
+                    "rule_name":      r.rule_name,
+                    "start_vaddr":    r.start_vaddr,
+                    "end_vaddr":      r.end_vaddr,
+                    "protection_str": r.protection_str,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,image_name,rule_name,start_vaddr,end_vaddr,protection_str");
+            for r in results {
+                println!(
+                    "{},{},{},0x{:016x},0x{:016x},{}",
+                    r.pid,
+                    csv_field(&r.image_name),
+                    csv_field(&r.rule_name),
+                    r.start_vaddr,
+                    r.end_vaddr,
+                    csv_field(&r.protection_str),
                 );
             }
         }
