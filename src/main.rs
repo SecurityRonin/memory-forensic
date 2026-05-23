@@ -7385,4 +7385,118 @@ mod tests {
     fn table_cell_strips_newline_in_field() {
         assert_eq!(table_cell("line1\nline2"), "line1line2");
     }
+
+    // -----------------------------------------------------------------------
+    // PPID-spoof CLI wiring tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_ps_ppid_spoof_on_linux_bails() {
+        let dump_path = make_temp_lime_dump("ppid_spoof_linux");
+        let isf_path = make_temp_isf_file("ppid_spoof_linux");
+        let result = cmd_ps(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,            // threads
+            None,             // pid
+            false,            // tree
+            false,            // masquerade
+            true,             // ppid_spoof
+            false,            // dlls
+            false,            // maps
+            false,            // envvars
+            false,            // cmdline
+            false,            // vad
+            false,            // privileges
+            false,            // elfinfo
+            false,            // bash_history
+            false,            // all
+            PsSortField::Pid,
+            None,             // btime
+            false,            // raw_fallback
+        );
+        let err = result.expect_err("--ppid-spoof on Linux must bail");
+        assert!(
+            format!("{err}").contains("only supported for Windows"),
+            "expected Windows-only bail, got: {err}"
+        );
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn cmd_ps_ppid_spoof_false_no_bail() {
+        let dump_path = make_temp_lime_dump("ppid_spoof_off");
+        let isf_path = make_temp_isf_file("ppid_spoof_off");
+        let result = cmd_ps(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            false,            // threads
+            None,             // pid
+            false,            // tree
+            false,            // masquerade
+            false,            // ppid_spoof
+            false,            // dlls
+            false,            // maps
+            false,            // envvars
+            false,            // cmdline
+            false,            // vad
+            false,            // privileges
+            false,            // elfinfo
+            false,            // bash_history
+            false,            // all
+            PsSortField::Pid,
+            None,             // btime
+            false,            // raw_fallback
+        );
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("ppid-spoof") && !msg.contains("ppid_spoof"),
+                "ppid_spoof=false must not produce a ppid-spoof error, got: {msg}"
+            );
+        }
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn print_ppid_spoof_empty_does_not_panic() {
+        print_ppid_spoof(&[], OutputFormat::Table);
+    }
+
+    #[test]
+    fn print_ppid_spoof_all_formats_no_panic() {
+        use forensicnomicon::processes::SpoofConfidence;
+        let hits = vec![memf_windows::WinPpidSpoofInfo {
+            pid: 1200,
+            ppid: 800,
+            name: "svchost.exe".to_string(),
+            parent_name: "explorer.exe".to_string(),
+            expected_parents: vec!["services.exe".to_string()],
+            confidence: SpoofConfidence::High,
+        }];
+        print_ppid_spoof(&hits, OutputFormat::Table);
+        print_ppid_spoof(&hits, OutputFormat::Json);
+        print_ppid_spoof(&hits, OutputFormat::Csv);
+    }
+
+    #[test]
+    fn print_ppid_spoof_low_confidence_shown() {
+        use forensicnomicon::processes::SpoofConfidence;
+        let hits = vec![memf_windows::WinPpidSpoofInfo {
+            pid: 1400,
+            ppid: 900,
+            name: "dllhost.exe".to_string(),
+            parent_name: "notepad.exe".to_string(),
+            expected_parents: vec!["svchost.exe".to_string(), "services.exe".to_string()],
+            confidence: SpoofConfidence::Low,
+        }];
+        // Low-confidence hit must not panic and must not be silently skipped.
+        print_ppid_spoof(&hits, OutputFormat::Table);
+    }
 }
