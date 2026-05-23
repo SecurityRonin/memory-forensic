@@ -7,9 +7,9 @@
 //! Currently implemented sources:
 //! 1. **ActiveProcessLinks** — `_EPROCESS` doubly-linked list
 //! 2. **PspCidTable** — kernel handle table mapping PIDs to `_EPROCESS`
+//! 3. **Pool tag scan** — nonpaged pool scan for `_POOL_HEADER` with tag `Proc`
 //!
 //! Future sources (not yet implemented):
-//! - Pool tag scan (`Proc` tag)
 //! - Session list (`_MM_SESSION_SPACE.ProcessList`)
 //! - CSRSS handle table
 
@@ -63,8 +63,10 @@ pub fn psxview<P: PhysicalMemoryProvider>(
     // View 2: PspCidTable
     let cid_procs = walk_cid_table(reader)?;
 
-    // Merge both views by PID
-    Ok(merge_views(active_procs, cid_procs))
+    // View 3: Pool tag scan (graceful: empty if MmNonPagedPool symbols absent)
+    let pool_procs = walk_pool_scan_procs(reader);
+
+    Ok(merge_views(active_procs, cid_procs, pool_procs))
 }
 
 /// Process info extracted from a single enumeration source.
@@ -123,10 +125,74 @@ fn walk_cid_table<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result
         .collect())
 }
 
-/// Merge process views from ActiveProcessLinks and PspCidTable.
+/// Walk the nonpaged pool for `_EPROCESS` objects tagged "Proc".
+///
+/// Reads the pool bounds by dereferencing `MmNonPagedPoolStart` and
+/// `MmNonPagedPoolEnd` symbols. Returns an empty `Vec` when either symbol is
+/// absent or unreadable (graceful degradation).
+fn walk_pool_scan_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Vec<RawProcInfo> {
+    const PROC_TAG: u32 = u32::from_le_bytes(*b"Proc");
+    const POOL_HEADER_SIZE: u64 = 0x10;
+
+    let Some(start_ptr_va) = reader.symbols().symbol_address("MmNonPagedPoolStart") else {
+        return Vec::new();
+    };
+    let Some(end_ptr_va) = reader.symbols().symbol_address("MmNonPagedPoolEnd") else {
+        return Vec::new();
+    };
+
+    let pool_start = {
+        let Ok(b) = reader.read_bytes(start_ptr_va, 8) else { return Vec::new(); };
+        let Ok(arr) = b.try_into() else { return Vec::new(); };
+        u64::from_le_bytes(arr)
+    };
+    let pool_end = {
+        let Ok(b) = reader.read_bytes(end_ptr_va, 8) else { return Vec::new(); };
+        let Ok(arr) = b.try_into() else { return Vec::new(); };
+        u64::from_le_bytes(arr)
+    };
+
+    if pool_end <= pool_start {
+        return Vec::new();
+    }
+
+    let obj_body_offset = reader
+        .symbols()
+        .field_offset("_OBJECT_HEADER", "Body")
+        .unwrap_or(0x30);
+
+    let hits = crate::pool_scan::scan_pool_for_tag(reader, PROC_TAG, pool_start, pool_end);
+    let mut procs = Vec::new();
+
+    for hit_va in hits {
+        let eprocess_va = hit_va + POOL_HEADER_SIZE + obj_body_offset;
+        let Ok(pid) = reader.read_field::<u64>(eprocess_va, "_EPROCESS", "UniqueProcessId")
+        else {
+            continue;
+        };
+        if pid == 0 {
+            continue;
+        }
+        let Ok(image_name) =
+            reader.read_field_string(eprocess_va, "_EPROCESS", "ImageFileName", 15)
+        else {
+            continue;
+        };
+        procs.push(RawProcInfo {
+            pid,
+            image_name,
+            eprocess_addr: eprocess_va,
+        });
+    }
+
+    procs
+}
+
+/// Merge process views from ActiveProcessLinks, PspCidTable, and pool scan.
 fn merge_views(
     active_list: Vec<RawProcInfo>,
     cid_table: Vec<RawProcInfo>,
+    pool_scan: Vec<RawProcInfo>,
 ) -> Vec<PsxViewEntry> {
     let mut map: HashMap<u64, PsxViewEntry> = HashMap::new();
 
@@ -162,6 +228,23 @@ fn merge_views(
                 in_active_list: false,
                 in_pool_scan: false,
                 in_cid_table: true,
+                is_hidden: false,
+            });
+    }
+
+    // Merge pool scan entries (no-op when pool scan was skipped)
+    for proc in pool_scan {
+        map.entry(proc.pid)
+            .and_modify(|e| {
+                e.in_pool_scan = true;
+            })
+            .or_insert(PsxViewEntry {
+                pid: proc.pid,
+                image_name: proc.image_name,
+                eprocess_addr: proc.eprocess_addr,
+                in_active_list: false,
+                in_pool_scan: true,
+                in_cid_table: false,
                 is_hidden: false,
             });
     }
