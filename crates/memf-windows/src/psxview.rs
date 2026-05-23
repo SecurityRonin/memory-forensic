@@ -704,4 +704,152 @@ mod tests {
         assert!(!malware.in_cid_table, "pool-only process must not be in CID table");
         assert!(malware.is_hidden, "pool-only process must be flagged hidden");
     }
+
+    // Session list (in_session_list) test constants
+    const MM_SESSION_LIST_VADDR: u64 = 0xFFFF_F805_5E00_0000;
+    const SESSION_SPACE_VADDR: u64 = 0xFFFF_F805_5E10_0000;
+    const SESS_LIST_ENTRY_OFFSET: u64 = 0x00; // _MM_SESSION_SPACE.ListEntry
+    const SESS_PROC_LIST_OFFSET: u64 = 0x10;  // _MM_SESSION_SPACE.ProcessList
+    const EPROCESS_SESSION_LINKS: u64 = 0x4E0; // _EPROCESS.SessionProcessLinks (Win10 x64)
+
+    /// Build a reader with PspCidTable + MmSessionList and session-aware ISF structs.
+    fn make_reader_with_session(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_struct("_MM_SESSION_SPACE", 4096)
+            .add_field("_MM_SESSION_SPACE", "ListEntry", SESS_LIST_ENTRY_OFFSET, "_LIST_ENTRY")
+            .add_field("_MM_SESSION_SPACE", "ProcessList", SESS_PROC_LIST_OFFSET, "_LIST_ENTRY")
+            .add_field("_EPROCESS", "SessionProcessLinks", EPROCESS_SESSION_LINKS, "_LIST_ENTRY")
+            .add_symbol("PspCidTable", PSP_CID_TABLE_VADDR)
+            .add_symbol("MmSessionList", MM_SESSION_LIST_VADDR)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// Build the standard active-list + CID layout for session tests.
+    ///
+    /// * `session_list_paddr` — physical page backing `MM_SESSION_LIST_VADDR`
+    /// * `session_space_paddr` — physical page backing `SESSION_SPACE_VADDR`
+    /// * `sess_proc_links_{paddr,vaddr}` — physical/virtual address of the
+    ///   `_EPROCESS.SessionProcessLinks` field for the process that is in the session.
+    fn build_session_test_base(
+        session_list_paddr: u64,
+        session_space_paddr: u64,
+        sess_proc_links_paddr: u64,
+        sess_proc_links_vaddr: u64,
+    ) -> PageTableBuilder {
+        let head_paddr: u64 = 0x0010_0000;
+        let eproc1_paddr: u64 = 0x0020_0000;
+        let cid_ptr_paddr: u64 = 0x0030_0000;
+        let ht_paddr: u64 = 0x0040_0000;
+        let entries_paddr: u64 = 0x0050_0000;
+
+        let head_vaddr = PS_ACTIVE_HEAD_VADDR;
+        let eproc1_vaddr: u64 = 0xFFFF_F805_5B00_0000;
+        let ht_vaddr: u64 = 0xFFFF_F805_5B10_0000;
+        let entries_vaddr: u64 = 0xFFFF_F805_5B20_0000;
+        let eproc1_links = eproc1_vaddr + EPROCESS_LINKS;
+        let sess_proc_list_head_vaddr = SESSION_SPACE_VADDR + SESS_PROC_LIST_OFFSET;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
+            .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
+            .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
+            .map_4k(MM_SESSION_LIST_VADDR, session_list_paddr, flags::WRITABLE)
+            .map_4k(SESSION_SPACE_VADDR, session_space_paddr, flags::WRITABLE);
+
+        // Active list: head → System → head (circular)
+        let ptb = ptb
+            .write_phys_u64(head_paddr, eproc1_links)
+            .write_phys_u64(head_paddr + 8, eproc1_links);
+        let ptb = write_eprocess(ptb, eproc1_paddr, 4, "System", head_vaddr, head_vaddr);
+
+        // CID table for System (pid=4)
+        let ptb = ptb
+            .write_phys_u64(cid_ptr_paddr, ht_vaddr)
+            .write_phys_u64(ht_paddr + HANDLE_TABLE_CODE, entries_vaddr)
+            .write_phys(ht_paddr + HANDLE_TABLE_NEXT_HANDLE, &8u32.to_le_bytes());
+        let ptb = write_cid_entry(ptb, entries_paddr, 4, eproc1_vaddr);
+
+        // Session list: MmSessionList ↔ session_space.ListEntry (one session, circular)
+        let ptb = ptb
+            .write_phys_u64(session_list_paddr, SESSION_SPACE_VADDR)        // MmSessionList.Flink
+            .write_phys_u64(session_list_paddr + 8, SESSION_SPACE_VADDR)    // MmSessionList.Blink
+            .write_phys_u64(session_space_paddr + SESS_LIST_ENTRY_OFFSET, MM_SESSION_LIST_VADDR)
+            .write_phys_u64(session_space_paddr + SESS_LIST_ENTRY_OFFSET + 8, MM_SESSION_LIST_VADDR);
+
+        // Session process list: ProcessList ↔ target _EPROCESS.SessionProcessLinks
+        ptb.write_phys_u64(session_space_paddr + SESS_PROC_LIST_OFFSET, sess_proc_links_vaddr)
+            .write_phys_u64(session_space_paddr + SESS_PROC_LIST_OFFSET + 8, sess_proc_links_vaddr)
+            .write_phys_u64(sess_proc_links_paddr, sess_proc_list_head_vaddr) // Flink → list head
+            .write_phys_u64(sess_proc_links_paddr + 8, sess_proc_list_head_vaddr) // Blink
+    }
+
+    /// RED: System visible in active list + CID + session list → in_session_list = true.
+    #[test]
+    fn psxview_session_list_sets_in_session_list_true() {
+        let session_list_paddr: u64 = 0x0060_0000;
+        let session_space_paddr: u64 = 0x0070_0000;
+        // eproc1 internals match build_session_test_base (0x0020_0000, 0xFFFF_F805_5B00_0000)
+        let eproc1_links_paddr: u64 = 0x0020_0000 + EPROCESS_SESSION_LINKS;
+        let eproc1_links_vaddr: u64 = 0xFFFF_F805_5B00_0000 + EPROCESS_SESSION_LINKS;
+
+        let ptb = build_session_test_base(
+            session_list_paddr,
+            session_space_paddr,
+            eproc1_links_paddr,
+            eproc1_links_vaddr,
+        );
+
+        let reader = make_reader_with_session(ptb);
+        let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
+
+        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        assert!(
+            system.in_session_list,
+            "System visible in session list must have in_session_list=true"
+        );
+        assert!(system.in_active_list);
+        assert!(system.in_cid_table);
+        assert!(!system.is_hidden);
+    }
+
+    /// RED: process visible ONLY in session list → in_session_list=true, is_hidden=true.
+    #[test]
+    fn psxview_session_list_only_process_is_hidden() {
+        let session_list_paddr: u64 = 0x0060_0000;
+        let session_space_paddr: u64 = 0x0070_0000;
+        let malware_paddr: u64 = 0x0080_0000;
+        let malware_vaddr: u64 = 0xFFFF_F805_5B40_0000;
+
+        // Session process list points to malware.exe (pid=100), NOT System
+        let ptb = build_session_test_base(
+            session_list_paddr,
+            session_space_paddr,
+            malware_paddr + EPROCESS_SESSION_LINKS,
+            malware_vaddr + EPROCESS_SESSION_LINKS,
+        );
+        // Map and write malware.exe _EPROCESS (not in active list, not in CID)
+        let ptb = ptb
+            .map_4k(malware_vaddr, malware_paddr, flags::WRITABLE)
+            .map_4k(malware_vaddr + 0x1000, malware_paddr + 0x1000, flags::WRITABLE);
+        let ptb = write_eprocess(ptb, malware_paddr, 100, "malware.exe", 0, 0);
+
+        let reader = make_reader_with_session(ptb);
+        let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
+
+        let malware = results
+            .iter()
+            .find(|e| e.pid == 100)
+            .expect("malware.exe must be discovered via session list");
+        assert!(malware.in_session_list, "session-only process must have in_session_list=true");
+        assert!(!malware.in_active_list, "session-only process must not be in active list");
+        assert!(!malware.in_cid_table, "session-only process must not be in CID table");
+        assert!(malware.is_hidden, "session-only process must be flagged hidden");
+    }
 }
