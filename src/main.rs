@@ -122,6 +122,12 @@ enum Commands {
         #[arg(long)]
         masquerade: bool,
 
+        /// Detect PPID spoofing — processes whose actual parent doesn't match
+        /// the expected parent for that process name (Windows only,
+        /// MITRE ATT&CK T1134.004).
+        #[arg(long, name = "ppid-spoof")]
+        ppid_spoof: bool,
+
         /// List loaded DLLs (Windows). Shows DLLs for a single process
         /// when --pid is given, or for all processes when --pid is omitted.
         #[arg(long)]
@@ -637,6 +643,7 @@ fn main() -> Result<()> {
             pid,
             tree,
             masquerade,
+            ppid_spoof,
             dlls,
             maps,
             envvars,
@@ -659,6 +666,7 @@ fn main() -> Result<()> {
                 pid,
                 tree,
                 masquerade,
+                ppid_spoof,
                 dlls,
                 maps,
                 envvars,
@@ -960,37 +968,37 @@ fn main() -> Result<()> {
                         }
                         "ps:cmdline" => cmd_ps(
                             &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false,
+                            false, pid_filter, false, false, false, false, false,
                             false, true, false, false, false, false, false,
                             PsSortField::Pid, None, true,
                         ),
                         "ps:dlls" => cmd_ps(
                             &file, symbols, fmt, None,
-                            false, pid_filter, false, false, true, false,
+                            false, pid_filter, false, false, false, true, false,
                             false, false, false, false, false, false, false,
                             PsSortField::Pid, None, true,
                         ),
                         "ps:envvars" => cmd_ps(
                             &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false,
+                            false, pid_filter, false, false, false, false, false,
                             true, false, false, false, false, false, false,
                             PsSortField::Pid, None, true,
                         ),
                         "ps:privileges" => cmd_ps(
                             &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false,
+                            false, pid_filter, false, false, false, false, false,
                             false, false, false, true, false, false, false,
                             PsSortField::Pid, None, true,
                         ),
                         "ps:threads" => cmd_ps(
                             &file, symbols, fmt, None,
-                            true, pid_filter, false, false, false, false,
+                            true, pid_filter, false, false, false, false, false,
                             false, false, false, false, false, false, false,
                             PsSortField::Pid, None, true,
                         ),
                         "ps:vad" => cmd_ps(
                             &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false,
+                            false, pid_filter, false, false, false, false, false,
                             false, false, true, false, false, false, false,
                             PsSortField::Pid, None, true,
                         ),
@@ -1255,6 +1263,7 @@ fn cmd_ps(
     pid_filter: Option<u64>,
     tree: bool,
     masquerade: bool,
+    ppid_spoof: bool,
     dlls: bool,
     maps: bool,
     envvars: bool,
@@ -1281,6 +1290,9 @@ fn cmd_ps(
 
             if masquerade {
                 anyhow::bail!("--masquerade is only supported for Windows dumps");
+            }
+            if ppid_spoof {
+                anyhow::bail!("--ppid-spoof is only supported for Windows dumps");
             }
             if dlls {
                 anyhow::bail!("--dlls is only supported for Windows dumps");
@@ -1467,6 +1479,12 @@ fn cmd_ps(
                     .context("failed to check PEB masquerade")?;
                 println!();
                 print_masquerade(&masq_results, output);
+            }
+
+            if ppid_spoof {
+                let hits = memf_windows::ppid_spoof::check_ppid_spoof(&procs);
+                println!();
+                print_ppid_spoof(&hits, output);
             }
 
             if dlls {
@@ -2381,6 +2399,78 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
             println!("pid,eprocess_name,peb_image_path,suspicious");
             for r in results {
                 println!("{},{},{},{}", r.pid, r.eprocess_name, csv_field(&r.peb_image_path), r.suspicious);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output formatters — PPID spoofing
+// ---------------------------------------------------------------------------
+
+fn print_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputFormat) {
+    use forensicnomicon::processes::SpoofConfidence;
+
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["PID", "Name", "PPID", "Parent", "Confidence", "Expected Parents"]);
+            for r in results {
+                let conf = match r.confidence {
+                    SpoofConfidence::High => "HIGH",
+                    SpoofConfidence::Low  => "low",
+                };
+                table.add_row(vec![
+                    format!("{}", r.pid),
+                    table_cell(&r.name),
+                    format!("{}", r.ppid),
+                    table_cell(&r.parent_name),
+                    conf.to_string(),
+                    r.expected_parents.join(", "),
+                ]);
+            }
+            println!("{table}");
+            let high_count = results.iter().filter(|r| r.confidence == SpoofConfidence::High).count();
+            let low_count  = results.iter().filter(|r| r.confidence == SpoofConfidence::Low).count();
+            println!(
+                "\nTotal: {} suspicious ({} high-confidence, {} low-confidence)",
+                results.len(), high_count, low_count
+            );
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            for r in results {
+                let conf = match r.confidence {
+                    SpoofConfidence::High => "high",
+                    SpoofConfidence::Low  => "low",
+                };
+                let json = serde_json::json!({
+                    "pid": r.pid,
+                    "name": r.name,
+                    "ppid": r.ppid,
+                    "parent_name": r.parent_name,
+                    "confidence": conf,
+                    "expected_parents": r.expected_parents,
+                });
+                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+        }
+        OutputFormat::Csv => {
+            println!("pid,name,ppid,parent_name,confidence,expected_parents");
+            for r in results {
+                let conf = match r.confidence {
+                    SpoofConfidence::High => "high",
+                    SpoofConfidence::Low  => "low",
+                };
+                println!(
+                    "{},{},{},{},{},{}",
+                    r.pid,
+                    csv_field(&r.name),
+                    r.ppid,
+                    csv_field(&r.parent_name),
+                    conf,
+                    csv_field(&r.expected_parents.join("|")),
+                );
             }
         }
     }
@@ -5520,6 +5610,7 @@ mod tests {
             None,             // pid
             false,            // tree
             false,            // masquerade
+            false,            // ppid_spoof
             false,            // dlls
             false,            // maps
             false,            // envvars
@@ -5559,6 +5650,7 @@ mod tests {
             None,             // pid
             false,            // tree
             false,            // masquerade
+            false,            // ppid_spoof
             false,            // dlls
             false,            // maps
             false,            // envvars
