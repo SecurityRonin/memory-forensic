@@ -7591,4 +7591,72 @@ mod tests {
         // Low-confidence hit must not panic and must not be silently skipped.
         print_ppid_spoof(&hits, OutputFormat::Table);
     }
+
+    // -----------------------------------------------------------------------
+    // YARA subcommand CLI wiring tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_yara_on_linux_bails() {
+        // memf yara is Windows-only; Linux dumps must bail with a clear message.
+        let dump_path = make_temp_lime_dump("yara_linux");
+        let isf_path = make_temp_isf_file("yara_linux");
+        let rules_path = std::env::temp_dir().join("memf_tdd_yara_test.yar");
+        std::fs::write(&rules_path, b"rule test { condition: false }").unwrap();
+        let result = cmd_yara(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            &rules_path,
+            4096,
+            false,
+        );
+        let err = result.expect_err("memf yara on Linux must bail");
+        assert!(
+            format!("{err}").contains("only supported for Windows"),
+            "expected Windows-only bail, got: {err}"
+        );
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+        std::fs::remove_file(&rules_path).ok();
+    }
+
+    #[test]
+    fn cmd_yara_nonexistent_rules_errors() {
+        let dump_path = make_temp_lime_dump("yara_norules");
+        let isf_path = make_temp_isf_file("yara_norules");
+        let result = cmd_yara(
+            &dump_path,
+            Some(&isf_path),
+            OutputFormat::Table,
+            None,
+            std::path::Path::new("/nonexistent/path/rules.yar"),
+            4096,
+            false,
+        );
+        assert!(result.is_err(), "nonexistent rules path must error");
+        std::fs::remove_file(&dump_path).ok();
+        std::fs::remove_file(&isf_path).ok();
+    }
+
+    #[test]
+    fn print_yara_hits_all_formats_no_panic() {
+        let hits = vec![memf_windows::WinYaraHit {
+            pid: 4,
+            image_name: "payload.exe".to_string(),
+            start_vaddr: 0x1000_0000,
+            end_vaddr:   0x1001_0000,
+            protection_str: "PAGE_EXECUTE_READWRITE".to_string(),
+            rule_name: "malware_shellcode".to_string(),
+        }];
+        print_yara_hits(&hits, OutputFormat::Table);
+        print_yara_hits(&hits, OutputFormat::Json);
+        print_yara_hits(&hits, OutputFormat::Csv);
+    }
+
+    #[test]
+    fn print_yara_hits_empty_does_not_panic() {
+        print_yara_hits(&[], OutputFormat::Table);
+    }
 }
