@@ -8,9 +8,9 @@
 //! 1. **ActiveProcessLinks** — `_EPROCESS` doubly-linked list
 //! 2. **PspCidTable** — kernel handle table mapping PIDs to `_EPROCESS`
 //! 3. **Pool tag scan** — nonpaged pool scan for `_POOL_HEADER` with tag `Proc`
+//! 4. **Session list** — `MmSessionList → _MM_SESSION_SPACE.ProcessList` walk
 //!
 //! Future sources (not yet implemented):
-//! - Session list (`_MM_SESSION_SPACE.ProcessList`)
 //! - CSRSS handle table
 
 use std::collections::HashMap;
@@ -32,10 +32,12 @@ pub struct PsxViewEntry {
     pub eprocess_addr: u64,
     /// Found via `ActiveProcessLinks` doubly-linked list walk.
     pub in_active_list: bool,
-    /// Found via pool tag scan (not yet implemented — always `false`).
+    /// Found via pool tag scan for `_POOL_HEADER` with tag `Proc`.
     pub in_pool_scan: bool,
     /// Found via `PspCidTable` handle table walk.
     pub in_cid_table: bool,
+    /// Found via `_MM_SESSION_SPACE.ProcessList` session list walk.
+    pub in_session_list: bool,
     /// `true` if the process is missing from one or more sources (potentially hidden).
     pub is_hidden: bool,
 }
@@ -66,7 +68,10 @@ pub fn psxview<P: PhysicalMemoryProvider>(
     // View 3: Pool tag scan (graceful: empty if MmNonPagedPool symbols absent)
     let pool_procs = walk_pool_scan_procs(reader);
 
-    Ok(merge_views(active_procs, cid_procs, pool_procs))
+    // View 4: Session list (graceful: empty if MmSessionList symbol absent)
+    let session_procs = walk_session_list_procs(reader);
+
+    Ok(merge_views(active_procs, cid_procs, pool_procs, session_procs))
 }
 
 /// Process info extracted from a single enumeration source.
@@ -188,11 +193,66 @@ fn walk_pool_scan_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> 
     procs
 }
 
-/// Merge process views from ActiveProcessLinks, PspCidTable, and pool scan.
+/// Walk `MmSessionList → _MM_SESSION_SPACE.ProcessList → _EPROCESS.SessionProcessLinks`
+/// and return one [`RawProcInfo`] per process found across all sessions.
+///
+/// Returns an empty `Vec` when the `MmSessionList` symbol is absent (graceful degradation).
+fn walk_session_list_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Vec<RawProcInfo> {
+    let Some(session_list_va) = reader.symbols().symbol_address("MmSessionList") else {
+        return Vec::new();
+    };
+
+    let mut procs = Vec::new();
+
+    // Walk outer list: MmSessionList ↔ _MM_SESSION_SPACE.ListEntry (at offset 0)
+    let outer = reader.walk_list_with(
+        session_list_va,
+        "_LIST_ENTRY",
+        "Flink",
+        "_MM_SESSION_SPACE",
+        "ListEntry",
+    );
+    let session_addrs: Vec<u64> = match outer {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    for session_base in session_addrs {
+        // Walk inner list: _MM_SESSION_SPACE.ProcessList ↔ _EPROCESS.SessionProcessLinks
+        // The ProcessList field IS the list head — pass its exact VA so termination works.
+        let proc_list_va = {
+            let off = reader.symbols().field_offset("_MM_SESSION_SPACE", "ProcessList").unwrap_or(0x10);
+            session_base.wrapping_add(off)
+        };
+        let inner = reader.walk_list_with(
+            proc_list_va,
+            "_LIST_ENTRY",
+            "Flink",
+            "_EPROCESS",
+            "SessionProcessLinks",
+        );
+        let eprocess_addrs: Vec<u64> = match inner {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        for eprocess_va in eprocess_addrs {
+            let Ok(pid) = reader.read_field::<u64>(eprocess_va, "_EPROCESS", "UniqueProcessId") else { continue; };
+            if pid == 0 { continue; }
+            let Ok(image_name) = reader.read_field_string(eprocess_va, "_EPROCESS", "ImageFileName", 15) else { continue; };
+            procs.push(RawProcInfo { pid, image_name, eprocess_addr: eprocess_va });
+        }
+    }
+
+    procs
+}
+
+/// Merge process views from ActiveProcessLinks, PspCidTable, pool scan, and session list.
 fn merge_views(
     active_list: Vec<RawProcInfo>,
     cid_table: Vec<RawProcInfo>,
     pool_scan: Vec<RawProcInfo>,
+    session_list: Vec<RawProcInfo>,
 ) -> Vec<PsxViewEntry> {
     let mut map: HashMap<u64, PsxViewEntry> = HashMap::new();
 
@@ -207,6 +267,7 @@ fn merge_views(
                 in_active_list: true,
                 in_pool_scan: false,
                 in_cid_table: false,
+                in_session_list: false,
                 is_hidden: false, // computed after merge
             },
         );
@@ -228,6 +289,7 @@ fn merge_views(
                 in_active_list: false,
                 in_pool_scan: false,
                 in_cid_table: true,
+                in_session_list: false,
                 is_hidden: false,
             });
     }
@@ -245,6 +307,25 @@ fn merge_views(
                 in_active_list: false,
                 in_pool_scan: true,
                 in_cid_table: false,
+                in_session_list: false,
+                is_hidden: false,
+            });
+    }
+
+    // Merge session list entries (no-op when MmSessionList symbol absent)
+    for proc in session_list {
+        map.entry(proc.pid)
+            .and_modify(|e| {
+                e.in_session_list = true;
+            })
+            .or_insert(PsxViewEntry {
+                pid: proc.pid,
+                image_name: proc.image_name,
+                eprocess_addr: proc.eprocess_addr,
+                in_active_list: false,
+                in_pool_scan: false,
+                in_cid_table: false,
+                in_session_list: true,
                 is_hidden: false,
             });
     }
