@@ -1344,6 +1344,9 @@ pub struct WinPpidSpoofInfo {
     pub parent_name: String,
     /// Process names that are legitimate parents for this process type.
     pub expected_parents: Vec<String>,
+    /// How strongly this anomaly signals a real spoof vs. a legitimate but
+    /// uncommon spawn pattern (e.g. COM Surrogate / dllhost.exe).
+    pub confidence: forensicnomicon::processes::SpoofConfidence,
 }
 
 /// A YARA rule match in a process's virtual memory region.
