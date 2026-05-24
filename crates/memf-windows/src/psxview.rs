@@ -933,4 +933,140 @@ mod tests {
         assert!(!malware.in_cid_table, "session-only process must not be in CID table");
         assert!(malware.is_hidden, "session-only process must be flagged hidden");
     }
+
+    // CSRSS handle table (in_csrss_handles) test constants
+    const EPROCESS_OBJECT_TABLE: u64 = 0x570; // Win10 x64 _EPROCESS.ObjectTable
+    const CSRSS_PID: u64 = 2000;
+    const CSRSS_VADDR: u64 = 0xFFFF_F805_5C00_0000;
+    const CSRSS_OT_HT_VADDR: u64 = 0xFFFF_F805_5C10_0000;
+    const CSRSS_OT_ENTRIES_VADDR: u64 = 0xFFFF_F805_5C20_0000;
+
+    /// Build a reader with PspCidTable + `_EPROCESS.ObjectTable` in ISF.
+    fn make_reader_with_csrss(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
+        let isf = IsfBuilder::windows_kernel_preset()
+            .add_symbol("PspCidTable", PSP_CID_TABLE_VADDR)
+            .add_field("_EPROCESS", "ObjectTable", EPROCESS_OBJECT_TABLE, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// Build layout: System (pid=4) + csrss.exe (pid=2000) in active list;
+    /// System in CID table; csrss.exe.ObjectTable holds a handle to System.
+    fn build_csrss_test_base() -> PageTableBuilder {
+        let head_paddr: u64 = 0x0010_0000;
+        let eproc1_paddr: u64 = 0x0020_0000; // System
+        let cid_ptr_paddr: u64 = 0x0030_0000;
+        let ht_paddr: u64 = 0x0040_0000;
+        let entries_paddr: u64 = 0x0050_0000;
+        let csrss_paddr: u64 = 0x0060_0000; // csrss.exe
+        let csrss_ot_ht_paddr: u64 = 0x0070_0000; // csrss OT _HANDLE_TABLE
+        let csrss_ot_entries_paddr: u64 = 0x0080_0000; // csrss OT entries
+
+        let head_vaddr = PS_ACTIVE_HEAD_VADDR;
+        let eproc1_vaddr: u64 = 0xFFFF_F805_5B00_0000;
+        let ht_vaddr: u64 = 0xFFFF_F805_5B10_0000;
+        let entries_vaddr: u64 = 0xFFFF_F805_5B20_0000;
+
+        let eproc1_links = eproc1_vaddr + EPROCESS_LINKS;
+        let csrss_links = CSRSS_VADDR + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
+            .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
+            .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
+            .map_4k(CSRSS_VADDR, csrss_paddr, flags::WRITABLE)
+            .map_4k(CSRSS_VADDR + 0x1000, csrss_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(CSRSS_OT_HT_VADDR, csrss_ot_ht_paddr, flags::WRITABLE)
+            .map_4k(CSRSS_OT_ENTRIES_VADDR, csrss_ot_entries_paddr, flags::WRITABLE);
+
+        // Active list: head ↔ System ↔ csrss ↔ head
+        let ptb = ptb
+            .write_phys_u64(head_paddr, eproc1_links)
+            .write_phys_u64(head_paddr + 8, csrss_links);
+
+        let ptb = write_eprocess(ptb, eproc1_paddr, 4, "System", csrss_links, head_vaddr);
+        let ptb = write_eprocess(ptb, csrss_paddr, CSRSS_PID, "csrss.exe", head_vaddr, eproc1_links);
+
+        // csrss.exe ObjectTable → csrss OT _HANDLE_TABLE
+        let ptb = ptb.write_phys_u64(csrss_paddr + EPROCESS_OBJECT_TABLE, CSRSS_OT_HT_VADDR);
+
+        // CID table: System only (csrss not in CID for this test)
+        let ptb = ptb.write_phys_u64(cid_ptr_paddr, ht_vaddr);
+        let ptb = ptb.write_phys_u64(ht_paddr + HANDLE_TABLE_CODE, entries_vaddr);
+        let ptb = ptb.write_phys(ht_paddr + HANDLE_TABLE_NEXT_HANDLE, &8u32.to_le_bytes());
+        let ptb = write_cid_entry(ptb, entries_paddr, 4, eproc1_vaddr);
+
+        // csrss OT _HANDLE_TABLE: one entry (idx=1) pointing to System's _EPROCESS
+        let ptb = ptb.write_phys_u64(csrss_ot_ht_paddr + HANDLE_TABLE_CODE, CSRSS_OT_ENTRIES_VADDR);
+        let ptb = ptb.write_phys(csrss_ot_ht_paddr + HANDLE_TABLE_NEXT_HANDLE, &8u32.to_le_bytes());
+
+        let obj_header_vaddr = eproc1_vaddr.wrapping_sub(OBJ_HEADER_BODY_OFFSET);
+        let obj_ptr_bits = (obj_header_vaddr & 0x0000_FFFF_FFFF_FFFF) >> 4;
+        ptb.write_phys_u64(csrss_ot_entries_paddr + ENTRY_SIZE, obj_ptr_bits)
+    }
+
+    /// RED: System visible in active + CID + csrss OT → in_csrss_handles = true.
+    #[test]
+    fn psxview_csrss_handles_sets_in_csrss_handles_true() {
+        let ptb = build_csrss_test_base();
+        let reader = make_reader_with_csrss(ptb);
+        let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
+
+        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        assert!(
+            system.in_csrss_handles,
+            "System visible in csrss OT must have in_csrss_handles=true"
+        );
+        assert!(system.in_active_list);
+        assert!(system.in_cid_table);
+        assert!(!system.is_hidden);
+    }
+
+    /// RED: no csrss.exe in active list → OT walk skipped, in_csrss_handles = false.
+    #[test]
+    fn psxview_csrss_handles_graceful_if_no_csrss() {
+        let head_paddr: u64 = 0x0010_0000;
+        let eproc1_paddr: u64 = 0x0020_0000;
+        let cid_ptr_paddr: u64 = 0x0030_0000;
+        let ht_paddr: u64 = 0x0040_0000;
+        let entries_paddr: u64 = 0x0050_0000;
+
+        let head_vaddr = PS_ACTIVE_HEAD_VADDR;
+        let eproc1_vaddr: u64 = 0xFFFF_F805_5B00_0000;
+        let ht_vaddr: u64 = 0xFFFF_F805_5B10_0000;
+        let entries_vaddr: u64 = 0xFFFF_F805_5B20_0000;
+        let eproc1_links = eproc1_vaddr + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
+            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
+            .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
+            .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc1_links)
+            .write_phys_u64(head_paddr + 8, eproc1_links)
+            .write_phys_u64(cid_ptr_paddr, ht_vaddr)
+            .write_phys_u64(ht_paddr + HANDLE_TABLE_CODE, entries_vaddr)
+            .write_phys(ht_paddr + HANDLE_TABLE_NEXT_HANDLE, &8u32.to_le_bytes());
+
+        let ptb = write_eprocess(ptb, eproc1_paddr, 4, "System", head_vaddr, head_vaddr);
+        let ptb = write_cid_entry(ptb, entries_paddr, 4, eproc1_vaddr);
+
+        let reader = make_reader_with_cid(ptb);
+        let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
+
+        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        assert!(
+            !system.in_csrss_handles,
+            "no csrss.exe in active list → in_csrss_handles must be false"
+        );
+        assert!(!system.is_hidden, "System in active+CID is not hidden");
+    }
 }
