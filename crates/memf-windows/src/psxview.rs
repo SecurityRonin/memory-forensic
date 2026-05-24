@@ -9,9 +9,10 @@
 //! 2. **PspCidTable** — kernel handle table mapping PIDs to `_EPROCESS`
 //! 3. **Pool tag scan** — nonpaged pool scan for `_POOL_HEADER` with tag `Proc`
 //! 4. **Session list** — `MmSessionList → _MM_SESSION_SPACE.ProcessList` walk
+//! 5. **CSRSS handle table** — `csrss.exe` process `ObjectTable` handle walk
 //!
 //! Future sources (not yet implemented):
-//! - CSRSS handle table
+//! - CSRSS heap / LPC port enumeration
 
 use std::collections::HashMap;
 
@@ -38,6 +39,8 @@ pub struct PsxViewEntry {
     pub in_cid_table: bool,
     /// Found via `_MM_SESSION_SPACE.ProcessList` session list walk.
     pub in_session_list: bool,
+    /// Found in a `csrss.exe` process ObjectTable (`_EPROCESS.ObjectTable` handle walk).
+    pub in_csrss_handles: bool,
     /// `true` if the process is missing from one or more sources (potentially hidden).
     pub is_hidden: bool,
 }
@@ -71,7 +74,10 @@ pub fn psxview<P: PhysicalMemoryProvider>(
     // View 4: Session list (graceful: empty if MmSessionList symbol absent)
     let session_procs = walk_session_list_procs(reader);
 
-    Ok(merge_views(active_procs, cid_procs, pool_procs, session_procs))
+    // View 5: CSRSS handle table (graceful: empty if no csrss.exe or ObjectTable absent)
+    let csrss_procs = walk_csrss_handle_procs(reader, &active_procs);
+
+    Ok(merge_views(active_procs, cid_procs, pool_procs, session_procs, csrss_procs))
 }
 
 /// Process info extracted from a single enumeration source.
@@ -247,12 +253,103 @@ fn walk_session_list_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) 
     procs
 }
 
-/// Merge process views from ActiveProcessLinks, PspCidTable, pool scan, and session list.
+/// Walk the `ObjectTable` handle table of every `csrss.exe` process found in `active_procs`
+/// and return one [`RawProcInfo`] for each process object referenced therein.
+///
+/// This constitutes psxview source #5. A process visible in the CSRSS handle table but
+/// absent from `ActiveProcessLinks` or `PspCidTable` is strongly suspicious.
+///
+/// Returns an empty `Vec` when no `csrss.exe` is present, or when the
+/// `_EPROCESS.ObjectTable` field is absent from the ISF (graceful degradation).
+fn walk_csrss_handle_procs<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    active_procs: &[RawProcInfo],
+) -> Vec<RawProcInfo> {
+    // ObjectTable field offset must be known; if absent, skip gracefully.
+    if reader.symbols().field_offset("_EPROCESS", "ObjectTable").is_none() {
+        return Vec::new();
+    }
+
+    let obj_body_offset = reader
+        .symbols()
+        .field_offset("_OBJECT_HEADER", "Body")
+        .unwrap_or(0x30);
+
+    let entry_size = match reader.symbols().struct_size("_HANDLE_TABLE_ENTRY") {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let mut procs = Vec::new();
+
+    for csrss in active_procs
+        .iter()
+        .filter(|p| p.image_name.eq_ignore_ascii_case("csrss.exe"))
+    {
+        // Read ObjectTable pointer from this csrss _EPROCESS
+        let ot_addr: u64 = match reader.read_field(csrss.eprocess_addr, "_EPROCESS", "ObjectTable") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if ot_addr == 0 {
+            continue;
+        }
+
+        // Read TableCode and NextHandleNeedingPool from the ObjectTable _HANDLE_TABLE
+        let table_code: u64 = match reader.read_field(ot_addr, "_HANDLE_TABLE", "TableCode") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let next_handle: u32 = match reader.read_field(ot_addr, "_HANDLE_TABLE", "NextHandleNeedingPool") {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let level = table_code & 0x3;
+        let base_addr = table_code & !0x3;
+        if level != 0 || base_addr == 0 {
+            continue; // only flat (level-0) tables supported
+        }
+
+        let num_entries = (u64::from(next_handle) / 4).min(crate::psxview_cid::MAX_CID_ENTRIES);
+
+        for idx in 1..num_entries {
+            let entry_addr = base_addr + idx * entry_size;
+            let obj_ptr: u64 = match reader.read_field(entry_addr, "_HANDLE_TABLE_ENTRY", "ObjectPointerBits") {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if obj_ptr == 0 {
+                continue;
+            }
+
+            let object_addr = (obj_ptr << 4) | 0xFFFF_0000_0000_0000;
+            let eprocess_va = object_addr.wrapping_add(obj_body_offset);
+
+            let pid: u64 = match reader.read_field(eprocess_va, "_EPROCESS", "UniqueProcessId") {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if pid == 0 {
+                continue;
+            }
+            let image_name = reader
+                .read_field_string(eprocess_va, "_EPROCESS", "ImageFileName", 15)
+                .unwrap_or_default();
+            procs.push(RawProcInfo { pid, image_name, eprocess_addr: eprocess_va });
+        }
+    }
+
+    procs
+}
+
+/// Merge process views from all five enumeration sources.
 fn merge_views(
     active_list: Vec<RawProcInfo>,
     cid_table: Vec<RawProcInfo>,
     pool_scan: Vec<RawProcInfo>,
     session_list: Vec<RawProcInfo>,
+    csrss_handles: Vec<RawProcInfo>,
 ) -> Vec<PsxViewEntry> {
     let mut map: HashMap<u64, PsxViewEntry> = HashMap::new();
 
@@ -268,6 +365,7 @@ fn merge_views(
                 in_pool_scan: false,
                 in_cid_table: false,
                 in_session_list: false,
+                in_csrss_handles: false,
                 is_hidden: false, // computed after merge
             },
         );
@@ -290,6 +388,7 @@ fn merge_views(
                 in_pool_scan: false,
                 in_cid_table: true,
                 in_session_list: false,
+                in_csrss_handles: false,
                 is_hidden: false,
             });
     }
@@ -308,6 +407,7 @@ fn merge_views(
                 in_pool_scan: true,
                 in_cid_table: false,
                 in_session_list: false,
+                in_csrss_handles: false,
                 is_hidden: false,
             });
     }
@@ -326,6 +426,26 @@ fn merge_views(
                 in_pool_scan: false,
                 in_cid_table: false,
                 in_session_list: true,
+                in_csrss_handles: false,
+                is_hidden: false,
+            });
+    }
+
+    // Merge CSRSS handle table entries (no-op when no csrss.exe or ObjectTable absent)
+    for proc in csrss_handles {
+        map.entry(proc.pid)
+            .and_modify(|e| {
+                e.in_csrss_handles = true;
+            })
+            .or_insert(PsxViewEntry {
+                pid: proc.pid,
+                image_name: proc.image_name,
+                eprocess_addr: proc.eprocess_addr,
+                in_active_list: false,
+                in_pool_scan: false,
+                in_cid_table: false,
+                in_session_list: false,
+                in_csrss_handles: true,
                 is_hidden: false,
             });
     }
