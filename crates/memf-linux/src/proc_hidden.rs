@@ -18,13 +18,29 @@ pub fn is_dkom_hidden(in_task_list: bool, in_pid_hash: bool) -> bool {
 
 /// Scan for processes hidden by DKOM or PID namespace tricks.
 ///
-/// Compares the PID namespace, task list, and PID hash table for discrepancies.
-/// Returns `Ok(vec![])` as a stub until full implementation is added.
+/// Delegates to [`crate::psxview::walk_psxview`] for the cross-view enumeration,
+/// then returns only entries where [`is_dkom_hidden`] is `true`.
 pub fn find_hidden_processes<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<HiddenProcessInfo>> {
-    let _ = reader;
-    Ok(vec![])
+    let entries = match crate::psxview::walk_psxview(reader) {
+        Ok(v) => v,
+        Err(crate::Error::MissingKernelSymbol { .. } | crate::Error::MissingField { .. }) => {
+            return Ok(vec![]);
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(entries
+        .into_iter()
+        .filter(|e| is_dkom_hidden(e.in_task_list, e.in_pid_hash))
+        .map(|e| HiddenProcessInfo {
+            pid: e.pid,
+            comm: e.comm,
+            present_in_pid_ns: false,
+            present_in_task_list: e.in_task_list,
+            present_in_pid_hash: e.in_pid_hash,
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -173,8 +189,23 @@ mod tests {
     fn find_hidden_processes_detects_task_list_only_process() {
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
-        // pid_hash bucket at 0x800 stays 0 (null) → no PIDs in hash
-        let page = base_task_page(vaddr);
+        // Seed bucket 0 with a *different* PID (99) so the hash set is non-empty.
+        // Without this, collect_pid_hash_pids returns an empty set which is
+        // filtered to None (fallback in_pid_hash=true), masking the detection.
+        //
+        // Layout on the page:
+        //   0x000: init_task (pid=1, tasks self-loop, NOT linked into hash)
+        //   0x200: fake_task (pid=99, NOT in task list, IS in hash)
+        //   0x238: fake_task.pid_links (hlist_node) — pid_links_offset = 56 = 0x38
+        //   0x800: pid_hash bucket 0 → points to fake_task.pid_links
+        let mut page = base_task_page(vaddr);
+        page[0x200..0x204].copy_from_slice(&99u32.to_le_bytes()); // fake pid
+        let fake_pid_links_va = vaddr + 0x238;
+        page[0x800..0x808].copy_from_slice(&fake_pid_links_va.to_le_bytes()); // bucket 0 → hlist_node
+        // fake_pid_links.next = NULL (end of chain)
+        page[0x238..0x240].copy_from_slice(&0u64.to_le_bytes());
+        // fake_pid_links.pprev → points back to bucket head (standard hlist bookkeeping)
+        page[0x240..0x248].copy_from_slice(&(vaddr + 0x800).to_le_bytes());
         let reader = make_proc_hidden_reader(page, vaddr, paddr);
 
         let hidden = find_hidden_processes(&reader).unwrap();
