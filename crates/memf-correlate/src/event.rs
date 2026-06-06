@@ -334,6 +334,36 @@ mod tests {
         assert_eq!(Severity::Critical.weight(), 100);
     }
 
+    #[test]
+    fn forensic_event_converts_to_a_canonical_finding() {
+        use forensicnomicon::report::{Category, Source};
+        let e = ForensicEvent {
+            timestamp: None,
+            source_walker: "test",
+            entity: Entity::Process {
+                pid: 4242,
+                name: "evil.exe".to_string(),
+                ppid: None,
+            },
+            finding: Finding::ProcessHollowing,
+            severity: Severity::Critical,
+            mitre_attack: vec![MitreAttackId::new("T1055.012").expect("valid id")],
+            confidence: 0.9,
+            raw_evidence: vec![0x4d, 0x5a],
+        };
+        let f = e.to_finding(Source {
+            analyzer: "memory-forensic".to_string(),
+            scope: "process".to_string(),
+            version: None,
+        });
+        assert_eq!(f.code, "MEM-PROCESS-HOLLOWING");
+        assert_eq!(f.severity, Some(Severity::Critical));
+        assert_eq!(f.category, Category::Threat);
+        assert_eq!(f.subjects[0].kind, "process");
+        assert!(f.context.confidence.is_some());
+        assert_eq!(f.context.external_refs[0].id, "T1055.012");
+    }
+
     // --- Severity ordering tests ---
 
     #[test]
