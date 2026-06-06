@@ -1,12 +1,13 @@
 [package]
 name = "memf-correlate"
-version = "0.1.0"
+version = "0.2.0"
 description = "Forensic event correlation model for the memf forensics framework"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+forensicnomicon.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror.workspace = true

@@ -18,6 +18,7 @@ fn severity_weight(severity: Severity) -> f64 {
         Severity::High => 5.0,
         Severity::Medium => 2.0,
         Severity::Info | Severity::Low => 0.5,
+        _ => 0.5,
     }
 }
 

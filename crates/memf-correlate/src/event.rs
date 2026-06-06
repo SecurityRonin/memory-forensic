@@ -233,30 +233,25 @@ impl fmt::Display for Protocol {
 // Severity
 // ---------------------------------------------------------------------------
 
-/// Severity classification for a forensic finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub enum Severity {
-    /// Informational — no immediate concern.
-    Info,
-    /// Low severity.
-    Low,
-    /// Medium severity.
-    Medium,
-    /// High severity.
-    High,
-    /// Critical severity.
-    Critical,
+/// The canonical 5-level severity scale, shared across every SecurityRonin
+/// analyzer via [`forensicnomicon::report`].
+pub use forensicnomicon::report::Severity;
+
+/// Extension trait giving each [`Severity`] a numeric weight for scoring.
+pub trait SeverityWeight {
+    /// The finding weight (`Info`=1 … `Critical`=100).
+    fn weight(self) -> u32;
 }
 
-impl Severity {
-    /// Returns a numeric weight for this severity level.
-    pub fn weight(self) -> u32 {
+impl SeverityWeight for Severity {
+    fn weight(self) -> u32 {
         match self {
-            Self::Info => 1,
-            Self::Low => 5,
-            Self::Medium => 15,
-            Self::High => 40,
-            Self::Critical => 100,
+            Severity::Info => 1,
+            Severity::Low => 5,
+            Severity::Medium => 15,
+            Severity::High => 40,
+            Severity::Critical => 100,
+            _ => 0,
         }
     }
 }
@@ -299,6 +294,60 @@ impl Finding {
             Self::LateralMovement => "Lateral Movement",
             Self::Other(s) => s,
         }
+    }
+}
+
+
+impl ForensicEvent {
+    /// Convert this event into a canonical [`forensicnomicon::report::Finding`],
+    /// carrying the entity as a subject, the confidence, and the MITRE techniques.
+    #[must_use]
+    pub fn to_finding(&self, source: forensicnomicon::report::Source) -> forensicnomicon::report::Finding {
+        use forensicnomicon::report::{Category, Confidence, ExternalRef, Finding as F, SubjectRef, Timestamp};
+        let code = match &self.finding {
+            Finding::ProcessHollowing => "MEM-PROCESS-HOLLOWING".to_string(),
+            Finding::NetworkBeaconing => "MEM-BEACONING".to_string(),
+            Finding::CredentialAccess => "MEM-CRED-ACCESS".to_string(),
+            Finding::PrivilegeEscalation => "MEM-PRIVESC".to_string(),
+            Finding::PersistenceMechanism => "MEM-PERSISTENCE".to_string(),
+            Finding::DefenseEvasion => "MEM-DEFENSE-EVASION".to_string(),
+            Finding::LateralMovement => "MEM-LATERAL-MOVEMENT".to_string(),
+            Finding::Other(s) => format!("MEM-{}", s.to_uppercase().replace([' ', '_'], "-")),
+        };
+        let sub = |kind: &str, id: String, label: Option<String>| SubjectRef {
+            scheme: "memory".to_string(),
+            kind: kind.to_string(),
+            id,
+            label,
+        };
+        let subject = match &self.entity {
+            Entity::Process { pid, name, .. } => sub("process", format!("pid:{pid}"), Some(name.clone())),
+            Entity::Thread { tid, .. } => sub("thread", format!("tid:{tid}"), None),
+            Entity::Module { name, base, .. } => sub("module", format!("{base:#x}"), Some(name.clone())),
+            Entity::Connection { src, dst, .. } => sub("connection", format!("{src} -> {dst}"), None),
+            Entity::Driver { name, .. } => sub("driver", name.clone(), None),
+            Entity::RegistryKey { path } => sub("registry_key", path.clone(), None),
+            Entity::File { path } => sub("file", path.clone(), None),
+        };
+        let mut b = F::observation(self.severity, Category::Threat, code)
+            .note(format!("{:?} observed by {}", self.finding, self.source_walker))
+            .source(source)
+            .subject(subject)
+            .evidence("evidence_bytes", self.raw_evidence.len().to_string());
+        if let Some(conf) = Confidence::new(self.confidence as f32) {
+            b = b.confidence(conf);
+        }
+        for m in &self.mitre_attack {
+            b = b.external_ref(ExternalRef::mitre_attack(m.as_str()));
+        }
+        if let Some(ts) = self.timestamp {
+            b = b.timestamp(Timestamp {
+                value: ts.to_rfc3339(),
+                kind: "event".to_string(),
+                location: None,
+            });
+        }
+        b.build()
     }
 }
 
