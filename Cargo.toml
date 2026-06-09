@@ -20,8 +20,8 @@ license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 
 [workspace.dependencies]
-forensicnomicon = { path = "../forensicnomicon", features = ["std", "serde"] }
-jsonguard = { path = "../jsonguard", features = ["std"] }
+forensicnomicon = { version = "0.3.1", features = ["std", "serde"] }
+jsonguard = { version = "0.2.2", features = ["std"] }
 winevt-core = { path = "../winevt-forensic/crates/winevt-core" }
 forensic-hashdb = { path = "crates/forensic-hashdb" }
 memf-format  = { path = "crates/memf-format" }
