@@ -19,6 +19,13 @@ const SCAN_START: u64 = 0x0010_0000;
 const SCAN_END: u64 = 0x0800_0000;
 const PAGE_SIZE: usize = 0x1000;
 
+/// 2 MiB — the granularity the kernel image base is aligned to.
+const TWO_MIB: u64 = 0x20_0000;
+/// How far below the anchor to search (256 MiB of kernel VA space).
+const DTB_DESCENT_WINDOW: u64 = 0x1000_0000;
+/// Cap on how many bytes of a candidate image to scan for the RSDS record.
+const MAX_IMAGE_SCAN: usize = 0x30_0000; // 3 MiB
+
 /// Scan physical memory for ntoskrnl.exe and extract its PDB identification.
 ///
 /// Searches page-aligned addresses from 1 MiB to 128 MiB for a valid
@@ -56,7 +63,30 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
         }
         addr += PAGE_SIZE as u64;
     }
-    Err(crate::Error::NotFound("kernel PE not found in physical memory".into()))
+
+    // Physical scan missed — on real dumps the kernel is mapped high and is only
+    // reachable through CR3/DTB translation. Fall back to the VA-aware locator
+    // using the page-table root and a known kernel VA from the dump header.
+    if let Some(meta) = mem.metadata() {
+        if let (Some(cr3), Some(anchor_va)) = (meta.cr3, dtb_anchor_va(&meta)) {
+            if let Ok(pdb_id) = scan_for_kernel_via_dtb(mem, cr3, anchor_va) {
+                return Ok(pdb_id);
+            }
+        }
+    }
+
+    Err(crate::Error::NotFound(
+        "kernel PE not found in physical memory or via DTB translation".into(),
+    ))
+}
+
+/// Pick a known kernel virtual address from the dump header to anchor the DTB
+/// descent. `PsLoadedModuleList` is preferred (it lives inside ntoskrnl's mapped
+/// image); `PsActiveProcessHead` is a fallback known kernel VA.
+fn dtb_anchor_va(meta: &memf_format::DumpMetadata) -> Option<u64> {
+    meta.ps_loaded_module_list
+        .or(meta.ps_active_process_head)
+        .or(meta.kd_debugger_data_block)
 }
 
 /// Check whether a PDB filename looks like an ntoskrnl variant.
@@ -78,12 +108,157 @@ fn is_kernel_pdb_name(name: &str) -> bool {
 /// Returns [`Error::NotFound`] if no kernel PE is located within the search
 /// window.
 pub fn scan_for_kernel_via_dtb<P: PhysicalMemoryProvider>(
-    _mem: &P,
-    _cr3: u64,
-    _anchor_va: u64,
+    mem: &P,
+    cr3: u64,
+    anchor_va: u64,
 ) -> crate::Result<PdbId> {
-    // RED stub — implemented in the GREEN commit.
-    Err(crate::Error::NotFound("not yet implemented".into()))
+    // Descend from the anchor in 2 MiB steps. The kernel base is 2 MiB-aligned
+    // and lies at or below the anchor (PsLoadedModuleList sits inside ntoskrnl's
+    // mapped image). Bound the descent so a bogus anchor cannot loop forever.
+    let start = anchor_va & !(TWO_MIB - 1);
+    let mut va = start;
+    let floor = start.saturating_sub(DTB_DESCENT_WINDOW);
+    while va >= floor {
+        if let Some(pdb_id) = try_kernel_at_va(mem, cr3, va) {
+            return Ok(pdb_id);
+        }
+        // Stop before underflow when floor is 0.
+        if va < TWO_MIB {
+            break;
+        }
+        va -= TWO_MIB;
+    }
+    Err(crate::Error::NotFound(
+        "kernel PE not found via DTB translation".into(),
+    ))
+}
+
+/// If a valid AMD64 kernel PE is mapped at `base_va`, return its PDB identity.
+fn try_kernel_at_va<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, base_va: u64) -> Option<PdbId> {
+    // Read the first page to validate the PE header.
+    let mut first = [0u8; PAGE_SIZE];
+    let n = read_virt(mem, cr3, base_va, &mut first);
+    if n < 0x40 || first[0] != b'M' || first[1] != b'Z' {
+        return None;
+    }
+    let e_lfanew =
+        u32::from_le_bytes([first[0x3C], first[0x3D], first[0x3E], first[0x3F]]) as usize;
+    if e_lfanew + 6 > PAGE_SIZE || first.get(e_lfanew..e_lfanew + 4) != Some(b"PE\0\0") {
+        return None;
+    }
+    let machine = u16::from_le_bytes([first[e_lfanew + 4], first[e_lfanew + 5]]);
+    if machine != 0x8664 {
+        return None;
+    }
+
+    // Determine how much of the image to scan: SizeOfImage lives at
+    // offset 56 in the PE32+ optional header (e_lfanew + 24 + 56).
+    let opt_off = e_lfanew + 24;
+    let size_of_image = first
+        .get(opt_off + 56..opt_off + 60)
+        .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let scan_len = size_of_image.clamp(PAGE_SIZE, MAX_IMAGE_SCAN);
+
+    // Read the image (capped) and run the tolerant RSDS scan over it. Pages that
+    // are not mapped read as zeros (read_virt fills the buffer up to the first gap).
+    let mut image = vec![0u8; scan_len];
+    let got = read_virt(mem, cr3, base_va, &mut image);
+    if got == 0 {
+        return None; // cov:unreachable: first-page read above already returned >= 0x40
+    }
+    image.truncate(got);
+
+    match crate::pe_debug::extract_pdb_id_tolerant(&image) {
+        Ok(pdb_id) if is_kernel_pdb_name(&pdb_id.pdb_name) => Some(pdb_id),
+        _ => None,
+    }
+}
+
+// --- Minimal, self-contained x86-64 4-level page-table walk --------------
+// memf-symbols sits below memf-core in the dependency graph (memf-core depends
+// ON memf-symbols), so it cannot reuse memf-core's VirtualAddressSpace without
+// creating a cycle. This is a deliberately small walker that needs only the
+// PhysicalMemoryProvider trait from memf-format.
+
+/// Physical-address mask for a 4 KiB-aligned page-table entry (bits 51:12).
+const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+/// Present bit in a page-table entry.
+const PTE_PRESENT: u64 = 1;
+/// Page-size bit (1 GiB / 2 MiB large pages).
+const PTE_PAGE_SIZE: u64 = 1 << 7;
+
+/// Read one little-endian 8-byte PTE from physical address `pa`.
+/// Returns `None` on a short/unmapped read (never panics).
+fn read_pte<P: PhysicalMemoryProvider>(mem: &P, pa: u64) -> Option<u64> {
+    let mut buf = [0u8; 8];
+    let n = mem.read_phys(pa, &mut buf).unwrap_or(0);
+    if n < 8 {
+        return None;
+    }
+    Some(u64::from_le_bytes(buf))
+}
+
+/// Translate virtual address `va` to a physical address using 4-level paging.
+/// Returns `None` for any non-present level (bounds- and present-checked).
+fn virt_to_phys<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, va: u64) -> Option<u64> {
+    let i4 = (va >> 39) & 0x1FF;
+    let i3 = (va >> 30) & 0x1FF;
+    let i2 = (va >> 21) & 0x1FF;
+    let i1 = (va >> 12) & 0x1FF;
+    let page_off = va & 0xFFF;
+
+    let pml4e = read_pte(mem, (cr3 & PTE_ADDR_MASK) + i4 * 8)?;
+    if pml4e & PTE_PRESENT == 0 {
+        return None;
+    }
+
+    let pdpte = read_pte(mem, (pml4e & PTE_ADDR_MASK) + i3 * 8)?;
+    if pdpte & PTE_PRESENT == 0 {
+        return None;
+    }
+    if pdpte & PTE_PAGE_SIZE != 0 {
+        // 1 GiB page
+        return Some((pdpte & 0x000F_FFFF_C000_0000) | (va & 0x3FFF_FFFF));
+    }
+
+    let pde = read_pte(mem, (pdpte & PTE_ADDR_MASK) + i2 * 8)?;
+    if pde & PTE_PRESENT == 0 {
+        return None;
+    }
+    if pde & PTE_PAGE_SIZE != 0 {
+        // 2 MiB page
+        return Some((pde & 0x000F_FFFF_FFE0_0000) | (va & 0x1F_FFFF));
+    }
+
+    let pte = read_pte(mem, (pde & PTE_ADDR_MASK) + i1 * 8)?;
+    if pte & PTE_PRESENT == 0 {
+        return None;
+    }
+    Some((pte & PTE_ADDR_MASK) | page_off)
+}
+
+/// Read up to `buf.len()` bytes starting at virtual address `va`, translating
+/// each 4 KiB page through `cr3`. Stops at the first untranslatable / unmapped
+/// page and returns the number of bytes filled (the rest of `buf` is untouched).
+fn read_virt<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, va: u64, buf: &mut [u8]) -> usize {
+    let mut filled = 0usize;
+    let mut cur = va;
+    while filled < buf.len() {
+        let page_off = (cur & 0xFFF) as usize;
+        let chunk = (PAGE_SIZE - page_off).min(buf.len() - filled);
+        let Some(pa) = virt_to_phys(mem, cr3, cur) else {
+            break;
+        };
+        let n = mem
+            .read_phys(pa, &mut buf[filled..filled + chunk])
+            .unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        filled += n;
+        cur = cur.wrapping_add(n as u64);
+    }
+    filled
 }
 
 #[cfg(test)]
@@ -358,6 +533,8 @@ mod tests {
         guid: [u8; 16],
         age: u32,
     ) -> SparseMem {
+        const PRESENT: u64 = 1;
+
         let mut mem = SparseMem::new();
 
         // Reserve physical pages for PML4/PDPT/PD/PT tables.
@@ -371,7 +548,6 @@ mod tests {
         let i2 = (kernel_va >> 21) & 0x1FF;
         let i1 = (kernel_va >> 12) & 0x1FF;
 
-        const PRESENT: u64 = 1;
         mem.write_pte(pml4 + i4 * 8, pdpt | PRESENT);
         mem.write_pte(pdpt + i3 * 8, pd | PRESENT);
         mem.write_pte(pd + i2 * 8, pt | PRESENT);

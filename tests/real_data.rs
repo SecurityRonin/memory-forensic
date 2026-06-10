@@ -89,6 +89,45 @@ fn classify_real_strings_file() {
     );
 }
 
+/// Locate the SecurityNik crash dump (`.dmp`) in the test data dir.
+fn securitynik_dmp() -> Option<PathBuf> {
+    test_file("SECURITYNIK-WIN-20231116-235706.dmp")
+}
+
+/// Validate the VA-aware kernel locator + tolerant RSDS scanner end-to-end
+/// against the real SecurityNik PAGEDU64 dump.
+///
+/// Ground truth (sidecar JSON): regNtCr3 = 0x1AE000, pdbGuid =
+/// 9DC3FC69-B1CA-4B34-707E-BC57FD1D6126, pdbName = ntkrnlmp.pdb, pdbAge = 1.
+///
+/// The dump maps the kernel high (phys 0x1_0040_0000), so the legacy 1-128 MiB
+/// physical scan misses; this exercises the DTB fallback path.
+#[test]
+#[ignore = "requires SecurityNik .dmp: set MEMF_TEST_DATA"]
+fn securitynik_kernel_locator_matches_ground_truth() {
+    let Some(dump) = securitynik_dmp() else {
+        eprintln!("Skipping: SECURITYNIK-WIN-20231116-235706.dmp not found");
+        return;
+    };
+
+    let provider = memf_format::open_dump(&dump).expect("open crash dump");
+
+    // The crash-dump header must carry the kernel CR3 (DirectoryTableBase).
+    let meta = provider.metadata().expect("crash dump exposes metadata");
+    assert_eq!(meta.cr3, Some(0x1AE000), "embedded CR3 / DTB");
+
+    let pdb_id = memf_symbols::scan_for_kernel(&provider)
+        .expect("scan_for_kernel should locate the kernel via DTB fallback");
+
+    assert_eq!(pdb_id.guid, "9DC3FC69-B1CA-4B34-707E-BC57FD1D6126");
+    assert_eq!(pdb_id.pdb_name, "ntkrnlmp.pdb");
+    assert_eq!(pdb_id.age, 1);
+    println!(
+        "SecurityNik kernel: {} {} age {}",
+        pdb_id.pdb_name, pdb_id.guid, pdb_id.age
+    );
+}
+
 #[test]
 #[ignore = "requires Total Recall zip (Deflate64, 1.3 GB)"]
 fn deflate64_zip_entries_are_readable() {

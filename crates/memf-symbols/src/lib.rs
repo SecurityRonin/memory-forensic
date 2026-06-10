@@ -31,7 +31,8 @@ pub mod symserver;
 pub mod test_builders;
 
 pub use auto_profile::AutoProfile;
-pub use kernel_scanner::scan_for_kernel;
+pub use kernel_scanner::{scan_for_kernel, scan_for_kernel_via_dtb};
+pub use pe_debug::extract_pdb_id_tolerant;
 
 use std::collections::HashMap;
 
