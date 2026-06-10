@@ -452,6 +452,7 @@ mod tests {
     struct SparseMem {
         pages: HashMap<u64, [u8; PAGE_SIZE]>,
         meta: Option<DumpMetadata>,
+        ranges: Vec<memf_format::PhysicalRange>,
     }
 
     impl SparseMem {
@@ -459,6 +460,7 @@ mod tests {
             Self {
                 pages: HashMap::new(),
                 meta: None,
+                ranges: Vec::new(),
             }
         }
 
@@ -475,7 +477,22 @@ mod tests {
                 off += n;
                 cur += n as u64;
             }
+            self.rebuild_ranges();
             self
+        }
+
+        /// Recompute one PhysicalRange per mapped page (coverage of the page-scan
+        /// path; real providers expose contiguous ranges, page granularity is fine).
+        fn rebuild_ranges(&mut self) {
+            let mut bases: Vec<u64> = self.pages.keys().copied().collect();
+            bases.sort_unstable();
+            self.ranges = bases
+                .into_iter()
+                .map(|b| memf_format::PhysicalRange {
+                    start: b,
+                    end: b + PAGE_SIZE as u64,
+                })
+                .collect();
         }
 
         /// Write a single 8-byte little-endian PTE at physical address `pa`.
@@ -508,7 +525,7 @@ mod tests {
         }
 
         fn ranges(&self) -> &[memf_format::PhysicalRange] {
-            &[]
+            &self.ranges
         }
 
         fn format_name(&self) -> &str {
@@ -625,5 +642,131 @@ mod tests {
         let id = scan_for_kernel(&mem).expect("fallback to DTB should find kernel");
         assert_eq!(id.pdb_name, "ntkrnlmp.pdb");
         assert_eq!(id.guid, "9DC3FC69-B1CA-4B34-707E-BC57FD1D6126");
+    }
+
+    // -----------------------------------------------------------------------
+    // Header-less DTB discriminator fixtures and tests (#62)
+    // -----------------------------------------------------------------------
+
+    /// Place a self-referencing PML4 page at physical `pml4_pa`: its entry at the
+    /// canonical Win10/11 self-map index (0x1F9) points back at the page itself.
+    /// Used to model a DTB candidate that the naive self-ref scan would surface.
+    fn write_self_ref_pml4(mem: &mut SparseMem, pml4_pa: u64) {
+        const PRESENT: u64 = 1;
+        // Ensure the PML4 page exists (zero-filled) even with no other entries.
+        mem.write_phys(pml4_pa & !0xFFF, &[0u8; PAGE_SIZE]);
+        mem.write_pte(pml4_pa + SELF_MAP_INDEX * 8, (pml4_pa & !0xFFF) | PRESENT);
+    }
+
+    /// Build a self-referencing PML4 that ALSO maps a kernel image at `kernel_va`.
+    /// Page-table pages live in a per-DTB reserved physical region so multiple
+    /// candidates do not collide. Returns nothing; mutates `mem` in place.
+    #[allow(clippy::too_many_arguments)]
+    fn map_kernel_under_pml4(
+        mem: &mut SparseMem,
+        pml4_pa: u64,
+        table_base: u64,
+        kernel_va: u64,
+        kernel_pa: u64,
+        pdb_name: &str,
+        guid: [u8; 16],
+        age: u32,
+    ) {
+        const PRESENT: u64 = 1;
+        write_self_ref_pml4(mem, pml4_pa);
+
+        let pdpt = table_base;
+        let pd = table_base + 0x1000;
+        let pt = table_base + 0x2000;
+
+        let i4 = (kernel_va >> 39) & 0x1FF;
+        let i3 = (kernel_va >> 30) & 0x1FF;
+        let i2 = (kernel_va >> 21) & 0x1FF;
+        let i1 = (kernel_va >> 12) & 0x1FF;
+
+        mem.write_pte(pml4_pa + i4 * 8, pdpt | PRESENT);
+        mem.write_pte(pdpt + i3 * 8, pd | PRESENT);
+        mem.write_pte(pd + i2 * 8, pt | PRESENT);
+        mem.write_pte(pt + i1 * 8, kernel_pa | PRESENT);
+
+        let pe = build_kernel_pe(pdb_name, guid, age);
+        mem.write_phys(kernel_pa, &pe);
+    }
+
+    /// SecurityNik ground-truth GUID bytes (mixed-endian) for
+    /// `9DC3FC69-B1CA-4B34-707E-BC57FD1D6126`.
+    fn securitynik_guid() -> [u8; 16] {
+        [
+            0x69, 0xFC, 0xC3, 0x9D, 0xCA, 0xB1, 0x34, 0x4B, 0x70, 0x7E, 0xBC, 0x57, 0xFD, 0x1D,
+            0x61, 0x26,
+        ]
+    }
+
+    #[test]
+    fn naive_self_ref_scan_yields_multiple_candidates() {
+        // Three self-referencing PML4s exist; only one maps ntkrnlmp. The naive
+        // self-ref enumeration must surface all three (the ambiguity #58 found).
+        let mut mem = SparseMem::new();
+        write_self_ref_pml4(&mut mem, 0x30_0000); // decoy process DTB
+        write_self_ref_pml4(&mut mem, 0x40_0000); // decoy process DTB
+        let kernel_dtb = 0x1AE000u64;
+        map_kernel_under_pml4(
+            &mut mem,
+            kernel_dtb,
+            0x50_0000,
+            0xFFFF_F802_1F40_0000,
+            0x1_0040_0000,
+            "ntkrnlmp.pdb",
+            securitynik_guid(),
+            1,
+        );
+
+        let candidates = enumerate_self_ref_pml4s(&mem);
+        assert!(
+            candidates.len() >= 3,
+            "expected >= 3 self-ref candidates, got {}",
+            candidates.len()
+        );
+        assert!(candidates.contains(&kernel_dtb));
+        assert!(candidates.contains(&0x30_0000));
+        assert!(candidates.contains(&0x40_0000));
+    }
+
+    #[test]
+    fn discriminator_selects_kernel_dtb_among_decoys() {
+        // The whole point: header-less, with multiple self-ref PML4 candidates,
+        // the discriminator must select the one that maps ntkrnlmp — the kernel DTB.
+        let mut mem = SparseMem::new();
+        write_self_ref_pml4(&mut mem, 0x30_0000); // decoy: self-refs, no ntkrnlmp
+        write_self_ref_pml4(&mut mem, 0x40_0000); // decoy: self-refs, no ntkrnlmp
+        let kernel_dtb = 0x1AE000u64;
+        map_kernel_under_pml4(
+            &mut mem,
+            kernel_dtb,
+            0x50_0000,
+            0xFFFF_F802_1F40_0000,
+            0x1_0040_0000,
+            "ntkrnlmp.pdb",
+            securitynik_guid(),
+            1,
+        );
+
+        let dtb = scan_for_kernel_dtb(&mem).expect("discriminator should select the kernel DTB");
+        assert_eq!(dtb, kernel_dtb, "must pick the DTB that maps ntkrnlmp");
+    }
+
+    #[test]
+    fn discriminator_returns_none_with_only_decoys() {
+        // Self-referencing PML4s that map no kernel must yield no kernel DTB.
+        let mut mem = SparseMem::new();
+        write_self_ref_pml4(&mut mem, 0x30_0000);
+        write_self_ref_pml4(&mut mem, 0x40_0000);
+        assert!(scan_for_kernel_dtb(&mem).is_none());
+    }
+
+    #[test]
+    fn discriminator_returns_none_on_empty_memory() {
+        let mem = SparseMem::new();
+        assert!(scan_for_kernel_dtb(&mem).is_none());
     }
 }
