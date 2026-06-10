@@ -11,6 +11,20 @@ const LIME_MAGIC: u32 = 0x4C694D45;
 const LIME_VERSION: u32 = 1;
 const HEADER_SIZE: usize = 32;
 
+/// Bounds-checked little-endian u32 read; out-of-range yields 0 (never panics).
+fn le_u32(data: &[u8], off: usize) -> u32 {
+    data.get(off..off + 4)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u32::from_le_bytes)
+}
+
+/// Bounds-checked little-endian u64 read; out-of-range yields 0 (never panics).
+fn le_u64(data: &[u8], off: usize) -> u64 {
+    data.get(off..off + 8)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u64::from_le_bytes)
+}
+
 /// A parsed LiME record: physical address range + byte offset into the dump data.
 #[derive(Debug)]
 struct LimeRecord {
@@ -71,22 +85,22 @@ fn parse_records(data: &[u8]) -> Result<Vec<LimeRecord>> {
             )));
         }
 
-        let magic = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let magic = le_u32(data, pos);
         if magic != LIME_MAGIC {
             return Err(Error::Corrupt(format!(
                 "bad magic at offset {pos}: expected 0x{LIME_MAGIC:08X}, got 0x{magic:08X}"
             )));
         }
 
-        let version = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+        let version = le_u32(data, pos + 4);
         if version != LIME_VERSION {
             return Err(Error::Corrupt(format!(
                 "unsupported LiME version {version} at offset {pos}"
             )));
         }
 
-        let s_addr = u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap());
-        let e_addr = u64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap());
+        let s_addr = le_u64(data, pos + 8);
+        let e_addr = le_u64(data, pos + 16);
         // reserved bytes at [pos+24..pos+32] — ignored
 
         if s_addr > e_addr {
@@ -162,8 +176,8 @@ impl FormatPlugin for LimePlugin {
         if header.len() < 8 {
             return 0;
         }
-        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let magic = le_u32(header, 0);
+        let version = le_u32(header, 4);
         if magic == LIME_MAGIC && version == LIME_VERSION {
             90
         } else {

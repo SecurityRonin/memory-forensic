@@ -288,7 +288,7 @@ impl FormatPlugin for VmwarePlugin {
         if header.len() < 4 {
             return 0;
         }
-        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        let magic = read_u32(header, 0).unwrap_or(0);
         if is_vmware_magic(magic) {
             85
         } else {

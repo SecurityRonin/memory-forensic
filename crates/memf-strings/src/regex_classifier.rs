@@ -11,111 +11,102 @@ struct PatternEntry {
     confidence: f32,
 }
 
-#[allow(clippy::too_many_lines)]
+/// Static (pattern, category, confidence) classification table.
+///
+/// Patterns are compile-time-constant and known-valid; building the live
+/// `PatternEntry` table filters out any that fail to compile (defence in
+/// depth) rather than panicking, so a future bad edit degrades to a missing
+/// category instead of an abort.
+const PATTERN_SPECS: &[(&str, StringCategory, f32)] = &[
+    (
+        "(?i)^https?://[^\\s<>\"'{}|\\\\^`\\[\\]]+$",
+        StringCategory::Url,
+        0.90,
+    ),
+    (
+        r"^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)$",
+        StringCategory::IpV4,
+        0.95,
+    ),
+    // IPv6: full 8-group, compressed (::), loopback (::1), etc.
+    // Covers RFC 5952 canonical forms without interface ID suffixes.
+    (
+        concat!(
+            r"^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$",
+            r"|^(?:[0-9a-fA-F]{1,4}:){1,7}:$",
+            r"|^::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$",
+            r"|^::$",
+            r"|^(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}$",
+            r"|^(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}$",
+            r"|^(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}$",
+            r"|^(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}$",
+            r"|^(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}$",
+            r"|^[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}$",
+        ),
+        StringCategory::IpV6,
+        0.95,
+    ),
+    (
+        r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+        StringCategory::Email,
+        0.90,
+    ),
+    (
+        r"^/(?:usr|etc|var|tmp|home|opt|dev|proc|sys|root|bin|sbin|lib|mnt|run|srv)/[^\s:*?<>|]+$",
+        StringCategory::UnixPath,
+        0.85,
+    ),
+    (
+        r"(?i)^[A-Z]:\\(?:[^\\/:*?<>|\r\n]+\\)*[^\\/:*?<>|\r\n]*$",
+        StringCategory::WindowsPath,
+        0.85,
+    ),
+    (
+        r"(?i)^HK(?:EY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)|LM|CU|CR)\\",
+        StringCategory::RegistryKey,
+        0.95,
+    ),
+    (
+        r"^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$",
+        StringCategory::CryptoAddress,
+        0.70,
+    ),
+    (r"^0x[0-9a-fA-F]{40}$", StringCategory::CryptoAddress, 0.80),
+    (
+        r"^bc1[a-zA-HJ-NP-Z0-9]{25,39}$",
+        StringCategory::CryptoAddress,
+        0.85,
+    ),
+    (
+        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
+        StringCategory::PrivateKey,
+        0.99,
+    ),
+    (
+        r"^[A-Za-z0-9+/]{20,}={0,2}$",
+        StringCategory::Base64Blob,
+        0.40,
+    ),
+    (
+        r"/dev/tcp/|/dev/udp/|pty\.spawn|os\.dup2\(|bash\s+-i\s+>&",
+        StringCategory::ShellCommand,
+        0.90,
+    ),
+];
+
 fn patterns() -> &'static [PatternEntry] {
     static PATTERNS: OnceLock<Vec<PatternEntry>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
-        vec![
-            PatternEntry {
-                regex: Regex::new("(?i)^https?://[^\\s<>\"'{}|\\\\^`\\[\\]]+$").unwrap(),
-                category: StringCategory::Url,
-                confidence: 0.90,
-            },
-            PatternEntry {
-                regex: Regex::new(
-                    r"^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)$",
-                )
-                .unwrap(),
-                category: StringCategory::IpV4,
-                confidence: 0.95,
-            },
-            PatternEntry {
-                // IPv6: full 8-group, compressed (::), loopback (::1), etc.
-                // Covers RFC 5952 canonical forms without interface ID suffixes.
-                regex: Regex::new(
-                    concat!(
-                        r"^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$",
-                        r"|^(?:[0-9a-fA-F]{1,4}:){1,7}:$",
-                        r"|^::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$",
-                        r"|^::$",
-                        r"|^(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}$",
-                        r"|^(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}$",
-                        r"|^(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}$",
-                        r"|^(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}$",
-                        r"|^(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}$",
-                        r"|^[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}$",
-                    ),
-                )
-                .unwrap(),
-                category: StringCategory::IpV6,
-                confidence: 0.95,
-            },
-            PatternEntry {
-                regex: Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").unwrap(),
-                category: StringCategory::Email,
-                confidence: 0.90,
-            },
-            PatternEntry {
-                regex: Regex::new(
-                    r"^/(?:usr|etc|var|tmp|home|opt|dev|proc|sys|root|bin|sbin|lib|mnt|run|srv)/[^\s:*?<>|]+$",
-                )
-                .unwrap(),
-                category: StringCategory::UnixPath,
-                confidence: 0.85,
-            },
-            PatternEntry {
-                regex: Regex::new(
-                    r"(?i)^[A-Z]:\\(?:[^\\/:*?<>|\r\n]+\\)*[^\\/:*?<>|\r\n]*$",
-                )
-                .unwrap(),
-                category: StringCategory::WindowsPath,
-                confidence: 0.85,
-            },
-            PatternEntry {
-                regex: Regex::new(
-                    r"(?i)^HK(?:EY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)|LM|CU|CR)\\",
-                )
-                .unwrap(),
-                category: StringCategory::RegistryKey,
-                confidence: 0.95,
-            },
-            PatternEntry {
-                regex: Regex::new(r"^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$").unwrap(),
-                category: StringCategory::CryptoAddress,
-                confidence: 0.70,
-            },
-            PatternEntry {
-                regex: Regex::new(r"^0x[0-9a-fA-F]{40}$").unwrap(),
-                category: StringCategory::CryptoAddress,
-                confidence: 0.80,
-            },
-            PatternEntry {
-                regex: Regex::new(r"^bc1[a-zA-HJ-NP-Z0-9]{25,39}$").unwrap(),
-                category: StringCategory::CryptoAddress,
-                confidence: 0.85,
-            },
-            PatternEntry {
-                regex: Regex::new(
-                    r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
-                )
-                .unwrap(),
-                category: StringCategory::PrivateKey,
-                confidence: 0.99,
-            },
-            PatternEntry {
-                regex: Regex::new(r"^[A-Za-z0-9+/]{20,}={0,2}$").unwrap(),
-                category: StringCategory::Base64Blob,
-                confidence: 0.40,
-            },
-            PatternEntry {
-                regex: Regex::new(
-                    r"/dev/tcp/|/dev/udp/|pty\.spawn|os\.dup2\(|bash\s+-i\s+>&",
-                )
-                .unwrap(),
-                category: StringCategory::ShellCommand,
-                confidence: 0.90,
-            },
-        ]
+        PATTERN_SPECS
+            .iter()
+            .filter_map(|(pat, category, confidence)| {
+                Regex::new(pat).ok().map(|regex| PatternEntry {
+                    regex,
+                    category: category.clone(),
+                    confidence: *confidence,
+                })
+            })
+            .collect()
     })
 }
 

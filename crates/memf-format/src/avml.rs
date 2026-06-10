@@ -11,6 +11,20 @@ const AVML_MAGIC: u32 = 0x4C4D5641;
 const AVML_VERSION: u32 = 2;
 const HEADER_SIZE: usize = 32;
 
+/// Bounds-checked little-endian u32 read; out-of-range yields 0 (never panics).
+fn le_u32(data: &[u8], off: usize) -> u32 {
+    data.get(off..off + 4)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u32::from_le_bytes)
+}
+
+/// Bounds-checked little-endian u64 read; out-of-range yields 0 (never panics).
+fn le_u64(data: &[u8], off: usize) -> u64 {
+    data.get(off..off + 8)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u64::from_le_bytes)
+}
+
 /// A parsed AVML block: physical address range + decompressed payload bytes.
 #[derive(Debug)]
 struct AvmlBlock {
@@ -58,10 +72,10 @@ fn parse_blocks(data: &[u8]) -> Result<Vec<AvmlBlock>> {
             )));
         }
 
-        let magic = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-        let version = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-        let start = u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap());
-        let end = u64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap());
+        let magic = le_u32(data, pos);
+        let version = le_u32(data, pos + 4);
+        let start = le_u64(data, pos + 8);
+        let end = le_u64(data, pos + 16);
         // bytes [24..32] are reserved — ignored.
 
         if magic != AVML_MAGIC {
@@ -98,7 +112,7 @@ fn parse_blocks(data: &[u8]) -> Result<Vec<AvmlBlock>> {
 
         let mut i = scan_start;
         while i <= scan_end {
-            let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+            let val = le_u64(data, i);
             if val == expected_uncompressed {
                 let compressed = &data[payload_start..i];
                 let mut decoder = snap::raw::Decoder::new();
@@ -175,8 +189,8 @@ impl FormatPlugin for AvmlPlugin {
         if header.len() < 8 {
             return 0;
         }
-        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let magic = le_u32(header, 0);
+        let version = le_u32(header, 4);
         if magic == AVML_MAGIC && version == AVML_VERSION {
             90
         } else {

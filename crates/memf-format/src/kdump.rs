@@ -275,8 +275,10 @@ impl KdumpProvider {
         // Build physical ranges from the 2nd bitmap.
         let ranges = ranges_from_bitmap(bitmap2, max_mapnr, block_size);
 
+        // CACHE_CAPACITY is a non-zero compile-time constant; the fallback to
+        // NonZeroUsize::MIN keeps construction infallible if it is ever set to 0.
         let cache = Mutex::new(lru::LruCache::new(
-            NonZeroUsize::new(CACHE_CAPACITY).expect("CACHE_CAPACITY must be > 0"),
+            NonZeroUsize::new(CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
         ));
 
         Ok(Self {

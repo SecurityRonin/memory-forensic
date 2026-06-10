@@ -2,6 +2,11 @@
 //!
 //! These are only compiled when `cfg(test)` is active or when explicitly
 //! depended on by other test modules.
+//!
+//! This is test-fixture infrastructure (a `pub mod` so integration tests can
+//! reach it), so panic-on-failure via `unwrap`/`expect` is the intended
+//! behavior — a broken fixture should fail loudly, not silently degrade.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 /// Build a synthetic LiME dump byte-by-byte.
 ///
