@@ -75,6 +75,15 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
         }
     }
 
+    // Header-less last resort: no embedded CR3 / anchor VA to lean on. Recover
+    // the kernel DTB from raw physical memory by self-map enumeration +
+    // ntkrnlmp verification, then locate the kernel through it.
+    if let Some(cr3) = scan_for_kernel_dtb(mem) {
+        if let Some(pdb_id) = locate_kernel_via_dtb_only(mem, cr3) {
+            return Ok(pdb_id);
+        }
+    }
+
     Err(crate::Error::NotFound(
         "kernel PE not found in physical memory or via DTB translation".into(),
     ))
@@ -131,6 +140,174 @@ pub fn scan_for_kernel_via_dtb<P: PhysicalMemoryProvider>(
     Err(crate::Error::NotFound(
         "kernel PE not found via DTB translation".into(),
     ))
+}
+
+// --- Header-less DTB/CR3 discriminator (#62) -----------------------------
+// A raw dump with no crash-dump metadata (no embedded CR3, no
+// PsLoadedModuleList) still lets us recover the kernel DTB: Win10/11 build a
+// recursive PML4 self-map at a fixed index, so the page-table root self-
+// references. But a bare self-reference scan is AMBIGUOUS — every *process*
+// DTB self-references at the same index too, and (validated on the SecurityNik
+// dump: 220 self-ref candidates) the kernel's upper-half page tables are shared
+// into every process DTB, so *all* of them resolve the kernel image. The
+// discriminator therefore combines two signals:
+//   1. VERIFICATION (necessary): a candidate must be a real DTB whose page
+//      tables locate an ntkrnlmp/ntoskrnl PE with a valid RSDS GUID — this
+//      rejects self-referencing pages that are not page-table roots at all.
+//   2. LOWEST-PHYSICAL prior (the selector): among the verified DTBs, the kernel
+//      DTB sits lowest in physical memory (0x1AE000 on SecurityNik), below the
+//      per-process DTBs. Because the kernel half is shared, verification alone
+//      does not single out the kernel DTB; the ascending order does.
+
+/// Canonical Windows 10/11 PML4 recursive self-map index.
+///
+/// The kernel installs a self-referencing entry here so the page tables are
+/// reachable through their own virtual address window. Both the kernel DTB and
+/// every process DTB carry it, which is exactly why the self-map scan alone is
+/// ambiguous and a verification step is required.
+const SELF_MAP_INDEX: u64 = 0x1F9;
+
+/// Cap on self-referencing PML4 candidate pages collected from the dump.
+/// A multi-GiB dump can contain hundreds of process DTBs; bound the work so a
+/// crafted dump cannot turn the scan into a denial of service.
+const MAX_PML4_CANDIDATES: usize = 4096;
+
+/// Cap on full RSDS verification attempts per DTB. The cheap MZ pre-check gates
+/// these, so only 2 MiB-aligned VAs that actually start with `MZ` (a handful per
+/// dump — ntoskrnl plus a few boot drivers) ever reach the expensive image read.
+/// Bounds the work a crafted dump full of fake `MZ` headers could impose.
+const MAX_KERNEL_VERIFY_ATTEMPTS: usize = 256;
+
+/// Number of 2 MiB slots probed within each present kernel-half PDPT region
+/// when hunting the 2 MiB-aligned ntkrnlmp base. A present PDPT entry covers a
+/// full 1 GiB (512 × 2 MiB pages), so probe the whole region.
+const KERNEL_PROBE_SLOTS: u64 = 512;
+
+/// Build a canonical kernel virtual address whose PML4 index is `pml4_idx`.
+/// Bits 47:39 carry the PML4 index; bit 47 is sign-extended into 63:48 so the
+/// address lands in the canonical kernel (high) half.
+fn kernel_va_for_pml4_index(pml4_idx: u64, pdpt_idx: u64) -> u64 {
+    let va = ((pml4_idx & 0x1FF) << 39) | ((pdpt_idx & 0x1FF) << 30);
+    // Canonical sign-extension: replicate bit 47 into 63:48.
+    if va & (1 << 47) != 0 {
+        va | 0xFFFF_0000_0000_0000
+    } else {
+        va
+    }
+}
+
+/// Enumerate physical pages that look like a self-referencing PML4 — the entry
+/// at [`SELF_MAP_INDEX`] is present and points back at the page itself.
+///
+/// These are the DTB *candidates*. The set is ambiguous (process + kernel DTBs
+/// alike); [`scan_for_kernel_dtb`] disambiguates by verification. Bounded by
+/// [`MAX_PML4_CANDIDATES`]; never panics (all reads bounds-/present-checked).
+fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider>(mem: &P) -> Vec<u64> {
+    let mut candidates = Vec::new();
+    for range in mem.ranges() {
+        let mut pa = range.start & !0xFFF;
+        while pa < range.end {
+            if candidates.len() >= MAX_PML4_CANDIDATES {
+                return candidates;
+            }
+            if let Some(entry) = read_pte(mem, pa + SELF_MAP_INDEX * 8) {
+                if entry & PTE_PRESENT != 0 && (entry & PTE_ADDR_MASK) == pa {
+                    candidates.push(pa);
+                }
+            }
+            // Stop before overflow at the top of the address space.
+            let Some(next) = pa.checked_add(PAGE_SIZE as u64) else {
+                break; // cov:unreachable: dump ranges never reach u64::MAX page
+            };
+            pa = next;
+        }
+    }
+    candidates
+}
+
+/// Treating physical `cr3` as the page-table root, try to reach an
+/// ntkrnlmp/ntoskrnl PE with a valid RSDS record, returning its PDB identity.
+/// `Some` means the candidate is a real DTB that maps the kernel — necessary,
+/// but on a live Windows dump *not* sufficient to single out the kernel DTB
+/// (the kernel half is shared into every process DTB). [`scan_for_kernel_dtb`]
+/// adds the lowest-physical prior to make the final selection.
+///
+/// With no dump metadata there is no known kernel VA, so we derive candidate
+/// kernel bases from the page tables themselves: walk every present kernel-half
+/// PML4 entry (indices 0x100..0x200) and present PDPT entry below it, and probe
+/// each 2 MiB-aligned virtual address in that 1 GiB region. A cheap two-byte
+/// `MZ` pre-check gates the expensive image read + RSDS scan, so only genuine PE
+/// bases are fully verified. ntoskrnl is the lowest such kernel-half image, so
+/// the ascending walk reaches it first. Full verifications are bounded by
+/// [`MAX_KERNEL_VERIFY_ATTEMPTS`]; the descent itself is bounded by the
+/// architectural kernel-half size and [`KERNEL_PROBE_SLOTS`].
+fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> Option<PdbId> {
+    let mut verify_attempts = 0usize;
+    for pml4_idx in 0x100u64..0x200 {
+        let pml4e = match read_pte(mem, (cr3 & PTE_ADDR_MASK) + pml4_idx * 8) {
+            Some(e) if e & PTE_PRESENT != 0 => e,
+            _ => continue,
+        };
+        for pdpt_idx in 0u64..0x200 {
+            match read_pte(mem, (pml4e & PTE_ADDR_MASK) + pdpt_idx * 8) {
+                Some(e) if e & PTE_PRESENT != 0 => {}
+                _ => continue,
+            }
+            // Probe 2 MiB-aligned VAs within this 1 GiB PDPT region for ntkrnlmp.
+            let base_va = kernel_va_for_pml4_index(pml4_idx, pdpt_idx);
+            for slot in 0..KERNEL_PROBE_SLOTS {
+                let va = base_va + slot * TWO_MIB;
+                // Cheap gate: only 2 MiB-aligned VAs that start with `MZ` are
+                // worth a full image read. Unmapped pages read short → skipped.
+                let mut sig = [0u8; 2];
+                if read_virt(mem, cr3, va, &mut sig) < 2 || sig != [b'M', b'Z'] {
+                    continue;
+                }
+                if verify_attempts >= MAX_KERNEL_VERIFY_ATTEMPTS {
+                    return None;
+                }
+                verify_attempts += 1;
+                if let Some(pdb_id) = try_kernel_at_va(mem, cr3, va) {
+                    return Some(pdb_id);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Recover the kernel DTB (page-table root) from a **header-less** raw dump.
+///
+/// For dumps with no crash-dump metadata (no embedded CR3, no
+/// `PsLoadedModuleList`), [`scan_for_kernel`] has nothing to anchor the DTB
+/// descent on. This entry point recovers the kernel DTB directly from raw
+/// physical memory:
+///
+/// 1. Enumerate self-referencing PML4 candidates ([`enumerate_self_ref_pml4s`]).
+///    On a real dump this surfaces the kernel DTB *and* many process DTBs — all
+///    self-reference at the same canonical index (220 on SecurityNik), so the
+///    set is ambiguous.
+/// 2. Order candidates by ascending physical address and accept the first whose
+///    page tables map an ntkrnlmp/ntoskrnl PE with a valid RSDS GUID
+///    ([`locate_kernel_via_dtb_only`]). Verification rejects self-referencing
+///    pages that are not page-table roots; the lowest-physical ordering selects
+///    the kernel DTB among the process DTBs (whose shared kernel half also maps
+///    the kernel, so verification alone would not distinguish them).
+///
+/// Returns the physical address of the kernel DTB, or `None` if no candidate
+/// verifies. Panic-free and bounded against crafted dumps.
+pub fn scan_for_kernel_dtb<P: PhysicalMemoryProvider>(mem: &P) -> Option<u64> {
+    let mut candidates = enumerate_self_ref_pml4s(mem);
+    // The kernel DTB sits lowest in physical memory (0x1AE000 on SecurityNik),
+    // below the per-process DTBs. Because the kernel's upper-half page tables are
+    // shared into every process DTB, every candidate's walk reaches the kernel
+    // image — so verification confirms "is a DTB mapping the kernel" but does not
+    // single out the kernel DTB. Ascending order makes that selection, and also
+    // finds the answer fast (the kernel is tried first).
+    candidates.sort_unstable();
+    candidates
+        .into_iter()
+        .find(|&cr3| locate_kernel_via_dtb_only(mem, cr3).is_some())
 }
 
 /// If a valid AMD64 kernel PE is mapped at `base_va`, return its PDB identity.
