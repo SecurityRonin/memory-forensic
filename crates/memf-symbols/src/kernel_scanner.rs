@@ -65,6 +65,27 @@ fn is_kernel_pdb_name(name: &str) -> bool {
     lower.contains("ntkrnl") || lower.contains("ntoskrnl")
 }
 
+/// Locate the kernel PE via CR3/DTB-based virtual address translation.
+///
+/// On many real dumps the kernel image is mapped high in the kernel virtual
+/// address space and is **not** reachable by a low physical scan
+/// ([`scan_for_kernel`]). Given the page-table root (`cr3`/DTB) and a known
+/// kernel virtual address `anchor_va` (e.g. `PsLoadedModuleList` from the crash
+/// dump header), this descends in 2 MiB steps from `anchor_va`, translating each
+/// candidate base through the page tables, until it finds an AMD64 PE whose
+/// CodeView RSDS record identifies it as an ntoskrnl variant.
+///
+/// Returns [`Error::NotFound`] if no kernel PE is located within the search
+/// window.
+pub fn scan_for_kernel_via_dtb<P: PhysicalMemoryProvider>(
+    _mem: &P,
+    _cr3: u64,
+    _anchor_va: u64,
+) -> crate::Result<PdbId> {
+    // RED stub — implemented in the GREEN commit.
+    Err(crate::Error::NotFound("not yet implemented".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +262,192 @@ mod tests {
         let mem = FakeMem::new(SCAN_START, pe);
         let result = scan_for_kernel(&mem);
         assert!(matches!(result, Err(crate::Error::NotFound(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // VA-aware (DTB) locator fixtures and tests
+    // -----------------------------------------------------------------------
+
+    use memf_format::DumpMetadata;
+    use std::collections::HashMap;
+
+    /// A sparse physical memory provider keyed by page. Lets a test place page
+    /// tables and a kernel image at arbitrary physical addresses, and exposes
+    /// optional [`DumpMetadata`] (cr3 + ps_loaded_module_list) like a real dump.
+    struct SparseMem {
+        pages: HashMap<u64, [u8; PAGE_SIZE]>,
+        meta: Option<DumpMetadata>,
+    }
+
+    impl SparseMem {
+        fn new() -> Self {
+            Self {
+                pages: HashMap::new(),
+                meta: None,
+            }
+        }
+
+        /// Write `data` starting at physical address `pa`, spanning pages as needed.
+        fn write_phys(&mut self, pa: u64, data: &[u8]) -> &mut Self {
+            let mut off = 0usize;
+            let mut cur = pa;
+            while off < data.len() {
+                let page_base = cur & !0xFFF;
+                let in_page = (cur & 0xFFF) as usize;
+                let n = (PAGE_SIZE - in_page).min(data.len() - off);
+                let page = self.pages.entry(page_base).or_insert([0u8; PAGE_SIZE]);
+                page[in_page..in_page + n].copy_from_slice(&data[off..off + n]);
+                off += n;
+                cur += n as u64;
+            }
+            self
+        }
+
+        /// Write a single 8-byte little-endian PTE at physical address `pa`.
+        fn write_pte(&mut self, pa: u64, value: u64) -> &mut Self {
+            self.write_phys(pa, &value.to_le_bytes())
+        }
+
+        fn with_metadata(&mut self, meta: DumpMetadata) -> &mut Self {
+            self.meta = Some(meta);
+            self
+        }
+    }
+
+    impl PhysicalMemoryProvider for SparseMem {
+        fn read_phys(&self, addr: u64, buf: &mut [u8]) -> memf_format::Result<usize> {
+            let mut off = 0usize;
+            let mut cur = addr;
+            while off < buf.len() {
+                let page_base = cur & !0xFFF;
+                let in_page = (cur & 0xFFF) as usize;
+                let n = (PAGE_SIZE - in_page).min(buf.len() - off);
+                match self.pages.get(&page_base) {
+                    Some(page) => buf[off..off + n].copy_from_slice(&page[in_page..in_page + n]),
+                    None => return Ok(off), // unmapped — short read like a real provider
+                }
+                off += n;
+                cur += n as u64;
+            }
+            Ok(off)
+        }
+
+        fn ranges(&self) -> &[memf_format::PhysicalRange] {
+            &[]
+        }
+
+        fn format_name(&self) -> &str {
+            "sparse"
+        }
+
+        fn metadata(&self) -> Option<DumpMetadata> {
+            self.meta.clone()
+        }
+    }
+
+    /// Map a kernel-base VA → kernel image physical base by building a minimal
+    /// x86-64 4-level page table. Page-table pages occupy a reserved physical
+    /// region; the kernel image occupies `kernel_pa`. Returns the populated mem.
+    ///
+    /// `pdb_name`/`guid`/`age` define the RSDS record embedded in the image.
+    fn build_dtb_fixture(
+        cr3: u64,
+        kernel_va: u64,
+        kernel_pa: u64,
+        pdb_name: &str,
+        guid: [u8; 16],
+        age: u32,
+    ) -> SparseMem {
+        let mut mem = SparseMem::new();
+
+        // Reserve physical pages for PML4/PDPT/PD/PT tables.
+        let pml4 = cr3 & !0xFFF;
+        let pdpt = 0x10_0000u64;
+        let pd = 0x11_0000u64;
+        let pt = 0x12_0000u64;
+
+        let i4 = (kernel_va >> 39) & 0x1FF;
+        let i3 = (kernel_va >> 30) & 0x1FF;
+        let i2 = (kernel_va >> 21) & 0x1FF;
+        let i1 = (kernel_va >> 12) & 0x1FF;
+
+        const PRESENT: u64 = 1;
+        mem.write_pte(pml4 + i4 * 8, pdpt | PRESENT);
+        mem.write_pte(pdpt + i3 * 8, pd | PRESENT);
+        mem.write_pte(pd + i2 * 8, pt | PRESENT);
+        mem.write_pte(pt + i1 * 8, kernel_pa | PRESENT);
+
+        // Place the kernel image at kernel_pa.
+        let pe = build_kernel_pe(pdb_name, guid, age);
+        mem.write_phys(kernel_pa, &pe);
+
+        mem
+    }
+
+    #[test]
+    fn dtb_locator_finds_kernel_at_anchor() {
+        let cr3 = 0x1AE000u64;
+        let kernel_va = 0xFFFF_F802_1F40_0000u64;
+        let kernel_pa = 0x1_0040_0000u64;
+        let guid = [
+            0x69, 0xFC, 0xC3, 0x9D, 0xCA, 0xB1, 0x34, 0x4B, 0x70, 0x7E, 0xBC, 0x57, 0xFD, 0x1D,
+            0x61, 0x26,
+        ];
+        let mem = build_dtb_fixture(cr3, kernel_va, kernel_pa, "ntkrnlmp.pdb", guid, 1);
+        let id = scan_for_kernel_via_dtb(&mem, cr3, kernel_va).expect("should find kernel via DTB");
+        assert_eq!(id.pdb_name, "ntkrnlmp.pdb");
+        assert_eq!(id.age, 1);
+        assert_eq!(id.guid, "9DC3FC69-B1CA-4B34-707E-BC57FD1D6126");
+    }
+
+    #[test]
+    fn dtb_locator_descends_from_anchor_above_kernel() {
+        // Anchor sits 6 MiB above the kernel base; locator must descend to find it.
+        let cr3 = 0x1AE000u64;
+        let kernel_va = 0xFFFF_F802_1F40_0000u64;
+        let anchor_va = kernel_va + 0x60_0000; // 6 MiB above, within the same 2MB grid
+        let kernel_pa = 0x1_0040_0000u64;
+        let guid = [0xAA; 16];
+        let mem = build_dtb_fixture(cr3, kernel_va, kernel_pa, "ntoskrnl.pdb", guid, 3);
+        let id =
+            scan_for_kernel_via_dtb(&mem, cr3, anchor_va).expect("should descend to kernel base");
+        assert_eq!(id.pdb_name, "ntoskrnl.pdb");
+        assert_eq!(id.age, 3);
+    }
+
+    #[test]
+    fn dtb_locator_not_found_on_empty_tables() {
+        let cr3 = 0x1AE000u64;
+        let mut mem = SparseMem::new();
+        // Map only the cr3 page (all zero PTEs) so the walk fails cleanly.
+        mem.write_phys(cr3 & !0xFFF, &[0u8; PAGE_SIZE]);
+        let result = scan_for_kernel_via_dtb(&mem, cr3, 0xFFFF_F802_1F40_0000);
+        assert!(matches!(result, Err(crate::Error::NotFound(_))));
+    }
+
+    #[test]
+    fn scan_for_kernel_falls_back_to_dtb_via_metadata() {
+        // No kernel in the low physical scan window; the kernel is reachable only
+        // through the DTB. scan_for_kernel must read cr3 + ps_loaded_module_list
+        // from metadata and fall back to the VA-aware locator.
+        let cr3 = 0x1AE000u64;
+        let kernel_va = 0xFFFF_F802_1F40_0000u64;
+        let ps_lml = kernel_va + 0x40_0000; // 4 MiB above kernel base
+        let kernel_pa = 0x1_0040_0000u64;
+        let guid = [
+            0x69, 0xFC, 0xC3, 0x9D, 0xCA, 0xB1, 0x34, 0x4B, 0x70, 0x7E, 0xBC, 0x57, 0xFD, 0x1D,
+            0x61, 0x26,
+        ];
+        let mut mem = build_dtb_fixture(cr3, kernel_va, kernel_pa, "ntkrnlmp.pdb", guid, 1);
+        let meta = DumpMetadata {
+            cr3: Some(cr3),
+            ps_loaded_module_list: Some(ps_lml),
+            ..Default::default()
+        };
+        mem.with_metadata(meta);
+
+        let id = scan_for_kernel(&mem).expect("fallback to DTB should find kernel");
+        assert_eq!(id.pdb_name, "ntkrnlmp.pdb");
+        assert_eq!(id.guid, "9DC3FC69-B1CA-4B34-707E-BC57FD1D6126");
     }
 }
