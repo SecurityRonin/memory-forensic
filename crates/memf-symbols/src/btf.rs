@@ -16,6 +16,27 @@ const BTF_MAGIC: u16 = 0xEB9F;
 /// BTF header size (version 1).
 const BTF_HEADER_SIZE: usize = 24;
 
+/// Bounds-checked little-endian u16 read; out-of-range yields 0 (never panics).
+fn le_u16(data: &[u8], off: usize) -> u16 {
+    data.get(off..off + 2)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u16::from_le_bytes)
+}
+
+/// Bounds-checked little-endian u32 read; out-of-range yields 0 (never panics).
+fn le_u32(data: &[u8], off: usize) -> u32 {
+    data.get(off..off + 4)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u32::from_le_bytes)
+}
+
+/// Bounds-checked little-endian u64 read; out-of-range yields 0 (never panics).
+fn le_u64(data: &[u8], off: usize) -> u64 {
+    data.get(off..off + 8)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u64::from_le_bytes)
+}
+
 /// BTF type kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -86,7 +107,7 @@ impl BtfResolver {
             return Err(Error::Malformed("BTF data too short for header".into()));
         }
 
-        let magic = u16::from_le_bytes(data[0..2].try_into().unwrap());
+        let magic = le_u16(data, 0);
         if magic != BTF_MAGIC {
             return Err(Error::Malformed(format!(
                 "bad BTF magic: expected 0x{BTF_MAGIC:04X}, got 0x{magic:04X}"
@@ -100,11 +121,11 @@ impl BtfResolver {
             )));
         }
 
-        let _hdr_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-        let type_off = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
-        let type_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
-        let str_off = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
-        let str_len = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
+        let _hdr_len = le_u32(data, 4) as usize;
+        let type_off = le_u32(data, 8) as usize;
+        let type_len = le_u32(data, 12) as usize;
+        let str_off = le_u32(data, 16) as usize;
+        let str_len = le_u32(data, 20) as usize;
 
         let type_start = BTF_HEADER_SIZE + type_off;
         let type_end = type_start + type_len;
@@ -234,9 +255,9 @@ fn parse_type_section(data: &[u8]) -> Result<Vec<BtfType>> {
 
     let mut pos = 0;
     while pos + 12 <= data.len() {
-        let name_off = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-        let info = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-        let size_or_type = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+        let name_off = le_u32(data, pos);
+        let info = le_u32(data, pos + 4);
+        let size_or_type = le_u32(data, pos + 8);
         pos += 12;
 
         let kind_val = ((info >> 24) & 0x1F) as u8;
@@ -252,9 +273,9 @@ fn parse_type_section(data: &[u8]) -> Result<Vec<BtfType>> {
                     if pos + 12 > data.len() {
                         return Err(Error::Malformed("truncated BTF struct member".into()));
                     }
-                    let m_name_off = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-                    let m_type_id = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-                    let m_offset = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+                    let m_name_off = le_u32(data, pos);
+                    let m_type_id = le_u32(data, pos + 4);
+                    let m_offset = le_u32(data, pos + 8);
                     pos += 12;
 
                     // BTF member offsets are always in bits; convert to bytes.
@@ -351,10 +372,10 @@ fn extract_btf_from_elf(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn extract_btf_from_elf64(data: &[u8]) -> Result<Vec<u8>> {
-    let e_shoff = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
-    let e_shentsize = u16::from_le_bytes(data[58..60].try_into().unwrap()) as usize;
-    let e_shnum = u16::from_le_bytes(data[60..62].try_into().unwrap()) as usize;
-    let e_shstrndx = u16::from_le_bytes(data[62..64].try_into().unwrap()) as usize;
+    let e_shoff = le_u64(data, 40) as usize;
+    let e_shentsize = le_u16(data, 58) as usize;
+    let e_shnum = le_u16(data, 60) as usize;
+    let e_shstrndx = le_u16(data, 62) as usize;
 
     if e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 {
         return Err(Error::Malformed("no ELF section headers".into()));
@@ -366,10 +387,8 @@ fn extract_btf_from_elf64(data: &[u8]) -> Result<Vec<u8>> {
             "section header string table out of bounds".into(),
         ));
     }
-    let shstr_offset =
-        u64::from_le_bytes(data[shstr_off + 24..shstr_off + 32].try_into().unwrap()) as usize;
-    let shstr_size =
-        u64::from_le_bytes(data[shstr_off + 32..shstr_off + 40].try_into().unwrap()) as usize;
+    let shstr_offset = le_u64(data, shstr_off + 24) as usize;
+    let shstr_size = le_u64(data, shstr_off + 32) as usize;
 
     if shstr_offset + shstr_size > data.len() {
         return Err(Error::Malformed(
@@ -383,13 +402,11 @@ fn extract_btf_from_elf64(data: &[u8]) -> Result<Vec<u8>> {
         if sh_off + 64 > data.len() {
             break;
         }
-        let sh_name = u32::from_le_bytes(data[sh_off..sh_off + 4].try_into().unwrap());
+        let sh_name = le_u32(data, sh_off);
         let name = read_btf_string(shstrtab, sh_name);
         if name == ".BTF" {
-            let sh_offset =
-                u64::from_le_bytes(data[sh_off + 24..sh_off + 32].try_into().unwrap()) as usize;
-            let sh_size =
-                u64::from_le_bytes(data[sh_off + 32..sh_off + 40].try_into().unwrap()) as usize;
+            let sh_offset = le_u64(data, sh_off + 24) as usize;
+            let sh_size = le_u64(data, sh_off + 32) as usize;
             if sh_offset + sh_size > data.len() {
                 return Err(Error::Malformed(".BTF section data out of bounds".into()));
             }

@@ -1,4 +1,9 @@
 //! Test builders for synthetic symbol tables.
+//!
+//! Test-fixture infrastructure (a `pub mod` reachable from integration tests);
+//! panic-on-failure via `unwrap`/`expect` is intended — a broken fixture
+//! should fail loudly, not silently degrade.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
