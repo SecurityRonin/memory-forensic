@@ -81,14 +81,95 @@ pub fn extract_pdb_id(pe_bytes: &[u8]) -> crate::Result<PdbId> {
     })
 }
 
+/// CodeView RSDS record signature.
+const RSDS_MAGIC: &[u8; 4] = b"RSDS";
+/// Minimum bytes in an RSDS record: 4 (magic) + 16 (GUID) + 4 (age) + 1 (name nul).
+const RSDS_MIN_LEN: usize = 4 + 16 + 4 + 1;
+/// Cap on the PDB-name length scanned after the age field (defensive bound).
+const MAX_PDB_NAME_LEN: usize = 256;
+
 /// Extract PDB identification by scanning raw bytes for a CodeView RSDS record.
 ///
-/// Tolerant fallback for [`extract_pdb_id`]: scans for the `RSDS` signature and
-/// reads the GUID/age/name directly, so it works on in-memory kernel images
-/// whose on-disk file offsets are invalid for a full PE parse.
-pub fn extract_pdb_id_tolerant(_bytes: &[u8]) -> crate::Result<PdbId> {
-    // RED stub — implemented in the GREEN commit.
-    Err(crate::Error::NotFound("not yet implemented".into()))
+/// Tolerant fallback for [`extract_pdb_id`]: it does **not** parse the PE
+/// structure (section table, data directories, attribute-certificate table),
+/// so it works on an *in-memory* kernel image whose on-disk file offsets are no
+/// longer valid (goblin rejects such images with errors like "End of attribute
+/// certificates table is after the end of the PE binary").
+///
+/// Scans `bytes` for the ASCII signature `RSDS`, then reads the 16-byte
+/// mixed-endian GUID, the 4-byte age, and the NUL-terminated PDB filename that
+/// follow. The first record with a non-empty, valid-UTF-8 filename wins.
+///
+/// All reads are bounds-checked; malformed or truncated input yields
+/// [`Error::NotFound`] rather than a panic (Paranoid Gatekeeper).
+pub fn extract_pdb_id_tolerant(bytes: &[u8]) -> crate::Result<PdbId> {
+    let mut search = 0usize;
+    while let Some(rel) = find_subslice(&bytes[search..], RSDS_MAGIC) {
+        let pos = search + rel;
+        // Advance past this candidate so the next iteration cannot re-match it.
+        search = pos + 1;
+
+        let Some(record) = bytes.get(pos..) else {
+            continue; // cov:unreachable: pos < bytes.len() because find_subslice matched here
+        };
+        if record.len() < RSDS_MIN_LEN {
+            continue;
+        }
+
+        let Some(guid_src) = record.get(4..20) else {
+            continue; // cov:unreachable: record.len() >= RSDS_MIN_LEN guarantees 20 bytes
+        };
+        let mut guid = [0u8; 16];
+        guid.copy_from_slice(guid_src);
+
+        let Some(age_src) = record.get(20..24) else {
+            continue; // cov:unreachable: record.len() >= RSDS_MIN_LEN guarantees 24 bytes
+        };
+        let age = u32::from_le_bytes([age_src[0], age_src[1], age_src[2], age_src[3]]);
+
+        // Name is NUL-terminated, bounded to MAX_PDB_NAME_LEN.
+        let Some(name_region) = record.get(24..) else {
+            continue; // cov:unreachable: record.len() >= RSDS_MIN_LEN guarantees byte 24 exists
+        };
+        let name_region = &name_region[..name_region.len().min(MAX_PDB_NAME_LEN)];
+        let name_len = name_region
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(name_region.len());
+        let Ok(raw_name) = std::str::from_utf8(&name_region[..name_len]) else {
+            continue; // not a UTF-8 name — keep scanning
+        };
+        if raw_name.is_empty() {
+            continue;
+        }
+
+        // PDB names are Windows paths; split on both separators (std::path::Path
+        // does not treat '\\' as a separator on Unix, so do it explicitly).
+        let pdb_name = raw_name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(raw_name)
+            .to_string();
+
+        return Ok(PdbId {
+            guid: format_guid(&guid),
+            age,
+            pdb_name,
+        });
+    }
+    Err(crate::Error::NotFound(
+        "no CodeView RSDS record found in image".into(),
+    ))
+}
+
+/// Find the first occurrence of `needle` in `haystack`, returning its offset.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[cfg(test)]
