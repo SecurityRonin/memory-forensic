@@ -6,3 +6,9 @@
 # Binary test data (memory dumps, disk images, archives)
 tests/data/
 .DS_Store
+
+# tooling / scratch artifacts
+/.serena/
+/.claude/worktrees/
+/fuzz/target/
+/fuzz/Cargo.lock

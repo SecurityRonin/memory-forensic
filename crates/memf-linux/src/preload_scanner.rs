@@ -1,23 +1,40 @@
 //! Library prevalence analysis for LD_PRELOAD rootkit detection.
 
+/// A shared library and how widely it is mapped across processes — the core
+/// signal for LD_PRELOAD-style rootkit detection: a malicious preload is injected
+/// into *every* process, so an unusually high prevalence is suspicious.
 #[derive(Debug)]
 pub struct GloballyLoadedLibrary {
+    /// Filesystem path of the shared object (e.g. `/usr/lib/evil.so`).
     pub path: String,
+    /// Number of inspected PIDs that have this library mapped.
     pub present_in_pid_count: usize,
+    /// Total number of PIDs inspected (the prevalence denominator).
     pub total_pids_checked: usize,
+    /// Fraction of inspected processes mapping this library, in `[0.0, 1.0]`.
     pub prevalence: f64,
+    /// Optional ELF capability analysis of the library, when available.
     pub elf_report: Option<crate::elf_analysis::ElfCapabilityReport>,
 }
 
+/// One row of Volatility's `linux.elfs` output — a memory-mapped ELF image in a
+/// process, used as an alternative prevalence source to `/proc/<pid>/maps`.
 #[derive(Debug, Clone)]
 pub struct VolatilityElfEntry {
+    /// Owning process id.
     pub pid: u32,
+    /// Owning process name.
     pub process_name: String,
+    /// Mapping start virtual address.
     pub start: u64,
+    /// Mapping end virtual address.
     pub end: u64,
+    /// Filesystem path of the mapped ELF image.
     pub path: String,
 }
 
+/// Rank shared objects by how many inspected processes map them, keeping only
+/// `.so` libraries whose prevalence meets `threshold` — the LD_PRELOAD candidates.
 pub fn find_globally_loaded_libraries(
     proc_maps: &[(u32, Vec<String>)],
     threshold: f64,
@@ -53,6 +70,8 @@ pub fn find_globally_loaded_libraries(
         .collect()
 }
 
+/// Parse Volatility `linux.elfs` TSV output into [`VolatilityElfEntry`] rows
+/// (skips the header and blank/comment lines; tolerant of short rows).
 pub fn parse_linux_elfs_tsv(content: &str) -> Vec<VolatilityElfEntry> {
     content
         .lines()
@@ -74,6 +93,8 @@ pub fn parse_linux_elfs_tsv(content: &str) -> Vec<VolatilityElfEntry> {
         .collect()
 }
 
+/// Prevalence ranking from [`VolatilityElfEntry`] rows: each path's fraction of
+/// distinct PIDs mapping it, filtered by `threshold`. Returns `(path, prevalence)`.
 pub fn find_globally_loaded_from_elfs(
     entries: &[VolatilityElfEntry],
     threshold: f64,

@@ -35,6 +35,8 @@ pub mod preload_scanner;
 pub mod vma_walker;
 pub mod envvars;
 pub mod files;
+/// Linux EFI/VESA linear framebuffer recovery — locates the framebuffer via
+/// `boot_params.screen_info` and encodes the captured screen as PNG.
 pub mod framebuffer;
 pub mod fs;
 pub mod ftrace;
