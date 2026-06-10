@@ -81,6 +81,16 @@ pub fn extract_pdb_id(pe_bytes: &[u8]) -> crate::Result<PdbId> {
     })
 }
 
+/// Extract PDB identification by scanning raw bytes for a CodeView RSDS record.
+///
+/// Tolerant fallback for [`extract_pdb_id`]: scans for the `RSDS` signature and
+/// reads the GUID/age/name directly, so it works on in-memory kernel images
+/// whose on-disk file offsets are invalid for a full PE parse.
+pub fn extract_pdb_id_tolerant(_bytes: &[u8]) -> crate::Result<PdbId> {
+    // RED stub — implemented in the GREEN commit.
+    Err(crate::Error::NotFound("not yet implemented".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +336,105 @@ mod tests {
     fn format_guid_mixed_endian() {
         let result = format_guid(&TEST_GUID_BYTES);
         assert_eq!(result, TEST_GUID_STR);
+    }
+
+    /// Build a bare CodeView RSDS record: "RSDS" + 16-byte GUID + 4-byte age +
+    /// NUL-terminated name. No surrounding PE — exactly the bytes the tolerant
+    /// scanner must locate inside an in-memory image.
+    fn rsds_record(guid: [u8; 16], age: u32, name: &str) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RSDS");
+        v.extend_from_slice(&guid);
+        v.extend_from_slice(&age.to_le_bytes());
+        v.extend_from_slice(name.as_bytes());
+        v.push(0);
+        v
+    }
+
+    #[test]
+    fn tolerant_finds_rsds_in_bare_record() {
+        let rec = rsds_record(TEST_GUID_BYTES, 1, "ntkrnlmp.pdb");
+        let id = extract_pdb_id_tolerant(&rec).expect("should find RSDS");
+        assert_eq!(id.guid, TEST_GUID_STR);
+        assert_eq!(id.age, 1);
+        assert_eq!(id.pdb_name, "ntkrnlmp.pdb");
+    }
+
+    #[test]
+    fn tolerant_finds_rsds_embedded_in_garbage() {
+        // RSDS record surrounded by leading and trailing junk, as in a memory image.
+        let rec = rsds_record(TEST_GUID_BYTES, 7, "ntoskrnl.pdb");
+        let mut buf = vec![0xCCu8; 0x1234];
+        buf.extend_from_slice(&rec);
+        buf.extend_from_slice(&[0xABu8; 0x100]);
+        let id = extract_pdb_id_tolerant(&buf).expect("should find embedded RSDS");
+        assert_eq!(id.guid, TEST_GUID_STR);
+        assert_eq!(id.age, 7);
+        assert_eq!(id.pdb_name, "ntoskrnl.pdb");
+    }
+
+    /// The proven SecurityNik ground truth: GUID 9DC3FC69-B1CA-4B34-707E-BC57FD1D6126,
+    /// ntkrnlmp.pdb, age 1. Mixed-endian GUID bytes for that GUID.
+    #[test]
+    fn tolerant_matches_securitynik_ground_truth() {
+        // 9DC3FC69-B1CA-4B34-707E-BC57FD1D6126
+        let guid: [u8; 16] = [
+            0x69, 0xFC, 0xC3, 0x9D, // Data1 LE
+            0xCA, 0xB1, // Data2 LE
+            0x34, 0x4B, // Data3 LE
+            0x70, 0x7E, 0xBC, 0x57, 0xFD, 0x1D, 0x61, 0x26, // Data4 BE
+        ];
+        let rec = rsds_record(guid, 1, "ntkrnlmp.pdb");
+        let id = extract_pdb_id_tolerant(&rec).expect("should parse");
+        assert_eq!(id.guid, "9DC3FC69-B1CA-4B34-707E-BC57FD1D6126");
+        assert_eq!(id.age, 1);
+        assert_eq!(id.pdb_name, "ntkrnlmp.pdb");
+    }
+
+    #[test]
+    fn tolerant_returns_not_found_without_rsds() {
+        let buf = vec![0u8; 0x1000];
+        let err = extract_pdb_id_tolerant(&buf).unwrap_err();
+        assert!(matches!(err, crate::Error::NotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn tolerant_skips_truncated_rsds_record() {
+        // "RSDS" near the very end, not enough bytes for GUID+age+name.
+        let mut buf = vec![0u8; 0x100];
+        buf.extend_from_slice(b"RSDS");
+        buf.extend_from_slice(&[0x11u8; 4]); // only 4 of 20 needed
+        let err = extract_pdb_id_tolerant(&buf).unwrap_err();
+        assert!(matches!(err, crate::Error::NotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn tolerant_strips_directory_path_from_name() {
+        let rec = rsds_record(TEST_GUID_BYTES, 2, "wntkrnlmp.pdb");
+        // simulate a path-prefixed name
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RSDS");
+        v.extend_from_slice(&TEST_GUID_BYTES);
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(b"d:\\build\\ntkrnlmp.pdb\0");
+        let id = extract_pdb_id_tolerant(&v).expect("should parse");
+        assert_eq!(id.pdb_name, "ntkrnlmp.pdb");
+        let _ = rec;
+    }
+
+    #[test]
+    fn tolerant_skips_non_utf8_name_continues_scan() {
+        // First RSDS has a non-UTF-8 name; a second valid RSDS follows.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RSDS");
+        buf.extend_from_slice(&TEST_GUID_BYTES);
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&[0xFF, 0xFEu8]); // invalid UTF-8, no nul yet
+        buf.push(0);
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&rsds_record(TEST_GUID_BYTES, 9, "ntkrnlmp.pdb"));
+        let id = extract_pdb_id_tolerant(&buf).expect("should find the valid RSDS");
+        assert_eq!(id.age, 9);
+        assert_eq!(id.pdb_name, "ntkrnlmp.pdb");
     }
 }
