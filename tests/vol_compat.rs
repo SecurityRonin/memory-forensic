@@ -1,6 +1,7 @@
 //! CLI integration tests for the `vol` subcommand and argv[0] compat mode.
 //!
 //! Tests marked `#[ignore]` require real dump files at /tmp/vol3_test/.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Run them with: cargo test --test vol_compat -- --include-ignored
 
 use assert_cmd::Command;

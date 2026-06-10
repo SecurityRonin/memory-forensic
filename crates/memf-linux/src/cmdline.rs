@@ -161,7 +161,7 @@ mod tests {
         let arg_vaddr: u64 = 0xFFFF_8000_0020_0000;
         data[0x200..0x208].copy_from_slice(&0x1000u64.to_le_bytes());
         data[0x240..0x248].copy_from_slice(&arg_vaddr.to_le_bytes());
-        let arg_data = b"/usr/sbin/sshd\0-D\0-p\02222\0";
+        let arg_data = b"/usr/sbin/sshd\0-D\0-p\x002222\0";
         let arg_end = arg_vaddr + arg_data.len() as u64;
         data[0x248..0x250].copy_from_slice(&arg_end.to_le_bytes());
 
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn parse_arg_region_joins_with_spaces() {
-        let result = parse_arg_region(b"python3\0-m\0http.server\08080\0");
+        let result = parse_arg_region(b"python3\0-m\0http.server\x008080\0");
         assert_eq!(result, "python3 -m http.server 8080");
     }
 

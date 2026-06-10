@@ -2,6 +2,7 @@
 //!
 //! These tests build synthetic memory images with page tables and
 //! kernel data structures, then run the walkers to verify the full pipeline.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use memf_core::object_reader::ObjectReader;
 use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};

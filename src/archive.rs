@@ -210,7 +210,7 @@ fn scanning_progress_bar(path: &Path) -> Result<(ProgressBar, u64)> {
     pb.set_style(
         ProgressStyle::default_bar()
             .template("  scanning {msg} [{bar:30}] {bytes}/{total_bytes}")
-            .expect("valid template")
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
             .progress_chars("=> "),
     );
     pb.set_message(short.to_string());
@@ -302,7 +302,7 @@ fn copy_with_progress(
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("  extracting {msg} [{bar:30}] {bytes}/{total_bytes}")
-                .expect("valid template")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
                 .progress_chars("=> "),
         );
         pb
@@ -311,7 +311,7 @@ fn copy_with_progress(
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("  extracting {msg} {bytes}")
-                .expect("valid template"),
+                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
         );
         pb
     };

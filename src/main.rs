@@ -1052,12 +1052,12 @@ fn main() -> Result<()> {
                                 .context("missing 'TcpBTable' symbol; Windows TCP listing requires tcpip.sys ISF")?;
                             let ptr_bytes = reader.read_bytes(tcp_table_sym, 8)
                                 .context("failed to dereference TcpBTable")?;
-                            let table_vaddr = u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
+                            let table_vaddr = ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
                             let tcp_size_sym = reader.symbols().symbol_address("TcpBTableSize")
                                 .context("missing 'TcpBTableSize' symbol")?;
                             let size_bytes = reader.read_bytes(tcp_size_sym, 4)
                                 .context("failed to read TcpBTableSize")?;
-                            let bucket_count = u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
+                            let bucket_count = size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
                             let mut conns = memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
                                 .context("failed to walk Windows TCP endpoints")?;
                             if let Some(pid) = pid_filter {
@@ -1646,7 +1646,7 @@ fn cmd_net(
             let ptr_bytes = reader
                 .read_bytes(tcp_table_sym, 8)
                 .context("failed to dereference TcpBTable pointer")?;
-            let table_vaddr = u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
+            let table_vaddr = ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
 
             let tcp_size_sym = reader
                 .symbols()
@@ -1655,7 +1655,7 @@ fn cmd_net(
             let size_bytes = reader
                 .read_bytes(tcp_size_sym, 4)
                 .context("failed to read TcpBTableSize")?;
-            let bucket_count = u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
+            let bucket_count = size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
 
             let mut conns =
                 memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
@@ -3925,7 +3925,7 @@ fn cmd_check(
                 let ptr_bytes = reader
                     .read_bytes(root_dir_sym, 8)
                     .context("failed to dereference ObpRootDirectoryObject")?;
-                let root_dir_ptr = u64::from_le_bytes(ptr_bytes[..8].try_into().unwrap());
+                let root_dir_ptr = ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
                 let driver_addrs =
                     memf_windows::object_directory::walk_driver_objects(&reader, root_dir_ptr)
                         .context("failed to walk \\Driver object directory")?;
@@ -3979,11 +3979,10 @@ fn cmd_check(
                         }
                     }
                 }
-                if pid_filter.is_some() && all_mods.is_empty() {
-                    eprintln!(
-                        "warning: no LDR modules found for PID {}",
-                        pid_filter.unwrap()
-                    );
+                if let Some(pid) = pid_filter {
+                    if all_mods.is_empty() {
+                        eprintln!("warning: no LDR modules found for PID {pid}");
+                    }
                 }
                 print_ldr_modules(&all_mods, output);
             }
@@ -5130,7 +5129,7 @@ fn cmd_timeline(
                 let ptr_bytes = reader
                     .read_bytes(tcp_ptr_sym, 8)
                     .context("failed to read TcpBTable pointer")?;
-                let table_vaddr = u64::from_le_bytes(ptr_bytes[..8].try_into().expect("8 bytes"));
+                let table_vaddr = ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
 
                 let tcp_size_sym = reader
                     .symbols()
@@ -5139,7 +5138,7 @@ fn cmd_timeline(
                 let size_bytes = reader
                     .read_bytes(tcp_size_sym, 4)
                     .context("failed to read TcpBTableSize")?;
-                let bucket_count = u32::from_le_bytes(size_bytes[..4].try_into().expect("4 bytes"));
+                let bucket_count = size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
 
                 memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
                     .context("failed to walk Windows TCP endpoints")

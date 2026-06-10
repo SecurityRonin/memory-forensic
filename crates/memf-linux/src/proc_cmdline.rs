@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn parse_ssh_tunnel_cmdline() {
-        let cmdline = parse_proc_cmdline(941, "ssh", b"ssh\0-L\03333:pool:3333\0");
+        let cmdline = parse_proc_cmdline(941, "ssh", b"ssh\0-L\x003333:pool:3333\0");
         assert_eq!(cmdline.pid, 941);
         assert_eq!(cmdline.comm, "ssh");
         assert_eq!(cmdline.exe, "ssh");
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn parse_cmdline_raw_space_joins_all_fields() {
-        let cmdline = parse_proc_cmdline(3, "python3", b"python3\0-m\0http.server\08080\0");
+        let cmdline = parse_proc_cmdline(3, "python3", b"python3\0-m\0http.server\x008080\0");
         assert_eq!(cmdline.cmdline_raw, "python3 -m http.server 8080");
     }
 
@@ -127,19 +127,19 @@ mod tests {
 
     #[test]
     fn ssh_tunnel_forward_l_is_tunnel() {
-        let cmdline = parse_proc_cmdline(941, "ssh", b"ssh\0-L\03333:pool:3333\0");
+        let cmdline = parse_proc_cmdline(941, "ssh", b"ssh\0-L\x003333:pool:3333\0");
         assert!(is_ssh_tunnel_cmdline(&cmdline));
     }
 
     #[test]
     fn ssh_tunnel_forward_r_is_tunnel() {
-        let cmdline = parse_proc_cmdline(942, "ssh", b"ssh\0-R\08080:localhost:80\0user@host\0");
+        let cmdline = parse_proc_cmdline(942, "ssh", b"ssh\0-R\x008080:localhost:80\0user@host\0");
         assert!(is_ssh_tunnel_cmdline(&cmdline));
     }
 
     #[test]
     fn ssh_tunnel_socks_d_is_tunnel() {
-        let cmdline = parse_proc_cmdline(943, "ssh", b"ssh\0-D\01080\0user@host\0");
+        let cmdline = parse_proc_cmdline(943, "ssh", b"ssh\0-D\x001080\0user@host\0");
         assert!(is_ssh_tunnel_cmdline(&cmdline));
     }
 
