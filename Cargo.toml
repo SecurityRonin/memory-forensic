@@ -79,19 +79,34 @@ ureq = "3"
 yara-x = "0.12"
 zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
 
+# unsafe is denied workspace-wide, not forbidden: a handful of crates legitimately
+# need one bounded mmap site (memf-core::pagefile, forensic-hashdb::known_good).
+# Those sites carry a justified `#[allow(unsafe_code)]`; every other `unsafe` stays
+# a hard error. `deny` (not `forbid`) is what makes the local override possible.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-doc_markdown = "allow"
-cast_possible_truncation = "allow"
-unnecessary_literal_bound = "allow"
-return_self_not_must_use = "allow"
-unreadable_literal = "allow"
-type_complexity = "allow"
-similar_names = "allow"
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+# Panic-free: memory dumps are untrusted, attacker-controllable input (Paranoid Gatekeeper).
+unwrap_used = { level = "deny", priority = 0 }
+expect_used = { level = "deny", priority = 0 }
+module_name_repetitions = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+doc_markdown = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+unnecessary_literal_bound = { level = "allow", priority = 1 }
+return_self_not_must_use = { level = "allow", priority = 1 }
+unreadable_literal = { level = "allow", priority = 1 }
+type_complexity = { level = "allow", priority = 1 }
+similar_names = { level = "allow", priority = 1 }
 
 [package]
 name = "memf"

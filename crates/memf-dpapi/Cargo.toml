@@ -16,3 +16,6 @@ hmac.workspace = true
 pbkdf2.workspace = true
 digest.workspace = true
 cipher.workspace = true
+
+[lints]
+workspace = true

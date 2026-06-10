@@ -1,0 +1,3 @@
+title = "memory-forensic gitleaks config"
+[extend]
+useDefault = true

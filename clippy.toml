@@ -1,0 +1,22 @@
+# Allow unwrap()/expect() inside test functions and #[cfg(test)] modules.
+# Production code keeps clippy::unwrap_used/expect_used = deny (see workspace
+# Cargo.toml); tests legitimately unwrap to fail loudly, so this is the
+# upstream-recommended exception rather than scattering #[allow] across every
+# test module.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Memory-forensics product/format/structure names that look like code
+# identifiers to clippy::doc_markdown. Keeps doc comments prose-clean without
+# backtick-wrapping every acronym.
+doc-valid-idents = [
+    "EPROCESS", "ETHREAD", "KPROCESS", "KTHREAD", "ETHREAD", "VAD", "VADs",
+    "DTB", "CR3", "KPCR", "KDBG", "PML4", "PML5", "PFN", "PTE", "PDE", "PDPTE",
+    "PDPT", "PFNs", "PTEs", "DKOM", "ASLR", "DPAPI", "ntoskrnl", "ntdll",
+    "WinPMEM", "hiberfil", "pagefile", "LiME", "ELF", "KASLR", "MMVAD",
+    "MMPFN", "PEB", "TEB", "SSDT", "IDT", "GDT", "IRP", "DRIVER_OBJECT",
+    "DEVICE_OBJECT", "POOL_HEADER", "BIG_POOL", "VACB", "CSRSS",
+    "WinDbg", "PsActiveProcessHead", "PsLoadedModuleList", "ObjectType",
+    "SHA-256", "SHA-1", "MD5", "CRC32", "UTF-16LE", "UTF-16", "PDB",
+    "AArch64", "x86_64", "PAE", "MmPfnDatabase", "KdVersionBlock",
+]
