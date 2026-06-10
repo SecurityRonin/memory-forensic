@@ -26,7 +26,12 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
         return Err(DpapiError::UnsupportedVersion(version));
     }
     pos += 16; // skip provider GUID
-    let master_key_guid: [u8; 16] = data[pos..pos + 16].try_into().unwrap();
+    // Guarded by the `data.len() < 44` check above (here pos == 20, pos+16 == 36);
+    // the fallback keeps construction panic-free if that invariant ever changes.
+    let master_key_guid: [u8; 16] = data
+        .get(pos..pos + 16)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or([0u8; 16]);
     pos += 16;
     let _flags = read_u32(data, &mut pos);
     let desc_len = read_u32(data, &mut pos) as usize;
@@ -90,9 +95,15 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
     })
 }
 
+/// Read a little-endian u32 at `*pos`, advancing `pos` by 4.
+/// Out-of-range yields 0 (never panics); callers range-check before relying on
+/// the value, so a 0 here is a defensive fallback, not a silent success.
 #[inline]
 fn read_u32(data: &[u8], pos: &mut usize) -> u32 {
-    let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
+    let v = data
+        .get(*pos..*pos + 4)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u32::from_le_bytes);
     *pos += 4;
     v
 }

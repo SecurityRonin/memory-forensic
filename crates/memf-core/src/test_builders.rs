@@ -1,4 +1,9 @@
 //! Test builders for synthetic page tables and kernel structs.
+//!
+//! Test-fixture infrastructure (a `pub mod` reachable from integration tests);
+//! panic-on-failure via `unwrap`/`expect` is intended — a broken fixture
+//! should fail loudly, not silently degrade.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use memf_format::{PhysicalMemoryProvider, PhysicalRange};
 

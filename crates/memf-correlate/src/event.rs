@@ -105,9 +105,16 @@ impl ForensicEventBuilder {
 
     /// Build the [`ForensicEvent`], consuming the builder.
     ///
+    /// The four required fields are supplied programmatically by the analyzers
+    /// that drive this builder (not parsed from untrusted dump bytes), so a
+    /// missing field is a programmer error, not malformed input. The `expect`
+    /// calls below therefore enforce a construction contract rather than trust
+    /// attacker-controllable data — hence the targeted allow.
+    ///
     /// # Panics
     ///
     /// Panics if `source_walker`, `entity`, `finding`, or `severity` were not set.
+    #[allow(clippy::expect_used)]
     pub fn build(self) -> ForensicEvent {
         let confidence = self.confidence.unwrap_or(0.5).clamp(0.0, 1.0);
         ForensicEvent {

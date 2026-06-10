@@ -68,8 +68,11 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             mode,
             pagefiles: Vec::new(),
             prototype_source: None,
+            // TRANSLATION_CACHE_CAPACITY is a non-zero compile-time constant; the
+            // fallback to NonZeroUsize::MIN keeps construction infallible if it is
+            // ever set to 0.
             tlb_cache: RefCell::new(LruCache::new(
-                NonZeroUsize::new(TRANSLATION_CACHE_CAPACITY).expect("capacity is nonzero"),
+                NonZeroUsize::new(TRANSLATION_CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
             )),
         }
     }

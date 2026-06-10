@@ -5,6 +5,20 @@ use std::path::Path;
 
 use crate::Result;
 
+/// Bounds-checked little-endian u32 read; out-of-range yields 0 (never panics).
+fn le_u32(data: &[u8], off: usize) -> u32 {
+    data.get(off..off + 4)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u32::from_le_bytes)
+}
+
+/// Bounds-checked little-endian u64 read; out-of-range yields 0 (never panics).
+fn le_u64(data: &[u8], off: usize) -> u64 {
+    data.get(off..off + 8)
+        .and_then(|s| s.try_into().ok())
+        .map_or(0, u64::from_le_bytes)
+}
+
 /// A source of paged-out memory pages (pagefile.sys, swapfile.sys, etc.).
 pub trait PagefileSource: Send + Sync {
     /// Which pagefile number this source handles (0 = pagefile.sys, 1-15 = secondary).
@@ -92,8 +106,8 @@ impl SwapfileProvider {
             )));
         }
 
-        let region_table_offset = u64::from_le_bytes(mmap[8..16].try_into().unwrap()) as usize;
-        let region_count = u32::from_le_bytes(mmap[16..20].try_into().unwrap()) as usize;
+        let region_table_offset = le_u64(&mmap, 8) as usize;
+        let region_count = le_u32(&mmap, 16) as usize;
 
         let mut index = HashMap::new();
 
@@ -105,23 +119,10 @@ impl SwapfileProvider {
                 )));
             }
 
-            let page_offset =
-                u64::from_le_bytes(mmap[entry_offset..entry_offset + 8].try_into().unwrap());
-            let file_offset = u64::from_le_bytes(
-                mmap[entry_offset + 8..entry_offset + 16]
-                    .try_into()
-                    .unwrap(),
-            );
-            let page_count = u32::from_le_bytes(
-                mmap[entry_offset + 16..entry_offset + 20]
-                    .try_into()
-                    .unwrap(),
-            );
-            let compressed_size = u32::from_le_bytes(
-                mmap[entry_offset + 20..entry_offset + 24]
-                    .try_into()
-                    .unwrap(),
-            );
+            let page_offset = le_u64(&mmap, entry_offset);
+            let file_offset = le_u64(&mmap, entry_offset + 8);
+            let page_count = le_u32(&mmap, entry_offset + 16);
+            let compressed_size = le_u32(&mmap, entry_offset + 20);
 
             for p in 0..u64::from(page_count) {
                 let fo = file_offset + p * u64::from(compressed_size);

@@ -53,6 +53,9 @@ impl KnownGoodDb {
         }
         // SAFETY: file is opened read-only; caller is responsible for not
         // modifying the file while this mapping is live (standard mmap contract).
+        // This is the one bounded `unsafe` this crate needs (mmap of the hash
+        // DB); `unsafe_code = "deny"` workspace-wide, allowed only here.
+        #[allow(unsafe_code)]
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
         Ok(Self { mmap: Some(mmap) })
     }
@@ -69,7 +72,15 @@ impl KnownGoodDb {
         let mut hi = count;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let entry: &[u8; 32] = data[mid * 32..(mid + 1) * 32].try_into().unwrap();
+            // mid < count == data.len()/32, so the 32-byte slice is always in
+            // range; the guard degrades to a non-match instead of panicking if
+            // that invariant is ever violated.
+            let Some(entry) = data
+                .get(mid * 32..(mid + 1) * 32)
+                .and_then(|s| <&[u8; 32]>::try_from(s).ok())
+            else {
+                return false; // cov:unreachable: mid < count bounds the slice
+            };
             match entry.cmp(sha256) {
                 std::cmp::Ordering::Equal => return true,
                 std::cmp::Ordering::Less => lo = mid + 1,
