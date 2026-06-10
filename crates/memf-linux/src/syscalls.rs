@@ -49,7 +49,7 @@ pub fn check_syscall_table<P: PhysicalMemoryProvider>(
 
     for i in 0..nr_syscalls {
         let off = (i as usize) * 8;
-        let handler = u64::from_le_bytes(table_raw[off..off + 8].try_into().unwrap());
+        let handler = table_raw[off..off + 8].try_into().map_or(0, u64::from_le_bytes);
 
         let hooked = handler < stext || handler > etext;
 

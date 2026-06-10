@@ -103,7 +103,7 @@ fn walk_xarray<P: memf_format::PhysicalMemoryProvider>(
         if entries.len() >= MAX_IPC_IDS {
             break;
         }
-        let slot = u64::from_le_bytes(raw[i * 8..(i + 1) * 8].try_into().unwrap());
+        let slot = raw[i * 8..(i + 1) * 8].try_into().map_or(0, u64::from_le_bytes);
         if slot == 0 {
             continue;
         }

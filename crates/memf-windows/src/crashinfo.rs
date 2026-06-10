@@ -68,11 +68,11 @@ pub fn walk_crashinfo<P: PhysicalMemoryProvider>(
         Ok(b) => b,
         Err(_) => return Ok(None),
     };
-    let bugcheck_code = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    let param1 = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-    let param2 = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
-    let param3 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
-    let param4 = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
+    let bugcheck_code = bytes[0..4].try_into().map_or(0, u32::from_le_bytes);
+    let param1 = bytes[8..16].try_into().map_or(0, u64::from_le_bytes);
+    let param2 = bytes[16..24].try_into().map_or(0, u64::from_le_bytes);
+    let param3 = bytes[24..32].try_into().map_or(0, u64::from_le_bytes);
+    let param4 = bytes[32..40].try_into().map_or(0, u64::from_le_bytes);
 
     let system_time = if let Some(kd_addr) = reader.symbols().symbol_address("KdDebuggerDataBlock")
     {

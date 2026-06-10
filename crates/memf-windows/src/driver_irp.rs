@@ -129,11 +129,7 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
     let mut results = Vec::new();
     for i in 0..IRP_MJ_COUNT {
         let byte_off = i * 8;
-        let handler_addr = u64::from_le_bytes(
-            mf_bytes[byte_off..byte_off + 8]
-                .try_into()
-                .expect("8 bytes"),
-        );
+        let handler_addr = mf_bytes[byte_off..byte_off + 8].try_into().map_or(0, u64::from_le_bytes);
         if handler_addr == 0 {
             continue;
         }

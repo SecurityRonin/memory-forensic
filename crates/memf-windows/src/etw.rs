@@ -92,7 +92,7 @@ pub fn walk_etw_sessions<P: PhysicalMemoryProvider>(
         // Read the pointer at array[i] (8-byte pointer).
         let ptr_addr = array_addr + (i as u64) * 8;
         let ctx_addr = match reader.read_bytes(ptr_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => continue, // Slot unreadable (page absent) — skip, keep scanning.
         };
 
@@ -189,7 +189,7 @@ pub fn scan_etw_buffers<P: PhysicalMemoryProvider>(
         // Read the context pointer from the array.
         let ptr_addr = array_addr + (i as u64) * 8;
         let ctx_addr = match reader.read_bytes(ptr_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => continue,
         };
         if ctx_addr == 0 {

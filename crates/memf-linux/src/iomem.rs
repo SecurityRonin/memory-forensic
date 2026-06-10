@@ -150,7 +150,7 @@ pub fn walk_iomem_regions<P: PhysicalMemoryProvider>(
 /// Read a 64-bit little-endian value from memory; returns 0 on failure.
 fn read_u64<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u64 {
     match reader.read_bytes(addr, 8) {
-        Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+        Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => 0,
     }
 }

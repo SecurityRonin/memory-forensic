@@ -133,7 +133,7 @@ fn read_addresses<P: PhysicalMemoryProvider>(
         let pdata: u64 = reader.read_field(local_addr_ptr, "_LOCAL_ADDRESS", "pData")?;
         if pdata != 0 {
             let bytes = reader.read_bytes(pdata, 4)?;
-            let raw = u32::from_le_bytes(bytes.try_into().expect("4 bytes"));
+            let raw = bytes.try_into().map_or(0, u32::from_le_bytes);
             ipv4_to_string(raw)
         } else {
             "0.0.0.0".to_string()

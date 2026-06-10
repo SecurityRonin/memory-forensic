@@ -431,7 +431,7 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
         Err(_) => {
             // Fallback: read pointer at offset 0x10 from hive addr.
             match reader.read_bytes(amcache_hive_addr.wrapping_add(0x10), 8) {
-                Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
                 _ => return Ok(Vec::new()),
             }
         }
@@ -449,7 +449,7 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
         Ok(b) if b.len() == 4 => b,
         _ => return Ok(Vec::new()),
     };
-    let root_cell = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
+    let root_cell = root_cell_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
     if root_cell == 0 {
         return Ok(Vec::new());
     }
@@ -496,20 +496,12 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
     };
 
     // Enumerate child keys (each represents one tracked executable).
-    let subkey_count = u32::from_le_bytes(
-        iaf_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let subkey_count = iaf_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
     if subkey_count == 0 {
         return Ok(Vec::new());
     }
 
-    let subkeys_list_index = u32::from_le_bytes(
-        iaf_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let subkeys_list_index = iaf_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
     let list_data = match read_cell_data(reader, hive_base, subkeys_list_index, 0x4000) {
         Some(d) if d.len() >= 4 => d,
         _ => return Ok(Vec::new()),

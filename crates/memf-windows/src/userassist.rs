@@ -212,7 +212,7 @@ fn read_cell_data<P: PhysicalMemoryProvider>(
     cell_vaddr: u64,
 ) -> crate::Result<Vec<u8>> {
     let size_bytes = reader.read_bytes(cell_vaddr, 4)?;
-    let raw_size = i32::from_le_bytes(size_bytes[..4].try_into().unwrap());
+    let raw_size = size_bytes[..4].try_into().map_or(0, i32::from_le_bytes);
     let abs_size = raw_size.unsigned_abs() as usize;
     if abs_size <= 4 {
         return Ok(Vec::new());
@@ -228,11 +228,7 @@ fn read_key_name(nk_data: &[u8]) -> String {
     if nk_data.len() < NK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = u16::from_le_bytes(
-        nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let name_len = nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
     let end = NK_NAME_OFFSET + name_len;
     if end > nk_data.len() {
         return String::new();
@@ -245,11 +241,7 @@ fn read_value_name(vk_data: &[u8]) -> String {
     if vk_data.len() < VK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = u16::from_le_bytes(
-        vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let name_len = vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
     let end = VK_NAME_OFFSET + name_len;
     if end > vk_data.len() {
         return String::new();
@@ -270,21 +262,13 @@ fn find_subkey<P: PhysicalMemoryProvider>(
         return Ok(None);
     }
 
-    let subkey_count = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
 
     if subkey_count == 0 {
         return Ok(None);
     }
 
-    let subkeys_list_cell = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let subkeys_list_cell = nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     // The subkeys list cell may be an index node (lf, lh, ri, li).
     // Read its data and iterate child cell indices.
@@ -295,8 +279,8 @@ fn find_subkey<P: PhysicalMemoryProvider>(
         return Ok(None);
     }
 
-    let sig = u16::from_le_bytes(list_data[0..2].try_into().unwrap());
-    let count = u16::from_le_bytes(list_data[2..4].try_into().unwrap()) as usize;
+    let sig = list_data[0..2].try_into().map_or(0, u16::from_le_bytes);
+    let count = list_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
     let count = count.min(MAX_SUBKEYS);
 
     match sig {
@@ -307,11 +291,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = child_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -329,11 +313,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = child_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -352,7 +336,7 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_list_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let sub_list_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                 // Build a synthetic nk_data-like slice so we can call ourselves
                 // with the sub-list. Instead, just read the sub-list directly.
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
@@ -360,8 +344,8 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if sub_data.len() < 4 {
                     continue;
                 }
-                let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
-                let sub_count = u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                let sub_sig = sub_data[0..2].try_into().map_or(0, u16::from_le_bytes);
+                let sub_count = sub_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
                 let sub_count = sub_count.min(MAX_SUBKEYS);
                 let entry_size: usize = match sub_sig {
                     0x666C | 0x686C => 8,
@@ -374,11 +358,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                         break;
                     }
                     let child_cell =
-                        u32::from_le_bytes(sub_data[soff..soff + 4].try_into().unwrap());
+                        sub_data[soff..soff + 4].try_into().map_or(0, u32::from_le_bytes);
                     let child_vaddr = cell_address(hive_addr, child_cell);
                     if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                         if child_nk.len() >= NK_NAME_OFFSET {
-                            let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                            let child_sig = child_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
                             if child_sig == NK_SIGNATURE {
                                 let name = read_key_name(&child_nk);
                                 if name.eq_ignore_ascii_case(target_name) {
@@ -406,21 +390,13 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    let subkey_count = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
 
     if subkey_count == 0 {
         return Ok(Vec::new());
     }
 
-    let subkeys_list_cell = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let subkeys_list_cell = nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     let list_vaddr = cell_address(hive_addr, subkeys_list_cell);
     let list_data = read_cell_data(reader, list_vaddr)?;
@@ -429,8 +405,8 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    let sig = u16::from_le_bytes(list_data[0..2].try_into().unwrap());
-    let count = u16::from_le_bytes(list_data[2..4].try_into().unwrap()) as usize;
+    let sig = list_data[0..2].try_into().map_or(0, u16::from_le_bytes);
+    let count = list_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
     let count = count.min(MAX_SUBKEYS);
     let mut cells = Vec::with_capacity(count);
 
@@ -441,9 +417,7 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                cells.push(u32::from_le_bytes(
-                    list_data[off..off + 4].try_into().unwrap(),
-                ));
+                cells.push(list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes));
             }
         }
         0x696C => {
@@ -452,9 +426,7 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                cells.push(u32::from_le_bytes(
-                    list_data[off..off + 4].try_into().unwrap(),
-                ));
+                cells.push(list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes));
             }
         }
         0x6972 => {
@@ -463,13 +435,13 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let sub_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                 let sub_vaddr = cell_address(hive_addr, sub_cell);
                 if let Ok(sub_data) = read_cell_data(reader, sub_vaddr) {
                     if sub_data.len() >= 4 {
-                        let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
+                        let sub_sig = sub_data[0..2].try_into().map_or(0, u16::from_le_bytes);
                         let sub_count =
-                            u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                            sub_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
                         let sub_count = sub_count.min(MAX_SUBKEYS);
                         let entry_size: usize = match sub_sig {
                             0x666C | 0x686C => 8,
@@ -481,9 +453,7 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                             if soff + 4 > sub_data.len() {
                                 break;
                             }
-                            cells.push(u32::from_le_bytes(
-                                sub_data[soff..soff + 4].try_into().unwrap(),
-                            ));
+                            cells.push(sub_data[soff..soff + 4].try_into().map_or(0, u32::from_le_bytes));
                         }
                     }
                 }
@@ -518,7 +488,7 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             Ok(b) => b,
             Err(_) => return Ok(Vec::new()),
         };
-    let root_cell = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
+    let root_cell = root_cell_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
     if root_cell == 0 {
         return Ok(Vec::new());
     }
@@ -534,7 +504,7 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
         if nk_data.len() < NK_NAME_OFFSET {
             return Ok(Vec::new());
         }
-        let sig = u16::from_le_bytes(nk_data[0..2].try_into().unwrap());
+        let sig = nk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
         if sig != NK_SIGNATURE {
             return Ok(Vec::new());
         }
@@ -565,7 +535,7 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
         if guid_nk.len() < NK_NAME_OFFSET {
             continue;
         }
-        let sig = u16::from_le_bytes(guid_nk[0..2].try_into().unwrap());
+        let sig = guid_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
         if sig != NK_SIGNATURE {
             continue;
         }
@@ -586,21 +556,13 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        let value_count = u32::from_le_bytes(
-            count_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        ) as usize;
+        let value_count = count_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
 
         if value_count == 0 {
             continue;
         }
 
-        let values_list_cell = u32::from_le_bytes(
-            count_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
+        let values_list_cell = count_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
         let vl_vaddr = cell_address(hive_addr, values_list_cell);
         let vl_data = match read_cell_data(reader, vl_vaddr) {
@@ -617,7 +579,7 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             if off + 4 > vl_data.len() {
                 break;
             }
-            let val_cell = u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
+            let val_cell = vl_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
 
             if let Ok(Some(entry)) = parse_userassist_value(reader, hive_addr, val_cell) { entries.push(entry) }
         }
@@ -642,7 +604,7 @@ fn parse_userassist_value<P: PhysicalMemoryProvider>(
         return Ok(None);
     }
 
-    let sig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
+    let sig = vk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
     if sig != VK_SIGNATURE {
         return Ok(None);
     }
@@ -652,11 +614,7 @@ fn parse_userassist_value<P: PhysicalMemoryProvider>(
     let decoded_name = rot13_decode(&rot13_name);
 
     // Read the binary value data.
-    let data_length = u32::from_le_bytes(
-        vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let data_length = vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     // Strip MSB (inline data flag) for size check.
     let actual_length = (data_length & 0x7FFF_FFFF) as usize;
@@ -666,11 +624,7 @@ fn parse_userassist_value<P: PhysicalMemoryProvider>(
     }
 
     // Read the value data from the data cell.
-    let data_cell = u32::from_le_bytes(
-        vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let data_cell = vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     let data_vaddr = cell_address(hive_addr, data_cell);
     let raw_data = read_cell_data(reader, data_vaddr)?;
@@ -680,10 +634,10 @@ fn parse_userassist_value<P: PhysicalMemoryProvider>(
     }
 
     // Parse the 72-byte UserAssist data structure (Vista+ format).
-    let run_count = u32::from_le_bytes(raw_data[4..8].try_into().unwrap());
-    let focus_count = u32::from_le_bytes(raw_data[8..12].try_into().unwrap());
-    let focus_time_ms = u32::from_le_bytes(raw_data[12..16].try_into().unwrap());
-    let last_run_time = u64::from_le_bytes(raw_data[60..68].try_into().unwrap());
+    let run_count = raw_data[4..8].try_into().map_or(0, u32::from_le_bytes);
+    let focus_count = raw_data[8..12].try_into().map_or(0, u32::from_le_bytes);
+    let focus_time_ms = raw_data[12..16].try_into().map_or(0, u32::from_le_bytes);
+    let last_run_time = raw_data[60..68].try_into().map_or(0, u64::from_le_bytes);
 
     let is_suspicious = classify_userassist(&decoded_name);
 

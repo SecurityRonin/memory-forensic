@@ -18,7 +18,7 @@ impl IntoForensicEvents for VmaInfo {
                 (
                     Severity::High,
                     Finding::ProcessHollowing,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    MitreAttackId::vec("T1055"),
                     0.9f64,
                 )
             } else if self.flags.exec && !self.file_backed {
@@ -26,7 +26,7 @@ impl IntoForensicEvents for VmaInfo {
                 (
                     Severity::Medium,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    MitreAttackId::vec("T1055"),
                     0.6f64,
                 )
             } else {
@@ -60,7 +60,7 @@ impl IntoForensicEvents for ProcessInfo {
             (
                 Severity::High,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1564").expect("valid id")],
+                MitreAttackId::vec("T1564"),
                 0.9f64,
             )
         } else if self.state == ProcessState::Zombie {
@@ -68,7 +68,7 @@ impl IntoForensicEvents for ProcessInfo {
             (
                 Severity::Medium,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1564").expect("valid id")],
+                MitreAttackId::vec("T1564"),
                 0.7f64,
             )
         } else if self.cr3.is_none() && self.ppid != 0 {
@@ -115,7 +115,7 @@ impl IntoForensicEvents for ConnectionInfo {
                 (
                     Severity::High,
                     Finding::NetworkBeaconing,
-                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    MitreAttackId::vec("T1071"),
                     0.8f64,
                 )
             } else if self.pid.is_none() {
@@ -123,7 +123,7 @@ impl IntoForensicEvents for ConnectionInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1095").expect("valid id")],
+                    MitreAttackId::vec("T1095"),
                     0.85f64,
                 )
             } else if self.remote_port == 0 && !is_loopback {
@@ -131,7 +131,7 @@ impl IntoForensicEvents for ConnectionInfo {
                 (
                     Severity::Medium,
                     Finding::NetworkBeaconing,
-                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    MitreAttackId::vec("T1071"),
                     0.6f64,
                 )
             } else {
@@ -145,10 +145,10 @@ impl IntoForensicEvents for ConnectionInfo {
 
         let src = format!("{}:{}", self.local_addr, self.local_port)
             .parse()
-            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+            .unwrap_or_else(|_| std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)));
         let dst = format!("{}:{}", self.remote_addr, self.remote_port)
             .parse()
-            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+            .unwrap_or_else(|_| std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)));
 
         vec![ForensicEvent::builder()
             .source_walker("linux_connection")
@@ -172,7 +172,7 @@ impl IntoForensicEvents for ModuleInfo {
             (
                 Severity::High,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1014").expect("valid id")],
+                MitreAttackId::vec("T1014"),
                 0.9f64,
             )
         } else if matches!(self.state, ModuleState::Going) {
@@ -180,7 +180,7 @@ impl IntoForensicEvents for ModuleInfo {
             (
                 Severity::Medium,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1014").expect("valid id")],
+                MitreAttackId::vec("T1014"),
                 0.6f64,
             )
         } else {
@@ -219,7 +219,7 @@ impl IntoForensicEvents for HiddenProcessInfo {
                 (
                     Severity::Critical,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1014").expect("valid id")],
+                    MitreAttackId::vec("T1014"),
                     0.95f64,
                 )
             } else if self.present_in_pid_hash && !self.present_in_task_list {
@@ -227,7 +227,7 @@ impl IntoForensicEvents for HiddenProcessInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1014").expect("valid id")],
+                    MitreAttackId::vec("T1014"),
                     0.85f64,
                 )
             } else if self.present_in_task_list && !self.present_in_pid_ns {
@@ -235,7 +235,7 @@ impl IntoForensicEvents for HiddenProcessInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1014").expect("valid id")],
+                    MitreAttackId::vec("T1014"),
                     0.8f64,
                 )
             } else {
@@ -270,7 +270,7 @@ impl IntoForensicEvents for VdsoTamperInfo {
                 (
                     Severity::Critical,
                     Finding::ProcessHollowing,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    MitreAttackId::vec("T1055"),
                     0.95f64,
                 )
             } else if self.differs_from_canonical {
@@ -278,7 +278,7 @@ impl IntoForensicEvents for VdsoTamperInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1055").expect("valid id")],
+                    MitreAttackId::vec("T1055"),
                     0.8f64,
                 )
             } else {
@@ -313,7 +313,7 @@ impl IntoForensicEvents for UserNsEscalationInfo {
                 (
                     Severity::Critical,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    MitreAttackId::vec("T1611"),
                     0.9f64,
                 )
             } else if self.ns_depth > 3 {
@@ -321,7 +321,7 @@ impl IntoForensicEvents for UserNsEscalationInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    MitreAttackId::vec("T1611"),
                     0.7f64,
                 )
             } else if self.has_cap_sys_admin && self.owner_uid == 0 {
@@ -329,7 +329,7 @@ impl IntoForensicEvents for UserNsEscalationInfo {
                 (
                     Severity::Medium,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1548").expect("valid id")],
+                    MitreAttackId::vec("T1548"),
                     0.6f64,
                 )
             } else {
@@ -363,7 +363,7 @@ impl IntoForensicEvents for AuditTamperInfo {
             (
                 Severity::Critical,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1562").expect("valid id")],
+                MitreAttackId::vec("T1562"),
                 0.95f64,
             )
         } else if !self.suppressed_pids.is_empty() {
@@ -371,7 +371,7 @@ impl IntoForensicEvents for AuditTamperInfo {
             (
                 Severity::High,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1562").expect("valid id")],
+                MitreAttackId::vec("T1562"),
                 0.85f64,
             )
         } else if self.backlog_limit < 64 {
@@ -379,7 +379,7 @@ impl IntoForensicEvents for AuditTamperInfo {
             (
                 Severity::Medium,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1562").expect("valid id")],
+                MitreAttackId::vec("T1562"),
                 0.6f64,
             )
         } else {
@@ -412,7 +412,7 @@ impl IntoForensicEvents for CpuPinningInfo {
                 (
                     Severity::High,
                     Finding::Other("cryptomining_suspected".into()),
-                    vec![MitreAttackId::new("T1496").expect("valid id")],
+                    MitreAttackId::vec("T1496"),
                     0.8f64,
                 )
             } else if self.sched_policy == 3 || self.sched_policy == 5 {
@@ -420,7 +420,7 @@ impl IntoForensicEvents for CpuPinningInfo {
                 (
                     Severity::Medium,
                     Finding::Other("stealth_scheduling".into()),
-                    vec![MitreAttackId::new("T1496").expect("valid id")],
+                    MitreAttackId::vec("T1496"),
                     0.5f64,
                 )
             } else {
@@ -459,7 +459,7 @@ impl IntoForensicEvents for ContainerEscapeCorrelateInfo {
                 (
                     Severity::Critical,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    MitreAttackId::vec("T1611"),
                     0.9f64,
                 )
             } else if self.cap_sys_admin && self.in_non_init_pid_ns {
@@ -467,7 +467,7 @@ impl IntoForensicEvents for ContainerEscapeCorrelateInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    MitreAttackId::vec("T1611"),
                     0.8f64,
                 )
             } else if self.pid_ns_differs_from_cgroup_ns {
@@ -475,7 +475,7 @@ impl IntoForensicEvents for ContainerEscapeCorrelateInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1611").expect("valid id")],
+                    MitreAttackId::vec("T1611"),
                     0.75f64,
                 )
             } else {
@@ -510,7 +510,7 @@ impl IntoForensicEvents for FdAbuseInfo {
                 (
                     Severity::High,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1205").expect("valid id")],
+                    MitreAttackId::vec("T1205"),
                     0.8f64,
                 )
             } else if self.fd_type == FdAbuseType::TimerFd && self.interval_ns < 1_000_000_000 {
@@ -518,7 +518,7 @@ impl IntoForensicEvents for FdAbuseInfo {
                 (
                     Severity::Medium,
                     Finding::NetworkBeaconing,
-                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    MitreAttackId::vec("T1071"),
                     0.5f64,
                 )
             } else if self.is_cross_process_shared {
@@ -526,7 +526,7 @@ impl IntoForensicEvents for FdAbuseInfo {
                 (
                     Severity::Medium,
                     Finding::DefenseEvasion,
-                    vec![MitreAttackId::new("T1071").expect("valid id")],
+                    MitreAttackId::vec("T1071"),
                     0.6f64,
                 )
             } else {
@@ -560,7 +560,7 @@ impl IntoForensicEvents for SharedMemAnomalyInfo {
             (
                 Severity::Critical,
                 Finding::ProcessHollowing,
-                vec![MitreAttackId::new("T1027").expect("valid id")],
+                MitreAttackId::vec("T1027"),
                 0.9f64,
             )
         } else if self.has_elf_header && self.is_executable {
@@ -568,7 +568,7 @@ impl IntoForensicEvents for SharedMemAnomalyInfo {
             (
                 Severity::High,
                 Finding::ProcessHollowing,
-                vec![MitreAttackId::new("T1055").expect("valid id")],
+                MitreAttackId::vec("T1055"),
                 0.85f64,
             )
         } else if self.is_cross_uid {
@@ -576,7 +576,7 @@ impl IntoForensicEvents for SharedMemAnomalyInfo {
             (
                 Severity::Medium,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1055").expect("valid id")],
+                MitreAttackId::vec("T1055"),
                 0.6f64,
             )
         } else {
@@ -610,7 +610,7 @@ impl IntoForensicEvents for FuseAbuseInfo {
             (
                 Severity::High,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1564").expect("valid id")],
+                MitreAttackId::vec("T1564"),
                 0.9f64,
             )
         } else if self.daemon_is_root && self.allow_other {
@@ -618,7 +618,7 @@ impl IntoForensicEvents for FuseAbuseInfo {
             (
                 Severity::Medium,
                 Finding::DefenseEvasion,
-                vec![MitreAttackId::new("T1564").expect("valid id")],
+                MitreAttackId::vec("T1564"),
                 0.6f64,
             )
         } else {

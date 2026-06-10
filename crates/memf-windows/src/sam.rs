@@ -119,7 +119,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
         .unwrap_or(0x10);
 
     let base_block_addr = match reader.read_bytes(hive_addr + base_block_off, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 
@@ -129,7 +129,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
 
     // Read root cell offset from _HBASE_BLOCK (at offset 0x24, u32).
     let root_cell_off = match reader.read_bytes(base_block_addr + 0x24, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 
@@ -148,7 +148,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
     // Try to read the flat storage base pointer (Stable storage BlockList).
     let flat_base = match reader.read_bytes(hive_addr + storage_base, 8) {
         Ok(bytes) if bytes.len() == 8 => {
-            let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            let addr = bytes[..8].try_into().map_or(0, u64::from_le_bytes);
             if addr != 0 {
                 addr
             } else {
@@ -197,7 +197,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
 
     // Enumerate RID subkeys under Users (hex RID strings like "000001F4").
     let subkey_count: u32 = match reader.read_bytes(users_key + 0x18, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => 0,
     };
 
@@ -206,7 +206,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
     }
 
     let subkey_list_off: u32 = match reader.read_bytes(users_key + 0x20, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return Ok(users),
     };
 
@@ -222,7 +222,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
     };
 
     let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
-        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
         _ => return Ok(users),
     };
 
@@ -232,7 +232,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
                 // lf/lh: 8-byte entries (offset + hash) starting at +4
                 match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                     }
                     _ => continue,
                 }
@@ -241,7 +241,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
                 // li: 4-byte entries (offset only) starting at +4
                 match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                     }
                     _ => continue,
                 }
@@ -256,7 +256,7 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
 
         // Read key name (at offset 0x4C in _CM_KEY_NODE, length at 0x4A).
         let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => continue,
         };
 
@@ -336,7 +336,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
     target_name: &str,
 ) -> u64 {
     let subkey_count: u32 = match reader.read_bytes(parent_addr + 0x18, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return 0,
     };
 
@@ -345,7 +345,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
     }
 
     let list_off: u32 = match reader.read_bytes(parent_addr + 0x20, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return 0,
     };
 
@@ -360,7 +360,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
     };
 
     let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
-        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
         _ => return 0,
     };
 
@@ -369,13 +369,13 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
             [b'l', b'f' | b'h'] => {
                 match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                     }
                     _ => continue,
                 }
             }
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
                 _ => continue,
             },
             _ => return 0,
@@ -387,7 +387,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
         }
 
         let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => continue,
         };
 
@@ -418,7 +418,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
     // Under Names, each subkey's name IS the username, and the default value
     // type encodes the RID. We read each subkey name and check the value type.
     let subkey_count: u32 = match reader.read_bytes(names_key + 0x18, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return format!("RID-{target_rid}"),
     };
 
@@ -427,7 +427,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
     }
 
     let list_off: u32 = match reader.read_bytes(names_key + 0x20, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return format!("RID-{target_rid}"),
     };
 
@@ -442,7 +442,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
     };
 
     let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
-        Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
         _ => return format!("RID-{target_rid}"),
     };
 
@@ -451,13 +451,13 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
             [b'l', b'f' | b'h'] => {
                 match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
                     Ok(bytes) if bytes.len() == 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                     }
                     _ => continue,
                 }
             }
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
                 _ => continue,
             },
             _ => break,
@@ -473,7 +473,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
         // whose data type is the RID (a Windows registry trick).
         // The value list offset is at _CM_KEY_NODE + 0x2C, count at +0x28.
         let val_count: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
-            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => continue,
         };
 
@@ -482,7 +482,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
         }
 
         let val_list_off: u32 = match reader.read_bytes(key_addr + 0x2C, 4) {
-            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => continue,
         };
 
@@ -493,7 +493,7 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
 
         // Read first value offset.
         let val_off: u32 = match reader.read_bytes(val_list_addr, 4) {
-            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => continue,
         };
 
@@ -504,14 +504,14 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
 
         // _CM_KEY_VALUE: Type at offset 0x10 (u32).
         let val_type: u32 = match reader.read_bytes(val_addr + 0x10, 4) {
-            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => continue,
         };
 
         if val_type == target_rid {
             // Read the key name as the username.
             let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-                Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+                Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
                 _ => continue,
             };
 
@@ -537,7 +537,7 @@ fn read_f_value<P: PhysicalMemoryProvider>(
 
     // Read value count and list.
     let val_count: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return default,
     };
 
@@ -546,7 +546,7 @@ fn read_f_value<P: PhysicalMemoryProvider>(
     }
 
     let val_list_off: u32 = match reader.read_bytes(key_addr + 0x2C, 4) {
-        Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return default,
     };
 
@@ -558,7 +558,7 @@ fn read_f_value<P: PhysicalMemoryProvider>(
     // Scan values for "F".
     for v in 0..val_count.min(64) {
         let val_off: u32 = match reader.read_bytes(val_list_addr + u64::from(v) * 4, 4) {
-            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => continue,
         };
 
@@ -569,7 +569,7 @@ fn read_f_value<P: PhysicalMemoryProvider>(
 
         // _CM_KEY_VALUE: NameLength at 0x02 (u16), Name at 0x18.
         let vname_len: u16 = match reader.read_bytes(val_addr + 0x02, 2) {
-            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => continue,
         };
 
@@ -589,7 +589,7 @@ fn read_f_value<P: PhysicalMemoryProvider>(
         // F value data: DataLength at 0x08 (u32), DataOffset at 0x0C (u32).
         let data_len: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
             Ok(bytes) if bytes.len() == 4 => {
-                u32::from_le_bytes(bytes[..4].try_into().unwrap()) & 0x7FFFFFFF
+                bytes[..4].try_into().map_or(0, u32::from_le_bytes) & 0x7FFFFFFF
             }
             _ => return default,
         };
@@ -599,7 +599,7 @@ fn read_f_value<P: PhysicalMemoryProvider>(
         }
 
         let data_off: u32 = match reader.read_bytes(val_addr + 0x0C, 4) {
-            Ok(bytes) if bytes.len() == 4 => u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => return default,
         };
 
@@ -615,27 +615,27 @@ fn read_f_value<P: PhysicalMemoryProvider>(
         // 0x30: account flags (u16)
         // 0x38: login count (u16)
         let last_login = match reader.read_bytes(data_addr + 0x08, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => 0,
         };
 
         let last_pw = match reader.read_bytes(data_addr + 0x18, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => 0,
         };
 
         let created = match reader.read_bytes(data_addr + 0x20, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => 0,
         };
 
         let flags_raw: u16 = match reader.read_bytes(data_addr + 0x30, 2) {
-            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => 0,
         };
 
         let login_cnt: u16 = match reader.read_bytes(data_addr + 0x38, 2) {
-            Ok(bytes) if bytes.len() == 2 => u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => 0,
         };
 

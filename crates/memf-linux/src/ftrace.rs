@@ -73,7 +73,7 @@ pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
     let mut hooks = Vec::new();
 
     let first_ptr = match reader.read_bytes(list_head_addr + next_field_offset, 8) {
-        Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+        Ok(b) if b.len() == 8 => b.try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 
@@ -89,12 +89,12 @@ pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
         let ops_addr = current_list_ptr.wrapping_sub(list_offset);
 
         let func = match reader.read_bytes(ops_addr + func_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b.try_into().map_or(0, u64::from_le_bytes),
             _ => 0,
         };
 
         let flags = match reader.read_bytes(ops_addr + flags_offset, 4) {
-            Ok(b) if b.len() == 4 => u32::from_le_bytes(b.try_into().unwrap()),
+            Ok(b) if b.len() == 4 => b.try_into().map_or(0, u32::from_le_bytes),
             _ => 0,
         };
 
@@ -111,7 +111,7 @@ pub fn walk_ftrace_hooks<P: PhysicalMemoryProvider>(
 
         // Advance: read ops.list.next
         current_list_ptr = match reader.read_bytes(current_list_ptr + next_field_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b.try_into().map_or(0, u64::from_le_bytes),
             _ => break,
         };
     }

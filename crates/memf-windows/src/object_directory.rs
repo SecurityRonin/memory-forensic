@@ -72,7 +72,7 @@ pub fn walk_directory<P: PhysicalMemoryProvider>(
     for bucket_idx in 0..HASH_BUCKET_COUNT {
         let off = bucket_idx * 8;
         let mut entry_ptr =
-            u64::from_le_bytes(bucket_bytes[off..off + 8].try_into().expect("8 bytes"));
+            bucket_bytes[off..off + 8].try_into().map_or(0, u64::from_le_bytes);
 
         let mut chain_len = 0;
         while entry_ptr != 0 && chain_len < MAX_CHAIN_LENGTH {

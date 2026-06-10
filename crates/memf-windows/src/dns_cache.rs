@@ -59,7 +59,7 @@ pub fn walk_dns_cache<P: PhysicalMemoryProvider>(
     for i in 0..bucket_count {
         let bucket_ptr_addr = buckets_addr + i * 8;
         let entry_ptr: u64 = match reader.read_bytes(bucket_ptr_addr, 8) {
-            Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+            Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             Err(_) => continue,
         };
 

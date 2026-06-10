@@ -27,6 +27,17 @@ impl MitreAttackId {
         &self.0
     }
 
+    /// Build a single-element `Vec` for a known-valid technique ID, or an empty
+    /// `Vec` if the ID is malformed.
+    ///
+    /// Call sites pass compile-time-constant IDs, so the empty case is a
+    /// defensive fallback (a typo'd constant degrades to "no MITRE tag")
+    /// rather than a panic — this is the panic-free replacement for
+    /// `vec![MitreAttackId::new("T1055").expect("valid id")]`.
+    pub fn vec(id: &str) -> Vec<Self> {
+        Self::new(id).into_iter().collect()
+    }
+
     fn is_valid(id: &str) -> bool {
         // Must start with 'T' followed by digits, optionally '.digits'
         let Some(rest) = id.strip_prefix('T') else {
@@ -82,6 +93,18 @@ mod tests {
     fn invalid_sub_technique_too_short() {
         let result = MitreAttackId::new("T1055.");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn vec_returns_single_for_valid_id() {
+        let v = MitreAttackId::vec("T1055");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].as_str(), "T1055");
+    }
+
+    #[test]
+    fn vec_returns_empty_for_invalid_id() {
+        assert!(MitreAttackId::vec("not-an-id").is_empty());
     }
 
     #[test]

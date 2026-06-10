@@ -44,7 +44,7 @@ pub fn walk_arp_cache<P: PhysicalMemoryProvider>(
         // Each bucket is a pointer (8 bytes) to the first neighbour
         let bucket_addr = buckets_ptr + i * 8;
         let neigh_ptr: u64 = match reader.read_bytes(bucket_addr, 8) {
-            Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+            Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             Err(_) => continue,
         };
 

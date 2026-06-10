@@ -133,7 +133,7 @@ pub fn check_irp_hooks<P: PhysicalMemoryProvider>(
     for (i, irp_name) in IRP_MJ_NAMES.iter().enumerate() {
         let offset = i * 8;
         let target_addr =
-            u64::from_le_bytes(mf_bytes[offset..offset + 8].try_into().expect("8 bytes"));
+            mf_bytes[offset..offset + 8].try_into().map_or(0, u64::from_le_bytes);
 
         if target_addr == 0 {
             continue;

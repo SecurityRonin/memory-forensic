@@ -39,7 +39,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_base: {e}"),
             })?;
-        u32::from_le_bytes(b.try_into().unwrap()) as u64
+        b.try_into().map_or(0, u32::from_le_bytes) as u64
     };
 
     let width = {
@@ -48,7 +48,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_width: {e}"),
             })?;
-        u16::from_le_bytes(b.try_into().unwrap()) as u32
+        b.try_into().map_or(0, u16::from_le_bytes) as u32
     };
 
     let height = {
@@ -57,7 +57,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_height: {e}"),
             })?;
-        u16::from_le_bytes(b.try_into().unwrap()) as u32
+        b.try_into().map_or(0, u16::from_le_bytes) as u32
     };
 
     let depth = {
@@ -66,7 +66,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_depth: {e}"),
             })?;
-        u16::from_le_bytes(b.try_into().unwrap())
+        b.try_into().map_or(0, u16::from_le_bytes)
     };
 
     let stride = {
@@ -75,7 +75,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_linelength: {e}"),
             })?;
-        u32::from_le_bytes(b.try_into().unwrap())
+        b.try_into().map_or(0, u32::from_le_bytes)
     };
 
     if width == 0 || height == 0 || lfb_base == 0 {

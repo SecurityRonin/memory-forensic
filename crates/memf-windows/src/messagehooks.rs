@@ -119,7 +119,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
 
     // Read the first winsta pointer from the symbol
     let first_ws: u64 = match reader.read_bytes(list_sym, 8) {
-        Ok(b) => u64::from_le_bytes(b[..8].try_into().unwrap()),
+        Ok(b) => b[..8].try_into().map_or(0, u64::from_le_bytes),
         Err(_) => return Ok(Vec::new()),
     };
     if first_ws == 0 {
@@ -189,7 +189,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
     while ws_addr != 0 {
         // Walk desktops of this station
         let first_desk: u64 = match reader.read_bytes(ws_addr + ws_desk_off, 8) {
-            Ok(b) => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) => b[..8].try_into().map_or(0, u64::from_le_bytes),
             Err(_) => 0,
         };
 
@@ -199,7 +199,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
             for i in 0..HOOK_TYPE_COUNT {
                 let slot_addr = desk_addr + desk_aphk_off + i as u64 * 8;
                 let head_hook: u64 = match reader.read_bytes(slot_addr, 8) {
-                    Ok(b) => u64::from_le_bytes(b[..8].try_into().unwrap()),
+                    Ok(b) => b[..8].try_into().map_or(0, u64::from_le_bytes),
                     Err(_) => 0,
                 };
 
@@ -214,20 +214,20 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
                     // Read hook type
                     let i_hook_raw: u32 = reader
                         .read_bytes(hook_addr + hook_type_off, 4)
-                        .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))
+                        .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
                         .unwrap_or(0xFFFF_FFFF);
                     let hook_type = hook_type_name(i_hook_raw);
 
                     // Read proc address
                     let hook_proc_addr: u64 = reader
                         .read_bytes(hook_addr + hook_proc_off, 8)
-                        .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
+                        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
                         .unwrap_or(0);
 
                     // Read ihmod to determine module origin (<=0xFFFF → injected/unknown)
                     let ihmod: i32 = reader
                         .read_bytes(hook_addr + hook_ihmod_off, 4)
-                        .map(|b| i32::from_le_bytes(b[..4].try_into().unwrap()))
+                        .map(|b| b[..4].try_into().map_or(0, i32::from_le_bytes))
                         .unwrap_or(-1);
                     let module_name = if ihmod > 0 {
                         // Try to read module name via _UNICODE_STRING at ihmod offset
@@ -240,7 +240,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
                     // Extract owner PID via tagTHREADINFO chain
                     let pti: u64 = reader
                         .read_bytes(hook_addr + hook_pti_off, 8)
-                        .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
+                        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
                         .unwrap_or(0);
                     let owner_pid = extract_pid_from_threadinfo(
                         reader,
@@ -262,7 +262,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
 
                     // Follow phkNext
                     hook_addr = match reader.read_bytes(hook_addr + hook_next_off, 8) {
-                        Ok(b) => u64::from_le_bytes(b[..8].try_into().unwrap()),
+                        Ok(b) => b[..8].try_into().map_or(0, u64::from_le_bytes),
                         Err(_) => 0,
                     };
                 }
@@ -270,14 +270,14 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
 
             // Next desktop
             desk_addr = match reader.read_bytes(desk_addr + desk_next_off, 8) {
-                Ok(b) => u64::from_le_bytes(b[..8].try_into().unwrap()),
+                Ok(b) => b[..8].try_into().map_or(0, u64::from_le_bytes),
                 Err(_) => 0,
             };
         }
 
         // Next window station
         ws_addr = match reader.read_bytes(ws_addr + ws_next_off, 8) {
-            Ok(b) => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) => b[..8].try_into().map_or(0, u64::from_le_bytes),
             Err(_) => 0,
         };
     }
@@ -299,21 +299,21 @@ fn extract_pid_from_threadinfo<P: PhysicalMemoryProvider>(
     }
     let ethread: u64 = reader
         .read_bytes(threadinfo_addr + threadinfo_eprocess_off, 8)
-        .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
+        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
         .unwrap_or(0);
     if ethread == 0 {
         return 0;
     }
     let eprocess: u64 = reader
         .read_bytes(ethread + ethread_process_off, 8)
-        .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
+        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
         .unwrap_or(0);
     if eprocess == 0 {
         return 0;
     }
     reader
         .read_bytes(eprocess + pid_off, 8)
-        .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()) as u32)
+        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes) as u32)
         .unwrap_or(0)
 }
 

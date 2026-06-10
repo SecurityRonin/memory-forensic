@@ -42,7 +42,7 @@ pub fn walk_named_pipes<P: PhysicalMemoryProvider>(
 
     // Read the pointer stored at the symbol address
     let root_dir_addr: u64 = match reader.read_bytes(root_dir_sym_addr, 8) {
-        Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         Err(_) => return Ok(Vec::new()),
     };
 

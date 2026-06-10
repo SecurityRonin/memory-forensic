@@ -177,7 +177,7 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
     let mut count = 0;
 
     while let Ok(flink_bytes) = reader.read_bytes(current, 8) {
-        let flink = u64::from_le_bytes(flink_bytes[..8].try_into().unwrap());
+        let flink = flink_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
 
         if flink == driver_list_head {
             break;
@@ -203,7 +203,7 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
                 current = flink;
                 continue;
             };
-        let mut device_addr = u64::from_le_bytes(dev_ptr_bytes[..8].try_into().unwrap());
+        let mut device_addr = dev_ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
 
         let mut device_count = 0;
         let mut visited_devices = std::collections::HashSet::new();

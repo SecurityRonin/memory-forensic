@@ -121,7 +121,7 @@ pub fn walk_cgroups<P: PhysicalMemoryProvider>(
 
         // Read task_struct.cgroups pointer -> css_set.
         let css_set_ptr: u64 = match reader.read_bytes(task_addr + cgroups_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => continue,
         };
         if css_set_ptr == 0 {
@@ -130,7 +130,7 @@ pub fn walk_cgroups<P: PhysicalMemoryProvider>(
 
         // Read first subsys pointer from css_set.subsys[0].
         let css_ptr: u64 = match reader.read_bytes(css_set_ptr + subsys_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => continue,
         };
         if css_ptr == 0 {
@@ -139,7 +139,7 @@ pub fn walk_cgroups<P: PhysicalMemoryProvider>(
 
         // Follow cgroup_subsys_state -> cgroup.
         let cgroup_ptr: u64 = match reader.read_bytes(css_ptr + css_cgroup_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => continue,
         };
         if cgroup_ptr == 0 {
@@ -148,7 +148,7 @@ pub fn walk_cgroups<P: PhysicalMemoryProvider>(
 
         // Read kernfs_node pointer from cgroup.kn.
         let kn_ptr: u64 = match reader.read_bytes(cgroup_ptr + cgroup_kn_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => continue,
         };
 
@@ -200,7 +200,7 @@ fn build_kernfs_path<P: PhysicalMemoryProvider>(
 
         // Read name pointer (char *).
         let name_ptr: u64 = match reader.read_bytes(current + name_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => break,
         };
 
@@ -225,7 +225,7 @@ fn build_kernfs_path<P: PhysicalMemoryProvider>(
 
         // Follow parent pointer.
         current = match reader.read_bytes(current + parent_offset, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => break,
         };
     }

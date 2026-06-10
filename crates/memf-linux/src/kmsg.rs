@@ -42,7 +42,7 @@ pub fn walk_kmsg<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<
     let buf_len: usize = if let Some(len_addr) = reader.symbols().symbol_address("log_buf_len") {
         match reader.read_bytes(len_addr, 4) {
             Ok(b) if b.len() == 4 => {
-                let v = u32::from_le_bytes(b.try_into().unwrap()) as usize;
+                let v = b.try_into().map_or(0, u32::from_le_bytes) as usize;
                 if v == 0 {
                     4096
                 } else {

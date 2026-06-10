@@ -155,7 +155,7 @@ fn read_u64_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) 
     if bytes.len() < 8 {
         return None;
     }
-    Some(u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")))
+    Some(bytes[..8].try_into().map_or(0, u64::from_le_bytes))
 }
 
 /// Read a little-endian u32 from virtual memory, returning `None` on failure.
@@ -164,7 +164,7 @@ fn read_u32_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) 
     if bytes.len() < 4 {
         return None;
     }
-    Some(u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")))
+    Some(bytes[..4].try_into().map_or(0, u32::from_le_bytes))
 }
 
 /// Attempt to identify the log channel name from event XML in a chunk.

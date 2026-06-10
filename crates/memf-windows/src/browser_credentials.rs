@@ -52,6 +52,10 @@ static CRED_RE: OnceLock<regex::Regex> = OnceLock::new();
 
 fn cred_re() -> &'static regex::Regex {
     CRED_RE.get_or_init(|| {
+        // Single compile-time-constant pattern in a OnceLock initializer; the
+        // expect enforces a programmer contract (the literal is known-valid),
+        // not trust in untrusted input — hence the targeted allow.
+        #[allow(clippy::expect_used)]
         regex::Regex::new(
             r"(?-u)[a-zA-Z]https?[ ]([a-zA-Z0-9\-_\.@?]{3,20})[ ]([a-zA-Z0-9!#$%^&*()\-+=\[\]{};:<>?/~\t ]{6,40})[ ]\x00",
         )

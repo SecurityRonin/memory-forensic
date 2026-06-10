@@ -83,14 +83,14 @@ fn analyze_prologue(bytes: &[u8], func_addr: u64) -> (String, Option<u64>) {
 
     // Pattern 1: E9 xx xx xx xx — relative JMP (5 bytes)
     if bytes[0] == 0xE9 {
-        let offset = i32::from_le_bytes(bytes[1..5].try_into().unwrap());
+        let offset = bytes[1..5].try_into().map_or(0, i32::from_le_bytes);
         let target = (func_addr as i64 + 5 + i64::from(offset)) as u64;
         return ("jmp_rel32".to_string(), Some(target));
     }
 
     // Pattern 2: FF 25 xx xx xx xx — absolute indirect JMP [rip+disp32]
     if bytes[0] == 0xFF && bytes[1] == 0x25 {
-        let offset = i32::from_le_bytes(bytes[2..6].try_into().unwrap());
+        let offset = bytes[2..6].try_into().map_or(0, i32::from_le_bytes);
         let target = (func_addr as i64 + 6 + i64::from(offset)) as u64;
         return ("jmp_indirect".to_string(), Some(target));
     }
@@ -102,7 +102,7 @@ fn analyze_prologue(bytes: &[u8], func_addr: u64) -> (String, Option<u64>) {
         && bytes[10] == 0xFF
         && bytes[11] == 0xE0
     {
-        let target = u64::from_le_bytes(bytes[2..10].try_into().unwrap());
+        let target = bytes[2..10].try_into().map_or(0, u64::from_le_bytes);
         return ("mov_rax_jmp".to_string(), Some(target));
     }
 

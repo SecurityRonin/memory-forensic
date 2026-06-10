@@ -143,7 +143,7 @@ pub fn walk_scheduled_tasks<P: PhysicalMemoryProvider>(
 
     // Read head Flink.
     let first = match reader.read_bytes(list_head, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 
@@ -172,19 +172,19 @@ pub fn walk_scheduled_tasks<P: PhysicalMemoryProvider>(
         // Read enabled flag (u32, nonzero = enabled).
         let enabled = match reader.read_bytes(task_addr + enabled_off, 4) {
             Ok(bytes) if bytes.len() == 4 => {
-                u32::from_le_bytes(bytes[..4].try_into().unwrap()) != 0
+                bytes[..4].try_into().map_or(0, u32::from_le_bytes) != 0
             }
             _ => false,
         };
 
         // Read timestamps (FILETIME u64).
         let last_run_time = match reader.read_bytes(task_addr + last_run_off, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => 0,
         };
 
         let next_run_time = match reader.read_bytes(task_addr + next_run_off, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => 0,
         };
 
@@ -203,7 +203,7 @@ pub fn walk_scheduled_tasks<P: PhysicalMemoryProvider>(
 
         // Follow Flink to next entry.
         current = match reader.read_bytes(current, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => break,
         };
     }

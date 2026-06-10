@@ -141,7 +141,7 @@ pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
     // Read root cell index from _HBASE_BLOCK
     let root_cell_bytes =
         reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4)?;
-    let root_cell = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
+    let root_cell = root_cell_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
 
     if root_cell == 0 {
         return Ok(Vec::new());
@@ -175,7 +175,7 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
     let nk_data = read_cell_data(reader, cell_vaddr)?;
 
     // Validate nk signature
-    let sig = u16::from_le_bytes(nk_data[0..2].try_into().unwrap());
+    let sig = nk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
     if sig != NK_SIGNATURE {
         return Err(crate::Error::WalkFailed {
             walker: "registry_keys",
@@ -183,21 +183,13 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
         });
     }
 
-    let value_count = u32::from_le_bytes(
-        nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let value_count = nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     if value_count == 0 {
         return Ok(Vec::new());
     }
 
-    let values_list_cell = u32::from_le_bytes(
-        nk_data[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let values_list_cell = nk_data[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     // The value list cell contains an array of u32 cell indices (one per value).
     let vl_vaddr = cell_address(hive_addr, values_list_cell);
@@ -212,7 +204,7 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
         if off + 4 > vl_data.len() {
             break;
         }
-        let val_cell = u32::from_le_bytes(vl_data[off..off + 4].try_into().unwrap());
+        let val_cell = vl_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
         if let Ok(v) = read_single_value(reader, hive_addr, val_cell, &key_name) {
             values.push(v); // skip corrupt values silently
         }
@@ -243,7 +235,7 @@ fn read_cell_data<P: PhysicalMemoryProvider>(
 ) -> crate::Result<Vec<u8>> {
     // Read the cell size (i32)
     let size_bytes = reader.read_bytes(cell_vaddr, 4)?;
-    let raw_size = i32::from_le_bytes(size_bytes[..4].try_into().unwrap());
+    let raw_size = size_bytes[..4].try_into().map_or(0, i32::from_le_bytes);
 
     // Allocated cells have negative size; the absolute value is the total cell
     // size including the 4-byte size field itself.
@@ -265,11 +257,7 @@ fn read_key_name(nk_data: &[u8]) -> String {
     if nk_data.len() < NK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = u16::from_le_bytes(
-        nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let name_len = nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
 
     let end = NK_NAME_OFFSET + name_len;
     if end > nk_data.len() {
@@ -303,7 +291,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
     }
 
     // Validate nk signature
-    let sig = u16::from_le_bytes(nk_data[0..2].try_into().unwrap());
+    let sig = nk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
     if sig != NK_SIGNATURE {
         return Ok(());
     }
@@ -315,21 +303,9 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
         format!("{parent_path}\\{key_name}")
     };
 
-    let last_write_time = u64::from_le_bytes(
-        nk_data[NK_LAST_WRITE_TIME_OFFSET..NK_LAST_WRITE_TIME_OFFSET + 8]
-            .try_into()
-            .unwrap(),
-    );
-    let subkey_count = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
-    let value_count = u32::from_le_bytes(
-        nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let last_write_time = nk_data[NK_LAST_WRITE_TIME_OFFSET..NK_LAST_WRITE_TIME_OFFSET + 8].try_into().map_or(0, u64::from_le_bytes);
+    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let value_count = nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     keys.push(RegistryKeyInfo {
         path: path.clone(),
@@ -343,11 +319,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
         return Ok(());
     }
 
-    let subkeys_list_cell = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let subkeys_list_cell = nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     // The subkeys list cell can be an "lf", "lh", "ri", or "li" index node.
     // For simplicity, we handle "lf"/"lh" (most common) and fall back gracefully.
@@ -358,8 +330,8 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
         return Ok(());
     }
 
-    let list_sig = u16::from_le_bytes(sl_data[0..2].try_into().unwrap());
-    let list_count = u16::from_le_bytes(sl_data[2..4].try_into().unwrap()) as usize;
+    let list_sig = sl_data[0..2].try_into().map_or(0, u16::from_le_bytes);
+    let list_count = sl_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
 
     match list_sig {
         // "lf" (0x666C) or "lh" (0x686C): each entry is 8 bytes (cell_index: u32, hash: u32)
@@ -373,7 +345,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                     break;
                 }
                 let child_cell =
-                    u32::from_le_bytes(sl_data[entry_off..entry_off + 4].try_into().unwrap());
+                    sl_data[entry_off..entry_off + 4].try_into().map_or(0, u32::from_le_bytes);
                 walk_key_recursive(
                     reader,
                     hive_addr,
@@ -395,7 +367,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                     break;
                 }
                 let child_cell =
-                    u32::from_le_bytes(sl_data[entry_off..entry_off + 4].try_into().unwrap());
+                    sl_data[entry_off..entry_off + 4].try_into().map_or(0, u32::from_le_bytes);
                 walk_key_recursive(
                     reader,
                     hive_addr,
@@ -417,15 +389,15 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                     break;
                 }
                 let sub_list_cell =
-                    u32::from_le_bytes(sl_data[entry_off..entry_off + 4].try_into().unwrap());
+                    sl_data[entry_off..entry_off + 4].try_into().map_or(0, u32::from_le_bytes);
                 // Read the sub-list and enumerate its children
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
                 let sub_data = read_cell_data(reader, sub_vaddr)?;
                 if sub_data.len() < 4 {
                     continue;
                 }
-                let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
-                let sub_count = u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                let sub_sig = sub_data[0..2].try_into().map_or(0, u16::from_le_bytes);
+                let sub_count = sub_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
                 let entry_size = match sub_sig {
                     0x666C | 0x686C => 8,
                     0x696C => 4,
@@ -439,7 +411,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                     if off + 4 > sub_data.len() {
                         break;
                     }
-                    let child_cell = u32::from_le_bytes(sub_data[off..off + 4].try_into().unwrap());
+                    let child_cell = sub_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                     walk_key_recursive(
                         reader,
                         hive_addr,
@@ -473,7 +445,7 @@ fn read_single_value<P: PhysicalMemoryProvider>(
         return Err(crate::Error::WalkFailed { walker: "registry_keys", reason: "vk cell too small".into() });
     }
 
-    let sig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
+    let sig = vk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
     if sig != VK_SIGNATURE {
         return Err(crate::Error::WalkFailed {
             walker: "registry_keys",
@@ -481,29 +453,13 @@ fn read_single_value<P: PhysicalMemoryProvider>(
         });
     }
 
-    let name_length = u16::from_le_bytes(
-        vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let name_length = vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
 
-    let data_length_raw = u32::from_le_bytes(
-        vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let data_length_raw = vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
-    let data_offset = u32::from_le_bytes(
-        vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let data_offset = vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
-    let value_type_raw = u32::from_le_bytes(
-        vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let value_type_raw = vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
 
     let name = if name_length == 0 {
         String::new() // default value
@@ -591,7 +547,7 @@ fn format_data_preview(value_type: u32, data: &[u8]) -> String {
         // REG_DWORD
         4 => {
             if data.len() >= 4 {
-                let v = u32::from_le_bytes(data[..4].try_into().unwrap());
+                let v = data[..4].try_into().map_or(0, u32::from_le_bytes);
                 format!("0x{v:08X} ({v})")
             } else {
                 format!("{data:02X?}")
@@ -600,7 +556,7 @@ fn format_data_preview(value_type: u32, data: &[u8]) -> String {
         // REG_QWORD
         11 => {
             if data.len() >= 8 {
-                let v = u64::from_le_bytes(data[..8].try_into().unwrap());
+                let v = data[..8].try_into().map_or(0, u64::from_le_bytes);
                 format!("0x{v:016X} ({v})")
             } else {
                 format!("{data:02X?}")

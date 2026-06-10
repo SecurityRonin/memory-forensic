@@ -50,7 +50,7 @@ pub fn walk_keyboard_notifiers<P: PhysicalMemoryProvider>(
 
     // Read raw_notifier_head.head pointer (offset 0).
     let first_nb = match reader.read_bytes(head_addr, 8) {
-        Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+        Ok(b) if b.len() == 8 => b.try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 
@@ -64,19 +64,19 @@ pub fn walk_keyboard_notifiers<P: PhysicalMemoryProvider>(
 
         // notifier_call at offset 0
         let notifier_call = match reader.read_bytes(current, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b.try_into().map_or(0, u64::from_le_bytes),
             _ => break,
         };
 
         // next at offset 8
         let next = match reader.read_bytes(current + 8, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b.try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b.try_into().map_or(0, u64::from_le_bytes),
             _ => 0,
         };
 
         // priority at offset 16 (i32)
         let priority = match reader.read_bytes(current + 16, 4) {
-            Ok(b) if b.len() == 4 => i32::from_le_bytes(b.try_into().unwrap()),
+            Ok(b) if b.len() == 4 => b.try_into().map_or(0, i32::from_le_bytes),
             _ => 0,
         };
 

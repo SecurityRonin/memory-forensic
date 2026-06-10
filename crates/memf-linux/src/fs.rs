@@ -97,7 +97,7 @@ fn read_dentry_name<P: PhysicalMemoryProvider>(
 ) -> Result<String> {
     let name_addr = dentry_ptr + d_name_offset + name_in_qstr_offset;
     let name_raw = reader.read_bytes(name_addr, 8)?;
-    let name_ptr = u64::from_le_bytes(name_raw.try_into().unwrap());
+    let name_ptr = name_raw.try_into().map_or(0, u64::from_le_bytes);
     if name_ptr != 0 {
         Ok(reader.read_string(name_ptr, 256)?)
     } else {

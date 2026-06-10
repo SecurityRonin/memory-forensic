@@ -119,7 +119,7 @@ fn read_sid_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, sid_ptr: u64
     let sub_authorities: Vec<u32> = (0..sub_count)
         .map(|i| {
             let off = i * 4;
-            u32::from_le_bytes(sub_bytes[off..off + 4].try_into().expect("4 bytes"))
+            sub_bytes[off..off + 4].try_into().map_or(0, u32::from_le_bytes)
         })
         .collect();
 

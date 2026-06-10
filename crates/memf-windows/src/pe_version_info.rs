@@ -51,7 +51,7 @@ pub fn walk_pe_version_info<P: PhysicalMemoryProvider>(
     // Attempt to read the list head pointer. If the address is 0 or unreadable,
     // the list is empty and we return early.
     let first_entry: u64 = match reader.read_bytes(list_head_addr, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 

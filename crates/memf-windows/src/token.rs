@@ -103,7 +103,7 @@ fn read_user_sid<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, token_addr
     let sub_authorities: Vec<u32> = (0..sub_count)
         .map(|i| {
             let off = i * 4;
-            u32::from_le_bytes(sub_bytes[off..off + 4].try_into().expect("4 bytes"))
+            sub_bytes[off..off + 4].try_into().map_or(0, u32::from_le_bytes)
         })
         .collect();
 
@@ -192,10 +192,10 @@ pub fn walk_tokens<P: PhysicalMemoryProvider>(
         let priv_base = token_addr.wrapping_add(priv_offset);
 
         let present_bytes = reader.read_bytes(priv_base.wrapping_add(present_off), 8)?;
-        let privileges_present = u64::from_le_bytes(present_bytes.try_into().expect("8 bytes"));
+        let privileges_present = present_bytes.try_into().map_or(0, u64::from_le_bytes);
 
         let enabled_bytes = reader.read_bytes(priv_base.wrapping_add(enabled_off), 8)?;
-        let privileges_enabled = u64::from_le_bytes(enabled_bytes.try_into().expect("8 bytes"));
+        let privileges_enabled = enabled_bytes.try_into().map_or(0, u64::from_le_bytes);
 
         let privilege_names = decode_privileges(privileges_enabled);
         let user_sid = read_user_sid(reader, token_addr);

@@ -65,7 +65,7 @@ fn read_callback_array<P: PhysicalMemoryProvider>(
 
     for i in 0..MAX_CALLBACK_SLOTS {
         let offset = i * 8;
-        let entry = u64::from_le_bytes(raw[offset..offset + 8].try_into().expect("8 bytes"));
+        let entry = raw[offset..offset + 8].try_into().map_or(0, u64::from_le_bytes);
 
         if entry == 0 {
             // PspCreateProcessNotifyRoutine is a sparse array — null slots can

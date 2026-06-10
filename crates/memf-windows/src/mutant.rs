@@ -30,7 +30,7 @@ pub fn walk_mutants<P: PhysicalMemoryProvider>(
         None => return Ok(Vec::new()),
     };
     let root_dir_addr: u64 = match reader.read_bytes(root_sym_addr, 8) {
-        Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         Err(_) => return Ok(Vec::new()),
     };
     if root_dir_addr == 0 {
@@ -112,7 +112,7 @@ fn resolve_type_name<P: PhysicalMemoryProvider>(
     // ObTypeIndexTable is an array of pointers to _OBJECT_TYPE
     let slot_addr = ob_table_addr + u64::from(type_index) * 8;
     let obj_type_ptr: u64 = match reader.read_bytes(slot_addr, 8) {
-        Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         Err(_) => return "<unknown>".to_string(),
     };
     if obj_type_ptr == 0 {
@@ -148,7 +148,7 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
 
     let owner_thread_ptr: u64 = reader
         .read_bytes(object_body_addr + owner_thread_off, 8)
-        .map(|b| u64::from_le_bytes(b[..8].try_into().expect("8")))
+        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
         .unwrap_or(0);
 
     let abandoned: bool = reader
@@ -163,11 +163,11 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
             .unwrap_or(0x620);
         let pid: u64 = reader
             .read_bytes(owner_thread_ptr + cid_off, 8)
-            .map(|b| u64::from_le_bytes(b[..8].try_into().expect("8")))
+            .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
             .unwrap_or(0);
         let tid: u64 = reader
             .read_bytes(owner_thread_ptr + cid_off + 8, 8)
-            .map(|b| u64::from_le_bytes(b[..8].try_into().expect("8")))
+            .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
             .unwrap_or(0);
         (pid, tid)
     } else {

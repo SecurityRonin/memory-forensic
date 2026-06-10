@@ -161,10 +161,10 @@ pub fn walk_bigpools<P: PhysicalMemoryProvider>(
         let offset = (i * ENTRY_SIZE) as usize;
         let entry = &table_data[offset..offset + ENTRY_SIZE as usize];
 
-        let va = u64::from_le_bytes(entry[0..8].try_into().unwrap());
-        let tag_raw = u32::from_le_bytes(entry[8..12].try_into().unwrap());
-        let pool_type_raw = u32::from_le_bytes(entry[12..16].try_into().unwrap());
-        let number_of_bytes = u64::from_le_bytes(entry[16..24].try_into().unwrap());
+        let va = entry[0..8].try_into().map_or(0, u64::from_le_bytes);
+        let tag_raw = entry[8..12].try_into().map_or(0, u32::from_le_bytes);
+        let pool_type_raw = entry[12..16].try_into().map_or(0, u32::from_le_bytes);
+        let number_of_bytes = entry[16..24].try_into().map_or(0, u64::from_le_bytes);
 
         // Skip completely empty entries (all zeros).
         if va == 0 && tag_raw == 0 && number_of_bytes == 0 {

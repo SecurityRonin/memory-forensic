@@ -59,7 +59,7 @@ pub fn walk_shimcache<P: PhysicalMemoryProvider>(
     // g_ShimCache is a pointer — read 8 bytes at the symbol address to
     // get the address of the cache header.
     let header_addr: u64 = match reader.read_bytes(cache_ptr_addr, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 
@@ -89,7 +89,7 @@ pub fn walk_shimcache<P: PhysicalMemoryProvider>(
 
     // Read Flink of ListHead to get first entry.
     let mut current: u64 = match reader.read_bytes(list_head_addr, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 
@@ -138,7 +138,7 @@ pub fn walk_shimcache<P: PhysicalMemoryProvider>(
 
         // Advance to next entry (Flink at offset 0 of _LIST_ENTRY).
         current = match reader.read_bytes(entry_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => break,
         };
 

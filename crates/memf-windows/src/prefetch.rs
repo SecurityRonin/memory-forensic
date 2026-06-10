@@ -164,7 +164,7 @@ fn read_u32_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) 
     if bytes.len() < 4 {
         return None;
     }
-    Some(u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")))
+    Some(bytes[..4].try_into().map_or(0, u32::from_le_bytes))
 }
 
 /// Read a little-endian u64 from virtual memory, returning `None` on failure.
@@ -173,7 +173,7 @@ fn read_u64_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) 
     if bytes.len() < 8 {
         return None;
     }
-    Some(u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")))
+    Some(bytes[..8].try_into().map_or(0, u64::from_le_bytes))
 }
 
 /// Extract a UTF-16LE string from raw bytes, trimming null terminators.

@@ -89,9 +89,9 @@ fn parse_elf64_header(bytes: &[u8], pid: u64, comm: &str, vma_start: u64) -> Opt
         return None;
     }
 
-    let e_type = u16::from_le_bytes(bytes[16..18].try_into().unwrap());
-    let e_machine = u16::from_le_bytes(bytes[18..20].try_into().unwrap());
-    let e_entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    let e_type = bytes[16..18].try_into().map_or(0, u16::from_le_bytes);
+    let e_machine = bytes[18..20].try_into().map_or(0, u16::from_le_bytes);
+    let e_entry = bytes[24..32].try_into().map_or(0, u64::from_le_bytes);
 
     Some(ElfInfo {
         pid,

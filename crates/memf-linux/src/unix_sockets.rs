@@ -98,7 +98,7 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
     for bucket in 0..UNIX_HASH_SIZE {
         let bucket_addr = table_addr + bucket * 8;
         let first = match reader.read_bytes(bucket_addr, 8) {
-            Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+            Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => continue,
         };
         if first == 0 {
@@ -120,7 +120,7 @@ pub fn walk_unix_sockets<P: PhysicalMemoryProvider>(
 
             // Follow hlist next pointer (offset 0 within hlist_node).
             let next = match reader.read_bytes(node, 8) {
-                Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+                Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
                 _ => break,
             };
 

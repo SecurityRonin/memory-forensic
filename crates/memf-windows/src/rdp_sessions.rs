@@ -97,7 +97,7 @@ pub fn walk_rdp_sessions<P: PhysicalMemoryProvider>(
     // Read the Flink pointer at the list head. If it is 0 or unreadable the
     // list is empty.
     let first_entry: u64 = match reader.read_bytes(list_head, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
 

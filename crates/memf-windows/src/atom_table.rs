@@ -103,7 +103,7 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
 
     // The symbol holds a pointer to the _RTL_ATOM_TABLE
     let table_ptr: u64 = match reader.read_bytes(sym_addr, 8) {
-        Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         Err(_) => return Ok(Vec::new()),
     };
     if table_ptr == 0 {
@@ -150,7 +150,7 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
     for i in 0..num_buckets {
         let bucket_ptr_addr = table_ptr + buckets_off + i as u64 * 8;
         let mut entry_ptr: u64 = match reader.read_bytes(bucket_ptr_addr, 8) {
-            Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+            Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             Err(_) => continue,
         };
 
@@ -158,13 +158,13 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
             // Read atom value
             let atom: u16 = reader
                 .read_bytes(entry_ptr + entry_atom_off, 2)
-                .map(|b| u16::from_le_bytes(b[..2].try_into().expect("2")))
+                .map(|b| b[..2].try_into().map_or(0, u16::from_le_bytes))
                 .unwrap_or(0);
 
             // Read reference count
             let reference_count: u32 = reader
                 .read_bytes(entry_ptr + entry_ref_count_off, 4)
-                .map(|b| u32::from_le_bytes(b[..4].try_into().expect("4")))
+                .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
                 .unwrap_or(0);
 
             // Read name length (count of UTF-16 code units)
@@ -201,7 +201,7 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
 
             // Follow HashLink
             entry_ptr = match reader.read_bytes(entry_ptr + entry_hash_link_off, 8) {
-                Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+                Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
                 Err(_) => break,
             };
         }

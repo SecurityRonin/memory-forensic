@@ -129,8 +129,8 @@ fn scan_heap_for_entries<P: PhysicalMemoryProvider>(
     let limit = data.len() - 23;
     let mut off = 0;
     while off < limit {
-        let line_ptr = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
-        let ts_ptr = u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap());
+        let line_ptr = data[off..off + 8].try_into().map_or(0, u64::from_le_bytes);
+        let ts_ptr = data[off + 8..off + 16].try_into().map_or(0, u64::from_le_bytes);
 
         // Quick reject: line_ptr must be non-zero and within a VMA
         if line_ptr == 0 || !addr_in_vmas(line_ptr, vma_ranges) {

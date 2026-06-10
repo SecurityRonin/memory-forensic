@@ -78,7 +78,7 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
 
     // Read the Flink of the list head
     let flink: u64 = match reader.read_bytes(list_head_vaddr, 8) {
-        Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         Err(_) => return Ok(Vec::new()),
     };
 
@@ -132,7 +132,7 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
                         return None;
                     }
                     reader.read_bytes(ptr + pid_off, 8).ok().map(|pid_bytes| {
-                        u64::from_le_bytes(pid_bytes[..8].try_into().expect("8")) as u32
+                        pid_bytes[..8].try_into().map_or(0, u64::from_le_bytes) as u32
                     })
                 })
                 .unwrap_or(0)
@@ -144,7 +144,7 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
                 .read_bytes(port_addr + connection_port_off, 8)
                 .ok()
                 .is_some_and(|b| {
-                    let ptr = u64::from_le_bytes(b[..8].try_into().expect("8"));
+                    let ptr = b[..8].try_into().map_or(0, u64::from_le_bytes);
                     ptr == port_addr || ptr == 0
                 })
         };
@@ -153,7 +153,7 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
         let connection_count = reader
             .read_bytes(port_addr + connection_count_off, 4)
             .ok()
-            .map_or(0, |b| u32::from_le_bytes(b[..4].try_into().expect("4")));
+            .map_or(0, |b| b[..4].try_into().map_or(0, u32::from_le_bytes));
 
         let is_suspicious = classify_alpc_port(&name);
 
@@ -168,7 +168,7 @@ pub fn walk_alpc_ports<P: PhysicalMemoryProvider>(
 
         // Follow Flink
         current = match reader.read_bytes(current, 8) {
-            Ok(bytes) => u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+            Ok(bytes) => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             Err(_) => break,
         };
         count += 1;

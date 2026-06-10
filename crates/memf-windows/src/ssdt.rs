@@ -36,7 +36,7 @@ pub fn check_ssdt_hooks<P: PhysicalMemoryProvider>(
     for i in 0..limit as usize {
         let offset = i * 4;
         let entry =
-            i32::from_le_bytes(table_bytes[offset..offset + 4].try_into().expect("4 bytes"));
+            table_bytes[offset..offset + 4].try_into().map_or(0, i32::from_le_bytes);
 
         let relative_offset = entry >> 4;
         #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]

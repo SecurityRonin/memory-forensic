@@ -141,7 +141,7 @@ fn resolve_type_name<P: PhysicalMemoryProvider>(
 ) -> String {
     let slot_addr = ob_table_addr.wrapping_add(u64::from(type_index) * 8);
     let obj_type_addr: u64 = match reader.read_bytes(slot_addr, 8) {
-        Ok(bytes) => u64::from_le_bytes(bytes.try_into().expect("8 bytes")),
+        Ok(bytes) => bytes.try_into().map_or(0, u64::from_le_bytes),
         Err(_) => return String::from("<unknown>"),
     };
 

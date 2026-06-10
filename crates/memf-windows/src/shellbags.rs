@@ -118,7 +118,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
         .unwrap_or(0);
 
     let value_list_addr: u64 = match reader.read_bytes(node_addr + value_list_offset, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => 0,
     };
 
@@ -148,7 +148,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     }
 
     let subkeys_list_addr: u64 = match reader.read_bytes(node_addr + subkeys_offset, 8) {
-        Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return,
     };
 
@@ -159,7 +159,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     for i in 0..MAX_SUBKEYS_PER_LEVEL {
         let subkey_ptr_addr = subkeys_list_addr + (i as u64) * 8;
         let subkey_addr: u64 = match reader.read_bytes(subkey_ptr_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
             _ => break,
         };
 

@@ -109,7 +109,7 @@ pub fn walk_process_files<P: PhysicalMemoryProvider>(
 
     for fd_num in 0..max_fds {
         let off = usize::try_from(fd_num).unwrap_or(0) * 8;
-        let file_ptr = u64::from_le_bytes(fd_raw[off..off + 8].try_into().unwrap());
+        let file_ptr = fd_raw[off..off + 8].try_into().map_or(0, u64::from_le_bytes);
 
         if file_ptr == 0 {
             continue; // closed fd slot
@@ -130,13 +130,13 @@ pub fn walk_process_files<P: PhysicalMemoryProvider>(
         // f_path_offset, dentry pointer is at dentry_in_path_offset within path)
         let dentry_addr = file_ptr + f_path_offset + dentry_in_path_offset;
         let dentry_raw = reader.read_bytes(dentry_addr, 8)?;
-        let dentry_ptr = u64::from_le_bytes(dentry_raw.try_into().unwrap());
+        let dentry_ptr = dentry_raw.try_into().map_or(0, u64::from_le_bytes);
 
         let path = if dentry_ptr != 0 {
             // dentry.d_name is an embedded qstr; name pointer at qstr.name offset
             let name_addr = dentry_ptr + d_name_offset + name_in_qstr_offset;
             let name_raw = reader.read_bytes(name_addr, 8)?;
-            let name_ptr = u64::from_le_bytes(name_raw.try_into().unwrap());
+            let name_ptr = name_raw.try_into().map_or(0, u64::from_le_bytes);
             if name_ptr != 0 {
                 reader.read_string(name_ptr, 256).unwrap_or_default()
             } else {

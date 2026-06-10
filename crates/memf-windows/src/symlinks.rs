@@ -104,7 +104,7 @@ pub fn walk_symlinks<P: PhysicalMemoryProvider>(
 
     // Read the root directory pointer value.
     let root_dir_addr = match reader.read_bytes(root_dir_ptr_addr, 8) {
-        Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+        Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return Ok(Vec::new()),
     };
     if root_dir_addr == 0 {
@@ -223,7 +223,7 @@ fn walk_dir_recursive<P: PhysicalMemoryProvider>(
 
             // Read creation time (u64 at body_addr + create_time_offset).
             let create_time = match reader.read_bytes(body_addr + create_time_offset, 8) {
-                Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+                Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
                 _ => 0,
             };
 
@@ -254,7 +254,7 @@ fn resolve_type_name<P: PhysicalMemoryProvider>(
     // Each slot is an 8-byte pointer.
     let slot_addr = table + u64::from(type_index) * 8;
     let type_obj_ptr = match reader.read_bytes(slot_addr, 8) {
-        Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap()),
+        Ok(b) if b.len() == 8 => b[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return None,
     };
     if type_obj_ptr == 0 {

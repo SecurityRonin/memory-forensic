@@ -89,7 +89,7 @@ fn read_cell_data<P: PhysicalMemoryProvider>(
     cell_vaddr: u64,
 ) -> crate::Result<Vec<u8>> {
     let size_bytes = reader.read_bytes(cell_vaddr, 4)?;
-    let raw_size = i32::from_le_bytes(size_bytes[..4].try_into().unwrap());
+    let raw_size = size_bytes[..4].try_into().map_or(0, i32::from_le_bytes);
     let abs_size = raw_size.unsigned_abs() as usize;
     if abs_size <= 4 {
         return Ok(Vec::new());
@@ -104,11 +104,7 @@ fn read_key_name(nk_data: &[u8]) -> String {
     if nk_data.len() < NK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = u16::from_le_bytes(
-        nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let name_len = nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
     let end = NK_NAME_OFFSET + name_len;
     if end > nk_data.len() {
         return String::new();
@@ -120,11 +116,7 @@ fn read_value_name(vk_data: &[u8]) -> String {
     if vk_data.len() < VK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = u16::from_le_bytes(
-        vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let name_len = vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
     let end = VK_NAME_OFFSET + name_len;
     if end > vk_data.len() {
         return String::new();
@@ -141,26 +133,18 @@ fn find_subkey<P: PhysicalMemoryProvider>(
     if nk_data.len() < NK_STABLE_SUBKEYS_LIST_OFFSET + 4 {
         return Ok(None);
     }
-    let subkey_count = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
     if subkey_count == 0 {
         return Ok(None);
     }
-    let subkeys_list_cell = u32::from_le_bytes(
-        nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let subkeys_list_cell = nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
     let list_vaddr = cell_address(hive_addr, subkeys_list_cell);
     let list_data = read_cell_data(reader, list_vaddr)?;
     if list_data.len() < 4 {
         return Ok(None);
     }
-    let sig = u16::from_le_bytes(list_data[0..2].try_into().unwrap());
-    let count = u16::from_le_bytes(list_data[2..4].try_into().unwrap()) as usize;
+    let sig = list_data[0..2].try_into().map_or(0, u16::from_le_bytes);
+    let count = list_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
     let count = count.min(MAX_SUBKEYS);
 
     match sig {
@@ -170,11 +154,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = child_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -191,11 +175,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let child_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
-                        let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                        let child_sig = child_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
                         if child_sig == NK_SIGNATURE {
                             let name = read_key_name(&child_nk);
                             if name.eq_ignore_ascii_case(target_name) {
@@ -212,14 +196,14 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_list_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().unwrap());
+                let sub_list_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
                 let sub_data = read_cell_data(reader, sub_vaddr)?;
                 if sub_data.len() < 4 {
                     continue;
                 }
-                let sub_sig = u16::from_le_bytes(sub_data[0..2].try_into().unwrap());
-                let sub_count = u16::from_le_bytes(sub_data[2..4].try_into().unwrap()) as usize;
+                let sub_sig = sub_data[0..2].try_into().map_or(0, u16::from_le_bytes);
+                let sub_count = sub_data[2..4].try_into().map_or(0, u16::from_le_bytes) as usize;
                 let sub_count = sub_count.min(MAX_SUBKEYS);
                 let entry_size: usize = match sub_sig {
                     0x666C | 0x686C => 8,
@@ -232,11 +216,11 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                         break;
                     }
                     let child_cell =
-                        u32::from_le_bytes(sub_data[soff..soff + 4].try_into().unwrap());
+                        sub_data[soff..soff + 4].try_into().map_or(0, u32::from_le_bytes);
                     let child_vaddr = cell_address(hive_addr, child_cell);
                     if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                         if child_nk.len() >= NK_NAME_OFFSET {
-                            let child_sig = u16::from_le_bytes(child_nk[0..2].try_into().unwrap());
+                            let child_sig = child_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
                             if child_sig == NK_SIGNATURE {
                                 let name = read_key_name(&child_nk);
                                 if name.eq_ignore_ascii_case(target_name) {
@@ -267,7 +251,7 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
             Ok(b) => b,
             Err(_) => return Ok(Vec::new()),
         };
-    let root_cell_index = u32::from_le_bytes(root_cell_bytes[..4].try_into().unwrap());
+    let root_cell_index = root_cell_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
     let root_vaddr = cell_address(hive_addr, root_cell_index);
     let root_nk = match read_cell_data(reader, root_vaddr) {
         Ok(d) => d,
@@ -276,7 +260,7 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
     if root_nk.len() < 2 {
         return Ok(Vec::new());
     }
-    let sig = u16::from_le_bytes(root_nk[0..2].try_into().unwrap());
+    let sig = root_nk[0..2].try_into().map_or(0, u16::from_le_bytes);
     if sig != NK_SIGNATURE {
         return Ok(Vec::new());
     }
@@ -298,19 +282,11 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
     if current_nk.len() < NK_VALUES_LIST_OFFSET + 4 {
         return Ok(Vec::new());
     }
-    let value_count = u32::from_le_bytes(
-        current_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let value_count = current_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
     if value_count == 0 {
         return Ok(Vec::new());
     }
-    let values_list_cell = u32::from_le_bytes(
-        current_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
-            .try_into()
-            .unwrap(),
-    );
+    let values_list_cell = current_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
     let vlist_vaddr = cell_address(hive_addr, values_list_cell);
     let vlist_data = match read_cell_data(reader, vlist_vaddr) {
         Ok(d) => d,
@@ -324,7 +300,7 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
             .read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4)
             .ok();
         if let Some(b) = root_cell_bytes2 {
-            let root_cell_index2 = u32::from_le_bytes(b[..4].try_into().unwrap());
+            let root_cell_index2 = b[..4].try_into().map_or(0, u32::from_le_bytes);
             let root_vaddr2 = cell_address(hive_addr, root_cell_index2);
             if let Ok(root_nk2) = read_cell_data(reader, root_vaddr2) {
                 let mut cur = root_nk2;
@@ -351,17 +327,9 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
     let mut time_map: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     if let Some(time_nk) = time_nk_opt {
         if time_nk.len() >= NK_VALUES_LIST_OFFSET + 4 {
-            let tc = u32::from_le_bytes(
-                time_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
+            let tc = time_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
             if tc > 0 {
-                let tvc = u32::from_le_bytes(
-                    time_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
-                        .try_into()
-                        .unwrap(),
-                );
+                let tvc = time_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
                 let tvl_vaddr = cell_address(hive_addr, tvc);
                 if let Ok(tvl_data) = read_cell_data(reader, tvl_vaddr) {
                     let tc = tc.min(MAX_TYPED_URLS);
@@ -371,33 +339,27 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                             break;
                         }
                         let vk_cell =
-                            u32::from_le_bytes(tvl_data[off..off + 4].try_into().unwrap());
+                            tvl_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
                         let vk_vaddr = cell_address(hive_addr, vk_cell);
                         if let Ok(vk_data) = read_cell_data(reader, vk_vaddr) {
                             if vk_data.len() >= 2 {
-                                let vsig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
+                                let vsig = vk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
                                 if vsig == VK_SIGNATURE {
                                     let vname = read_value_name(&vk_data);
                                     if vk_data.len() >= VK_DATA_OFFSET_OFFSET + 4 {
-                                        let data_len = u32::from_le_bytes(
-                                            vk_data
-                                                [VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
-                                                .try_into()
-                                                .unwrap(),
-                                        );
-                                        let data_cell = u32::from_le_bytes(
-                                            vk_data
-                                                [VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
-                                                .try_into()
-                                                .unwrap(),
-                                        );
+                                        let data_len = vk_data
+                                            [VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+                                            .try_into()
+                                            .map_or(0, u32::from_le_bytes);
+                                        let data_cell = vk_data
+                                            [VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+                                            .try_into()
+                                            .map_or(0, u32::from_le_bytes);
                                         if data_len >= 8 {
                                             let dc_vaddr = cell_address(hive_addr, data_cell);
                                             if let Ok(dc_data) = read_cell_data(reader, dc_vaddr) {
                                                 if dc_data.len() >= 8 {
-                                                    let ts = u64::from_le_bytes(
-                                                        dc_data[0..8].try_into().unwrap(),
-                                                    );
+                                                    let ts = dc_data[0..8].try_into().map_or(0, u64::from_le_bytes);
                                                     time_map.insert(vname, ts);
                                                 }
                                             }
@@ -419,7 +381,7 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
         if off + 4 > vlist_data.len() {
             break;
         }
-        let vk_cell = u32::from_le_bytes(vlist_data[off..off + 4].try_into().unwrap());
+        let vk_cell = vlist_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
         let vk_vaddr = cell_address(hive_addr, vk_cell);
         let vk_data = match read_cell_data(reader, vk_vaddr) {
             Ok(d) => d,
@@ -428,7 +390,7 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
         if vk_data.len() < 2 {
             continue;
         }
-        let vsig = u16::from_le_bytes(vk_data[0..2].try_into().unwrap());
+        let vsig = vk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
         if vsig != VK_SIGNATURE {
             continue;
         }
@@ -436,20 +398,12 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
         if vk_data.len() < VK_DATA_OFFSET_OFFSET + 4 {
             continue;
         }
-        let data_len_raw = u32::from_le_bytes(
-            vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
+        let data_len_raw = vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
         let data_len = (data_len_raw & 0x7FFF_FFFF) as usize;
         if data_len < 2 {
             continue;
         }
-        let data_cell = u32::from_le_bytes(
-            vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
+        let data_cell = vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
         let dc_vaddr = cell_address(hive_addr, data_cell);
         let dc_data = match read_cell_data(reader, dc_vaddr) {
             Ok(d) => d,

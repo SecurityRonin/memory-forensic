@@ -45,46 +45,31 @@ struct TokenPattern {
 
 static TOKEN_PATTERNS: OnceLock<Vec<TokenPattern>> = OnceLock::new();
 
+/// (label, pattern, use_capture) spec table. Patterns are compile-time
+/// constants; any that fail to compile are dropped (defence in depth) rather
+/// than panicking, so a bad edit degrades to a missing detector, not an abort.
+const TOKEN_PATTERN_SPECS: &[(&str, &str, bool)] = &[
+    ("Jwt", JWT_PATTERN, false),
+    ("Bearer", BEARER_PATTERN, true),
+    ("GitHub", GITHUB_PATTERN, false),
+    ("GitLab", GITLAB_PATTERN, false),
+    ("Slack", SLACK_PATTERN, false),
+    ("AwsSts", AWS_STS_PATTERN, false),
+    ("GenericAccessToken", GENERIC_TOKEN_PATTERN, true),
+];
+
 fn token_patterns() -> &'static [TokenPattern] {
     TOKEN_PATTERNS.get_or_init(|| {
-        vec![
-            TokenPattern {
-                label: "Jwt",
-                re: regex::Regex::new(JWT_PATTERN).expect("JWT_PATTERN is valid"),
-                use_capture: false,
-            },
-            TokenPattern {
-                label: "Bearer",
-                re: regex::Regex::new(BEARER_PATTERN).expect("BEARER_PATTERN is valid"),
-                use_capture: true,
-            },
-            TokenPattern {
-                label: "GitHub",
-                re: regex::Regex::new(GITHUB_PATTERN).expect("GITHUB_PATTERN is valid"),
-                use_capture: false,
-            },
-            TokenPattern {
-                label: "GitLab",
-                re: regex::Regex::new(GITLAB_PATTERN).expect("GITLAB_PATTERN is valid"),
-                use_capture: false,
-            },
-            TokenPattern {
-                label: "Slack",
-                re: regex::Regex::new(SLACK_PATTERN).expect("SLACK_PATTERN is valid"),
-                use_capture: false,
-            },
-            TokenPattern {
-                label: "AwsSts",
-                re: regex::Regex::new(AWS_STS_PATTERN).expect("AWS_STS_PATTERN is valid"),
-                use_capture: false,
-            },
-            TokenPattern {
-                label: "GenericAccessToken",
-                re: regex::Regex::new(GENERIC_TOKEN_PATTERN)
-                    .expect("GENERIC_TOKEN_PATTERN is valid"),
-                use_capture: true,
-            },
-        ]
+        TOKEN_PATTERN_SPECS
+            .iter()
+            .filter_map(|&(label, pat, use_capture)| {
+                regex::Regex::new(pat).ok().map(|re| TokenPattern {
+                    label,
+                    re,
+                    use_capture,
+                })
+            })
+            .collect()
     })
 }
 
