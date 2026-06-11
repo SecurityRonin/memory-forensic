@@ -953,6 +953,39 @@ mod tests {
         assert_eq!(dtb, kernel_dtb, "must pick the DTB that maps ntkrnlmp");
     }
 
+    /// The Case 001 DC dump shape: ntoskrnl's PE-header page is paged out, so NO
+    /// candidate maps an `nt*` image — only resident driver images are reachable.
+    /// The discriminator must still recover a kernel DTB: a candidate that maps
+    /// any valid kernel-space PE with an RSDS is a genuine page-table root, and
+    /// the kernel DTB is the lowest-physical such root. Requiring ntoskrnl's own
+    /// header to be resident leaves the whole memory leg dark on real dumps.
+    #[test]
+    fn discriminator_selects_lowest_dtb_when_ntoskrnl_header_absent() {
+        let mut mem = SparseMem::new();
+        // A bare self-ref decoy that maps no PE at all — must be rejected.
+        write_self_ref_pml4(&mut mem, 0x70_0000);
+        // Two genuine DTBs, each mapping only a *driver* PE (no ntoskrnl).
+        let low_dtb = 0x1AE000u64;
+        let high_dtb = 0x60_0000u64;
+        for (dtb, table_base, kpa) in
+            [(low_dtb, 0x20_0000u64, 0x1_0040_0000u64), (high_dtb, 0x90_0000, 0x1_0080_0000)]
+        {
+            map_kernel_under_pml4(
+                &mut mem,
+                dtb,
+                table_base,
+                0xFFFF_F800_6420_0000,
+                kpa,
+                "bootvid.pdb",
+                securitynik_guid(),
+                1,
+            );
+        }
+        let dtb = scan_for_kernel_dtb(&mem)
+            .expect("a DTB mapping a resident kernel-space PE must be recovered");
+        assert_eq!(dtb, low_dtb, "the kernel DTB is the lowest-physical genuine root");
+    }
+
     /// Windows Server 2012 R2 (pre-1607: no self-ref randomization) places the
     /// self-map at the classic index 0x1ED — the Case 001 DC dump. A real
     /// PML4's self-ref can sit at ANY of the 512 slots (randomized on Win10
