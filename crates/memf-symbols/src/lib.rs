@@ -121,6 +121,51 @@ pub trait SymbolResolver: Send + Sync {
     fn clone_boxed(&self) -> Box<dyn SymbolResolver>;
 }
 
+/// A [`SymbolResolver`] decorator that rebases global symbol addresses by a
+/// kernel image base virtual address (KVO). Windows ISF stores symbols as RVAs;
+/// wrapping the resolver here means **every** `symbol_address` caller receives a
+/// real virtual address by construction — there is no way to obtain an
+/// un-rebased RVA (secure-by-design). Struct/field offsets are image-relative
+/// and pass through unchanged.
+pub struct RebasedResolver {
+    inner: Box<dyn SymbolResolver>,
+    kernel_base: u64,
+}
+
+impl RebasedResolver {
+    /// Wrap `inner`, adding `kernel_base` to every resolved symbol address.
+    #[must_use]
+    pub fn new(inner: Box<dyn SymbolResolver>, kernel_base: u64) -> Self {
+        Self { inner, kernel_base }
+    }
+}
+
+impl SymbolResolver for RebasedResolver {
+    fn field_offset(&self, struct_name: &str, field_name: &str) -> Option<u64> {
+        self.inner.field_offset(struct_name, field_name)
+    }
+    fn struct_size(&self, struct_name: &str) -> Option<u64> {
+        self.inner.struct_size(struct_name)
+    }
+    fn symbol_address(&self, symbol_name: &str) -> Option<u64> {
+        self.inner
+            .symbol_address(symbol_name)
+            .map(|rva| self.kernel_base.wrapping_add(rva))
+    }
+    fn struct_info(&self, struct_name: &str) -> Option<StructInfo> {
+        self.inner.struct_info(struct_name)
+    }
+    fn backend_name(&self) -> &str {
+        self.inner.backend_name()
+    }
+    fn clone_boxed(&self) -> Box<dyn SymbolResolver> {
+        Box::new(RebasedResolver {
+            inner: self.inner.clone_boxed(),
+            kernel_base: self.kernel_base,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +174,44 @@ mod tests {
     #[test]
     fn trait_is_object_safe() {
         fn _assert_object_safe(_: &dyn SymbolResolver) {}
+    }
+
+    /// A minimal resolver returning fixed RVA/offset values, for the decorator test.
+    struct MockResolver;
+    impl SymbolResolver for MockResolver {
+        fn field_offset(&self, s: &str, f: &str) -> Option<u64> {
+            (s == "_EPROCESS" && f == "UniqueProcessId").then_some(0x2e0)
+        }
+        fn struct_size(&self, s: &str) -> Option<u64> {
+            (s == "_EPROCESS").then_some(0x500)
+        }
+        fn symbol_address(&self, n: &str) -> Option<u64> {
+            (n == "PsActiveProcessHead").then_some(0x002b_00a0)
+        }
+        fn struct_info(&self, _: &str) -> Option<StructInfo> {
+            None
+        }
+        fn backend_name(&self) -> &str {
+            "mock"
+        }
+        fn clone_boxed(&self) -> Box<dyn SymbolResolver> {
+            Box::new(MockResolver)
+        }
+    }
+
+    /// The decorator rebases `symbol_address` by the KVO but leaves field/struct
+    /// offsets (image-relative) untouched — so the EPROCESS walk dereferences a
+    /// real VA, not the bare `0x2b00a0` RVA.
+    #[test]
+    fn rebased_resolver_adds_base_to_symbols_only() {
+        let r = RebasedResolver::new(Box::new(MockResolver), 0xFFFF_F800_CBE0_0000);
+        assert_eq!(
+            r.symbol_address("PsActiveProcessHead"),
+            Some(0xFFFF_F800_CC0B_00A0)
+        );
+        assert_eq!(r.field_offset("_EPROCESS", "UniqueProcessId"), Some(0x2e0));
+        assert_eq!(r.struct_size("_EPROCESS"), Some(0x500));
+        assert_eq!(r.symbol_address("Missing"), None);
     }
 
     #[test]
