@@ -727,6 +727,19 @@ mod tests {
     }
 
     #[test]
+    fn required_symbol_rebases_by_kernel_base() {
+        let isf = IsfBuilder::new()
+            .add_struct("x", 1)
+            .add_symbol("PsActiveProcessHead", 0x002b_00a0);
+        let reader = make_reader(&isf, PageTableBuilder::new())
+            .with_kernel_base(0xFFFF_F800_CBE0_0000);
+        assert_eq!(
+            reader.required_symbol("PsActiveProcessHead").unwrap(),
+            0xFFFF_F800_CC0B_00A0
+        );
+    }
+
+    #[test]
     fn required_symbol_missing_returns_error() {
         let isf = IsfBuilder::new().add_struct("task_struct", 128);
 
