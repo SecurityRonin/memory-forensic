@@ -634,6 +634,32 @@ mod tests {
         assert!(pdb_id.guid.contains("1B72224D"));
     }
 
+    /// Case 001 DC shape: ntoskrnl's PE header is paged out (no MZ to anchor on)
+    /// but its CodeView RSDS record — `RSDS` + GUID + age + `ntkrnlmp.pdb` — sits
+    /// resident in .rdata. `scan_for_kernel` must recover the profile from that
+    /// physical RSDS, not give up because no MZ header is reachable.
+    #[test]
+    fn scan_finds_kernel_via_physical_rsds_when_header_paged() {
+        let guid = [
+            0x4D, 0x22, 0x72, 0x1B, 0xB8, 0x37, 0x92, 0x17, 0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44,
+            0x98, 0xB2,
+        ];
+        // A bare RSDS record with NO surrounding MZ/PE header, mid-buffer.
+        let mut data = vec![0u8; 0x800];
+        let mut rsds = Vec::new();
+        rsds.extend_from_slice(b"RSDS");
+        rsds.extend_from_slice(&guid);
+        rsds.extend_from_slice(&1u32.to_le_bytes());
+        rsds.extend_from_slice(b"ntkrnlmp.pdb\0");
+        data[0x400..0x400 + rsds.len()].copy_from_slice(&rsds);
+        let mem = FakeMem::new(SCAN_START, data);
+
+        let pdb_id = scan_for_kernel(&mem)
+            .expect("kernel profile must be recoverable from a resident physical RSDS");
+        assert_eq!(pdb_id.pdb_name, "ntkrnlmp.pdb");
+        assert!(pdb_id.guid.contains("1B72224D"));
+    }
+
     #[test]
     fn scan_skips_pages_before_valid_pe() {
         let guid = [0xAA; 16];
