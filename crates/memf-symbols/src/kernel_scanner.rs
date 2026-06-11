@@ -26,6 +26,76 @@ const DTB_DESCENT_WINDOW: u64 = 0x1000_0000;
 /// Cap on how many bytes of a candidate image to scan for the RSDS record.
 const MAX_IMAGE_SCAN: usize = 0x30_0000; // 3 MiB
 
+/// The x64 boot "Low Stub" (`PROCESSOR_START_BLOCK`) recovered from low physical
+/// memory: it carries both the kernel page-table base (CR3/DTB) and a kernel
+/// virtual-address hint, neither of which depends on ntoskrnl's PE header being
+/// page-resident. This is the authoritative header-less anchor (the technique
+/// Volatility 3's `method_low_stub` uses; reimplemented clean-room from the
+/// documented `PROCESSOR_START_BLOCK` layout, not copied).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LowStub {
+    /// Kernel page-table base (physical), 4 KiB-aligned.
+    pub cr3: u64,
+    /// 2 MiB-aligned kernel image base **virtual** address (the KVO hint), to
+    /// which symbol RVAs are added.
+    pub kernel_base_va: u64,
+}
+
+// PROCESSOR_START_BLOCK field layout (AMD64 WRK), the architectural constants
+// the Low Stub scan keys on.
+const LOW_STUB_SIGNATURE: u64 = 0x0000_0001_0006_00E9;
+// The jmp offset's low byte varies, so wildcard bits 8:15 in the match.
+const LOW_STUB_SIGNATURE_MASK: u64 = 0xFFFF_FFFF_FFFF_00FF;
+const PSB_LM_TARGET_OFFSET: u64 = 0x70; // PROCESSOR_START_BLOCK->LmTarget (PVOID)
+const PSB_CR3_OFFSET: u64 = 0xA0; // ...->ProcessorState->SpecialRegisters->Cr3
+
+/// Recover the [`LowStub`] by scanning the lower 1 MiB of physical memory for the
+/// `PROCESSOR_START_BLOCK` signature. Returns `None` if not present (e.g. the
+/// "Discard Low Memory" BIOS case can push it past the first MiB, or the page is
+/// absent). Panic-free and bounds-checked.
+#[must_use]
+pub fn find_low_stub<P: PhysicalMemoryProvider>(mem: &P) -> Option<LowStub> {
+    let read_u64 = |pa: u64| -> Option<u64> {
+        let mut b = [0u8; 8];
+        if mem.read_phys(pa, &mut b).unwrap_or(0) < 8 {
+            return None;
+        }
+        Some(u64::from_le_bytes(b))
+    };
+    // Start at the second page (the first is the real-mode IVT / BIOS area).
+    let mut offset = 0x1000u64;
+    while offset < 0x10_0000 {
+        if let Some(sig) = read_u64(offset) {
+            if sig & LOW_STUB_SIGNATURE_MASK == LOW_STUB_SIGNATURE {
+                if let (Some(cr3), Some(lm_target)) = (
+                    read_u64(offset + PSB_CR3_OFFSET),
+                    read_u64(offset + PSB_LM_TARGET_OFFSET),
+                ) {
+                    // LmTarget is a canonical kernel VA; the low two bits must be
+                    // clear (it is a code address). Reject otherwise.
+                    if lm_target & 0x3 == 0 {
+                        // 48-bit hint → 2 MiB-aligned base → canonical (sign-extend bit 47).
+                        let base48 = (lm_target & 0xFFFF_FFFF_FFFF) & !(TWO_MIB - 1);
+                        let kernel_base_va = if base48 & (1 << 47) != 0 {
+                            base48 | 0xFFFF_0000_0000_0000
+                        } else {
+                            base48
+                        };
+                        if cr3 != 0 && base48 != 0 {
+                            return Some(LowStub {
+                                cr3: cr3 & 0x000F_FFFF_FFFF_F000,
+                                kernel_base_va,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        offset += PAGE_SIZE as u64;
+    }
+    None
+}
+
 /// Scan physical memory for ntoskrnl.exe and extract its PDB identification.
 ///
 /// Searches page-aligned addresses from 1 MiB to 128 MiB for a valid
@@ -46,7 +116,8 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
             addr += PAGE_SIZE as u64;
             continue;
         }
-        let e_lfanew = u32::from_le_bytes([page[0x3C], page[0x3D], page[0x3E], page[0x3F]]) as usize;
+        let e_lfanew =
+            u32::from_le_bytes([page[0x3C], page[0x3D], page[0x3E], page[0x3F]]) as usize;
         if e_lfanew + 6 > PAGE_SIZE || &page[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
             addr += PAGE_SIZE as u64;
             continue;
@@ -105,8 +176,8 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
 /// windows so a record spanning a boundary is parsed whole; panic-free.
 fn scan_physical_for_kernel_rsds<P: PhysicalMemoryProvider>(mem: &P) -> Option<PdbId> {
     const CHUNK: usize = 1 << 20; // 1 MiB
-    // A full RSDS record: magic(4) + GUID(16) + age(4) + a generous PDB name.
-    // Overlap each window by this so a record on a boundary is still parsed whole.
+                                  // A full RSDS record: magic(4) + GUID(16) + age(4) + a generous PDB name.
+                                  // Overlap each window by this so a record on a boundary is still parsed whole.
     const OVERLAP: u64 = (4 + 16 + 4 + 256) as u64;
     let page = PAGE_SIZE as u64;
     let mut buf = vec![0u8; CHUNK + OVERLAP as usize];
@@ -270,15 +341,14 @@ fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider>(mem: &P) -> Vec<u64> {
                 if off + 8 > n {
                     return false;
                 }
-                let entry =
-                    u64::from_le_bytes(page[off..off + 8].try_into().unwrap_or([0u8; 8]));
+                let entry = u64::from_le_bytes(page[off..off + 8].try_into().unwrap_or([0u8; 8]));
                 entry & PTE_PRESENT != 0 && (entry & PTE_ADDR_MASK) == pa
             };
             // The self-map is architecturally a kernel-half entry (index >= 0x100).
             // Probe the common modern slot first, then the rest of the kernel half
             // — the index is not fixed (2012 R2 = 0x1ED; 1607+ randomizes it).
-            let found = is_self_ref(SELF_MAP_INDEX as usize)
-                || (0x100usize..0x200).any(is_self_ref);
+            let found =
+                is_self_ref(SELF_MAP_INDEX as usize) || (0x100usize..0x200).any(is_self_ref);
             if found {
                 candidates.push(pa);
             }
@@ -597,7 +667,7 @@ mod tests {
 
         // COFF header (20 bytes)
         buf[pos..pos + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // Machine: AMD64
-        buf[pos + 2..pos + 4].copy_from_slice(&1u16.to_le_bytes());  // NumberOfSections: 1
+        buf[pos + 2..pos + 4].copy_from_slice(&1u16.to_le_bytes()); // NumberOfSections: 1
         let opt_size: u16 = 240;
         buf[pos + 16..pos + 18].copy_from_slice(&opt_size.to_le_bytes());
         buf[pos + 18..pos + 20].copy_from_slice(&0x0022u16.to_le_bytes()); // Characteristics
@@ -607,13 +677,13 @@ mod tests {
         let opt_start = pos;
         buf[opt_start..opt_start + 2].copy_from_slice(&0x020Bu16.to_le_bytes()); // Magic
         buf[opt_start + 32..opt_start + 36].copy_from_slice(&0x1000u32.to_le_bytes()); // SectionAlignment
-        buf[opt_start + 36..opt_start + 40].copy_from_slice(&0x200u32.to_le_bytes());  // FileAlignment
+        buf[opt_start + 36..opt_start + 40].copy_from_slice(&0x200u32.to_le_bytes()); // FileAlignment
         buf[opt_start + 56..opt_start + 60].copy_from_slice(&0x2000u32.to_le_bytes()); // SizeOfImage
-        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x200u32.to_le_bytes());  // SizeOfHeaders
-        buf[opt_start + 108..opt_start + 112].copy_from_slice(&16u32.to_le_bytes());   // NumberOfRvaAndSizes
-        // Debug directory: data dir index 6 → offset 112 + 6*8 = 160 from opt_start
+        buf[opt_start + 60..opt_start + 64].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfHeaders
+        buf[opt_start + 108..opt_start + 112].copy_from_slice(&16u32.to_le_bytes()); // NumberOfRvaAndSizes
+                                                                                     // Debug directory: data dir index 6 → offset 112 + 6*8 = 160 from opt_start
         buf[opt_start + 160..opt_start + 164].copy_from_slice(&0x200u32.to_le_bytes()); // RVA
-        buf[opt_start + 164..opt_start + 168].copy_from_slice(&28u32.to_le_bytes());    // size
+        buf[opt_start + 164..opt_start + 168].copy_from_slice(&28u32.to_le_bytes()); // size
 
         pos = opt_start + opt_size as usize;
 
@@ -668,8 +738,8 @@ mod tests {
     fn scan_finds_kernel_pe_at_scan_start() {
         let guid = [
             0x4D, 0x22, 0x72, 0x1B, // Data1 LE → "1B72224D"
-            0xB8, 0x37,             // Data2 LE → "37B8"
-            0x92, 0x17,             // Data3 LE → "1792"
+            0xB8, 0x37, // Data2 LE → "37B8"
+            0x92, 0x17, // Data3 LE → "1792"
             0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44, 0x98, 0xB2,
         ];
         let pe = build_kernel_pe("ntkrnlmp.pdb", guid, 1);
@@ -1080,9 +1150,10 @@ mod tests {
         // Two genuine DTBs, each mapping only a *driver* PE (no ntoskrnl).
         let low_dtb = 0x1AE000u64;
         let high_dtb = 0x60_0000u64;
-        for (dtb, table_base, kpa) in
-            [(low_dtb, 0x20_0000u64, 0x1_0040_0000u64), (high_dtb, 0x90_0000, 0x1_0080_0000)]
-        {
+        for (dtb, table_base, kpa) in [
+            (low_dtb, 0x20_0000u64, 0x1_0040_0000u64),
+            (high_dtb, 0x90_0000, 0x1_0080_0000),
+        ] {
             map_kernel_under_pml4(
                 &mut mem,
                 dtb,
@@ -1096,7 +1167,39 @@ mod tests {
         }
         let dtb = scan_for_kernel_dtb(&mem)
             .expect("a DTB mapping a resident kernel-space PE must be recovered");
-        assert_eq!(dtb, low_dtb, "the kernel DTB is the lowest-physical genuine root");
+        assert_eq!(
+            dtb, low_dtb,
+            "the kernel DTB is the lowest-physical genuine root"
+        );
+    }
+
+    /// The x64 Low Stub yields the kernel CR3 and a kernel-base VA from low
+    /// physical memory with no dependence on ntoskrnl's PE header — the
+    /// authoritative header-less anchor (vol3 `method_low_stub`).
+    #[test]
+    fn find_low_stub_recovers_cr3_and_kernel_base() {
+        let mut mem = SparseMem::new();
+        let stub = 0x3000u64; // a page within the lower 1 MiB
+                              // Signature with a non-zero jmp-offset low byte (must be wildcarded).
+        mem.write_phys(stub, &0x0000_0001_0006_42E9u64.to_le_bytes());
+        // CR3 at +0xA0 (low 12 bits noise → masked to a 4 KiB-aligned base).
+        mem.write_phys(stub + 0xA0, &0x001A_7867u64.to_le_bytes());
+        // LmTarget at +0x70: a canonical kernel VA inside ntoskrnl (4-aligned).
+        mem.write_phys(stub + 0x70, &0xFFFF_F800_6421_3454u64.to_le_bytes());
+
+        let ls = find_low_stub(&mem).expect("low stub must be found");
+        assert_eq!(ls.cr3, 0x1A7000, "CR3 masked to a 4 KiB-aligned page base");
+        assert_eq!(
+            ls.kernel_base_va, 0xFFFF_F800_6420_0000,
+            "kernel base VA is the LmTarget rounded down to 2 MiB"
+        );
+    }
+
+    #[test]
+    fn find_low_stub_absent_yields_none() {
+        let mut mem = SparseMem::new();
+        mem.write_phys(0x4000, &[0u8; 0x200]); // present page, no signature
+        assert!(find_low_stub(&mem).is_none());
     }
 
     /// Windows Server 2012 R2 (pre-1607: no self-ref randomization) places the

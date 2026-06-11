@@ -6,7 +6,7 @@
 //! Usage: cargo run --release -p memf-symbols --example probe_dtb -- <dump>
 
 use memf_format::{open_dump_with_raw_fallback, PhysicalMemoryProvider};
-use memf_symbols::scan_for_kernel_dtb;
+use memf_symbols::{find_low_stub, scan_for_kernel_dtb};
 
 const PRESENT: u64 = 1;
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
@@ -15,7 +15,11 @@ const PAGE: usize = 4096;
 fn main() {
     let path = std::env::args().nth(1).expect("usage: probe_dtb <dump>");
     let prov = open_dump_with_raw_fallback(std::path::Path::new(&path)).expect("open dump");
-    println!("format: {}  total: {} bytes", prov.format_name(), prov.total_size());
+    println!(
+        "format: {}  total: {} bytes",
+        prov.format_name(),
+        prov.total_size()
+    );
     let ranges: Vec<_> = prov.ranges().to_vec();
     println!("ranges: {} (first={:?})", ranges.len(), ranges.first());
 
@@ -56,12 +60,20 @@ fn main() {
         let mut mz_hits = 0u32;
         let mut first_mz_va = 0u64;
         for p4 in 0x100u64..0x200 {
-            let Some(e4) = rd_pte(&prov, (cr3 & ADDR_MASK) + p4 * 8) else { continue };
-            if e4 & PRESENT == 0 { continue; }
+            let Some(e4) = rd_pte(&prov, (cr3 & ADDR_MASK) + p4 * 8) else {
+                continue;
+            };
+            if e4 & PRESENT == 0 {
+                continue;
+            }
             present_pml4 += 1;
             for p3 in 0u64..0x200 {
-                let Some(e3) = rd_pte(&prov, (e4 & ADDR_MASK) + p3 * 8) else { continue };
-                if e3 & PRESENT == 0 { continue; }
+                let Some(e3) = rd_pte(&prov, (e4 & ADDR_MASK) + p3 * 8) else {
+                    continue;
+                };
+                if e3 & PRESENT == 0 {
+                    continue;
+                }
                 present_pdpt += 1;
                 let base = canon((p4 << 39) | (p3 << 30));
                 for slot in 0..512u64 {
@@ -69,7 +81,9 @@ fn main() {
                     let mut sig = [0u8; 2];
                     if rd_virt(&prov, cr3, va, &mut sig) == 2 && sig == [b'M', b'Z'] {
                         mz_hits += 1;
-                        if first_mz_va == 0 { first_mz_va = va; }
+                        if first_mz_va == 0 {
+                            first_mz_va = va;
+                        }
                     }
                 }
             }
@@ -85,21 +99,33 @@ fn main() {
     if let Some(&(cr3, _)) = first_few.first() {
         println!("all kernel-half MZ images under cr3={cr3:#x}:");
         for p4 in 0x100u64..0x200 {
-            let Some(e4) = rd_pte(&prov, (cr3 & ADDR_MASK) + p4 * 8) else { continue };
-            if e4 & PRESENT == 0 { continue; }
+            let Some(e4) = rd_pte(&prov, (cr3 & ADDR_MASK) + p4 * 8) else {
+                continue;
+            };
+            if e4 & PRESENT == 0 {
+                continue;
+            }
             for p3 in 0u64..0x200 {
-                let Some(e3) = rd_pte(&prov, (e4 & ADDR_MASK) + p3 * 8) else { continue };
-                if e3 & PRESENT == 0 { continue; }
+                let Some(e3) = rd_pte(&prov, (e4 & ADDR_MASK) + p3 * 8) else {
+                    continue;
+                };
+                if e3 & PRESENT == 0 {
+                    continue;
+                }
                 let base = canon((p4 << 39) | (p3 << 30));
                 for slot in 0..512u64 {
                     let va = base + slot * 0x20_0000;
                     let mut sig = [0u8; 2];
-                    if rd_virt(&prov, cr3, va, &mut sig) != 2 || sig != [b'M', b'Z'] { continue; }
+                    if rd_virt(&prov, cr3, va, &mut sig) != 2 || sig != [b'M', b'Z'] {
+                        continue;
+                    }
                     let mut hdr = [0u8; 4096];
                     let _ = rd_virt(&prov, cr3, va, &mut hdr);
-                    let elf = u32::from_le_bytes([hdr[0x3C], hdr[0x3D], hdr[0x3E], hdr[0x3F]]) as usize;
+                    let elf =
+                        u32::from_le_bytes([hdr[0x3C], hdr[0x3D], hdr[0x3E], hdr[0x3F]]) as usize;
                     let opt = elf + 24;
-                    let soi = hdr.get(opt + 56..opt + 60)
+                    let soi = hdr
+                        .get(opt + 56..opt + 60)
                         .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
                     let scan_len = (soi as usize).clamp(4096, 0x30_0000);
                     let mut img = vec![0u8; scan_len];
@@ -121,33 +147,58 @@ fn main() {
         println!("64KiB-granular kernel-name hits under cr3={cr3:#x}:");
         let mut hits = 0;
         'outer: for p4 in 0x100u64..0x200 {
-            let Some(e4) = rd_pte(&prov, (cr3 & ADDR_MASK) + p4 * 8) else { continue };
-            if e4 & PRESENT == 0 { continue; }
+            let Some(e4) = rd_pte(&prov, (cr3 & ADDR_MASK) + p4 * 8) else {
+                continue;
+            };
+            if e4 & PRESENT == 0 {
+                continue;
+            }
             for p3 in 0u64..0x200 {
-                let Some(e3) = rd_pte(&prov, (e4 & ADDR_MASK) + p3 * 8) else { continue };
-                if e3 & PRESENT == 0 { continue; }
+                let Some(e3) = rd_pte(&prov, (e4 & ADDR_MASK) + p3 * 8) else {
+                    continue;
+                };
+                if e3 & PRESENT == 0 {
+                    continue;
+                }
                 let base = canon((p4 << 39) | (p3 << 30));
                 for slot in 0..(0x4000_0000u64 / 0x1_0000) {
                     let va = base + slot * 0x1_0000;
                     let mut sig = [0u8; 2];
-                    if rd_virt(&prov, cr3, va, &mut sig) != 2 || sig != [b'M', b'Z'] { continue; }
+                    if rd_virt(&prov, cr3, va, &mut sig) != 2 || sig != [b'M', b'Z'] {
+                        continue;
+                    }
                     let mut img = vec![0u8; 0x30_0000];
                     let got = rd_virt(&prov, cr3, va, &mut img);
                     img.truncate(got);
                     if let Ok(id) = memf_symbols::pe_debug::extract_pdb_id_tolerant(&img) {
                         let l = id.pdb_name.to_lowercase();
                         if l.contains("nt") {
-                            println!("  va={va:#x} (2MiB-aligned={}) pdb={:?}", va & 0x1F_FFFF == 0, id.pdb_name);
+                            println!(
+                                "  va={va:#x} (2MiB-aligned={}) pdb={:?}",
+                                va & 0x1F_FFFF == 0,
+                                id.pdb_name
+                            );
                             hits += 1;
-                            if hits >= 6 { break 'outer; }
+                            if hits >= 6 {
+                                break 'outer;
+                            }
                         }
                     }
                 }
             }
         }
-        if hits == 0 { println!("  (none — ntoskrnl MZ header not resident, or deeper alignment)"); }
+        if hits == 0 {
+            println!("  (none — ntoskrnl MZ header not resident, or deeper alignment)");
+        }
     }
 
+    match find_low_stub(&prov) {
+        Some(ls) => println!(
+            "find_low_stub => cr3={:#x} kernel_base_va={:#x}",
+            ls.cr3, ls.kernel_base_va
+        ),
+        None => println!("find_low_stub => None"),
+    }
     match scan_for_kernel_dtb(&prov) {
         Some(dtb) => println!("scan_for_kernel_dtb => {dtb:#x} (VERIFIED kernel DTB)"),
         None => println!("scan_for_kernel_dtb => None (no candidate verified as mapping a kernel)"),
@@ -156,12 +207,18 @@ fn main() {
 
 fn rd_pte(p: &dyn PhysicalMemoryProvider, pa: u64) -> Option<u64> {
     let mut b = [0u8; 8];
-    if p.read_phys(pa, &mut b).unwrap_or(0) < 8 { return None; }
+    if p.read_phys(pa, &mut b).unwrap_or(0) < 8 {
+        return None;
+    }
     Some(u64::from_le_bytes(b))
 }
 
 fn canon(va: u64) -> u64 {
-    if va & (1 << 47) != 0 { va | 0xFFFF_0000_0000_0000 } else { va }
+    if va & (1 << 47) != 0 {
+        va | 0xFFFF_0000_0000_0000
+    } else {
+        va
+    }
 }
 
 fn v2p(p: &dyn PhysicalMemoryProvider, cr3: u64, va: u64) -> Option<u64> {
@@ -170,15 +227,27 @@ fn v2p(p: &dyn PhysicalMemoryProvider, cr3: u64, va: u64) -> Option<u64> {
     let i2 = (va >> 21) & 0x1FF;
     let i1 = (va >> 12) & 0x1FF;
     let e4 = rd_pte(p, (cr3 & ADDR_MASK) + i4 * 8)?;
-    if e4 & PRESENT == 0 { return None; }
+    if e4 & PRESENT == 0 {
+        return None;
+    }
     let e3 = rd_pte(p, (e4 & ADDR_MASK) + i3 * 8)?;
-    if e3 & PRESENT == 0 { return None; }
-    if e3 & (1 << 7) != 0 { return Some((e3 & 0x000F_FFFF_C000_0000) | (va & 0x3FFF_FFFF)); }
+    if e3 & PRESENT == 0 {
+        return None;
+    }
+    if e3 & (1 << 7) != 0 {
+        return Some((e3 & 0x000F_FFFF_C000_0000) | (va & 0x3FFF_FFFF));
+    }
     let e2 = rd_pte(p, (e3 & ADDR_MASK) + i2 * 8)?;
-    if e2 & PRESENT == 0 { return None; }
-    if e2 & (1 << 7) != 0 { return Some((e2 & 0x000F_FFFF_FFE0_0000) | (va & 0x1F_FFFF)); }
+    if e2 & PRESENT == 0 {
+        return None;
+    }
+    if e2 & (1 << 7) != 0 {
+        return Some((e2 & 0x000F_FFFF_FFE0_0000) | (va & 0x1F_FFFF));
+    }
     let e1 = rd_pte(p, (e2 & ADDR_MASK) + i1 * 8)?;
-    if e1 & PRESENT == 0 { return None; }
+    if e1 & PRESENT == 0 {
+        return None;
+    }
     Some((e1 & ADDR_MASK) | (va & 0xFFF))
 }
 
@@ -189,10 +258,18 @@ fn rd_virt(p: &dyn PhysicalMemoryProvider, cr3: u64, va: u64, buf: &mut [u8]) ->
         let off = (cur & 0xFFF) as usize;
         let chunk = (PAGE - off).min(buf.len() - filled);
         let Some(pa) = v2p(p, cr3, cur) else { break };
-        let n = p.read_phys(pa, &mut buf[filled..filled + chunk]).unwrap_or(0);
-        if n == 0 { break; }
+        let n = p
+            .read_phys(pa, &mut buf[filled..filled + chunk])
+            .unwrap_or(0);
+        if n == 0 {
+            break;
+        }
         filled += n;
-        if n < chunk { break; }
+        if n < chunk {
+            break;
+        }
     }
     filled
 }
+
+// (appended) Low Stub probe is invoked via the main fn when present.
