@@ -103,6 +103,17 @@ const MAX_PDB_NAME_LEN: usize = 256;
 /// All reads are bounds-checked; malformed or truncated input yields
 /// [`Error::NotFound`] rather than a panic (Paranoid Gatekeeper).
 pub fn extract_pdb_id_tolerant(bytes: &[u8]) -> crate::Result<PdbId> {
+    extract_pdb_id_tolerant_where(bytes, |_| true)
+}
+
+/// Like [`extract_pdb_id_tolerant`], but returns the first RSDS record whose
+/// recovered PDB name satisfies `accept`. Used to pick a *kernel* RSDS out of a
+/// physical-memory window that may also contain driver RSDS records — when
+/// ntoskrnl's PE header is paged out, its RSDS in `.rdata` is still the anchor.
+pub fn extract_pdb_id_tolerant_where(
+    bytes: &[u8],
+    accept: impl Fn(&str) -> bool,
+) -> crate::Result<PdbId> {
     let mut search = 0usize;
     while let Some(rel) = find_subslice(&bytes[search..], RSDS_MAGIC) {
         let pos = search + rel;
@@ -150,6 +161,10 @@ pub fn extract_pdb_id_tolerant(bytes: &[u8]) -> crate::Result<PdbId> {
             .next()
             .unwrap_or(raw_name)
             .to_string();
+
+        if !accept(&pdb_name) {
+            continue; // an RSDS, but not the one the caller wants — keep scanning
+        }
 
         return Ok(PdbId {
             guid: format_guid(&guid),

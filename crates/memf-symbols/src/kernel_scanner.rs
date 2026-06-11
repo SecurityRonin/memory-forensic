@@ -76,17 +76,63 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
     }
 
     // Header-less last resort: no embedded CR3 / anchor VA to lean on. Recover
-    // the kernel DTB from raw physical memory by self-map enumeration +
-    // ntkrnlmp verification, then locate the kernel through it.
+    // the kernel DTB from raw physical memory by self-map enumeration. A 64-bit
+    // self-referential DTB that maps kernel space is itself proof the image is
+    // AMD64 Windows (the architecture gate vol3 applies at the DTB layer), so it
+    // is only inside this branch that we trust a kernel profile.
     if let Some(cr3) = scan_for_kernel_dtb(mem) {
+        // Preferred: ntoskrnl's own PE header is resident → full verification.
         if let Some(pdb_id) = locate_kernel_via_dtb_only(mem, cr3) {
             return Ok(pdb_id);
+        }
+        // ntoskrnl's PE header is paged out (the Case 001 DC shape), but its
+        // CodeView RSDS in `.rdata` is still resident. Sweep physical memory for
+        // an RSDS whose PDB name is a kernel image. The DTB above already
+        // established AMD64, so this cannot mis-profile a 32-bit image.
+        if let Some(id) = scan_physical_for_kernel_rsds(mem) {
+            return Ok(id);
         }
     }
 
     Err(crate::Error::NotFound(
         "kernel PE not found in physical memory or via DTB translation".into(),
     ))
+}
+
+/// Sweep physical memory for a CodeView RSDS record whose PDB name is a kernel
+/// image (`ntkrnlmp`/`ntoskrnl`), returning its [`PdbId`]. The anchor of last
+/// resort when the kernel's PE header is not page-resident. Reads overlapping
+/// windows so a record spanning a boundary is parsed whole; panic-free.
+fn scan_physical_for_kernel_rsds<P: PhysicalMemoryProvider>(mem: &P) -> Option<PdbId> {
+    const CHUNK: usize = 1 << 20; // 1 MiB
+    // A full RSDS record: magic(4) + GUID(16) + age(4) + a generous PDB name.
+    // Overlap each window by this so a record on a boundary is still parsed whole.
+    const OVERLAP: u64 = (4 + 16 + 4 + 256) as u64;
+    let page = PAGE_SIZE as u64;
+    let mut buf = vec![0u8; CHUNK + OVERLAP as usize];
+    // Scan the physical layer's available ranges (Raw exposes one [0,len) range;
+    // sparse providers expose mapped extents) — the same model vol3's
+    // `PageMapScanner`/`PDBUtility.scan` use. Within each range, read overlapping
+    // windows; a gap (short read) advances one page.
+    for range in mem.ranges() {
+        let mut addr = range.start & !0xFFF;
+        while addr < range.end {
+            let n = mem.read_phys(addr, &mut buf).unwrap_or(0);
+            if n == 0 {
+                addr = addr.saturating_add(page); // gap — step to the next page
+                continue;
+            }
+            if let Ok(id) = crate::pe_debug::extract_pdb_id_tolerant_where(&buf[..n], |name| {
+                is_kernel_pdb_name(name)
+            }) {
+                return Some(id);
+            }
+            // Advance by what we read, less the overlap, never less than a page.
+            let step = (n as u64).saturating_sub(OVERLAP).max(page);
+            addr = addr.saturating_add(step);
+        }
+    }
+    None
 }
 
 /// Pick a known kernel virtual address from the dump header to anchor the DTB
@@ -640,19 +686,31 @@ mod tests {
     /// physical RSDS, not give up because no MZ header is reachable.
     #[test]
     fn scan_finds_kernel_via_physical_rsds_when_header_paged() {
+        let mut mem = SparseMem::new();
+        // A genuine 64-bit DTB that maps a resident *driver* PE (no ntoskrnl
+        // header) — this establishes AMD64 and lets scan_for_kernel_dtb succeed,
+        // while locate_kernel_via_dtb_only (ntoskrnl-only) finds nothing.
+        map_kernel_under_pml4(
+            &mut mem,
+            0x1AE000,
+            0x40_0000,
+            0xFFFF_F800_6420_0000,
+            0x1_0040_0000,
+            "bootvid.pdb",
+            securitynik_guid(),
+            1,
+        );
+        // ntoskrnl's CodeView RSDS, resident in .rdata, with NO MZ/PE header.
         let guid = [
             0x4D, 0x22, 0x72, 0x1B, 0xB8, 0x37, 0x92, 0x17, 0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44,
             0x98, 0xB2,
         ];
-        // A bare RSDS record with NO surrounding MZ/PE header, mid-buffer.
-        let mut data = vec![0u8; 0x800];
         let mut rsds = Vec::new();
         rsds.extend_from_slice(b"RSDS");
         rsds.extend_from_slice(&guid);
         rsds.extend_from_slice(&1u32.to_le_bytes());
         rsds.extend_from_slice(b"ntkrnlmp.pdb\0");
-        data[0x400..0x400 + rsds.len()].copy_from_slice(&rsds);
-        let mem = FakeMem::new(SCAN_START, data);
+        mem.write_phys(0x05_00_0000, &rsds);
 
         let pdb_id = scan_for_kernel(&mem)
             .expect("kernel profile must be recoverable from a resident physical RSDS");
