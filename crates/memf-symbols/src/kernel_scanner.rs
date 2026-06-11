@@ -196,24 +196,45 @@ fn kernel_va_for_pml4_index(pml4_idx: u64, pdpt_idx: u64) -> u64 {
     }
 }
 
-/// Enumerate physical pages that look like a self-referencing PML4 — the entry
-/// at [`SELF_MAP_INDEX`] is present and points back at the page itself.
+/// Enumerate physical pages that look like a self-referencing PML4 — a present
+/// entry that points back at the page itself.
+///
+/// The self-map index is NOT fixed: Windows Server 2012 R2 uses the classic
+/// `0x1ED`, later Win10/11 use other kernel-half slots, and 1607+ randomizes it
+/// per boot. So every kernel-half slot (`0x100..0x200`) of each page is checked,
+/// not one constant — keying on a single index misses whole OS generations
+/// (`SELF_MAP_INDEX` remains the canonical example used elsewhere). The page is
+/// read once and scanned in memory.
 ///
 /// These are the DTB *candidates*. The set is ambiguous (process + kernel DTBs
 /// alike); [`scan_for_kernel_dtb`] disambiguates by verification. Bounded by
 /// [`MAX_PML4_CANDIDATES`]; never panics (all reads bounds-/present-checked).
 fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider>(mem: &P) -> Vec<u64> {
     let mut candidates = Vec::new();
+    let mut page = [0u8; PAGE_SIZE];
     for range in mem.ranges() {
         let mut pa = range.start & !0xFFF;
         while pa < range.end {
             if candidates.len() >= MAX_PML4_CANDIDATES {
                 return candidates;
             }
-            if let Some(entry) = read_pte(mem, pa + SELF_MAP_INDEX * 8) {
-                if entry & PTE_PRESENT != 0 && (entry & PTE_ADDR_MASK) == pa {
-                    candidates.push(pa);
+            let n = mem.read_phys(pa, &mut page).unwrap_or(0);
+            let is_self_ref = |idx: usize| -> bool {
+                let off = idx * 8;
+                if off + 8 > n {
+                    return false;
                 }
+                let entry =
+                    u64::from_le_bytes(page[off..off + 8].try_into().unwrap_or([0u8; 8]));
+                entry & PTE_PRESENT != 0 && (entry & PTE_ADDR_MASK) == pa
+            };
+            // The self-map is architecturally a kernel-half entry (index >= 0x100).
+            // Probe the common modern slot first, then the rest of the kernel half
+            // — the index is not fixed (2012 R2 = 0x1ED; 1607+ randomizes it).
+            let found = is_self_ref(SELF_MAP_INDEX as usize)
+                || (0x100usize..0x200).any(is_self_ref);
+            if found {
+                candidates.push(pa);
             }
             // Stop before overflow at the top of the address space.
             let Some(next) = pa.checked_add(PAGE_SIZE as u64) else {
