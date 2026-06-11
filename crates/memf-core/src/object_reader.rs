@@ -17,12 +17,29 @@ const MAX_LIST_ITERATIONS: usize = 100_000;
 pub struct ObjectReader<P: PhysicalMemoryProvider> {
     vas: VirtualAddressSpace<P>,
     symbols: Box<dyn SymbolResolver>,
+    /// Kernel image base virtual address (KVO). Windows ISF symbols are RVAs
+    /// relative to this; it is added in [`Self::required_symbol`] so no caller
+    /// can obtain an un-rebased address. Zero for resolvers whose symbols are
+    /// already absolute VAs (e.g. Linux kallsyms), leaving them unchanged.
+    kernel_base: u64,
 }
 
 impl<P: PhysicalMemoryProvider> ObjectReader<P> {
-    /// Create a new object reader.
+    /// Create a new object reader (kernel base unset → symbols used verbatim).
     pub fn new(vas: VirtualAddressSpace<P>, symbols: Box<dyn SymbolResolver>) -> Self {
-        Self { vas, symbols }
+        Self {
+            vas,
+            symbols,
+            kernel_base: 0,
+        }
+    }
+
+    /// Set the kernel image base VA (KVO) so RVA-based symbols are rebased to
+    /// real virtual addresses. Builder form; the default (0) is a no-op.
+    #[must_use]
+    pub fn with_kernel_base(mut self, kernel_base: u64) -> Self {
+        self.kernel_base = kernel_base;
+        self
     }
 
     /// Access the underlying symbol resolver.
@@ -46,6 +63,7 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         Self {
             vas,
             symbols: self.symbols.clone_boxed(),
+            kernel_base: self.kernel_base,
         }
     }
 
@@ -191,10 +209,13 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         Ok(buf)
     }
 
-    /// Resolve a global kernel symbol address, returning an error if absent.
+    /// Resolve a global kernel symbol to a real virtual address, returning an
+    /// error if absent. The resolver yields an RVA (Windows ISF); the kernel
+    /// base (KVO) is added here so callers cannot obtain an un-rebased address.
     pub fn required_symbol(&self, name: &str) -> Result<u64> {
         self.symbols()
             .symbol_address(name)
+            .map(|rva| self.kernel_base.wrapping_add(rva))
             .ok_or_else(|| Error::MissingSymbol(name.to_owned()))
     }
 
