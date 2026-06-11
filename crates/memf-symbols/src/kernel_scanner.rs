@@ -128,7 +128,7 @@ pub fn scan_for_kernel_via_dtb<P: PhysicalMemoryProvider>(
     let mut va = start;
     let floor = start.saturating_sub(DTB_DESCENT_WINDOW);
     while va >= floor {
-        if let Some(pdb_id) = try_kernel_at_va(mem, cr3, va) {
+        if let Some(pdb_id) = try_kernel_at_va(mem, cr3, va, &|name| is_kernel_pdb_name(name)) {
             return Ok(pdb_id);
         }
         // Stop before underflow when floor is 0.
@@ -263,6 +263,20 @@ fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider>(mem: &P) -> Vec<u64> {
 /// [`MAX_KERNEL_VERIFY_ATTEMPTS`]; the descent itself is bounded by the
 /// architectural kernel-half size and [`KERNEL_PROBE_SLOTS`].
 fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> Option<PdbId> {
+    locate_pe_via_dtb(mem, cr3, &|name| is_kernel_pdb_name(name))
+}
+
+/// Walk the kernel half of `cr3`'s page tables and return the PDB identity of the
+/// first 2 MiB-aligned, MZ-headed PE image whose recovered PDB name satisfies
+/// `accept`. The page-table descent is identical regardless of `accept`; only the
+/// acceptance test differs, so [`locate_kernel_via_dtb_only`] (ntoskrnl-only, for
+/// profile resolution) and the any-kernel-PE genuineness test in
+/// [`scan_for_kernel_dtb`] share one walk.
+fn locate_pe_via_dtb<P: PhysicalMemoryProvider>(
+    mem: &P,
+    cr3: u64,
+    accept: &dyn Fn(&str) -> bool,
+) -> Option<PdbId> {
     let mut verify_attempts = 0usize;
     for pml4_idx in 0x100u64..0x200 {
         let pml4e = match read_pte(mem, (cr3 & PTE_ADDR_MASK) + pml4_idx * 8) {
@@ -274,7 +288,7 @@ fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> O
                 Some(e) if e & PTE_PRESENT != 0 => {}
                 _ => continue,
             }
-            // Probe 2 MiB-aligned VAs within this 1 GiB PDPT region for ntkrnlmp.
+            // Probe 2 MiB-aligned VAs within this 1 GiB PDPT region for a PE.
             let base_va = kernel_va_for_pml4_index(pml4_idx, pdpt_idx);
             for slot in 0..KERNEL_PROBE_SLOTS {
                 let va = base_va + slot * TWO_MIB;
@@ -288,13 +302,22 @@ fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> O
                     return None;
                 }
                 verify_attempts += 1;
-                if let Some(pdb_id) = try_kernel_at_va(mem, cr3, va) {
+                if let Some(pdb_id) = try_kernel_at_va(mem, cr3, va, accept) {
                     return Some(pdb_id);
                 }
             }
         }
     }
     None
+}
+
+/// `true` if `cr3` is a genuine page-table root: its kernel half maps at least
+/// one valid PE image with a recoverable RSDS record. On a real dump the kernel's
+/// own header may be paged out, but resident boot drivers in the shared kernel
+/// half still prove the candidate is a real DTB (not a stray self-referencing
+/// page). The kernel DTB is then the lowest-physical such root.
+fn dtb_maps_kernel_space<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> bool {
+    locate_pe_via_dtb(mem, cr3, &|_| true).is_some()
 }
 
 /// Recover the kernel DTB (page-table root) from a **header-less** raw dump.
@@ -328,11 +351,17 @@ pub fn scan_for_kernel_dtb<P: PhysicalMemoryProvider>(mem: &P) -> Option<u64> {
     candidates.sort_unstable();
     candidates
         .into_iter()
-        .find(|&cr3| locate_kernel_via_dtb_only(mem, cr3).is_some())
+        .find(|&cr3| dtb_maps_kernel_space(mem, cr3))
 }
 
-/// If a valid AMD64 kernel PE is mapped at `base_va`, return its PDB identity.
-fn try_kernel_at_va<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, base_va: u64) -> Option<PdbId> {
+/// If a valid AMD64 PE is mapped at `base_va` whose recovered PDB name satisfies
+/// `accept`, return its PDB identity.
+fn try_kernel_at_va<P: PhysicalMemoryProvider>(
+    mem: &P,
+    cr3: u64,
+    base_va: u64,
+    accept: &dyn Fn(&str) -> bool,
+) -> Option<PdbId> {
     // Read the first page to validate the PE header.
     let mut first = [0u8; PAGE_SIZE];
     let n = read_virt(mem, cr3, base_va, &mut first);
@@ -367,7 +396,7 @@ fn try_kernel_at_va<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, base_va: u64) 
     image.truncate(got);
 
     match crate::pe_debug::extract_pdb_id_tolerant(&image) {
-        Ok(pdb_id) if is_kernel_pdb_name(&pdb_id.pdb_name) => Some(pdb_id),
+        Ok(pdb_id) if accept(&pdb_id.pdb_name) => Some(pdb_id),
         _ => None,
     }
 }
