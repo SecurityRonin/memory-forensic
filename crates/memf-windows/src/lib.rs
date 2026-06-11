@@ -20,14 +20,14 @@ pub mod browser_sessions;
 pub mod cachedump;
 pub mod callbacks;
 pub mod clipboard;
-pub mod clr_heap;
 pub mod cloud_credentials;
+pub mod clr_heap;
 pub mod cmdline;
 pub mod com_hijacking;
 pub mod consoles;
-pub mod credman;
 pub mod correlate;
 pub mod crashinfo;
+pub mod credman;
 pub mod debug_registers;
 pub mod desktops;
 pub mod device_tree;
@@ -44,8 +44,8 @@ pub mod etw;
 pub mod etw_patch;
 pub mod evtx;
 pub mod fiber_fls;
-pub mod firefox_credentials;
 pub mod filescan;
+pub mod firefox_credentials;
 pub mod framebuffer;
 pub mod getsids;
 pub mod handles;
@@ -67,12 +67,13 @@ pub mod object_directory;
 pub mod pe_version_info;
 pub mod peb_masquerade;
 pub mod pipes;
-/// PPID spoofing detection (MITRE ATT&CK T1134.004).
-pub mod ppid_spoof;
 pub mod pool_scan;
 pub mod pool_tag;
+/// PPID spoofing detection (MITRE ATT&CK T1134.004).
+pub mod ppid_spoof;
 pub mod prefetch;
 pub mod process;
+pub mod psscan;
 pub mod psxview;
 pub mod psxview_cid;
 pub mod rdp_sessions;
@@ -84,11 +85,11 @@ pub mod section_object;
 pub mod service;
 pub mod session_tokens;
 pub mod sessions;
-pub mod ssh_agent_keys;
 pub mod shellbags;
 pub mod shimcache;
 pub mod skeleton_key;
 pub mod ssdt;
+pub mod ssh_agent_keys;
 pub mod suspicious_threads;
 pub mod svc_diff;
 pub mod symlinks;
@@ -103,18 +104,21 @@ pub mod types;
 pub mod unicode;
 pub mod userassist;
 pub mod vad;
-/// YARA rule scanning of process virtual memory regions.
-pub mod yara_scan;
 pub mod wdigest;
 pub mod wmi;
 pub mod wmi_persistence;
 pub mod wow64_anomaly;
+/// YARA rule scanning of process virtual memory regions.
+pub mod yara_scan;
 
 #[cfg(test)]
 pub mod testing;
 
+pub use moddump::{
+    dump_memory_region, list_mapped_files, moddump, moddump_driver, procdump, reconstruct_pe,
+    MappedFileRegion, ModuleDump,
+};
 pub use types::*;
-pub use moddump::{ModuleDump, MappedFileRegion, dump_memory_region, moddump, moddump_driver, procdump, list_mapped_files, reconstruct_pe};
 
 /// Error type for memf-windows operations.
 #[derive(Debug, thiserror::Error)]
@@ -183,7 +187,9 @@ mod tests {
 
     #[test]
     fn error_missing_kernel_symbol_contains_name() {
-        let e = Error::MissingKernelSymbol { name: "init_task".to_owned() };
+        let e = Error::MissingKernelSymbol {
+            name: "init_task".to_owned(),
+        };
         assert!(e.to_string().contains("init_task"));
     }
 
