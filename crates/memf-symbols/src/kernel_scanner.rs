@@ -932,6 +932,32 @@ mod tests {
         assert_eq!(dtb, kernel_dtb, "must pick the DTB that maps ntkrnlmp");
     }
 
+    /// Windows Server 2012 R2 (pre-1607: no self-ref randomization) places the
+    /// self-map at the classic index 0x1ED — the Case 001 DC dump. A real
+    /// PML4's self-ref can sit at ANY of the 512 slots (randomized on Win10
+    /// 1607+), so enumeration keyed to one fixed slot misses whole OS
+    /// generations; it must scan every slot of each candidate page.
+    #[test]
+    fn enumeration_finds_self_ref_at_any_slot() {
+        const PRESENT: u64 = 1;
+        let mut mem = SparseMem::new();
+        for (pa, index) in [
+            (0x30_0000u64, 0x1EDu64), // 2012 R2 classic
+            (0x40_0000, 0x1F9),       // Win10/11 randomized example
+            (0x50_0000, 0x100),       // arbitrary kernel-half slot
+        ] {
+            mem.write_phys(pa, &[0u8; PAGE_SIZE]);
+            mem.write_pte(pa + index * 8, pa | PRESENT);
+        }
+        let candidates = enumerate_self_ref_pml4s(&mem);
+        for pa in [0x30_0000u64, 0x40_0000, 0x50_0000] {
+            assert!(
+                candidates.contains(&pa),
+                "self-ref at any slot must be enumerated; missed {pa:#x}"
+            );
+        }
+    }
+
     #[test]
     fn discriminator_returns_none_with_only_decoys() {
         // Self-referencing PML4s that map no kernel must yield no kernel DTB.
