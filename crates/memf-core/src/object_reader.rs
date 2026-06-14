@@ -707,6 +707,70 @@ mod tests {
     }
 
     #[test]
+    fn walk_list_bidirectional_recovers_forward_orphans() {
+        // A doubly-linked list whose FORWARD chain is smeared (B.Flink = 0) but
+        // whose BACKWARD chain (Blink) is intact. The forward walk reaches only
+        // A and B; the node C, orphaned forward, is still reachable via Blink
+        // from the head. A bidirectional walk must return all three. This is the
+        // DESKTOP-SDN1RPT.mem case: 11 processes after the smear are recovered
+        // from the Blink side.
+        let isf = IsfBuilder::new()
+            .add_struct("_EPROCESS", 256)
+            .add_field("_EPROCESS", "ActiveProcessLinks", 0x10, "_LIST_ENTRY")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer");
+
+        let lo: u64 = 0x10;
+        let head_p = 0x0080_0000u64;
+        let a_p = 0x0080_1000u64;
+        let b_p = 0x0080_2000u64;
+        let c_p = 0x0080_3000u64;
+        let head_v = 0xFFFF_8000_0010_0000u64;
+        let a_v = 0xFFFF_8000_0010_1000u64;
+        let b_v = 0xFFFF_8000_0010_2000u64;
+        let c_v = 0xFFFF_8000_0010_3000u64;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_v, head_p, flags::WRITABLE)
+            .map_4k(a_v, a_p, flags::WRITABLE)
+            .map_4k(b_v, b_p, flags::WRITABLE)
+            .map_4k(c_v, c_p, flags::WRITABLE)
+            // head: Flink -> A, Blink -> C
+            .write_phys_u64(head_p, a_v + lo)
+            .write_phys_u64(head_p + 8, c_v + lo)
+            // A: Flink -> B, Blink -> head
+            .write_phys_u64(a_p + lo, b_v + lo)
+            .write_phys_u64(a_p + lo + 8, head_v)
+            // B: Flink -> 0 (forward smear), Blink -> A
+            .write_phys_u64(b_p + lo, 0)
+            .write_phys_u64(b_p + lo + 8, a_v + lo)
+            // C: Flink -> head, Blink -> B
+            .write_phys_u64(c_p + lo, head_v)
+            .write_phys_u64(c_p + lo + 8, b_v + lo);
+
+        let reader = make_reader(&isf, ptb);
+
+        let containers = reader
+            .walk_list_bidirectional(
+                head_v,
+                "_LIST_ENTRY",
+                "Flink",
+                "Blink",
+                "_EPROCESS",
+                "ActiveProcessLinks",
+            )
+            .unwrap();
+
+        // Forward gives [A, B]; backward adds [C]. Order: forward first, then
+        // backward-only, deduplicated.
+        assert_eq!(containers.len(), 3, "all three nodes recovered: {containers:x?}");
+        assert!(containers.contains(&a_v));
+        assert!(containers.contains(&b_v));
+        assert!(containers.contains(&c_v), "forward-orphaned C recovered via Blink");
+    }
+
+    #[test]
     fn walk_list_with_empty() {
         // Empty list: head.Flink points back to head.
         let isf = IsfBuilder::new()
