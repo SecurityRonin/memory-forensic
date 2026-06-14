@@ -2143,6 +2143,13 @@ fn print_linux_pstree(
 // ---------------------------------------------------------------------------
 
 fn print_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputFormat) {
+    println!("{}", render_linux_cmdlines(cmdlines, output));
+}
+
+/// Humble Object: render Linux command lines. `comm` and `cmdline` are
+/// attacker-controlled, so JSON wraps them in `JsonSafe` (bidi/control → U+FFFD)
+/// and CSV runs them through `csv_field` (RFC 4180 quoting + formula guard).
+fn render_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2155,24 +2162,26 @@ fn print_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputForm
                     table_cell(&c.cmdline),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} processes with command lines", cmdlines.len());
+            format!("{table}\n\nTotal: {} processes with command lines", cmdlines.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for c in cmdlines {
                 let json = serde_json::json!({
                     "pid": c.pid,
-                    "comm": c.comm,
-                    "cmdline": c.cmdline,
+                    "comm": jsonguard::JsonSafe(&c.comm),
+                    "cmdline": jsonguard::JsonSafe(&c.cmdline),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,comm,cmdline");
+            let mut out = String::from("pid,comm,cmdline\n");
             for c in cmdlines {
-                println!("{},{},{}", c.pid, c.comm, c.cmdline);
+                let _ = writeln!(out, "{},{},{}", c.pid, csv_field(&c.comm).value, csv_field(&c.cmdline).value);
             }
+            out
         }
     }
 }
@@ -2424,16 +2433,26 @@ fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: Output
 // ---------------------------------------------------------------------------
 
 fn print_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: OutputFormat) {
+    println!("{}", render_windows_cmdlines(cmdlines, output));
+}
+
+/// Humble Object: render Windows command lines. `image_name` and `cmdline` are
+/// attacker-controlled — JSON wraps them in `JsonSafe`, CSV runs them through
+/// `csv_field`. The table arm truncates by *characters* (never byte-slices a
+/// `String`, which would panic on a multi-byte boundary) after sanitizing.
+fn render_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
             table.set_header(vec!["PID", "Image Name", "Command Line"]);
             for c in cmdlines {
-                let cmdline_display = if c.cmdline.len() > 120 {
-                    format!("{}...", &c.cmdline[..117])
+                let cell = table_cell(&c.cmdline);
+                let cmdline_display = if cell.chars().count() > 120 {
+                    let head: String = cell.chars().take(117).collect();
+                    format!("{head}...")
                 } else {
-                    table_cell(&c.cmdline)
+                    cell
                 };
                 table.add_row(vec![
                     format!("{}", c.pid),
@@ -2441,24 +2460,26 @@ fn print_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: Out
                     cmdline_display,
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} command lines", cmdlines.len());
+            format!("{table}\n\nTotal: {} command lines", cmdlines.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for c in cmdlines {
                 let json = serde_json::json!({
                     "pid": c.pid,
-                    "image_name": c.image_name,
-                    "cmdline": c.cmdline,
+                    "image_name": jsonguard::JsonSafe(&c.image_name),
+                    "cmdline": jsonguard::JsonSafe(&c.cmdline),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,cmdline");
+            let mut out = String::from("pid,image_name,cmdline\n");
             for c in cmdlines {
-                println!("{},{},{}", c.pid, c.image_name, csv_field(&c.cmdline));
+                let _ = writeln!(out, "{},{},{}", c.pid, csv_field(&c.image_name).value, csv_field(&c.cmdline).value);
             }
+            out
         }
     }
 }
@@ -5849,6 +5870,47 @@ mod tests {
             handle_count: 0,
             session_id: 0,
         }
+    }
+
+    #[test]
+    fn render_linux_cmdlines_sanitizes_json_and_csv() {
+        let cmds = vec![memf_linux::CmdlineInfo {
+            pid: 42,
+            comm: "ev\u{202e}il".into(),
+            cmdline: "=calc,foo bar\u{202e}".into(), // formula + embedded comma + bidi
+        }];
+        let json = render_linux_cmdlines(&cmds, OutputFormat::Json);
+        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        let v: serde_json::Value =
+            serde_json::from_str(json.lines().next().unwrap()).expect("valid json object");
+        assert_eq!(v["pid"], 42);
+
+        let csv = render_linux_cmdlines(&cmds, OutputFormat::Csv);
+        assert!(csv.lines().next().unwrap_or_default().contains("cmdline"), "csv header");
+        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
+        assert!(!csv.contains(",=calc"), "formula must be guarded: {csv}");
+        // The comma embedded in cmdline must be RFC 4180-quoted, not split the row.
+        assert!(csv.lines().nth(1).unwrap_or_default().contains('"'), "embedded comma forces quoting: {csv}");
+    }
+
+    #[test]
+    fn render_windows_cmdlines_sanitizes_and_truncation_is_char_safe() {
+        // A multi-byte char straddling the old 117-byte truncation boundary must
+        // not panic the table arm (byte-slicing a String at a non-char boundary).
+        let long = format!("{}\u{4e16}\u{754c}", "A".repeat(116));
+        let big = vec![memf_windows::WinCmdlineInfo { pid: 7, image_name: "x.exe".into(), cmdline: long }];
+        let _table = render_windows_cmdlines(&big, OutputFormat::Table); // must not panic
+
+        let cmds = vec![memf_windows::WinCmdlineInfo {
+            pid: 8,
+            image_name: "=x.exe".into(),
+            cmdline: "cmd\u{202e}".into(),
+        }];
+        let json = render_windows_cmdlines(&cmds, OutputFormat::Json);
+        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        let csv = render_windows_cmdlines(&cmds, OutputFormat::Csv);
+        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
+        assert!(!csv.contains(",=x.exe"), "image_name formula must be guarded: {csv}");
     }
 
     #[test]
