@@ -54,7 +54,7 @@ const PSB_CR3_OFFSET: u64 = 0xA0; // ...->ProcessorState->SpecialRegisters->Cr3
 /// "Discard Low Memory" BIOS case can push it past the first MiB, or the page is
 /// absent). Panic-free and bounds-checked.
 #[must_use]
-pub fn find_low_stub<P: PhysicalMemoryProvider>(mem: &P) -> Option<LowStub> {
+pub fn find_low_stub<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Option<LowStub> {
     let read_u64 = |pa: u64| -> Option<u64> {
         let mut b = [0u8; 8];
         if mem.read_phys(pa, &mut b).unwrap_or(0) < 8 {
@@ -96,12 +96,43 @@ pub fn find_low_stub<P: PhysicalMemoryProvider>(mem: &P) -> Option<LowStub> {
     None
 }
 
+/// Recover the page-granular kernel image base virtual address from a raw dump
+/// that carries no crash-dump header.
+///
+/// The low stub ([`find_low_stub`]) yields the kernel DTB plus a kernel-VA hint
+/// floored to 2 MiB. On modern Win10/11 KASLR the true image base is page (4 KiB)
+/// granular and sits *within* that 2 MiB window — not at the floor (validated on
+/// DESKTOP-SDN1RPT.mem, base `...A14000`, 0x14000 above its floor). So this scans
+/// page-by-page across the 2 MiB region surrounding the hint, translating each
+/// candidate VA through the kernel page tables, and returns the first VA that
+/// resolves to an ntoskrnl PE (valid `MZ`/`PE` + ntkrnl RSDS).
+///
+/// Returns `None` if no low stub is present or no ntoskrnl image is located.
+#[must_use]
+pub fn resolve_kernel_base_va<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Option<u64> {
+    let stub = find_low_stub(mem)?;
+    let hint = stub.kernel_base_va; // 2 MiB-aligned floor of the LmTarget hint
+    // The base lies within ±2 MiB of the floor: the LmTarget routine is somewhere
+    // inside the (≤ MAX_IMAGE_SCAN) image, so flooring it can land one 2 MiB slot
+    // above or below the true base. Scan the surrounding window at page grain.
+    let start = hint.saturating_sub(TWO_MIB);
+    let end = hint.saturating_add(TWO_MIB);
+    let mut va = start;
+    while va < end {
+        if try_kernel_at_va(mem, stub.cr3, va, &is_kernel_pdb_name).is_some() {
+            return Some(va);
+        }
+        va = va.saturating_add(PAGE_SIZE as u64);
+    }
+    None
+}
+
 /// Scan physical memory for ntoskrnl.exe and extract its PDB identification.
 ///
 /// Searches page-aligned addresses from 1 MiB to 128 MiB for a valid
 /// AMD64 PE image whose CodeView record identifies it as an ntoskrnl variant.
 /// Returns `Error::NotFound` if no kernel PE is found in the scan window.
-pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbId> {
+pub fn scan_for_kernel<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> crate::Result<PdbId> {
     let mut addr = SCAN_START;
     while addr < SCAN_END {
         let mut mz = [0u8; 2];
@@ -174,7 +205,7 @@ pub fn scan_for_kernel<P: PhysicalMemoryProvider>(mem: &P) -> crate::Result<PdbI
 /// image (`ntkrnlmp`/`ntoskrnl`), returning its [`PdbId`]. The anchor of last
 /// resort when the kernel's PE header is not page-resident. Reads overlapping
 /// windows so a record spanning a boundary is parsed whole; panic-free.
-fn scan_physical_for_kernel_rsds<P: PhysicalMemoryProvider>(mem: &P) -> Option<PdbId> {
+fn scan_physical_for_kernel_rsds<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Option<PdbId> {
     const CHUNK: usize = 1 << 20; // 1 MiB
                                   // A full RSDS record: magic(4) + GUID(16) + age(4) + a generous PDB name.
                                   // Overlap each window by this so a record on a boundary is still parsed whole.
@@ -233,7 +264,7 @@ fn is_kernel_pdb_name(name: &str) -> bool {
 ///
 /// Returns [`Error::NotFound`] if no kernel PE is located within the search
 /// window.
-pub fn scan_for_kernel_via_dtb<P: PhysicalMemoryProvider>(
+pub fn scan_for_kernel_via_dtb<P: PhysicalMemoryProvider + ?Sized>(
     mem: &P,
     cr3: u64,
     anchor_va: u64,
@@ -326,7 +357,7 @@ fn kernel_va_for_pml4_index(pml4_idx: u64, pdpt_idx: u64) -> u64 {
 /// These are the DTB *candidates*. The set is ambiguous (process + kernel DTBs
 /// alike); [`scan_for_kernel_dtb`] disambiguates by verification. Bounded by
 /// [`MAX_PML4_CANDIDATES`]; never panics (all reads bounds-/present-checked).
-fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider>(mem: &P) -> Vec<u64> {
+fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Vec<u64> {
     let mut candidates = Vec::new();
     let mut page = [0u8; PAGE_SIZE];
     for range in mem.ranges() {
@@ -378,7 +409,7 @@ fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider>(mem: &P) -> Vec<u64> {
 /// the ascending walk reaches it first. Full verifications are bounded by
 /// [`MAX_KERNEL_VERIFY_ATTEMPTS`]; the descent itself is bounded by the
 /// architectural kernel-half size and [`KERNEL_PROBE_SLOTS`].
-fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> Option<PdbId> {
+fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64) -> Option<PdbId> {
     locate_pe_via_dtb(mem, cr3, &|name| is_kernel_pdb_name(name))
 }
 
@@ -388,7 +419,7 @@ fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> O
 /// acceptance test differs, so [`locate_kernel_via_dtb_only`] (ntoskrnl-only, for
 /// profile resolution) and the any-kernel-PE genuineness test in
 /// [`scan_for_kernel_dtb`] share one walk.
-fn locate_pe_via_dtb<P: PhysicalMemoryProvider>(
+fn locate_pe_via_dtb<P: PhysicalMemoryProvider + ?Sized>(
     mem: &P,
     cr3: u64,
     accept: &dyn Fn(&str) -> bool,
@@ -432,7 +463,7 @@ fn locate_pe_via_dtb<P: PhysicalMemoryProvider>(
 /// own header may be paged out, but resident boot drivers in the shared kernel
 /// half still prove the candidate is a real DTB (not a stray self-referencing
 /// page). The kernel DTB is then the lowest-physical such root.
-fn dtb_maps_kernel_space<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> bool {
+fn dtb_maps_kernel_space<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64) -> bool {
     locate_pe_via_dtb(mem, cr3, &|_| true).is_some()
 }
 
@@ -456,7 +487,7 @@ fn dtb_maps_kernel_space<P: PhysicalMemoryProvider>(mem: &P, cr3: u64) -> bool {
 ///
 /// Returns the physical address of the kernel DTB, or `None` if no candidate
 /// verifies. Panic-free and bounded against crafted dumps.
-pub fn scan_for_kernel_dtb<P: PhysicalMemoryProvider>(mem: &P) -> Option<u64> {
+pub fn scan_for_kernel_dtb<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Option<u64> {
     let mut candidates = enumerate_self_ref_pml4s(mem);
     // The kernel DTB sits lowest in physical memory (0x1AE000 on SecurityNik),
     // below the per-process DTBs. Because the kernel's upper-half page tables are
@@ -472,7 +503,7 @@ pub fn scan_for_kernel_dtb<P: PhysicalMemoryProvider>(mem: &P) -> Option<u64> {
 
 /// If a valid AMD64 PE is mapped at `base_va` whose recovered PDB name satisfies
 /// `accept`, return its PDB identity.
-fn try_kernel_at_va<P: PhysicalMemoryProvider>(
+fn try_kernel_at_va<P: PhysicalMemoryProvider + ?Sized>(
     mem: &P,
     cr3: u64,
     base_va: u64,
@@ -532,7 +563,7 @@ const PTE_PAGE_SIZE: u64 = 1 << 7;
 
 /// Read one little-endian 8-byte PTE from physical address `pa`.
 /// Returns `None` on a short/unmapped read (never panics).
-fn read_pte<P: PhysicalMemoryProvider>(mem: &P, pa: u64) -> Option<u64> {
+fn read_pte<P: PhysicalMemoryProvider + ?Sized>(mem: &P, pa: u64) -> Option<u64> {
     let mut buf = [0u8; 8];
     let n = mem.read_phys(pa, &mut buf).unwrap_or(0);
     if n < 8 {
@@ -543,7 +574,7 @@ fn read_pte<P: PhysicalMemoryProvider>(mem: &P, pa: u64) -> Option<u64> {
 
 /// Translate virtual address `va` to a physical address using 4-level paging.
 /// Returns `None` for any non-present level (bounds- and present-checked).
-fn virt_to_phys<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, va: u64) -> Option<u64> {
+fn virt_to_phys<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64, va: u64) -> Option<u64> {
     let i4 = (va >> 39) & 0x1FF;
     let i3 = (va >> 30) & 0x1FF;
     let i2 = (va >> 21) & 0x1FF;
@@ -583,7 +614,7 @@ fn virt_to_phys<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, va: u64) -> Option
 /// Read up to `buf.len()` bytes starting at virtual address `va`, translating
 /// each 4 KiB page through `cr3`. Stops at the first untranslatable / unmapped
 /// page and returns the number of bytes filled (the rest of `buf` is untouched).
-fn read_virt<P: PhysicalMemoryProvider>(mem: &P, cr3: u64, va: u64, buf: &mut [u8]) -> usize {
+fn read_virt<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64, va: u64, buf: &mut [u8]) -> usize {
     let mut filled = 0usize;
     let mut cur = va;
     while filled < buf.len() {
