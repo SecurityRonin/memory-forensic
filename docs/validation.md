@@ -66,8 +66,16 @@ finding against **at least two independent implementations** plus the raw bytes:
 
 - **Volatility 3** — done (above).
 - **MemProcFS** (Ulf Frisk) — a C/Rust engine with a different code lineage, so
-  agreement is genuinely independent. Source is vendored; a macOS/Linux build +
-  `proc.txt` differential is the next validation step.
+  agreement is genuinely independent. **Status (2026-06-14): blocked on this
+  macOS arm64 host** — `pip install memprocfs` fails to build the `memprocfs` /
+  `leechcorepyc` native wheels, and the prebuilt macOS binary needs macFUSE (a
+  kernel extension) to mount. The clean path is a **Linux** box: the upstream
+  `MemProcFS_files…linux_aarch64` / `linux_x64` and `LeechCore` prebuilt releases
+  run without a source build; mount `DESKTOP-SDN1RPT.mem` and diff `proc.txt` /
+  the `windows.psscan` equivalent against memf. Tracked as the second-oracle
+  step. (memf is already reconciled with Volatility 3 on *two* independent
+  methods — pslist 95/95 and psscan 95/95, 0 FP — so this adds a third
+  independent tool, not a missing correctness check.)
 - **Published case ground truth** — the DFIR Madness write-up documents the
   incident's process activity, and the paired disk image carries the on-disk
   executables, giving a non-tool cross-reference.
