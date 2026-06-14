@@ -55,7 +55,7 @@ const EPROCESS_DELTAS: &[u64] = &[
 ];
 
 /// Read `n` bytes at physical `pa`, returning `None` on a short read.
-fn read_phys_exact<P: PhysicalMemoryProvider>(prov: &P, pa: u64, n: usize) -> Option<Vec<u8>> {
+fn read_phys_exact<P: PhysicalMemoryProvider + ?Sized>(prov: &P, pa: u64, n: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; n];
     if prov.read_phys(pa, &mut buf).unwrap_or(0) < n {
         return None;
@@ -97,7 +97,7 @@ fn decode_image_name(raw: &[u8]) -> Option<String> {
 /// This is a convenience wrapper over [`scan_processes_dtb`] with `dtb_off = None`
 /// (no DTB validation). Prefer [`scan_processes_dtb`] when the `_KPROCESS`
 /// `DirectoryTableBase` offset is available from the ISF.
-pub fn scan_processes<P: PhysicalMemoryProvider>(
+pub fn scan_processes<P: PhysicalMemoryProvider + ?Sized>(
     prov: &P,
     pid_off: u64,
     name_off: u64,
@@ -118,7 +118,7 @@ pub fn scan_processes<P: PhysicalMemoryProvider>(
 /// suppression without a panic). Results are deduplicated by `(pid, name)`.
 ///
 /// Panic-free and bounded.
-pub fn scan_processes_dtb<P: PhysicalMemoryProvider>(
+pub fn scan_processes_dtb<P: PhysicalMemoryProvider + ?Sized>(
     prov: &P,
     pid_off: u64,
     name_off: u64,
@@ -182,7 +182,7 @@ pub fn scan_processes_dtb<P: PhysicalMemoryProvider>(
 /// process objects from the many coincidental `Proc` byte sequences in a dump.
 const DISPATCHER_TYPE_PROCESS: u8 = 0x03;
 
-fn try_eprocess<P: PhysicalMemoryProvider>(
+fn try_eprocess<P: PhysicalMemoryProvider + ?Sized>(
     prov: &P,
     pool_base: u64,
     pid_off: u64,
@@ -429,6 +429,113 @@ mod tests {
         assert!(
             found.is_empty(),
             "misaligned DTB must be rejected (page-table roots are 4 KiB-aligned)"
+        );
+    }
+
+    // ── Real-dump reconciliation (machine-specific; skipped in CI) ──────────────
+
+    /// Real-dump oracle reconciliation: compare our psscan output against
+    /// Volatility 3's `windows.psscan.PsScan` on `DESKTOP-SDN1RPT.mem`.
+    ///
+    /// Generate the oracle ONCE (takes ~2 min):
+    ///   vol -r json -f /tmp/vol3_test/DESKTOP-SDN1RPT.mem \
+    ///       windows.psscan.PsScan > /tmp/vol3_test/oracle_psscan.json
+    ///
+    /// Then run:
+    ///   cargo test -p memf-windows --lib -- psscan::tests::psscan_reconcile_vs_vol3 \
+    ///              --include-ignored
+    ///
+    /// Expected outcome: our unique-PID set ≥ vol3's unique-PID set.
+    /// Vol3's output contains duplicate entries (same process appears at multiple
+    /// virtual addresses across process layers); we scan physical memory once and
+    /// naturally deduplicate. Discrepancies are printed for analysis.
+    ///
+    /// This test MUST NOT be removed — it is the Doer-Checker gate that proves the
+    /// scanner is validated against a real 2 GiB Win10 dump and an independent oracle.
+    #[test]
+    #[ignore = "requires /tmp/vol3_test/DESKTOP-SDN1RPT.mem and oracle_psscan.json"]
+    fn psscan_reconcile_vs_vol3() {
+        use memf_format::open_dump;
+        use memf_symbols::isf::IsfResolver;
+        use memf_symbols::SymbolResolver as _;
+        use std::collections::HashSet;
+
+        let dump_path = "/tmp/vol3_test/DESKTOP-SDN1RPT.mem";
+        let isf_path = "/tmp/vol3_test/ntkrnlmp_81BC5C37.json";
+        let oracle_path = "/tmp/vol3_test/oracle_psscan.json";
+
+        // Load the ISF (real offsets for this dump).
+        let isf_bytes = std::fs::read(isf_path).expect("ISF must exist at {isf_path}");
+        let isf_json: serde_json::Value =
+            serde_json::from_slice(&isf_bytes).expect("ISF must be valid JSON");
+        let resolver =
+            IsfResolver::from_value(&isf_json).expect("IsfResolver must parse the ISF");
+
+        // Offsets from the real ISF (ntkrnlmp_81BC5C37.json):
+        //   _EPROCESS.UniqueProcessId  offset=1088 (0x440)
+        //   _EPROCESS.ImageFileName    offset=1448 (0x5A8)
+        //   _KPROCESS.DirectoryTableBase offset=40 (0x28) — Pcb is at _EPROCESS+0
+        let pid_off = resolver
+            .field_offset("_EPROCESS", "UniqueProcessId")
+            .expect("UniqueProcessId offset must be in ISF");
+        let name_off = resolver
+            .field_offset("_EPROCESS", "ImageFileName")
+            .expect("ImageFileName offset must be in ISF");
+        let dtb_off = resolver.field_offset("_KPROCESS", "DirectoryTableBase");
+
+        // Open the raw dump and run our psscan.
+        let dump = open_dump(std::path::Path::new(dump_path)).expect("dump must open");
+        // scan_processes_dtb accepts &P where P: ?Sized, so Box<dyn …>.as_ref() works.
+        let our_procs = scan_processes_dtb(dump.as_ref(), pid_off, name_off, dtb_off);
+
+        let our_pids: HashSet<u64> = our_procs.iter().map(|p| p.pid).collect();
+
+        // Load and parse the vol3 oracle.
+        let oracle_bytes = std::fs::read(oracle_path).expect("oracle must exist");
+        let oracle: Vec<serde_json::Value> =
+            serde_json::from_slice(&oracle_bytes).expect("oracle must be valid JSON");
+        let vol3_pids: HashSet<u64> = oracle
+            .iter()
+            .filter_map(|e| e.get("PID").and_then(|v| v.as_u64()))
+            .collect();
+
+        let overlap: Vec<u64> = {
+            let mut v: Vec<u64> = our_pids.intersection(&vol3_pids).copied().collect();
+            v.sort_unstable();
+            v
+        };
+        let memf_only: Vec<u64> = {
+            let mut v: Vec<u64> = our_pids.difference(&vol3_pids).copied().collect();
+            v.sort_unstable();
+            v
+        };
+        let vol3_only: Vec<u64> = {
+            let mut v: Vec<u64> = vol3_pids.difference(&our_pids).copied().collect();
+            v.sort_unstable();
+            v
+        };
+
+        println!("=== psscan reconciliation vs vol3 ===");
+        println!("  Our unique PIDs:  {}", our_pids.len());
+        println!("  Vol3 unique PIDs: {}", vol3_pids.len());
+        println!("  Overlap:          {} PIDs", overlap.len());
+        println!("  memf-only (FP?):  {:?}", memf_only);
+        println!("  vol3-only (miss): {:?}", vol3_only);
+
+        // memf-only entries are potential false positives — target 0.
+        assert!(
+            memf_only.is_empty(),
+            "psscan found {} PID(s) not in vol3 oracle (false positives): {:?}",
+            memf_only.len(),
+            memf_only,
+        );
+
+        // We must find at least as many unique PIDs as vol3.
+        assert!(
+            our_pids.len() >= vol3_pids.len(),
+            "psscan found {} unique PIDs, vol3 found {} — we should be >= vol3",
+            our_pids.len(),
+            vol3_pids.len(),
         );
     }
 
