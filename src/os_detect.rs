@@ -69,7 +69,10 @@ pub fn extract_cr3(
     match os {
         OsProfile::Windows => metadata
             .and_then(|m| m.cr3)
-            .context("Windows dump missing CR3 in metadata; provide --cr3"),
+            // Raw .mem dumps carry no header CR3; recover the kernel DTB from the
+            // boot low stub (PROCESSOR_START_BLOCK) in low physical memory.
+            .or_else(|| memf_symbols::find_low_stub(provider).map(|s| s.cr3))
+            .context("Windows dump missing CR3 (no header value, no low stub); provide --cr3"),
         OsProfile::Linux => {
             let swapper_vaddr = symbols
                 .symbol_address("swapper_pg_dir")
