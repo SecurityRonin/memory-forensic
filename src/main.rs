@@ -3004,19 +3004,15 @@ fn try_auto_download_symbols(
         "Found kernel PDB: {} (GUID {}, age {})",
         pdb_id.pdb_name, pdb_id.guid, pdb_id.age
     );
-    eprintln!("Downloading from Microsoft symbol server...");
+    eprintln!("Resolving symbols (ISF, then PDB fallback)...");
 
-    let client = memf_symbols::symserver::SymbolServerClient::microsoft()
-        .context("failed to initialize symbol server client")?;
-    let pdb_path = client
-        .get_pdb(&pdb_id.pdb_name, &pdb_id.guid, pdb_id.age)
-        .with_context(|| format!("failed to download {}", pdb_id.pdb_name))?;
-
-    eprintln!("Cached at {}", pdb_path.display());
-
-    let resolver = memf_symbols::pdb_resolver::PdbResolver::from_path(&pdb_path)
-        .with_context(|| format!("failed to load PDB from {}", pdb_path.display()))?;
-    Ok(Box::new(resolver))
+    // Dual source: prefer a pre-built ISF, fall back to a PDB from the symbol
+    // server. load_symbols dispatches the returned path (.json -> ISF, .pdb -> PDB).
+    let cache = symbol_dl::default_cache_dir();
+    let path = symbol_dl::resolve_symbols(&cache, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age, true)
+        .context("failed to resolve symbols (ISF and PDB both unavailable)")?;
+    eprintln!("Symbols ready: {}", path.display());
+    load_symbols(Some(&path))
 }
 
 /// Maximum bytes to read when probing a PE candidate.
@@ -3085,13 +3081,13 @@ fn try_auto_download_isf(dump: &Path, quiet: bool, allow_network: bool) -> Optio
 
     if !quiet {
         eprintln!(
-            "Detected kernel: {} (GUID {}, age {}). Checking ISF cache{}...",
+            "Detected kernel: {} (GUID {}, age {}). Resolving symbols{}...",
             pdb_id.pdb_name, pdb_id.guid, pdb_id.age,
-            if allow_network { "" } else { " (offline — cache only)" }
+            if allow_network { " (ISF, then PDB fallback)" } else { " (offline — cache only)" }
         );
     }
 
-    match symbol_dl::resolve_isf(&cache, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age, allow_network) {
+    match symbol_dl::resolve_symbols(&cache, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age, allow_network) {
         Ok(path) => {
             if !quiet { eprintln!("Symbols ready: {}", path.display()); }
             Some(path)

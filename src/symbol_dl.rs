@@ -109,6 +109,46 @@ pub fn resolve_isf(
     download_isf(cache_dir, pdb_name, guid, age)
 }
 
+/// Resolve a symbol file for the kernel, trying both sources in order.
+///
+/// 1. **ISF first** — a pre-built Volatility-3 ISF from the community server
+///    (cached or downloaded). Fast, no conversion.
+/// 2. **PDB fallback** — when no ISF is available, a PDB straight from the
+///    Microsoft symbol server (`msdl.microsoft.com`), which covers *every*
+///    Windows build the community ISF set may lack. The returned `.pdb` path is
+///    consumed by the same loader (it dispatches `.pdb` → `PdbResolver`).
+///
+/// `allow_network` gates both downloads; offline resolution is cache-only.
+/// Returns the path to whichever symbol file was found (`.json` ISF or `.pdb`).
+pub fn resolve_symbols(
+    cache_dir: &Path,
+    pdb_name: &str,
+    guid: &str,
+    age: u32,
+    allow_network: bool,
+) -> anyhow::Result<PathBuf> {
+    // 1. Prefer a pre-built ISF.
+    if let Ok(isf) = resolve_isf(cache_dir, pdb_name, guid, age, allow_network) {
+        return Ok(isf);
+    }
+    // 2. Fall back to a PDB from the Microsoft symbol server.
+    let pdb_cached = memf_symbols::symserver::cache_path(cache_dir, pdb_name, guid, age);
+    if pdb_cached.exists() {
+        return Ok(pdb_cached);
+    }
+    if !allow_network {
+        anyhow::bail!(
+            "no symbols for {pdb_name}: neither a community ISF nor a Microsoft PDB is cached, \
+             and network download is disabled (offline mode)"
+        );
+    }
+    let client =
+        memf_symbols::symserver::SymbolServerClient::new(memf_symbols::symserver::default_server_url(), cache_dir);
+    client
+        .get_pdb(pdb_name, guid, age)
+        .map_err(|e| anyhow::anyhow!("ISF unavailable and PDB download from the symbol server failed: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // Platform-agnostic cache base directory
 // ---------------------------------------------------------------------------
