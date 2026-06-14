@@ -127,6 +127,25 @@ pub fn resolve_kernel_base_va<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Op
     None
 }
 
+/// Resolve a kernel symbol's virtual address on a raw, header-less dump.
+///
+/// Combines the page-granular kernel base ([`resolve_kernel_base_va`]) with the
+/// symbol's image-relative RVA from `symbols` (an un-rebased ISF resolver, whose
+/// `symbol_address` returns RVAs). This is how `PsActiveProcessHead` /
+/// `PsLoadedModuleList` are recovered when no crash-dump header supplies them.
+///
+/// Returns `None` if the kernel base cannot be located or the symbol is absent.
+#[must_use]
+pub fn resolve_kernel_symbol_va<P: PhysicalMemoryProvider + ?Sized>(
+    mem: &P,
+    symbols: &dyn crate::SymbolResolver,
+    name: &str,
+) -> Option<u64> {
+    let base = resolve_kernel_base_va(mem)?;
+    let rva = symbols.symbol_address(name)?;
+    Some(base.wrapping_add(rva))
+}
+
 /// Scan physical memory for ntoskrnl.exe and extract its PDB identification.
 ///
 /// Searches page-aligned addresses from 1 MiB to 128 MiB for a valid

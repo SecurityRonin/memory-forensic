@@ -32,8 +32,8 @@ pub mod test_builders;
 
 pub use auto_profile::AutoProfile;
 pub use kernel_scanner::{
-    find_low_stub, resolve_kernel_base_va, scan_for_kernel, scan_for_kernel_dtb,
-    scan_for_kernel_via_dtb, LowStub,
+    find_low_stub, resolve_kernel_base_va, resolve_kernel_symbol_va, scan_for_kernel,
+    scan_for_kernel_dtb, scan_for_kernel_via_dtb, LowStub,
 };
 pub use pe_debug::extract_pdb_id_tolerant;
 
