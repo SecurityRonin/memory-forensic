@@ -230,4 +230,36 @@ mod tests {
             .expect("cache hit must resolve even offline");
         assert_eq!(result, file);
     }
+
+    // ── Dual symbol source: ISF-first, then PDB-from-msdl fallback ──
+
+    /// A pre-built ISF is preferred over a PDB — fast path, no conversion needed.
+    #[test]
+    fn test_resolve_symbols_prefers_isf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let isf = tmp.path().join(cache_filename("ntkrnlmp.pdb", "AAA111", 1));
+        std::fs::write(&isf, b"{}").unwrap();
+        let p = resolve_symbols(tmp.path(), "ntkrnlmp.pdb", "AAA111", 1, false).unwrap();
+        assert_eq!(p, isf, "ISF is the preferred source when present");
+    }
+
+    /// When no ISF exists, fall back to a (cached) PDB from the Microsoft symbol
+    /// server — universal build coverage that the community ISF set may lack.
+    #[test]
+    fn test_resolve_symbols_falls_back_to_pdb() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdb = memf_symbols::symserver::cache_path(tmp.path(), "ntkrnlmp.pdb", "BBB222", 1);
+        std::fs::create_dir_all(pdb.parent().unwrap()).unwrap();
+        std::fs::write(&pdb, b"PDB").unwrap();
+        let p = resolve_symbols(tmp.path(), "ntkrnlmp.pdb", "BBB222", 1, false).unwrap();
+        assert_eq!(p, pdb, "falls back to the cached PDB when no ISF is available");
+    }
+
+    /// Offline with neither source cached errors — and does not phone home.
+    #[test]
+    fn test_resolve_symbols_offline_no_cache_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = resolve_symbols(tmp.path(), "ntkrnlmp.pdb", "CCC333", 1, false);
+        assert!(r.is_err(), "neither ISF nor PDB cached + offline must error");
+    }
 }
