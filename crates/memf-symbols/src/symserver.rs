@@ -39,13 +39,11 @@ pub fn default_cache_dir() -> Option<PathBuf> {
 // ── SymbolServerClient (only with `symserver` feature) ──
 
 /// A client for downloading PDB files from a symbol server with local caching.
-#[cfg(feature = "symserver")]
 pub struct SymbolServerClient {
     server_url: String,
     cache_dir: PathBuf,
 }
 
-#[cfg(feature = "symserver")]
 impl SymbolServerClient {
     /// Create a new client with custom server URL and cache directory.
     pub fn new(server_url: impl Into<String>, cache_dir: impl Into<PathBuf>) -> Self {
@@ -215,7 +213,6 @@ mod tests {
 
     // ── Task 5: Client tests (feature-gated) ──
 
-    #[cfg(feature = "symserver")]
     #[test]
     fn client_new() {
         let client = SymbolServerClient::new("https://example.com", "/tmp/cache");
@@ -223,7 +220,6 @@ mod tests {
         assert_eq!(client.cache_dir(), Path::new("/tmp/cache"));
     }
 
-    #[cfg(feature = "symserver")]
     #[test]
     fn client_get_pdb_uses_cache() {
         let dir = std::env::temp_dir().join("memf-test-symserver-cache");
@@ -244,7 +240,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(feature = "symserver")]
     #[test]
     #[ignore]
     fn client_download_real() {

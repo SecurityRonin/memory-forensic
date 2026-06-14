@@ -5,6 +5,10 @@
 //!
 //! Usage: cargo run --release -p memf-symbols --example probe_dtb -- <dump>
 
+// Diagnostic example (not production): opt out of the panic lints, same as the
+// crate's test code, so quick `.unwrap()`/`.expect()` on argv stays readable.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use memf_format::{open_dump_with_raw_fallback, PhysicalMemoryProvider};
 use memf_symbols::{find_low_stub, scan_for_kernel_dtb};
 

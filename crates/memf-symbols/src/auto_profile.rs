@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 use crate::pdb_resolver::PdbResolver;
 use crate::pe_debug::{extract_pdb_id, PdbId};
-#[cfg(feature = "symserver")]
 use crate::symserver::{self, SymbolServerClient};
 use crate::SymbolResolver;
 
@@ -19,6 +18,9 @@ use crate::SymbolResolver;
 pub struct AutoProfile {
     /// Local directory used as the PDB cache.
     pub(crate) cache_dir: PathBuf,
+    /// Whether a cache miss may fetch the PDB from the network symbol server.
+    /// Enabled by default; disable (`with_network(false)`) for air-gapped work.
+    network_enabled: bool,
 }
 
 impl AutoProfile {
@@ -26,26 +28,54 @@ impl AutoProfile {
     pub fn new() -> crate::Result<Self> {
         let cache_dir = crate::symserver::default_cache_dir()
             .ok_or_else(|| crate::Error::Cache("HOME not set".into()))?;
-        Ok(Self { cache_dir })
+        Ok(Self {
+            cache_dir,
+            network_enabled: true,
+        })
     }
 
     /// Create an `AutoProfile` with a custom cache directory.
     pub fn with_cache_dir(dir: impl Into<PathBuf>) -> Self {
         Self {
             cache_dir: dir.into(),
+            network_enabled: true,
         }
+    }
+
+    /// Enable or disable network symbol-server download (default: **enabled**).
+    ///
+    /// Pass `false` for air-gapped / offline forensic analysis: a cache miss
+    /// then returns [`crate::Error::NotFound`] instead of reaching the network.
+    /// This is a runtime setting, never a compile-time feature — the capability
+    /// is always present.
+    #[must_use]
+    pub fn with_network(mut self, enabled: bool) -> Self {
+        self.network_enabled = enabled;
+        self
+    }
+
+    /// Whether network symbol-server download is currently enabled.
+    #[must_use]
+    pub fn network_enabled(&self) -> bool {
+        self.network_enabled
     }
 
     /// Resolve a [`SymbolResolver`] for the given PDB identity.
     ///
-    /// Checks the local cache first. If the PDB is not cached, downloads it
-    /// from the Microsoft symbol server and writes it to the cache directory.
-    #[cfg(feature = "symserver")]
+    /// Checks the local cache first. On a miss, downloads the PDB from the
+    /// Microsoft symbol server **iff** network is enabled; otherwise returns
+    /// [`crate::Error::NotFound`] without touching the network.
     pub fn from_pdb_id(&self, pdb_id: &PdbId) -> crate::Result<Box<dyn SymbolResolver>> {
         let cached =
             symserver::cache_path(&self.cache_dir, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age);
 
         if !cached.exists() {
+            if !self.network_enabled {
+                return Err(crate::Error::NotFound(format!(
+                    "{} not cached and network symbol-server disabled (offline mode)",
+                    pdb_id.pdb_name
+                )));
+            }
             let client = SymbolServerClient::new(symserver::default_server_url(), &self.cache_dir);
             client.get_pdb(&pdb_id.pdb_name, &pdb_id.guid, pdb_id.age)?;
         }
@@ -59,7 +89,6 @@ impl AutoProfile {
     /// Extracts the PDB identity from `pe_bytes` then delegates to [`from_pdb_id`].
     ///
     /// [`from_pdb_id`]: AutoProfile::from_pdb_id
-    #[cfg(feature = "symserver")]
     pub fn from_pe_bytes(&self, pe_bytes: &[u8]) -> crate::Result<Box<dyn SymbolResolver>> {
         let pdb_id = extract_pdb_id(pe_bytes)?;
         self.from_pdb_id(&pdb_id)
@@ -71,7 +100,6 @@ impl AutoProfile {
     /// to [`from_pdb_id`].
     ///
     /// [`from_pdb_id`]: AutoProfile::from_pdb_id
-    #[cfg(feature = "symserver")]
     pub fn from_dump<P: memf_format::PhysicalMemoryProvider>(
         &self,
         mem: &P,
@@ -126,7 +154,6 @@ mod tests {
     }
 
     /// Stub returns an error when cache is empty and no network is available.
-    #[cfg(feature = "symserver")]
     #[test]
     fn from_pdb_id_returns_error_when_cache_empty_and_no_network() {
         let tmp = tempfile::tempdir().unwrap();
@@ -136,7 +163,6 @@ mod tests {
     }
 
     /// Garbage PE bytes produce a Malformed error (from extract_pdb_id).
-    #[cfg(feature = "symserver")]
     #[test]
     fn from_pe_bytes_propagates_malformed_error() {
         let tmp = tempfile::tempdir().unwrap();
@@ -152,7 +178,6 @@ mod tests {
     /// RED test: when a cached PDB file exists the real implementation should
     /// attempt to open it (yielding Pdb/Malformed on a zero-byte file), NOT
     /// NotFound.  The stub returns NotFound, so this test FAILS in RED.
-    #[cfg(feature = "symserver")]
     #[test]
     fn from_pdb_id_uses_cached_pdb_when_present() {
         let tmp = tempfile::tempdir().unwrap();
