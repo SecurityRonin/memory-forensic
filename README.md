@@ -11,15 +11,15 @@
 
 `memf` reads every common dump format (LiME, AVML, ELF core, Windows crash dumps, hibernation files, VMware save-states, kdump, raw…) and walks processes, threads, modules, network connections, and injected memory — from **one static binary** you compile once and copy anywhere, with **no Python, no runtime, no pre-staged symbol catalog**. On Windows it builds its own profile: locate `ntoskrnl` in physical memory, read its PDB GUID from the CodeView record, resolve the matching Volatility-3 ISF, recover the kernel base under modern KASLR, and reconstruct `PsActiveProcessHead` from the symbol table — the same self-profiling chain Volatility 3 and MemProcFS use, reimplemented in Rust.
 
-Because the bar for an evidence tool is *correctness*, the process walker is validated head-to-head against Volatility 3 on a real 2 GB Windows 10 image:
+Because the bar for an evidence tool is *correctness*, the process walker is cross-checked against an **independent reference implementation** — Volatility 3 — on a real 2 GB Windows 10 image (a reference agreeing is strong evidence, not proof; the raw bytes are the ground truth):
 
-| `windows.pslist` on DESKTOP-SDN1RPT.mem | result |
+| `windows.pslist` on DESKTOP-SDN1RPT.mem | memf vs Volatility 3 |
 |---|---|
-| Processes matched | **83 / 83 shared — exact PID, PPID, name, create-time** |
-| False positives (memf reported, vol3 did not) | **0 — 100% precision** |
-| Reachable-list recall | 84 / 95 (the 11-process gap is a single live-acquisition smear; [details](docs/validation.md)) |
+| Processes matched | **94 / 94 shared PIDs — exact PID, PPID, name, create-time** |
+| Missed (vol3 found, memf did not) | **0** |
+| False positives (memf found, vol3 did not) | **0** |
 
-See [`docs/validation.md`](docs/validation.md) for the full differential and reproduction steps.
+memf matches Volatility 3 **exactly** — including recovering 11 processes orphaned by a live-acquisition smear via a bidirectional `ActiveProcessLinks` walk. A second independent oracle (MemProcFS) is [in progress](docs/validation.md#multi-oracle-in-progress). See [`docs/validation.md`](docs/validation.md) for the full differential and reproduction steps.
 
 ## Quick start
 
