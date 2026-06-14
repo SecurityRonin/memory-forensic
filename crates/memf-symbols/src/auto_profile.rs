@@ -101,6 +101,30 @@ mod tests {
         assert_eq!(profile.cache_dir, tmp.path());
     }
 
+    /// Network symbol-server download is a RUNTIME setting, ENABLED by default
+    /// (forensic tool: full capability by default; examiners opt out at runtime
+    /// for air-gapped work — never a compile-time feature).
+    #[test]
+    fn network_enabled_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(AutoProfile::with_cache_dir(tmp.path()).network_enabled());
+    }
+
+    /// In offline mode (`with_network(false)`) a cache miss returns NotFound
+    /// WITHOUT attempting the network — deterministic, no phone-home.
+    #[test]
+    fn offline_mode_cache_miss_returns_notfound_without_network() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = AutoProfile::with_cache_dir(tmp.path()).with_network(false);
+        assert!(!profile.network_enabled());
+        let result = profile.from_pdb_id(&test_pdb_id());
+        assert!(
+            matches!(result, Err(crate::Error::NotFound(_))),
+            "offline cache-miss should be NotFound, got: {:?}",
+            result.err().map(|e| e.to_string())
+        );
+    }
+
     /// Stub returns an error when cache is empty and no network is available.
     #[cfg(feature = "symserver")]
     #[test]
