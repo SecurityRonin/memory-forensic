@@ -101,13 +101,44 @@ pub fn build_analysis_context(
     } else {
         0
     };
+    let (ps_active_process_head, ps_loaded_module_list) =
+        resolve_kernel_list_heads(os, metadata, symbols, provider);
     Ok(AnalysisContext {
         os,
         cr3,
         kaslr_offset,
-        ps_active_process_head: metadata.and_then(|m| m.ps_active_process_head),
-        ps_loaded_module_list: metadata.and_then(|m| m.ps_loaded_module_list),
+        ps_active_process_head,
+        ps_loaded_module_list,
     })
+}
+
+/// Resolve the Windows kernel list-head VAs `(PsActiveProcessHead,
+/// PsLoadedModuleList)`.
+///
+/// Prefers the crash-dump header values (authoritative, no scanning). On a raw
+/// Windows dump that carries no header, reconstructs each from the page-granular
+/// kernel base plus the ISF symbol RVA ([`memf_symbols::resolve_kernel_symbol_va`])
+/// — the same technique Volatility 3 uses to self-profile. Non-Windows or an
+/// unrecoverable kernel base degrade to `None` (the caller surfaces a clear
+/// "missing PsActiveProcessHead" error rather than walking a bogus list).
+pub fn resolve_kernel_list_heads(
+    os: OsProfile,
+    metadata: Option<&DumpMetadata>,
+    symbols: &dyn SymbolResolver,
+    provider: &dyn PhysicalMemoryProvider,
+) -> (Option<u64>, Option<u64>) {
+    let from_symbol = |name: &str| {
+        (os == OsProfile::Windows)
+            .then(|| memf_symbols::resolve_kernel_symbol_va(provider, symbols, name))
+            .flatten()
+    };
+    let head = metadata
+        .and_then(|m| m.ps_active_process_head)
+        .or_else(|| from_symbol("PsActiveProcessHead"));
+    let mods = metadata
+        .and_then(|m| m.ps_loaded_module_list)
+        .or_else(|| from_symbol("PsLoadedModuleList"));
+    (head, mods)
 }
 
 /// Parse a hex address string (with or without "0x" prefix).
@@ -214,6 +245,27 @@ mod tests {
             resolve_kernel_list_heads(OsProfile::Windows, None, resolver.as_ref(), &provider);
         assert_eq!(head, None);
         assert_eq!(mods, None);
+    }
+
+    /// A raw .mem dump carries no header CR3, but the boot low stub
+    /// (PROCESSOR_START_BLOCK) in low physical memory does. extract_cr3 must
+    /// recover the kernel DTB from it so `--cr3` is not required.
+    #[test]
+    fn extract_cr3_windows_from_low_stub_when_no_metadata() {
+        // PROCESSOR_START_BLOCK page at phys 0x3000: signature, CR3 at +0xA0
+        // (low bits are noise, masked to a 4 KiB base), LmTarget at +0x70.
+        let mut page = vec![0u8; 0xB0];
+        page[0..8].copy_from_slice(&0x0000_0001_0006_42E9u64.to_le_bytes());
+        page[0x70..0x78].copy_from_slice(&0xFFFF_F800_1234_4000u64.to_le_bytes());
+        page[0xA0..0xA8].copy_from_slice(&0x001A_D867u64.to_le_bytes());
+        let dump = memf_format::test_builders::LimeBuilder::new()
+            .add_range(0x3000, &page)
+            .build();
+        let provider = memf_format::lime::LimeProvider::from_bytes(&dump).unwrap();
+        let resolver = make_resolver(&IsfBuilder::windows_kernel_preset());
+
+        let cr3 = extract_cr3(OsProfile::Windows, None, resolver.as_ref(), &provider).unwrap();
+        assert_eq!(cr3, 0x1AD000, "CR3 recovered from the low stub, 4 KiB-masked");
     }
 
     #[test]
