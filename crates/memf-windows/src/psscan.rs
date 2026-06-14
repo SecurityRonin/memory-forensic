@@ -23,6 +23,11 @@ pub struct ScannedProcess {
     pub pid: u64,
     /// `ImageFileName` (≤ 15 chars).
     pub name: String,
+    /// `_KPROCESS.DirectoryTableBase` — the process page-table root (CR3).
+    ///
+    /// Only present when the caller supplies a `dtb_off`; `None` when the
+    /// offset is not available (e.g. the resolver has no `_KPROCESS` type).
+    pub dtb: Option<u64>,
 }
 
 /// `Proc` pool tag — standard non-paged pool tag for `_EPROCESS` objects.
@@ -304,6 +309,67 @@ mod tests {
         assert!(
             scan_processes(&mem, PID_OFF, NAME_OFF).is_empty(),
             "no process dispatcher header → not a process"
+        );
+    }
+
+    // DTB_OFF: _KPROCESS.DirectoryTableBase is at offset 0x28 within _KPROCESS,
+    // which is at _EPROCESS offset 0 (Pcb field). So DTB is at _EPROCESS + 0x28.
+    // Source: ISF ntkrnlmp_81BC5C37.json: _KPROCESS.DirectoryTableBase offset=40 (0x28).
+    const DTB_OFF: u64 = 0x28;
+
+    /// `place_proc_dtb` — like `place_proc` but also writes a DTB value.
+    fn place_proc_dtb(buf: &mut [u8], at: usize, pid: u64, name: &str, dtb: u64) {
+        place_proc(buf, at, pid, name);
+        let eproc = at + 0x30;
+        buf[eproc + DTB_OFF as usize..eproc + DTB_OFF as usize + 8]
+            .copy_from_slice(&dtb.to_le_bytes());
+    }
+
+    /// The DTB field on `ScannedProcess` must be populated when `dtb_off` is
+    /// provided to `scan_processes_dtb`. This test will FAIL until the function
+    /// signature and implementation are extended with a `dtb_off` parameter.
+    #[test]
+    fn psscan_populates_dtb_field_when_offset_given() {
+        let mut data = vec![0u8; 0x4000];
+        // dtb = 0x1ad000 — 4 KiB aligned (real-world-like value)
+        place_proc_dtb(&mut data, 0x100, 4, "System", 0x0000_0000_001a_d000);
+        let mem = VecMem::new(data);
+        let found = scan_processes_dtb(&mem, PID_OFF, NAME_OFF, Some(DTB_OFF));
+        let sys = found.iter().find(|p| p.pid == 4).expect("System must be found");
+        assert_eq!(
+            sys.dtb,
+            Some(0x0000_0000_001a_d000),
+            "dtb must match the _KPROCESS.DirectoryTableBase value"
+        );
+    }
+
+    /// A candidate EPROCESS whose DTB is zero (clearly invalid — no real process
+    /// has a zero page-table root) must be rejected when DTB validation is active.
+    #[test]
+    fn psscan_rejects_eprocess_with_zero_dtb() {
+        let mut data = vec![0u8; 0x4000];
+        // dtb = 0 — invalid; should be rejected
+        place_proc_dtb(&mut data, 0x100, 4, "System", 0);
+        let mem = VecMem::new(data);
+        let found = scan_processes_dtb(&mem, PID_OFF, NAME_OFF, Some(DTB_OFF));
+        assert!(
+            found.is_empty(),
+            "zero DTB must be rejected as an invalid process candidate"
+        );
+    }
+
+    /// A candidate whose DTB is non-zero but NOT 4 KiB-aligned (low 12 bits != 0)
+    /// must be rejected — page-table roots are always page-aligned on x86-64.
+    #[test]
+    fn psscan_rejects_eprocess_with_misaligned_dtb() {
+        let mut data = vec![0u8; 0x4000];
+        // dtb has low bits set — not page-aligned
+        place_proc_dtb(&mut data, 0x100, 4, "System", 0x1ad001);
+        let mem = VecMem::new(data);
+        let found = scan_processes_dtb(&mem, PID_OFF, NAME_OFF, Some(DTB_OFF));
+        assert!(
+            found.is_empty(),
+            "misaligned DTB must be rejected (page-table roots are 4 KiB-aligned)"
         );
     }
 
