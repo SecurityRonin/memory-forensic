@@ -10,7 +10,7 @@ fn severity_weight(severity: Severity) -> f64 {
         Severity::Critical => 10.0,
         Severity::High => 5.0,
         Severity::Medium => 2.0,
-        Severity::Info | Severity::Low => 0.5,
+        // Info, Low, and any future (non_exhaustive) variant weight 0.5.
         _ => 0.5,
     }
 }
@@ -143,6 +143,21 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use crate::event::{Entity, Finding, ForensicEvent, Protocol, Severity};
+
+    /// Characterization: pins the per-severity weights so the redundant-arm
+    /// cleanup (and any future edit) cannot silently shift threat scoring.
+    #[test]
+    fn severity_weight_is_stable_across_all_levels() {
+        for (sev, want) in [
+            (Severity::Critical, 10.0_f64),
+            (Severity::High, 5.0),
+            (Severity::Medium, 2.0),
+            (Severity::Info, 0.5),
+            (Severity::Low, 0.5),
+        ] {
+            assert!((severity_weight(sev) - want).abs() < f64::EPSILON);
+        }
+    }
 
     fn proc_event(
         pid: u32,

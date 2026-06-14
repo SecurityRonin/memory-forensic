@@ -17,7 +17,7 @@ fn severity_weight(severity: Severity) -> f64 {
         Severity::Critical => 10.0,
         Severity::High => 5.0,
         Severity::Medium => 2.0,
-        Severity::Info | Severity::Low => 0.5,
+        // Info, Low, and any future (non_exhaustive) variant weight 0.5.
         _ => 0.5,
     }
 }
@@ -205,6 +205,21 @@ mod tests {
             .severity(severity)
             .confidence(confidence)
             .build()
+    }
+
+    /// Characterization: pins the per-severity weights (mirrors scoring.rs) so
+    /// the redundant-arm cleanup cannot silently shift process-tree weighting.
+    #[test]
+    fn severity_weight_is_stable_across_all_levels() {
+        for (sev, want) in [
+            (Severity::Critical, 10.0_f64),
+            (Severity::High, 5.0),
+            (Severity::Medium, 2.0),
+            (Severity::Info, 0.5),
+            (Severity::Low, 0.5),
+        ] {
+            assert!((severity_weight(sev) - want).abs() < f64::EPSILON);
+        }
     }
 
     fn conn_event(src_port: u16, dst_port: u16) -> ForensicEvent {
