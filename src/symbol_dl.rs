@@ -190,4 +190,35 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("\"symbols\""), "ISF must have symbols key");
     }
+
+    /// Offline mode (`allow_network = false`) with an empty cache returns an
+    /// error WITHOUT attempting the network download — deterministic, runs with
+    /// no network available (no `#[ignore]`).
+    #[test]
+    fn test_resolve_isf_offline_cache_miss_errors_without_network() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_isf(tmp.path(), "ntkrnlmp.pdb", "DEADBEEF", 1, false);
+        assert!(
+            result.is_err(),
+            "offline cache-miss must error, not phone home"
+        );
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("offline"),
+            "error should explain offline mode, got: {msg}"
+        );
+    }
+
+    /// Offline mode still serves a cache HIT — disabling the network must not
+    /// disable using symbols already on disk.
+    #[test]
+    fn test_resolve_isf_offline_cache_hit_returns_cached() {
+        let tmp = tempfile::tempdir().unwrap();
+        let name = cache_filename("ntkrnlmp.pdb", "CAFEBABE", 1);
+        let file = tmp.path().join(&name);
+        std::fs::write(&file, b"{}").unwrap();
+        let result = resolve_isf(tmp.path(), "ntkrnlmp.pdb", "CAFEBABE", 1, false)
+            .expect("cache hit must resolve even offline");
+        assert_eq!(result, file);
+    }
 }
