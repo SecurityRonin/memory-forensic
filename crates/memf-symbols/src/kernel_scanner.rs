@@ -1202,6 +1202,38 @@ mod tests {
         assert!(find_low_stub(&mem).is_none());
     }
 
+    /// Write a minimal x64 boot Low Stub (`PROCESSOR_START_BLOCK`) at physical
+    /// `stub_pa`: signature, CR3 at +0xA0, LmTarget kernel VA at +0x70.
+    fn write_low_stub(mem: &mut SparseMem, stub_pa: u64, cr3: u64, lm_target: u64) {
+        mem.write_phys(stub_pa, &0x0000_0001_0006_42E9u64.to_le_bytes());
+        mem.write_phys(stub_pa + PSB_CR3_OFFSET, &cr3.to_le_bytes());
+        mem.write_phys(stub_pa + PSB_LM_TARGET_OFFSET, &lm_target.to_le_bytes());
+    }
+
+    /// On modern Win10/11, KASLR places the kernel image base at PAGE (4 KiB)
+    /// granularity — NOT 2 MiB-aligned (DESKTOP-SDN1RPT.mem: base ...A14000,
+    /// 0x14000 above its 2 MiB floor). The low stub's LmTarget only floors to
+    /// 2 MiB, so the true base must be recovered by a page-granular scan within
+    /// that 2 MiB window. `resolve_kernel_base_va` must return the page-aligned
+    /// base, not the 2 MiB floor.
+    #[test]
+    fn resolve_kernel_base_va_finds_page_granular_base() {
+        let cr3 = 0x1AE000u64;
+        // Kernel base sits 0x14000 ABOVE its 2 MiB floor — like the real dump.
+        let kernel_va = 0xFFFF_F802_1F41_4000u64;
+        let two_mib_floor = kernel_va & !(TWO_MIB - 1); // 0x...1F40_0000
+        assert_ne!(kernel_va, two_mib_floor, "fixture base must be page-granular");
+        let kernel_pa = 0x1_0040_0000u64;
+        let guid = [0xCDu8; 16];
+        let mut mem = build_dtb_fixture(cr3, kernel_va, kernel_pa, "ntkrnlmp.pdb", guid, 1);
+        // Low stub: CR3 (noise in low bits, masked) + LmTarget inside the image
+        // so it floors to the kernel's 2 MiB region.
+        write_low_stub(&mut mem, 0x3000, cr3 | 0x867, kernel_va);
+
+        let base = resolve_kernel_base_va(&mem).expect("page-granular base must be found");
+        assert_eq!(base, kernel_va, "must recover the page-aligned base, not the 2 MiB floor");
+    }
+
     /// Windows Server 2012 R2 (pre-1607: no self-ref randomization) places the
     /// self-map at the classic index 0x1ED — the Case 001 DC dump. A real
     /// PML4's self-ref can sit at ANY of the 512 slots (randomized on Win10
