@@ -5693,6 +5693,37 @@ fn cmd_read_virt(
 mod tests {
     use super::*;
 
+    // ── psscan output rendering (Humble Object — pure, testable) ──────────────
+
+    fn sp(addr: u64, pid: u64, name: &str, dtb: Option<u64>) -> memf_windows::psscan::ScannedProcess {
+        memf_windows::psscan::ScannedProcess { physical_addr: addr, pid, name: name.into(), dtb }
+    }
+
+    #[test]
+    fn render_scanned_processes_csv_header_and_formula_guard() {
+        let procs = vec![
+            sp(0x5e1000, 4, "System", Some(0x1ad000)),
+            sp(0x600000, 1234, "=calc.exe", None), // formula-injection vector
+        ];
+        let csv = render_scanned_processes(&procs, OutputFormat::Csv);
+        let header = csv.lines().next().unwrap_or_default();
+        assert!(header.contains("pid") && header.contains("physical_addr"), "header: {header}");
+        assert!(csv.contains("System"));
+        assert!(csv.contains("1234"));
+        // the attacker-controlled "=calc.exe" must be neutralised, never emitted raw after a comma
+        assert!(!csv.contains(",=calc.exe"), "formula name must be guarded: {csv}");
+    }
+
+    #[test]
+    fn render_scanned_processes_json_is_valid_array() {
+        let procs = vec![sp(0x5e1000, 4, "System", Some(0x1ad000))];
+        let json = render_scanned_processes(&procs, OutputFormat::Json);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json array");
+        assert_eq!(v[0]["pid"], 4);
+        assert_eq!(v[0]["name"], "System");
+        assert_eq!(v[0]["dtb"], "0x1ad000");
+    }
+
     fn make_temp_lime_dump(suffix: &str) -> std::path::PathBuf {
         use memf_format::test_builders::LimeBuilder;
 
