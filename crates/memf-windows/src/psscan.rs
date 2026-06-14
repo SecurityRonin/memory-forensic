@@ -25,8 +25,23 @@ pub struct ScannedProcess {
     pub name: String,
 }
 
-/// `Proc` pool tag, little-endian.
+/// `Proc` pool tag — standard non-paged pool tag for `_EPROCESS` objects.
+///
+/// Source: volatility3/framework/plugins/windows/poolscanner.py `builtin_constraints()`,
+/// which registers `b"Proc"` (standard) and `b"Pro\xe3"` (protected) as the two
+/// EPROCESS pool tag variants.
 const PROC_TAG: [u8; 4] = *b"Proc";
+/// `Pro\xe3` pool tag — protected non-paged pool allocation (Windows 10+).
+///
+/// The MSB of the 4-byte pool tag carries protection flags in the Windows 10
+/// pool manager; `\xe3` signals a non-paged, protected allocation. The first
+/// three bytes remain `Pro`, identifying this as an `_EPROCESS` pool block.
+///
+/// Source: volatility3/framework/plugins/windows/psscan.py:
+/// `constraints = poolscanner.PoolScanner.builtin_constraints(…, [b"Pro\xe3", b"Proc"])`
+const PROC_PROTECTED_TAG: [u8; 4] = [b'P', b'r', b'o', 0xe3];
+/// Pool tags to scan: the standard `Proc` and the Win10+ protected-pool variant `Pro\xe3`.
+const POOL_TAGS: &[[u8; 4]] = &[PROC_TAG, PROC_PROTECTED_TAG];
 /// Candidate `_EPROCESS` start offsets relative to the pool block base
 /// (`pool_header`), covering the usual `_POOL_HEADER` + optional/`_OBJECT_HEADER`
 /// span on x64 Windows. Validation rejects wrong guesses.
@@ -102,10 +117,12 @@ pub fn scan_processes<P: PhysicalMemoryProvider>(
                 addr = addr.saturating_add(CHUNK as u64);
                 continue;
             }
-            // Find every `Proc` tag in this window.
+            // Find every `Proc` or `Pro\xe3` tag in this window.
+            // Both are valid EPROCESS pool tags; see POOL_TAGS for references.
             let mut i = 0usize;
             while i + 4 <= n {
-                if buf[i..i + 4] != PROC_TAG {
+                let tag_match = POOL_TAGS.iter().any(|t| &buf[i..i + 4] == t.as_slice());
+                if !tag_match {
                     i += 1;
                     continue;
                 }
@@ -308,15 +325,16 @@ mod tests {
         data[0x204..0x208].copy_from_slice(b"Pro\xe3");
         let eproc = 0x200 + 0x30;
         data[eproc] = 0x03; // _DISPATCHER_HEADER.Type = ProcessObject
+        // pid=1236 is a valid Windows process id: non-zero, <= 0x40000, multiple of 4.
         data[eproc + PID_OFF as usize..eproc + PID_OFF as usize + 8]
-            .copy_from_slice(&1234u64.to_le_bytes());
+            .copy_from_slice(&1236u64.to_le_bytes());
         let name = b"hidden.exe";
         data[eproc + NAME_OFF as usize..eproc + NAME_OFF as usize + name.len()]
             .copy_from_slice(name);
         let mem = VecMem::new(data);
         let found = scan_processes(&mem, PID_OFF, NAME_OFF);
         assert!(
-            found.iter().any(|p| p.pid == 1234 && p.name == "hidden.exe"),
+            found.iter().any(|p| p.pid == 1236 && p.name == "hidden.exe"),
             "must recover process under Pro\\xe3 (protected) pool tag: {found:?}"
         );
     }
