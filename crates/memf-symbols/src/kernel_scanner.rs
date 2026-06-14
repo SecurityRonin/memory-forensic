@@ -1265,6 +1265,51 @@ mod tests {
         assert_eq!(base, kernel_va, "must recover the page-aligned base, not the 2 MiB floor");
     }
 
+    /// A minimal SymbolResolver returning a fixed RVA for one symbol — models an
+    /// ISF resolver whose `symbol_address` yields image-relative offsets.
+    struct RvaSym(&'static str, u64);
+    impl crate::SymbolResolver for RvaSym {
+        fn field_offset(&self, _: &str, _: &str) -> Option<u64> {
+            None
+        }
+        fn struct_size(&self, _: &str) -> Option<u64> {
+            None
+        }
+        fn symbol_address(&self, n: &str) -> Option<u64> {
+            (n == self.0).then_some(self.1)
+        }
+        fn struct_info(&self, _: &str) -> Option<crate::StructInfo> {
+            None
+        }
+        fn backend_name(&self) -> &str {
+            "rva-test"
+        }
+        fn clone_boxed(&self) -> Box<dyn crate::SymbolResolver> {
+            Box::new(RvaSym(self.0, self.1))
+        }
+    }
+
+    /// On a raw, header-less dump, a kernel symbol's true VA is the page-granular
+    /// kernel base plus the ISF's image-relative RVA. `resolve_kernel_symbol_va`
+    /// must combine the two — this is how `PsActiveProcessHead` is recovered when
+    /// no crash-dump header supplies it.
+    #[test]
+    fn resolve_kernel_symbol_va_combines_base_and_rva() {
+        let cr3 = 0x1AE000u64;
+        let kernel_va = 0xFFFF_F802_1F41_4000u64;
+        let kernel_pa = 0x1_0040_0000u64;
+        let mut mem = build_dtb_fixture(cr3, kernel_va, kernel_pa, "ntkrnlmp.pdb", [0xCD; 16], 1);
+        write_low_stub(&mut mem, 0x3000, cr3 | 0x867, kernel_va);
+
+        let rva = 0xC1E060u64; // PsActiveProcessHead RVA (real value from the Win10 ISF)
+        let sym = RvaSym("PsActiveProcessHead", rva);
+        let head = resolve_kernel_symbol_va(&mem, &sym, "PsActiveProcessHead");
+        assert_eq!(head, Some(kernel_va + rva), "head VA = page-granular base + RVA");
+
+        // A symbol the resolver does not know yields None (no spurious address).
+        assert_eq!(resolve_kernel_symbol_va(&mem, &sym, "NoSuchSymbol"), None);
+    }
+
     /// Windows Server 2012 R2 (pre-1607: no self-ref randomization) places the
     /// self-map at the classic index 0x1ED — the Case 001 DC dump. A real
     /// PML4's self-ref can sit at ANY of the 512 slots (randomized on Win10
