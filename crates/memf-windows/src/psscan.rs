@@ -232,14 +232,23 @@ fn try_eprocess<P: PhysicalMemoryProvider + ?Sized>(
     None
 }
 
-/// True if `dtb` looks like a valid page-table root:
-/// - Non-zero (a zero DTB has no valid page table)
-/// - 4 KiB-aligned (x86-64 CR3 values are always page-aligned; low 12 bits = 0)
+/// True if `dtb` looks like a valid page-table root.
 ///
-/// Source: x86-64 architecture manual §4.5 — CR3 bits 11:0 are ignored (zero);
-/// effectively the physical base of the PML4 table is 4 KiB-aligned.
+/// `_KPROCESS.DirectoryTableBase` holds the raw CR3 value. On Windows 10+
+/// with KPTI (Kernel Page-Table Isolation) and PCID (Process-Context IDs)
+/// enabled, the low 12 bits carry the PCID tag (typically 0x001 for kernel,
+/// 0x003 for user) rather than being zero. The physical PML4 base is
+/// therefore `dtb & !0xFFF`; the PCID bits are not an error.
+///
+/// Validation: the PML4 physical base (bits 63:12) must be non-zero —
+/// a zero page-frame address has no valid page table regardless of PCID.
+///
+/// Source: x86-64 architecture manual §4.5 (CR3 bits 63:12 = PML4 base,
+/// bits 11:0 = PCID when CR4.PCIDE=1); Windows Internals 7th ed. §5
+/// (KPTI DirectoryTableBase includes PCID bits).
 fn plausible_dtb(dtb: u64) -> bool {
-    dtb != 0 && dtb & 0xFFF == 0
+    // Physical page frame address (bits 63:12) must be non-zero.
+    dtb & !0xFFF != 0
 }
 
 /// Convenience wrapper: pull the `_EPROCESS` / `_KPROCESS` field offsets from
@@ -417,18 +426,45 @@ mod tests {
         );
     }
 
-    /// A candidate whose DTB is non-zero but NOT 4 KiB-aligned (low 12 bits != 0)
-    /// must be rejected — page-table roots are always page-aligned on x86-64.
+    /// A candidate whose DTB page-frame address (bits 63:12) is zero must be
+    /// rejected, even if the low PCID bits are non-zero.
+    ///
+    /// On Windows 10+, `DirectoryTableBase` carries PCID bits in the low 12
+    /// bits (e.g., `0x1ad001` = frame `0x1ad000` + PCID 1 is VALID). A truly
+    /// invalid DTB is one where the page-frame bits are zero — e.g. `0x001`
+    /// (only a PCID, no actual page-table address).
     #[test]
-    fn psscan_rejects_eprocess_with_misaligned_dtb() {
+    fn psscan_rejects_eprocess_with_zero_frame_dtb() {
         let mut data = vec![0u8; 0x4000];
-        // dtb has low bits set — not page-aligned
-        place_proc_dtb(&mut data, 0x100, 4, "System", 0x1ad001);
+        // dtb = 0x001: page-frame address (bits 63:12) is 0 — no valid PML4.
+        // This would be a bare PCID with no physical page-table backing.
+        place_proc_dtb(&mut data, 0x100, 4, "System", 0x001);
         let mem = VecMem::new(data);
         let found = scan_processes_dtb(&mem, PID_OFF, NAME_OFF, Some(DTB_OFF));
         assert!(
             found.is_empty(),
-            "misaligned DTB must be rejected (page-table roots are 4 KiB-aligned)"
+            "DTB with zero page-frame (only PCID bits) must be rejected"
+        );
+    }
+
+    /// DTB with PCID bits set (Windows 10+ KPTI) must be ACCEPTED — `0x1ad001`
+    /// means frame `0x1ad000` + PCID=1 (kernel entry), which is a valid CR3.
+    #[test]
+    fn psscan_accepts_eprocess_with_pcid_dtb() {
+        let mut data = vec![0u8; 0x4000];
+        // dtb = 0x1ad001: frame 0x1ad000 + PCID 1 (kernel-mode Win10 CR3)
+        place_proc_dtb(&mut data, 0x100, 4, "System", 0x1ad001);
+        let mem = VecMem::new(data);
+        let found = scan_processes_dtb(&mem, PID_OFF, NAME_OFF, Some(DTB_OFF));
+        assert!(
+            found.iter().any(|p| p.pid == 4 && p.name == "System"),
+            "PCID-carrying DTB (Win10 KPTI) must be accepted: {found:?}"
+        );
+        let sys = found.iter().find(|p| p.pid == 4).unwrap();
+        assert_eq!(
+            sys.dtb,
+            Some(0x1ad001),
+            "dtb field must hold the raw _KPROCESS.DirectoryTableBase value"
         );
     }
 
@@ -455,7 +491,7 @@ mod tests {
     #[test]
     #[ignore = "requires /tmp/vol3_test/DESKTOP-SDN1RPT.mem and oracle_psscan.json"]
     fn psscan_reconcile_vs_vol3() {
-        use memf_format::open_dump;
+        use memf_format::open_dump_with_raw_fallback as open_dump;
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::SymbolResolver as _;
         use std::collections::HashSet;
