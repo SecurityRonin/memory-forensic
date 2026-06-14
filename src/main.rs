@@ -1931,12 +1931,23 @@ fn print_linux_processes_json(
     procs: &[memf_linux::ProcessInfo],
     boot_info: &memf_linux::BootTimeInfo,
 ) {
+    print!("{}", render_linux_processes_json(procs, boot_info));
+}
+
+/// Humble Object: render Linux processes as one JSON object per line. `comm` is
+/// attacker-controlled (`task_struct.comm`), so it is wrapped in `JsonSafe`
+/// (bidi/control → U+FFFD) before it reaches the emitted JSON.
+fn render_linux_processes_json(
+    procs: &[memf_linux::ProcessInfo],
+    boot_info: &memf_linux::BootTimeInfo,
+) -> String {
+    let mut out = String::new();
     for p in procs {
         let abs_epoch = boot_info.absolute_secs(p.start_time);
         let mut json = serde_json::json!({
             "pid": p.pid,
             "ppid": p.ppid,
-            "name": p.comm,
+            "name": jsonguard::JsonSafe(&p.comm),
             "state": format!("{}", p.state),
             "start_time_ns": p.start_time,
             "start_time": format_boot_ns(p.start_time),
@@ -1946,28 +1957,40 @@ fn print_linux_processes_json(
             json["start_epoch"] = serde_json::json!(epoch);
             json["start_utc"] = serde_json::json!(format_epoch(epoch));
         }
-        println!("{}", serde_json::to_string(&json).unwrap_or_default());
+        let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
     }
+    out
 }
 
 fn print_linux_processes_csv(
     procs: &[memf_linux::ProcessInfo],
     boot_info: &memf_linux::BootTimeInfo,
 ) {
+    print!("{}", render_linux_processes_csv(procs, boot_info));
+}
+
+/// Humble Object: render Linux processes as CSV. `comm` is attacker-controlled,
+/// so it runs through `csv_field` (RFC 4180 quoting + formula-injection guard).
+fn render_linux_processes_csv(
+    procs: &[memf_linux::ProcessInfo],
+    boot_info: &memf_linux::BootTimeInfo,
+) -> String {
     let has_boot = boot_info.best_estimate.is_some();
+    let mut out = String::new();
     if has_boot {
-        println!("pid,ppid,name,state,start_time_ns,start_time,start_epoch,start_utc,vaddr");
+        out.push_str("pid,ppid,name,state,start_time_ns,start_time,start_epoch,start_utc,vaddr\n");
     } else {
-        println!("pid,ppid,name,state,start_time_ns,start_time,vaddr");
+        out.push_str("pid,ppid,name,state,start_time_ns,start_time,vaddr\n");
     }
     for p in procs {
         if has_boot {
             let abs = boot_info.absolute_secs(p.start_time).unwrap_or(0);
-            println!(
+            let _ = writeln!(
+                out,
                 "{},{},{},{},{},{},{},{},{:#x}",
                 p.pid,
                 p.ppid,
-                p.comm,
+                csv_field(&p.comm).value,
                 p.state,
                 p.start_time,
                 format_boot_ns(p.start_time),
@@ -1976,11 +1999,12 @@ fn print_linux_processes_csv(
                 p.vaddr,
             );
         } else {
-            println!(
+            let _ = writeln!(
+                out,
                 "{},{},{},{},{},{},{:#x}",
                 p.pid,
                 p.ppid,
-                p.comm,
+                csv_field(&p.comm).value,
                 p.state,
                 p.start_time,
                 format_boot_ns(p.start_time),
@@ -1988,6 +2012,7 @@ fn print_linux_processes_csv(
             );
         }
     }
+    out
 }
 
 fn print_linux_processes(
@@ -2007,6 +2032,12 @@ fn print_linux_processes(
 // ---------------------------------------------------------------------------
 
 fn print_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat) {
+    println!("{}", render_linux_threads(threads, output));
+}
+
+/// Humble Object: render Linux threads. `comm` is attacker-controlled, so JSON
+/// wraps it in `JsonSafe` and CSV runs it through `csv_field`.
+fn render_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2020,25 +2051,27 @@ fn print_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat)
                     table_cell(&t.comm),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} threads", threads.len());
+            format!("{table}\n\nTotal: {} threads", threads.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for t in threads {
                 let json = serde_json::json!({
                     "tid": t.tid,
                     "tgid": t.tgid,
                     "state": format!("{}", t.state),
-                    "comm": t.comm,
+                    "comm": jsonguard::JsonSafe(&t.comm),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("tid,tgid,state,comm");
+            let mut out = String::from("tid,tgid,state,comm\n");
             for t in threads {
-                println!("{},{},{},{}", t.tid, t.tgid, t.state, t.comm);
+                let _ = writeln!(out, "{},{},{},{}", t.tid, t.tgid, t.state, csv_field(&t.comm).value);
             }
+            out
         }
     }
 }
@@ -2052,6 +2085,17 @@ fn print_linux_pstree(
     output: OutputFormat,
     boot_info: &memf_linux::BootTimeInfo,
 ) {
+    println!("{}", render_linux_pstree(entries, output, boot_info));
+}
+
+/// Humble Object: render the Linux process tree. `comm` is attacker-controlled,
+/// so the table sanitizes it via `table_cell`, JSON via `JsonSafe`, and CSV via
+/// `csv_field`.
+fn render_linux_pstree(
+    entries: &[memf_linux::PsTreeEntry],
+    output: OutputFormat,
+    boot_info: &memf_linux::BootTimeInfo,
+) -> String {
     let has_boot = boot_info.best_estimate.is_some();
     match output {
         OutputFormat::Table => {
@@ -2064,7 +2108,7 @@ fn print_linux_pstree(
             }
             for e in entries {
                 let indent = "  ".repeat(e.depth as usize);
-                let name = format!("{}{}", indent, e.process.comm);
+                let name = format!("{}{}", indent, table_cell(&e.process.comm));
                 if has_boot {
                     let abs = boot_info
                         .absolute_secs(e.process.start_time)
@@ -2086,17 +2130,17 @@ fn print_linux_pstree(
                     ]);
                 }
             }
-            println!("{table}");
-            println!("\nTotal: {} processes", entries.len());
+            format!("{table}\n\nTotal: {} processes", entries.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for e in entries {
                 let abs_epoch = boot_info.absolute_secs(e.process.start_time);
                 let mut json = serde_json::json!({
                     "pid": e.process.pid,
                     "ppid": e.process.ppid,
                     "state": format!("{}", e.process.state),
-                    "comm": e.process.comm,
+                    "comm": jsonguard::JsonSafe(&e.process.comm),
                     "depth": e.depth,
                     "start_time_ns": e.process.start_time,
                 });
@@ -2104,36 +2148,41 @@ fn print_linux_pstree(
                     json["start_epoch"] = serde_json::json!(epoch);
                     json["start_utc"] = serde_json::json!(format_epoch(epoch));
                 }
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
+            let mut out = String::new();
             if has_boot {
-                println!("pid,ppid,state,comm,depth,start_time_ns,start_epoch,start_utc");
+                out.push_str("pid,ppid,state,comm,depth,start_time_ns,start_epoch,start_utc\n");
             } else {
-                println!("pid,ppid,state,comm,depth");
+                out.push_str("pid,ppid,state,comm,depth\n");
             }
             for e in entries {
                 if has_boot {
                     let abs = boot_info.absolute_secs(e.process.start_time).unwrap_or(0);
-                    println!(
+                    let _ = writeln!(
+                        out,
                         "{},{},{},{},{},{},{},{}",
                         e.process.pid,
                         e.process.ppid,
                         e.process.state,
-                        e.process.comm,
+                        csv_field(&e.process.comm).value,
                         e.depth,
                         e.process.start_time,
                         abs,
                         format_epoch(abs),
                     );
                 } else {
-                    println!(
+                    let _ = writeln!(
+                        out,
                         "{},{},{},{},{}",
-                        e.process.pid, e.process.ppid, e.process.state, e.process.comm, e.depth
+                        e.process.pid, e.process.ppid, e.process.state, csv_field(&e.process.comm).value, e.depth
                     );
                 }
             }
+            out
         }
     }
 }
@@ -5953,6 +6002,75 @@ mod tests {
         assert_eq!(v[0]["pid"], 4);
         assert_eq!(v[0]["name"], "System");
         assert_eq!(v[0]["dtb"], "0x1ad000");
+    }
+
+    // ----- Linux processes / threads / pstree sanitization -----
+
+    fn boot_none() -> memf_linux::BootTimeInfo {
+        memf_linux::BootTimeInfo {
+            best_estimate: None,
+            estimates: vec![],
+            inconsistent: false,
+            max_drift_secs: 0,
+        }
+    }
+
+    fn lpi(pid: u64, comm: &str) -> memf_linux::ProcessInfo {
+        memf_linux::ProcessInfo {
+            pid,
+            ppid: 1,
+            comm: comm.into(),
+            state: memf_linux::ProcessState::Sleeping,
+            vaddr: 0xFFFF_8000_0010_0000,
+            cr3: None,
+            start_time: 0,
+        }
+    }
+
+    #[test]
+    fn render_linux_processes_json_csv_sanitize_comm() {
+        let procs = vec![lpi(7, "ev\u{202e}il"), lpi(8, "=calc,foo")];
+        let boot = boot_none();
+        let json = render_linux_processes_json(&procs, &boot);
+        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        let v: serde_json::Value =
+            serde_json::from_str(json.lines().next().unwrap()).expect("valid json object");
+        assert_eq!(v["pid"], 7);
+
+        let csv = render_linux_processes_csv(&procs, &boot);
+        assert!(csv.lines().next().unwrap_or_default().contains("name"), "csv header");
+        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
+        assert!(!csv.contains(",=calc"), "formula must be guarded: {csv}");
+        // embedded comma forces RFC-4180 quoting
+        assert!(csv.lines().nth(2).unwrap_or_default().contains('"'), "embedded comma quoted: {csv}");
+    }
+
+    #[test]
+    fn render_linux_threads_sanitizes_comm() {
+        let threads = vec![memf_linux::ThreadInfo {
+            tgid: 7,
+            tid: 7,
+            comm: "ev\u{202e}il,x".into(),
+            state: memf_linux::ProcessState::Running,
+        }];
+        let json = render_linux_threads(&threads, OutputFormat::Json);
+        assert!(!json.contains('\u{202e}'), "bidi: {json}");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        let csv = render_linux_threads(&threads, OutputFormat::Csv);
+        assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
+        assert!(csv.lines().nth(1).unwrap_or_default().contains('"'), "comma quoted: {csv}");
+    }
+
+    #[test]
+    fn render_linux_pstree_sanitizes_comm() {
+        let entries = vec![memf_linux::PsTreeEntry { process: lpi(7, "ev\u{202e}il=calc,x"), depth: 0 }];
+        let boot = boot_none();
+        let json = render_linux_pstree(&entries, OutputFormat::Json, &boot);
+        assert!(!json.contains('\u{202e}'), "bidi json: {json}");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        let csv = render_linux_pstree(&entries, OutputFormat::Csv, &boot);
+        assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
+        assert!(!csv.contains(",=calc"), "formula guarded: {csv}");
     }
 
     fn make_temp_lime_dump(suffix: &str) -> std::path::PathBuf {
