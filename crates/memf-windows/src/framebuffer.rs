@@ -1,6 +1,6 @@
 //! Windows session framebuffer extraction (win32k pool scan) — screen state at acquisition.
 use memf_format::PhysicalMemoryProvider;
-use memf_framebuffer::{encode_png, FramebufferResult, PixelFormat};
+use memf_core::framebuffer::{encode_png, FramebufferResult, PixelFormat};
 
 use crate::Result;
 

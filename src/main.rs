@@ -5402,7 +5402,7 @@ fn cmd_framebuffer(
 /// Call `walk_framebuffer_windows` with any `PhysicalMemoryProvider` reference.
 fn memf_framebuffer_windows<P: memf_format::PhysicalMemoryProvider>(
     provider: &P,
-) -> anyhow::Result<memf_framebuffer::FramebufferResult> {
+) -> anyhow::Result<memf_core::framebuffer::FramebufferResult> {
     memf_windows::framebuffer::walk_framebuffer_windows(provider)
         .map_err(|e| anyhow::anyhow!("{e}"))
 }

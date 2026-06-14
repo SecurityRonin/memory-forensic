@@ -1779,7 +1779,6 @@ dependencies = [
  "lzma-rs",
  "memf-core",
  "memf-format",
- "memf-framebuffer",
  "memf-linux",
  "memf-strings",
  "memf-symbols",
@@ -1807,6 +1806,7 @@ dependencies = [
  "memf-format",
  "memf-symbols",
  "memmap2",
+ "png",
  "rust-lzxpress",
  "serde",
  "serde_json",
@@ -1841,15 +1841,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memf-framebuffer"
-version = "0.1.0"
-dependencies = [
- "png",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "memf-linux"
 version = "0.1.0"
 dependencies = [
@@ -1859,7 +1850,6 @@ dependencies = [
  "memf-core",
  "memf-correlate",
  "memf-format",
- "memf-framebuffer",
  "memf-symbols",
  "serde",
  "serde_json",
@@ -1908,7 +1898,6 @@ dependencies = [
  "memf-core",
  "memf-correlate",
  "memf-format",
- "memf-framebuffer",
  "memf-symbols",
  "pbkdf2",
  "regex",

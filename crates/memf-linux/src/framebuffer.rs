@@ -8,7 +8,7 @@
 ///   +0x16  lfb_height      u16  — height in pixels
 ///   +0x18  lfb_depth       u16  — bits per pixel (16, 24, or 32)
 ///   +0x1A  lfb_linelength  u32  — row stride in bytes
-use memf_framebuffer::{encode_png, FramebufferResult, PixelFormat};
+use memf_core::framebuffer::{encode_png, FramebufferResult, PixelFormat};
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 

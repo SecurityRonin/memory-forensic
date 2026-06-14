@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+png.workspace = true
 memf-format.workspace = true
 memf-symbols.workspace = true
 thiserror.workspace = true

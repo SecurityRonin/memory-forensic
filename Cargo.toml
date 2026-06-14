@@ -9,7 +9,6 @@ members = [
     "crates/memf-windows",
     "crates/forensic-hashdb",
     "crates/memf-correlate",
-    "crates/memf-framebuffer",
 ]
 
 [workspace.package]
@@ -30,7 +29,6 @@ memf-core    = { path = "crates/memf-core" }
 memf-linux   = { path = "crates/memf-linux" }
 memf-windows = { path = "crates/memf-windows" }
 memf-correlate    = { path = "crates/memf-correlate" }
-memf-framebuffer  = { path = "crates/memf-framebuffer" }
 assert_cmd = "2"
 aes            = "0.8"
 aes-gcm        = "0.10"
@@ -124,7 +122,6 @@ memf-symbols.workspace = true
 memf-core.workspace = true
 memf-linux.workspace = true
 memf-windows.workspace = true
-memf-framebuffer.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 comfy-table.workspace = true

@@ -8,6 +8,9 @@
 //! - [`ObjectReader`] — high-level kernel struct traversal using symbol information
 
 pub mod lzo;
+// Folded in from the former memf-framebuffer crate (cross-OS framebuffer extraction).
+#[allow(missing_docs)]
+pub mod framebuffer;
 pub mod object_reader;
 pub mod pagefile;
 pub mod proto_pte;
