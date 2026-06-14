@@ -408,7 +408,7 @@ mod tests {
         let mut image_data = vec![0u8; 4096];
         write_pe_header(&mut image_data, 0, size_of_image);
 
-        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+        let (cr3, mem, head_vaddr) = build_single_process_memory(
             1234,
             "notepad.exe",
             peb_paddr,
@@ -418,7 +418,7 @@ mod tests {
             u64::from(size_of_image),
         );
 
-        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = check_hollowing(&reader, head_vaddr).unwrap();
@@ -444,7 +444,7 @@ mod tests {
         // Zeroed image — no MZ magic (classic hollowing indicator)
         let image_data = vec![0u8; 4096];
 
-        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+        let (cr3, mem, head_vaddr) = build_single_process_memory(
             666,
             "svchost.exe",
             peb_paddr,
@@ -454,7 +454,7 @@ mod tests {
             0x2_0000,
         );
 
-        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = check_hollowing(&reader, head_vaddr).unwrap();
@@ -483,7 +483,7 @@ mod tests {
         let mut image_data = vec![0u8; 4096];
         write_pe_header(&mut image_data, 0, pe_size);
 
-        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+        let (cr3, mem, head_vaddr) = build_single_process_memory(
             999,
             "explorer.exe",
             peb_paddr,
@@ -493,7 +493,7 @@ mod tests {
             ldr_size,
         );
 
-        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = check_hollowing(&reader, head_vaddr).unwrap();
@@ -574,7 +574,7 @@ mod tests {
         image_data[0x80] = 0xFF;
         image_data[0x81] = 0xFF;
 
-        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+        let (cr3, mem, head_vaddr) = build_single_process_memory(
             888,
             "cmd.exe",
             peb_paddr,
@@ -584,7 +584,7 @@ mod tests {
             0x1_0000,
         );
 
-        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = check_hollowing(&reader, head_vaddr).unwrap();
@@ -626,7 +626,7 @@ mod tests {
 
         let ldr_size: u64 = u64::from(soi);
 
-        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+        let (cr3, mem, head_vaddr) = build_single_process_memory(
             777,
             "legit.exe",
             peb_paddr,
@@ -636,7 +636,7 @@ mod tests {
             ldr_size,
         );
 
-        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = check_hollowing(&reader, head_vaddr).unwrap();
@@ -671,7 +671,7 @@ mod tests {
 
         // ldr_size=0 passed as the "LDR-advertised" size.
         // When ldr_size == 0, ldr_first_image_size returns 0, so there's no mismatch.
-        let (_cr3, mem, head_vaddr) = build_single_process_memory(
+        let (cr3, mem, head_vaddr) = build_single_process_memory(
             555,
             "test.exe",
             peb_paddr,
@@ -681,7 +681,7 @@ mod tests {
             0, // ldr_size = 0 → ldr_first_image_size path returns 0
         );
 
-        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = check_hollowing(&reader, head_vaddr).unwrap();

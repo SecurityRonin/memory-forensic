@@ -144,7 +144,7 @@ mod tests {
     use memf_core::test_builders::{flags as ptflags, SyntheticPhysMem};
 
     fn make_proc_hidden_reader(
-        page_data: [u8; 4096],
+        page_data: &[u8; 4096],
         vaddr: u64,
         paddr: u64,
     ) -> ObjectReader<SyntheticPhysMem> {
@@ -168,7 +168,7 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()
             .map_4k(vaddr, paddr, ptflags::WRITABLE)
-            .write_phys(paddr, &page_data)
+            .write_phys(paddr, page_data)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         ObjectReader::new(vas, Box::new(resolver))
@@ -206,7 +206,7 @@ mod tests {
         page[0x238..0x240].copy_from_slice(&0u64.to_le_bytes());
         // fake_pid_links.pprev → points back to bucket head (standard hlist bookkeeping)
         page[0x240..0x248].copy_from_slice(&(vaddr + 0x800).to_le_bytes());
-        let reader = make_proc_hidden_reader(page, vaddr, paddr);
+        let reader = make_proc_hidden_reader(&page, vaddr, paddr);
 
         let hidden = find_hidden_processes(&reader).unwrap();
         assert_eq!(hidden.len(), 1, "init absent from pid_hash must be flagged");
@@ -226,7 +226,7 @@ mod tests {
         page[0x800..0x808].copy_from_slice(&pid_links_va.to_le_bytes());
         // pid_links.next = 0 (end of chain); .pprev points back to bucket
         page[0x808..0x810].copy_from_slice(&(vaddr + 0x800).to_le_bytes());
-        let reader = make_proc_hidden_reader(page, vaddr, paddr);
+        let reader = make_proc_hidden_reader(&page, vaddr, paddr);
 
         let hidden = find_hidden_processes(&reader).unwrap();
         assert!(hidden.is_empty(), "process visible in all sources must not be flagged");

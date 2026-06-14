@@ -152,6 +152,9 @@ pub fn walk_dpapi_master_keys<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    // Test fixtures declare layout consts/helpers beside the statements that use
+    // them to keep each byte-plan readable; that ordering is intentional here.
+    #![allow(clippy::items_after_statements)]
     use super::*;
 
     /// An empty GUID is suspicious (indicates uninitialized or corrupt entry).

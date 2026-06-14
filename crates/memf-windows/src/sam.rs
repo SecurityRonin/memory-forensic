@@ -17,6 +17,7 @@ use memf_format::PhysicalMemoryProvider;
 
 /// Maximum number of SAM user entries to walk (safety limit).
 const MAX_USERS: usize = 4096;
+const _: () = assert!(MAX_USERS > 0 && MAX_USERS <= 65536);
 
 /// Information about a local user account recovered from the SAM hive.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -945,14 +946,6 @@ mod tests {
         assert!(json.contains("\"is_suspicious\":true"));
     }
 
-    // ── MAX_USERS constant ────────────────────────────────────────────
-
-    #[test]
-    fn max_users_constant_reasonable() {
-        assert!(MAX_USERS > 0);
-        assert!(MAX_USERS <= 65536);
-    }
-
     // ── walk_sam_users body coverage ─────────────────────────────────
     //
     // These tests exercise the walk body past the hive_addr=0 guard by
@@ -1358,9 +1351,8 @@ mod tests {
         // Since building a full valid hive chain is complex, we instead test
         // classify_sam_user with all suspicious name variants to improve coverage.
         // The subkey_count branch is only reachable through walk_sam_users itself,
-        // which requires a full hive chain. We verify the constant is consistent.
-        assert!(MAX_USERS > 0);
-        assert!(MAX_USERS <= 65536);
+        // which requires a full hive chain. (The MAX_USERS bounds invariant is
+        // checked at compile time by the `const _: () = assert!(...)` near its definition.)
         // Directly exercise the constant path: count > MAX_USERS → empty
         // via the inline walker logic comparison.
         let count: u32 = MAX_USERS as u32 + 1;
@@ -1649,7 +1641,7 @@ mod tests {
     // All cell offsets are within a single 4 KB page at flat_base_paddr so
     // addresses stay well below the 16 MB SyntheticPhysMem limit.
 
-    fn build_deep_hive(flat_page: &mut Vec<u8>) {
+    fn build_deep_hive(flat_page: &mut [u8]) {
         // Cell offsets (within flat_base page):
         let root_cell_off: u32 = 0x020;
         let root_list_off: u32 = 0x060;
@@ -1963,7 +1955,7 @@ mod tests {
     //   f_data_off     = 0x540   data cell (0x38 bytes of FILETIME + flags data)
     //   All within a single 4 KB page.
 
-    fn build_extended_hive(flat_page: &mut Vec<u8>) {
+    fn build_extended_hive(flat_page: &mut [u8]) {
         // First lay down the standard 5-level chain.
         build_deep_hive(flat_page);
 
@@ -2088,9 +2080,6 @@ mod tests {
     /// succeeds with real timestamps and UAC flags.
     #[test]
     fn walk_sam_users_extended_chain_with_names_and_f_value() {
-        let _hive_vaddr: u64 = 0x00A0_0000; // reusing address space not taken by earlier tests
-                                            // NOTE: 0x00A0_0000 was used in walk_sam_users_lh_list_sam_found_domains_missing
-                                            // Use a fresh address range.
         let hive_vaddr: u64 = 0x0045_0000;
         let hive_paddr: u64 = 0x0045_0000;
         let base_block: u64 = 0x0046_0000;

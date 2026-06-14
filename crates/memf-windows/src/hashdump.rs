@@ -21,6 +21,7 @@ use memf_format::PhysicalMemoryProvider;
 
 /// Maximum number of user entries to enumerate (safety limit).
 const MAX_USERS: usize = 4096;
+const _: () = assert!(MAX_USERS > 0 && MAX_USERS <= 65536);
 
 /// Well-known empty/blank NT hash (NTLM of empty string).
 const EMPTY_NT_HASH: &str = "31d6cfe0d16ae931b73c59d7e0c089c0";
@@ -2704,12 +2705,6 @@ mod tests {
         assert_eq!(EMPTY_LM_HASH, "aad3b435b51404eeaad3b435b51404ee");
     }
 
-    /// MAX_USERS constant is within reasonable bounds.
-    #[test]
-    fn max_users_constant_reasonable() {
-        assert!(MAX_USERS > 0);
-        assert!(MAX_USERS <= 65536);
-    }
 
     // ── Additional DES / crypto coverage ────────────────────────────
 
@@ -2776,8 +2771,8 @@ mod tests {
     #[test]
     fn inv_mix_columns_no_panic() {
         let mut state = [0u8; 16];
-        for i in 0..16 {
-            state[i] = i as u8 * 17;
+        for (i, byte) in state.iter_mut().enumerate() {
+            *byte = i as u8 * 17;
         }
         inv_mix_columns(&mut state);
         // Just verify no panic and the output is 16 bytes.
@@ -3059,8 +3054,10 @@ mod tests {
     // Physical addresses stay well below 16 MB.
 
     // Write a NK cell at `off` within `page` (page offsets = virt).
+    // Test builder mirroring the registry NK cell fields; arity matches the layout.
+    #[allow(clippy::too_many_arguments)]
     fn write_nk(
-        page: &mut Vec<u8>,
+        page: &mut [u8],
         off: usize,
         name: &[u8],
         subkey_count: u32,
@@ -3083,7 +3080,7 @@ mod tests {
     }
 
     // Write a lf list at `off` within `page` with one entry pointing to `child_off`.
-    fn write_lf1(page: &mut Vec<u8>, off: usize, child_off: u32) {
+    fn write_lf1(page: &mut [u8], off: usize, child_off: u32) {
         page[off] = b'l';
         page[off + 1] = b'f';
         page[off + 2..off + 4].copy_from_slice(&1u16.to_le_bytes());
@@ -3091,7 +3088,7 @@ mod tests {
     }
 
     // Write a lf list at `off` within `page` with N entries.
-    fn write_lf_n(page: &mut Vec<u8>, off: usize, children: &[u32]) {
+    fn write_lf_n(page: &mut [u8], off: usize, children: &[u32]) {
         page[off] = b'l';
         page[off + 1] = b'f';
         page[off + 2..off + 4].copy_from_slice(&(children.len() as u16).to_le_bytes());
@@ -3102,7 +3099,7 @@ mod tests {
 
     // Write a VK cell at `off` within `page`.
     // VK: sig at 0=vk, NameLength at 0x02, DataLength at 0x08, DataOffset at 0x0C, Name at 0x18.
-    fn write_vk(page: &mut Vec<u8>, off: usize, name: &[u8], data_len: u32, data_off: u32) {
+    fn write_vk(page: &mut [u8], off: usize, name: &[u8], data_len: u32, data_off: u32) {
         page[off] = b'v';
         page[off + 1] = b'k';
         page[off + 0x02..off + 0x04].copy_from_slice(&(name.len() as u16).to_le_bytes());
@@ -3127,7 +3124,7 @@ mod tests {
     /// Layout rule: each subkey list cell is placed AFTER its parent NK's footprint
     /// (NK footprint = ao(nk_off)..ao(nk_off)+0x4C+name_len+2).  Class data cells
     /// are placed in a dedicated region ≥ 0x3C0 so they never alias NK fields.
-    fn build_system_hive(flat: &mut Vec<u8>) {
+    fn build_system_hive(flat: &mut [u8]) {
         // NK cells (ao = cell_off + 4):
         //   root    0x010 → ao 0x014, name "root"(4)  → footprint 0x014..0x064
         //   ccs     0x090 → ao 0x094, name "CurrentControlSet"(17) → 0x094..0x0F2
@@ -3240,7 +3237,7 @@ mod tests {
 
     /// Build a minimal SAM hive flat page for walk_hashdump.
     /// Navigation: root → SAM → Domains → Account (F value, rev2) → Users → RID "000001F4"
-    fn build_sam_hive(flat: &mut Vec<u8>) {
+    fn build_sam_hive(flat: &mut [u8]) {
         let root_off: u32 = 0x020;
         let root_list_off: u32 = 0x060;
         let sam_off: u32 = 0x090;
@@ -3282,11 +3279,6 @@ mod tests {
         // Correction: Account has Users as a subkey, but we need to put users_off in the list.
         // Use a lf list for Account's subkeys pointing to users_off:
         // Actually write_nk puts list_off at +0x20 (subkey list offset), so let's use acct_list:
-        let _acct_list_off: u32 = 0x170 + 0x30; // reuse some space: 0x1A0 but let's use a fresh offset
-                                                // Recalculate to avoid overlap: set acct's subkey list at a distinct offset
-                                                // Note: write_nk already wrote acct_off + 0x20 = users_off (wrong, that's the NK cell!)
-                                                // Let me use a dedicated list cell for Account's subkeys.
-
         // Fix: The Account NK should point to a subkey list, not directly to users_off.
         // Let's put the account list at acct_list_off = 0x190:
         let acct_sk_list_off: u32 = 0x380;
@@ -3414,8 +3406,6 @@ mod tests {
     fn read_value_data_zero_data_len_returns_empty() {
         let key_vaddr: u64 = 0x009B_0000;
         let key_paddr: u64 = 0x009B_0000;
-        let _vlist_paddr: u64 = 0x009C_0000;
-        let _vk_paddr: u64 = 0x009D_0000;
         let flat_base: u64 = 0x009E_0000;
 
         let vlist_off: u32 = 0x0050;

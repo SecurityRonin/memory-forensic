@@ -295,7 +295,7 @@ mod tests {
 
     fn build_dns_reader_with_type(
         record_type: u16,
-        data_bytes: Vec<u8>,
+        data_bytes: &[u8],
         data_vaddr: u64,
         data_paddr: u64,
     ) -> ObjectReader<SyntheticPhysMem> {
@@ -360,7 +360,7 @@ mod tests {
         ];
         let data_vaddr: u64 = 0xFFFF_8000_0020_4000;
         let data_paddr: u64 = 0x0080_4000;
-        let reader = build_dns_reader_with_type(28, ipv6_bytes.to_vec(), data_vaddr, data_paddr);
+        let reader = build_dns_reader_with_type(28, &ipv6_bytes, data_vaddr, data_paddr);
         let entries = walk_dns_cache(&reader).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
@@ -380,7 +380,7 @@ mod tests {
         }
         let data_vaddr: u64 = 0xFFFF_8000_0020_5000;
         let data_paddr: u64 = 0x0080_5000;
-        let reader = build_dns_reader_with_type(5, wide_bytes, data_vaddr, data_paddr);
+        let reader = build_dns_reader_with_type(5, &wide_bytes, data_vaddr, data_paddr);
         let entries = walk_dns_cache(&reader).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
@@ -399,7 +399,7 @@ mod tests {
         }
         let data_vaddr: u64 = 0xFFFF_8000_0020_6000;
         let data_paddr: u64 = 0x0080_6000;
-        let reader = build_dns_reader_with_type(12, wide_bytes, data_vaddr, data_paddr);
+        let reader = build_dns_reader_with_type(12, &wide_bytes, data_vaddr, data_paddr);
         let entries = walk_dns_cache(&reader).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
@@ -413,7 +413,7 @@ mod tests {
         let data_bytes = vec![0xde, 0xad, 0xbe, 0xef];
         let data_vaddr: u64 = 0xFFFF_8000_0020_7000;
         let data_paddr: u64 = 0x0080_7000;
-        let reader = build_dns_reader_with_type(15, data_bytes, data_vaddr, data_paddr);
+        let reader = build_dns_reader_with_type(15, &data_bytes, data_vaddr, data_paddr);
         let entries = walk_dns_cache(&reader).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];

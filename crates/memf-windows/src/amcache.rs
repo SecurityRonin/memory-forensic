@@ -24,6 +24,7 @@ use memf_format::PhysicalMemoryProvider;
 
 /// Maximum number of Amcache entries to enumerate (safety limit).
 const MAX_AMCACHE_ENTRIES: usize = 8192;
+const _: () = assert!(MAX_AMCACHE_ENTRIES > 0 && MAX_AMCACHE_ENTRIES <= 100_000);
 
 /// Maximum depth when navigating to `Root\InventoryApplicationFile`.
 #[allow(dead_code)]
@@ -591,6 +592,9 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    // Test fixtures declare layout consts/helpers beside the statements that use
+    // them to keep each byte-plan readable; that ordering is intentional here.
+    #![allow(clippy::items_after_statements)]
     use super::*;
     use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::{PageTableBuilder, SyntheticPhysMem};
@@ -884,12 +888,6 @@ mod tests {
         assert_eq!(HBIN_START_OFFSET, 0x1000);
         assert_eq!(NK_SIGNATURE, 0x6B6E);
         assert_eq!(VK_SIGNATURE, 0x6B76);
-    }
-
-    #[test]
-    fn max_amcache_entries_reasonable() {
-        assert!(MAX_AMCACHE_ENTRIES > 0);
-        assert!(MAX_AMCACHE_ENTRIES <= 100_000);
     }
 
     // ── walk_amcache body coverage ────────────────────────────────────
@@ -1586,7 +1584,7 @@ mod tests {
         let mut cell_page = vec![0u8; 0x1000];
 
         // Helper: write cell = [i32 neg size][data] at offset
-        fn write_cell(page: &mut Vec<u8>, off: usize, data: &[u8]) {
+        fn write_cell(page: &mut [u8], off: usize, data: &[u8]) {
             let size: i32 = -((4 + data.len()) as i32);
             page[off..off + 4].copy_from_slice(&size.to_le_bytes());
             page[off + 4..off + 4 + data.len()].copy_from_slice(data);
@@ -1715,7 +1713,7 @@ mod tests {
     // has one child entry whose cell has a bad NK signature → child skipped → empty Vec.
     // This exercises lines 532-549 (the enumeration loop with sig check).
 
-    fn build_iaf_hive(flat_page: &mut Vec<u8>, child_nk_sig: u16) -> (u64, u32) {
+    fn build_iaf_hive(flat_page: &mut [u8], child_nk_sig: u16) -> (u64, u32) {
         // Layout within flat_page:
         //   root NK: cell_off = 0x020 → addr = 0x024
         //   root list: cell_off = 0x060 → addr = 0x064

@@ -109,6 +109,9 @@ fn read_thread_info<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    // Test fixtures declare layout consts/helpers beside the statements that use
+    // them to keep each byte-plan readable; that ordering is intentional here.
+    #![allow(clippy::items_after_statements)]
     use super::*;
     use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
@@ -155,6 +158,8 @@ mod tests {
     /// Write a _KTHREAD / _ETHREAD structure at the given physical address.
     ///
     /// Since Tcb is at offset 0 within _ETHREAD, the kthread base = ethread base.
+    // Test builder mirroring the _KTHREAD/_ETHREAD fields; arity matches the struct.
+    #[allow(clippy::too_many_arguments)]
     fn write_kthread(
         ptb: PageTableBuilder,
         paddr: u64,

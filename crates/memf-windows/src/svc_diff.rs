@@ -360,6 +360,9 @@ fn enum_direct_subkeys<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    // Test fixtures declare layout consts/helpers beside the statements that use
+    // them to keep each byte-plan readable; that ordering is intentional here.
+    #![allow(clippy::items_after_statements)]
     use super::*;
     use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::PageTableBuilder;
@@ -1263,10 +1266,10 @@ mod tests {
 
         let mut cp = vec![0u8; 0x1000];
 
-        fn w32(buf: &mut Vec<u8>, off: usize, val: u32) {
+        fn w32(buf: &mut [u8], off: usize, val: u32) {
             buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
         }
-        fn w16(buf: &mut Vec<u8>, off: usize, val: u16) {
+        fn w16(buf: &mut [u8], off: usize, val: u16) {
             buf[off..off + 2].copy_from_slice(&val.to_le_bytes());
         }
 

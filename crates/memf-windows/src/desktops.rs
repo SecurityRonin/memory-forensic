@@ -442,7 +442,7 @@ mod tests {
     /// Layout: Length(u16) at off, MaxLength(u16) at off+2, Buffer(u64) at off+8.
     /// The UTF-16LE string data is placed at str_off within the same page.
     fn write_unistr_in_page(
-        page: &mut Vec<u8>,
+        page: &mut [u8],
         off: usize,
         text: &str,
         str_off: usize,

@@ -677,6 +677,8 @@ mod tests {
     /// Build a reader wired up with `xt_table` and `xt_table_info` ISF types plus
     /// the real entry data so that `parse_table_rules` can follow the full chain:
     ///   xt_table.private → xt_table_info → (entries vaddr, size) → ipt_entry region
+    // Test builder wiring the xt_table → xt_table_info → ipt_entry chain; arity matches the layout.
+    #[allow(clippy::too_many_arguments)]
     fn make_parse_table_rules_reader(
         private_ptr: u64, // value stored in xt_table.private (0 = null test)
         table_vaddr: u64,

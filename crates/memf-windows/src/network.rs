@@ -272,6 +272,8 @@ mod tests {
     }
 
     /// Write a _TCP_ENDPOINT into a byte buffer at the given offset.
+    // Test builder mirroring the _TCP_ENDPOINT fields; arity matches the struct.
+    #[allow(clippy::too_many_arguments)]
     fn write_endpoint(
         buf: &mut [u8],
         off: usize,
@@ -309,6 +311,8 @@ mod tests {
 
     /// Write _ADDR_INFO + _LOCAL_ADDRESS + IPv4 data into a byte buffer.
     /// Returns nothing; caller provides the offsets.
+    // Test builder mirroring the _ADDR_INFO/_LOCAL_ADDRESS layout; arity matches the structs.
+    #[allow(clippy::too_many_arguments)]
     fn write_addr_info(
         buf: &mut [u8],
         ai_off: usize,

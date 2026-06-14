@@ -16,6 +16,7 @@ use crate::{Error, Result};
 
 /// Maximum number of modules to walk per linked list (safety bound).
 const MAX_MODULES: usize = 4096;
+const _: () = assert!(MAX_MODULES > 0 && MAX_MODULES <= 65536);
 
 /// Cross-reference result for a single DLL across the three PEB loader lists.
 ///
@@ -293,12 +294,12 @@ mod tests {
         // _EPROCESS.Peb is at offset 0x550 — write 0 (null PEB).
         eproc_data[0x550..0x558].copy_from_slice(&0u64.to_le_bytes());
 
-        let (_cr3, mem) = PageTableBuilder::new()
+        let (cr3, mem) = PageTableBuilder::new()
             .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
             .write_phys(eproc_paddr, &eproc_data)
             .build();
 
-        let vas = VirtualAddressSpace::new(mem, _cr3, TranslationMode::X86_64FourLevel);
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let results = walk_ldrmodules(&reader, eproc_vaddr, 4, "System").unwrap();
@@ -507,12 +508,6 @@ mod tests {
         );
     }
 
-    /// MAX_MODULES constant is sensible.
-    #[test]
-    fn max_modules_constant_sensible() {
-        assert!(MAX_MODULES > 0);
-        assert!(MAX_MODULES <= 65536);
-    }
 
     /// walk_ldrmodules with one module in all three lists → 1 result, not suspicious.
     ///

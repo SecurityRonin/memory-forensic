@@ -14,6 +14,7 @@ use crate::unicode::read_unicode_string;
 
 /// Maximum number of hooks to enumerate (safety limit).
 const MAX_HOOKS: usize = 4096;
+const _: () = assert!(MAX_HOOKS >= 256);
 
 /// Number of hook types in the aphkStart array (WH_MSGFILTER=-1 through WH_MOUSE_LL=14).
 const HOOK_TYPE_COUNT: usize = 16;
@@ -560,11 +561,11 @@ mod tests {
         assert_eq!(hook_type_name(15), "WH_UNKNOWN(15)");
     }
 
-    /// HOOK_TYPE_COUNT and MAX_HOOKS constants are reasonable.
+    /// HOOK_TYPE_COUNT constant is reasonable. (The MAX_HOOKS bound is checked
+    /// at compile time by the `const _: () = assert!(...)` near its definition.)
     #[test]
     fn hook_constants_sensible() {
         assert_eq!(HOOK_TYPE_COUNT, 16);
-        assert!(MAX_HOOKS >= 256);
     }
 
     /// MessageHookInfo serializes to JSON.

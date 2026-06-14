@@ -89,12 +89,14 @@ const CONSOLE_HOST_NAMES: &[&str] = &["conhost.exe", "csrss.exe"];
 
 /// Maximum number of command history entries per console (safety limit).
 const MAX_HISTORY_ENTRIES: usize = 4096;
+const _: () = assert!(MAX_HISTORY_ENTRIES >= 64);
 
 /// Maximum number of commands per history buffer (safety limit).
 const MAX_COMMANDS_PER_HISTORY: usize = 4096;
 
 /// Scan window size for _CONSOLE_INFORMATION signature search (bytes).
 const SCAN_WINDOW_SIZE: usize = 512 * 1024; // 512 KB
+const _: () = assert!(SCAN_WINDOW_SIZE >= 64 * 1024 && SCAN_WINDOW_SIZE <= 4 * 1024 * 1024);
 
 /// Walk console command history from `conhost.exe` / `csrss.exe` memory.
 ///
@@ -407,6 +409,9 @@ fn read_utf16_string<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    // Test fixtures declare layout consts/helpers beside the statements that use
+    // them to keep each byte-plan readable; that ordering is intentional here.
+    #![allow(clippy::items_after_statements)]
     use super::*;
 
     // ---------------------------------------------------------------
@@ -657,20 +662,10 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn scan_window_size_reasonable() {
-        assert!(SCAN_WINDOW_SIZE >= 64 * 1024);
-        assert!(SCAN_WINDOW_SIZE <= 4 * 1024 * 1024);
-    }
-
-    #[test]
     fn console_host_names_includes_conhost() {
         assert!(CONSOLE_HOST_NAMES.contains(&"conhost.exe"));
     }
 
-    #[test]
-    fn max_history_entries_reasonable() {
-        assert!(MAX_HISTORY_ENTRIES >= 64);
-    }
 
     // ---------------------------------------------------------------
     // Private helper function coverage (read_ptr, read_u32, read_u16,

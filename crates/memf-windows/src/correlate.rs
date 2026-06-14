@@ -665,7 +665,7 @@ mod tests {
         let events = proc.into_forensic_events();
         assert_eq!(events.len(), 1);
         // svchost by itself is not suspicious without tree context — just noted.
-        assert_eq!(events[0].confidence, 0.4);
+        assert!((events[0].confidence - 0.4).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -725,8 +725,8 @@ mod tests {
         let proc = make_process(2000, 4, "mygame.exe", 3);
         let events = proc.into_forensic_events();
         assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0].confidence, 0.5,
+        assert!(
+            (events[0].confidence - 0.5).abs() < f64::EPSILON,
             "non-spoofable name should have confidence=0.5"
         );
         assert!(

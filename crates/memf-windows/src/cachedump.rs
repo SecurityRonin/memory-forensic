@@ -21,6 +21,7 @@ use memf_format::PhysicalMemoryProvider;
 
 /// Maximum number of cached credential entries to enumerate (safety limit).
 const MAX_CACHED_CREDS: usize = 64;
+const _: () = assert!(MAX_CACHED_CREDS >= 10 && MAX_CACHED_CREDS <= 1024);
 
 /// Information about a domain cached credential recovered from the SECURITY hive.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -401,6 +402,9 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    // Test fixtures declare layout consts/helpers beside the statements that use
+    // them to keep each byte-plan readable; that ordering is intentional here.
+    #![allow(clippy::items_after_statements)]
     use super::*;
     use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::PageTableBuilder;
@@ -659,11 +663,6 @@ mod tests {
 
     // ── MAX_CACHED_CREDS constant ─────────────────────────────────────
 
-    #[test]
-    fn max_cached_creds_reasonable() {
-        assert!(MAX_CACHED_CREDS >= 10);
-        assert!(MAX_CACHED_CREDS <= 1024);
-    }
 
     // ── walk_cached_credentials body coverage ────────────────────────
     //
@@ -1071,10 +1070,10 @@ mod tests {
 
         let mut flat_page = vec![0u8; 0x2000]; // 2 pages (val list + data can span)
 
-        fn w32(page: &mut Vec<u8>, off: usize, val: u32) {
+        fn w32(page: &mut [u8], off: usize, val: u32) {
             page[off..off + 4].copy_from_slice(&val.to_le_bytes());
         }
-        fn w16(page: &mut Vec<u8>, off: usize, val: u16) {
+        fn w16(page: &mut [u8], off: usize, val: u16) {
             page[off..off + 2].copy_from_slice(&val.to_le_bytes());
         }
 

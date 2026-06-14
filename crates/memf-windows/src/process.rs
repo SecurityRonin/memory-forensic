@@ -219,6 +219,9 @@ pub fn check_peb_masquerade<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    // Test fixtures declare layout consts/helpers beside the statements that use
+    // them to keep each byte-plan readable; that ordering is intentional here.
+    #![allow(clippy::items_after_statements)]
     use super::*;
     use crate::testing::make_reader;
     use memf_core::object_reader::ObjectReader;
@@ -260,6 +263,8 @@ mod tests {
     }
 
     /// Write an _EPROCESS structure at the given physical address.
+    // Test builder mirroring the _EPROCESS fields; arity matches the struct.
+    #[allow(clippy::too_many_arguments)]
     fn write_eprocess(
         ptb: PageTableBuilder,
         paddr: u64,

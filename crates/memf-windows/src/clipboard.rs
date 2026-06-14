@@ -13,6 +13,7 @@ use memf_format::PhysicalMemoryProvider;
 
 /// Maximum number of clipboard entries to enumerate (safety limit).
 const MAX_CLIP_ENTRIES: usize = 256;
+const _: () = assert!(MAX_CLIP_ENTRIES >= 64 && MAX_CLIP_ENTRIES <= 4096);
 
 /// Information about a clipboard entry recovered from kernel memory.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -561,12 +562,6 @@ mod tests {
         assert_eq!(size, (text.len() + 1) * 2);
     }
 
-    /// MAX_CLIP_ENTRIES constant is reasonable.
-    #[test]
-    fn max_clip_entries_constant_sensible() {
-        assert!(MAX_CLIP_ENTRIES >= 64);
-        assert!(MAX_CLIP_ENTRIES <= 4096);
-    }
 
     // ── walk_clipboard tests — walker body coverage ──────────────────
 

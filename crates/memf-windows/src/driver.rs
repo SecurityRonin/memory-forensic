@@ -201,6 +201,8 @@ mod tests {
     /// - SizeOfImage (offset 64): u32
     /// - FullDllName (offset 72): _UNICODE_STRING
     /// - BaseDllName (offset 88): _UNICODE_STRING
+    // Test builder mirroring the _KLDR_DATA_TABLE_ENTRY fields; arity matches the struct.
+    #[allow(clippy::too_many_arguments)]
     fn build_kldr_entry(
         buf: &mut [u8],
         entry_offset: usize,
