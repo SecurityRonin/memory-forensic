@@ -5815,6 +5815,40 @@ mod tests {
         assert!(!csv.contains(",=calc.exe"), "formula name must be guarded: {csv}");
     }
 
+    fn wpi(pid: u64, name: &str) -> memf_windows::WinProcessInfo {
+        memf_windows::WinProcessInfo {
+            pid,
+            ppid: 4,
+            image_name: name.into(),
+            create_time: 0,
+            exit_time: 0,
+            cr3: 0x1ad000,
+            peb_addr: 0,
+            vaddr: 0x5e1000,
+            thread_count: 1,
+            is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
+        }
+    }
+
+    #[test]
+    fn render_windows_processes_sanitizes_json_and_csv() {
+        // ImageFileName is attacker-controlled: a bidi override (terminal spoof)
+        // and a leading '=' (CSV formula injection) must both be neutralised.
+        let procs = vec![wpi(666, "ev\u{202e}il.exe"), wpi(1234, "=calc.exe")];
+
+        let json = render_windows_processes(&procs, OutputFormat::Json);
+        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json array");
+        assert_eq!(v[0]["pid"], 666);
+
+        let csv = render_windows_processes(&procs, OutputFormat::Csv);
+        assert!(csv.lines().next().unwrap_or_default().contains("image_name"), "csv header");
+        assert!(!csv.contains(",=calc.exe"), "formula name must be guarded: {csv}");
+        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
+    }
+
     #[test]
     fn render_scanned_processes_strips_bidi_in_every_channel() {
         // U+202E RIGHT-TO-LEFT OVERRIDE — a terminal/JSON name-spoofing vector
