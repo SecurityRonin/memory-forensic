@@ -192,34 +192,28 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
             }
 
             // Smear tolerance: a live-acquired dump can contain a torn-down node
-            // whose forward pointer reads 0 (a null terminus). Treat it as the
-            // end of the reliable list and return what was collected, rather than
-            // dereferencing null or fabricating a container from `0 - offset`.
-            // Orphans beyond the smear are recovered by pool-tag scanning, not by
-            // the linked-list walk.
+            // whose link reads 0 (a null terminus). Stop rather than dereference
+            // null or fabricate a container from `0 - offset`.
             if current == 0 {
                 return Ok(result);
             }
 
-            // Smear tolerance (cont.): a torn-down node's link can hold garbage —
-            // null (above) or a non-canonical / user-half value. Kernel object
-            // lists live entirely in the canonical high half (top 16 bits set);
-            // anything else is not a real list node, so terminate rather than
-            // fabricate a container that a later field read would fault on.
-            if current >> 48 != 0xFFFF {
-                return Ok(result);
-            }
+            // Peek-before-record: read this node's forward pointer FIRST. If its
+            // LIST_ENTRY page is not mapped, `current` is not a real node — a
+            // torn-down node's link can hold garbage (e.g. the user-half value
+            // 0x5a289000 seen on DESKTOP-SDN1RPT.mem, which is canonical but
+            // unmapped). Terminate without fabricating a container that a later
+            // field read would fault on. This works for BOTH kernel object lists
+            // and user-space lists (PEB/LDR modules), so it must NOT assume a
+            // kernel-half address.
+            let next = match self.read_u64_at(current.wrapping_add(next_offset)) {
+                Ok(next) => next,
+                Err(_) => return Ok(result),
+            };
 
             // container_of: subtract list_offset to get the containing struct base
-            let container = current.wrapping_sub(list_offset);
-            result.push(container);
-
-            // Follow next/Flink pointer. An unreadable (paged-out / smeared) next
-            // pointer also terminates the walk gracefully with what we have.
-            match self.read_u64_at(current.wrapping_add(next_offset)) {
-                Ok(next) => current = next,
-                Err(_) => return Ok(result),
-            }
+            result.push(current.wrapping_sub(list_offset));
+            current = next;
         }
 
         Err(Error::ListCycle(MAX_LIST_ITERATIONS))
