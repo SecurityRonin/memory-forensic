@@ -664,7 +664,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Info { dump } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_info(resolved.path(), resolved.is_extracted())
+            cmd_info(resolved.path(), true)
         }
         Commands::Ps {
             dump,
@@ -710,7 +710,7 @@ fn main() -> Result<()> {
                 all,
                 sort,
                 btime,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::Sys {
@@ -727,7 +727,7 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 mounts,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::Net {
@@ -746,7 +746,7 @@ fn main() -> Result<()> {
                 cr3,
                 pid,
                 arp,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::Check {
@@ -789,7 +789,7 @@ fn main() -> Result<()> {
                     all,
                 },
                 pid,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::Handles {
@@ -806,7 +806,7 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 pid,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::Yara {
@@ -825,7 +825,7 @@ fn main() -> Result<()> {
                 cr3,
                 &rules,
                 max_region_bytes,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::Strings {
@@ -864,7 +864,7 @@ fn main() -> Result<()> {
                 cr3,
                 btime,
                 bodyfile,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::Procdump {
@@ -889,7 +889,7 @@ fn main() -> Result<()> {
                 symbols.as_deref(),
                 output,
                 png.as_deref(),
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::BrowserSessions {
@@ -906,7 +906,7 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 pid,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::BrowserCookies {
@@ -923,7 +923,7 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 pid,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::BrowserCreds {
@@ -940,7 +940,7 @@ fn main() -> Result<()> {
                 output,
                 cr3,
                 pid,
-                resolved.is_extracted(),
+                true,
             )
         }
         Commands::ReadPhys { dump, addr, len } => {
@@ -1213,12 +1213,21 @@ fn setup_analysis(
 
     let ctx = if let Some(cr3) = cr3_override {
         let os = os_detect::detect_os(metadata.as_ref(), resolver.as_ref())?;
+        // Even with an explicit CR3, a raw dump may carry no list-head metadata;
+        // reconstruct the heads from the kernel base + ISF symbols just like the
+        // auto path, so `--cr3` is sufficient to analyze a header-less .mem.
+        let (ps_active_process_head, ps_loaded_module_list) = os_detect::resolve_kernel_list_heads(
+            os,
+            metadata.as_ref(),
+            resolver.as_ref(),
+            provider.as_ref(),
+        );
         AnalysisContext {
             os,
             cr3,
             kaslr_offset: 0,
-            ps_active_process_head: metadata.as_ref().and_then(|m| m.ps_active_process_head),
-            ps_loaded_module_list: metadata.as_ref().and_then(|m| m.ps_loaded_module_list),
+            ps_active_process_head,
+            ps_loaded_module_list,
         }
     } else {
         os_detect::build_analysis_context(metadata.as_ref(), resolver.as_ref(), provider.as_ref())?
