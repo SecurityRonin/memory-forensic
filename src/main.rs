@@ -2402,6 +2402,12 @@ fn render_scanned_processes(
 // ---------------------------------------------------------------------------
 
 fn print_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) {
+    println!("{}", render_linux_modules(mods, output));
+}
+
+/// Humble Object: render Linux kernel modules. `name` is attacker-controlled,
+/// so JSON wraps it in `JsonSafe` and CSV runs it through `csv_field`.
+fn render_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2414,24 +2420,26 @@ fn print_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) {
                     format_size(m.size),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} modules", mods.len());
+            format!("{table}\n\nTotal: {} modules", mods.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for m in mods {
                 let json = serde_json::json!({
-                    "name": m.name,
+                    "name": jsonguard::JsonSafe(&m.name),
                     "base_addr": format!("{:#x}", m.base_addr),
                     "size": m.size,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("name,base_addr,size");
+            let mut out = String::from("name,base_addr,size\n");
             for m in mods {
-                println!("{},{:#x},{}", m.name, m.base_addr, m.size);
+                let _ = writeln!(out, "{},{:#x},{}", csv_field(&m.name).value, m.base_addr, m.size);
             }
+            out
         }
     }
 }
@@ -2441,6 +2449,13 @@ fn print_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) {
 // ---------------------------------------------------------------------------
 
 fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: OutputFormat) {
+    println!("{}", render_windows_drivers(drivers, output));
+}
+
+/// Humble Object: render Windows drivers. `name` and `full_path` are
+/// attacker-controlled, so JSON wraps them in `JsonSafe` and CSV runs them
+/// through `csv_field`.
+fn render_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2454,25 +2469,27 @@ fn print_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: Output
                     table_cell(&d.full_path),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} drivers", drivers.len());
+            format!("{table}\n\nTotal: {} drivers", drivers.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for d in drivers {
                 let json = serde_json::json!({
-                    "name": d.name,
+                    "name": jsonguard::JsonSafe(&d.name),
                     "base_addr": format!("{:#x}", d.base_addr),
                     "size": d.size,
-                    "path": d.full_path,
+                    "path": jsonguard::JsonSafe(&d.full_path),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("name,base_addr,size,path");
+            let mut out = String::from("name,base_addr,size,path\n");
             for d in drivers {
-                println!("{},{:#x},{},{}", d.name, d.base_addr, d.size, csv_field(&d.full_path));
+                let _ = writeln!(out, "{},{:#x},{},{}", csv_field(&d.name).value, d.base_addr, d.size, csv_field(&d.full_path).value);
             }
+            out
         }
     }
 }
@@ -2538,6 +2555,13 @@ fn render_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: Ou
 // ---------------------------------------------------------------------------
 
 fn print_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFormat) {
+    println!("{}", render_windows_envvars(vars, output));
+}
+
+/// Humble Object: render Windows environment variables. `image_name`,
+/// `variable`, and `value` are attacker-controlled, so JSON wraps them in
+/// `JsonSafe` and CSV runs them through `csv_field`.
+fn render_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2551,25 +2575,27 @@ fn print_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFor
                     table_cell(&v.value),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} environment variables", vars.len());
+            format!("{table}\n\nTotal: {} environment variables", vars.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for v in vars {
                 let json = serde_json::json!({
                     "pid": v.pid,
-                    "image_name": v.image_name,
-                    "variable": v.variable,
-                    "value": v.value,
+                    "image_name": jsonguard::JsonSafe(&v.image_name),
+                    "variable": jsonguard::JsonSafe(&v.variable),
+                    "value": jsonguard::JsonSafe(&v.value),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,variable,value");
+            let mut out = String::from("pid,image_name,variable,value\n");
             for v in vars {
-                println!("{},{},{},{}", v.pid, v.image_name, v.variable, csv_field(&v.value));
+                let _ = writeln!(out, "{},{},{},{}", v.pid, csv_field(&v.image_name).value, csv_field(&v.variable).value, csv_field(&v.value).value);
             }
+            out
         }
     }
 }
@@ -2579,6 +2605,13 @@ fn print_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFor
 // ---------------------------------------------------------------------------
 
 fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) {
+    println!("{}", render_pstree(entries, output));
+}
+
+/// Humble Object: render the Windows process tree. `image_name` is
+/// attacker-controlled, so the table sanitizes it via `table_cell`, JSON via
+/// `JsonSafe`, and CSV via `csv_field`.
+fn render_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2592,7 +2625,7 @@ fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) 
             ]);
             for e in entries {
                 let indent = "  ".repeat(e.depth as usize);
-                let name = format!("{}{}", indent, e.process.image_name);
+                let name = format!("{}{}", indent, table_cell(&e.process.image_name));
                 table.add_row(vec![
                     format!("{}", e.process.pid),
                     format!("{}", e.process.ppid),
@@ -2601,37 +2634,40 @@ fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) 
                     format!("{:#x}", e.process.cr3),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} processes", entries.len());
+            format!("{table}\n\nTotal: {} processes", entries.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for e in entries {
                 let json = serde_json::json!({
                     "pid": e.process.pid,
                     "ppid": e.process.ppid,
-                    "image_name": e.process.image_name,
+                    "image_name": jsonguard::JsonSafe(&e.process.image_name),
                     "depth": e.depth,
                     "create_time": format_filetime(e.process.create_time),
                     "create_time_raw": e.process.create_time,
                     "cr3": format!("{:#x}", e.process.cr3),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,ppid,image_name,depth,create_time,create_time_raw,cr3");
+            let mut out = String::from("pid,ppid,image_name,depth,create_time,create_time_raw,cr3\n");
             for e in entries {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{},{},{},{},{:#x}",
                     e.process.pid,
                     e.process.ppid,
-                    e.process.image_name,
+                    csv_field(&e.process.image_name).value,
                     e.depth,
                     format_filetime(e.process.create_time),
                     e.process.create_time,
                     e.process.cr3
                 );
             }
+            out
         }
     }
 }
@@ -2641,6 +2677,13 @@ fn print_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat) 
 // ---------------------------------------------------------------------------
 
 fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: OutputFormat) {
+    println!("{}", render_masquerade(results, output));
+}
+
+/// Humble Object: render PEB-masquerade results. `eprocess_name` and
+/// `peb_image_path` are attacker-controlled, so JSON wraps them in `JsonSafe`
+/// and CSV runs them through `csv_field`.
+fn render_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2658,30 +2701,32 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
                     },
                 ]);
             }
-            println!("{table}");
             let suspicious_count = results.iter().filter(|r| r.suspicious).count();
-            println!(
-                "\nTotal: {} processes checked, {} suspicious",
+            format!(
+                "{table}\n\nTotal: {} processes checked, {} suspicious",
                 results.len(),
                 suspicious_count
-            );
+            )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for r in results {
                 let json = serde_json::json!({
                     "pid": r.pid,
-                    "eprocess_name": r.eprocess_name,
-                    "peb_image_path": r.peb_image_path,
+                    "eprocess_name": jsonguard::JsonSafe(&r.eprocess_name),
+                    "peb_image_path": jsonguard::JsonSafe(&r.peb_image_path),
                     "suspicious": r.suspicious,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,eprocess_name,peb_image_path,suspicious");
+            let mut out = String::from("pid,eprocess_name,peb_image_path,suspicious\n");
             for r in results {
-                println!("{},{},{},{}", r.pid, r.eprocess_name, csv_field(&r.peb_image_path), r.suspicious);
+                let _ = writeln!(out, "{},{},{},{}", r.pid, csv_field(&r.eprocess_name).value, csv_field(&r.peb_image_path).value, r.suspicious);
             }
+            out
         }
     }
 }
@@ -2691,6 +2736,14 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
 // ---------------------------------------------------------------------------
 
 fn print_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputFormat) {
+    println!("{}", render_ppid_spoof(results, output));
+}
+
+/// Humble Object: render PPID-spoof results. `name`, `parent_name`, and the
+/// `expected_parents` strings are attacker-controlled (process names sourced
+/// from the dump), so JSON wraps each in `JsonSafe` and CSV runs them through
+/// `csv_field`.
+fn render_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputFormat) -> String {
     use forensicnomicon::processes::SpoofConfidence;
 
     match output {
@@ -2709,51 +2762,55 @@ fn print_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputFo
                     format!("{}", r.ppid),
                     table_cell(&r.parent_name),
                     conf.to_string(),
-                    r.expected_parents.join(", "),
+                    table_cell(&r.expected_parents.join(", ")),
                 ]);
             }
-            println!("{table}");
             let high_count = results.iter().filter(|r| r.confidence == SpoofConfidence::High).count();
             let low_count  = results.iter().filter(|r| r.confidence == SpoofConfidence::Low).count();
-            println!(
-                "\nTotal: {} suspicious ({} high-confidence, {} low-confidence)",
+            format!(
+                "{table}\n\nTotal: {} suspicious ({} high-confidence, {} low-confidence)",
                 results.len(), high_count, low_count
-            );
+            )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for r in results {
                 let conf = match r.confidence {
                     SpoofConfidence::High => "high",
                     SpoofConfidence::Low  => "low",
                 };
+                let expected: Vec<_> = r.expected_parents.iter().map(|p| jsonguard::JsonSafe(p.as_str())).collect();
                 let json = serde_json::json!({
                     "pid": r.pid,
-                    "name": r.name,
+                    "name": jsonguard::JsonSafe(&r.name),
                     "ppid": r.ppid,
-                    "parent_name": r.parent_name,
+                    "parent_name": jsonguard::JsonSafe(&r.parent_name),
                     "confidence": conf,
-                    "expected_parents": r.expected_parents,
+                    "expected_parents": expected,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,name,ppid,parent_name,confidence,expected_parents");
+            let mut out = String::from("pid,name,ppid,parent_name,confidence,expected_parents\n");
             for r in results {
                 let conf = match r.confidence {
                     SpoofConfidence::High => "high",
                     SpoofConfidence::Low  => "low",
                 };
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{},{},{},{}",
                     r.pid,
-                    csv_field(&r.name),
+                    csv_field(&r.name).value,
                     r.ppid,
-                    csv_field(&r.parent_name),
+                    csv_field(&r.parent_name).value,
                     conf,
-                    csv_field(&r.expected_parents.join("|")),
+                    csv_field(&r.expected_parents.join("|")).value,
                 );
             }
+            out
         }
     }
 }
@@ -2763,6 +2820,13 @@ fn print_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputFo
 // ---------------------------------------------------------------------------
 
 fn print_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) {
+    println!("{}", render_yara_hits(results, output));
+}
+
+/// Humble Object: render YARA scan hits. `image_name`, `rule_name`, and
+/// `protection_str` are attacker-controlled, so JSON wraps them in `JsonSafe`
+/// and CSV runs them through `csv_field`.
+fn render_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2778,38 +2842,41 @@ fn print_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) {
                     table_cell(&r.protection_str),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} YARA hits across {} processes",
+            format!("{table}\n\nTotal: {} YARA hits across {} processes",
                 results.len(),
                 results.iter().map(|r| r.pid).collect::<std::collections::HashSet<_>>().len(),
-            );
+            )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for r in results {
                 let json = serde_json::json!({
                     "pid":            r.pid,
-                    "image_name":     r.image_name,
-                    "rule_name":      r.rule_name,
+                    "image_name":     jsonguard::JsonSafe(&r.image_name),
+                    "rule_name":      jsonguard::JsonSafe(&r.rule_name),
                     "start_vaddr":    r.start_vaddr,
                     "end_vaddr":      r.end_vaddr,
-                    "protection_str": r.protection_str,
+                    "protection_str": jsonguard::JsonSafe(&r.protection_str),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,rule_name,start_vaddr,end_vaddr,protection_str");
+            let mut out = String::from("pid,image_name,rule_name,start_vaddr,end_vaddr,protection_str\n");
             for r in results {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{},0x{:016x},0x{:016x},{}",
                     r.pid,
-                    csv_field(&r.image_name),
-                    csv_field(&r.rule_name),
+                    csv_field(&r.image_name).value,
+                    csv_field(&r.rule_name).value,
                     r.start_vaddr,
                     r.end_vaddr,
-                    csv_field(&r.protection_str),
+                    csv_field(&r.protection_str).value,
                 );
             }
+            out
         }
     }
 }
@@ -2819,6 +2886,13 @@ fn print_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) {
 // ---------------------------------------------------------------------------
 
 fn print_arp_entries(entries: &[memf_linux::ArpEntryInfo], output: OutputFormat) {
+    println!("{}", render_arp_entries(entries, output));
+}
+
+/// Humble Object: render ARP/neighbour entries. `ip_addr`, `mac_addr`, and
+/// `dev_name` are decoded from kernel memory (attacker-controllable), so JSON
+/// wraps them in `JsonSafe` and CSV runs them through `csv_field`.
+fn render_arp_entries(entries: &[memf_linux::ArpEntryInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2826,44 +2900,53 @@ fn print_arp_entries(entries: &[memf_linux::ArpEntryInfo], output: OutputFormat)
             table.set_header(vec!["IP Address", "MAC Address", "Device", "State"]);
             for e in entries {
                 table.add_row(vec![
-                    &e.ip_addr,
-                    &e.mac_addr,
-                    &e.dev_name,
-                    &e.state.to_string(),
+                    table_cell(&e.ip_addr),
+                    table_cell(&e.mac_addr),
+                    table_cell(&e.dev_name),
+                    e.state.to_string(),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} ARP entries", entries.len());
+            format!("{table}\n\nTotal: {} ARP entries", entries.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for e in entries {
                 let json = serde_json::json!({
-                    "ip_addr": e.ip_addr,
-                    "mac_addr": e.mac_addr,
-                    "dev_name": e.dev_name,
+                    "ip_addr": jsonguard::JsonSafe(&e.ip_addr),
+                    "mac_addr": jsonguard::JsonSafe(&e.mac_addr),
+                    "dev_name": jsonguard::JsonSafe(&e.dev_name),
                     "state": e.state.to_string(),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("ip_addr,mac_addr,dev_name,state");
+            let mut out = String::from("ip_addr,mac_addr,dev_name,state\n");
             for e in entries {
-                println!("{},{},{},{}", e.ip_addr, e.mac_addr, e.dev_name, e.state);
+                let _ = writeln!(out, "{},{},{},{}", csv_field(&e.ip_addr).value, csv_field(&e.mac_addr).value, csv_field(&e.dev_name).value, e.state);
             }
+            out
         }
     }
 }
 
 fn print_connections(conns: &[memf_linux::ConnectionInfo], output: OutputFormat) {
+    println!("{}", render_connections(conns, output));
+}
+
+/// Humble Object: render Linux connections. `local_addr` and `remote_addr` are
+/// decoded from kernel memory (attacker-controllable), so JSON wraps them in
+/// `JsonSafe` and CSV runs them through `csv_field`.
+fn render_connections(conns: &[memf_linux::ConnectionInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
             table.set_header(vec!["Proto", "Local", "Remote", "State", "PID"]);
             for c in conns {
-                let local = format!("{}:{}", c.local_addr, c.local_port);
-                let remote = format!("{}:{}", c.remote_addr, c.remote_port);
+                let local = format!("{}:{}", table_cell(&c.local_addr), c.local_port);
+                let remote = format!("{}:{}", table_cell(&c.remote_addr), c.remote_port);
                 let pid_str = c.pid.map_or_else(|| "-".to_string(), |p| format!("{p}"));
                 table.add_row(vec![
                     format!("{}", c.protocol),
@@ -2873,43 +2956,53 @@ fn print_connections(conns: &[memf_linux::ConnectionInfo], output: OutputFormat)
                     pid_str,
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} connections", conns.len());
+            format!("{table}\n\nTotal: {} connections", conns.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for c in conns {
                 let json = serde_json::json!({
                     "protocol": format!("{}", c.protocol),
-                    "local_addr": c.local_addr,
+                    "local_addr": jsonguard::JsonSafe(&c.local_addr),
                     "local_port": c.local_port,
-                    "remote_addr": c.remote_addr,
+                    "remote_addr": jsonguard::JsonSafe(&c.remote_addr),
                     "remote_port": c.remote_port,
                     "state": format!("{}", c.state),
                     "pid": c.pid,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("proto,local,remote,state,pid");
+            let mut out = String::from("proto,local,remote,state,pid\n");
             for c in conns {
                 let pid_str = c.pid.map_or_else(|| "-".to_string(), |p| format!("{p}"));
-                println!(
-                    "{},{}:{},{}:{},{},{}",
+                let local = format!("{}:{}", c.local_addr, c.local_port);
+                let remote = format!("{}:{}", c.remote_addr, c.remote_port);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{},{}",
                     c.protocol,
-                    c.local_addr,
-                    c.local_port,
-                    c.remote_addr,
-                    c.remote_port,
+                    csv_field(&local).value,
+                    csv_field(&remote).value,
                     c.state,
                     pid_str
                 );
             }
+            out
         }
     }
 }
 
 fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: OutputFormat) {
+    println!("{}", render_win_connections(conns, output));
+}
+
+/// Humble Object: render Windows connections. `protocol`, `local_addr`,
+/// `remote_addr`, and `process_name` are attacker-controllable, so JSON wraps
+/// them in `JsonSafe` and CSV runs them through `csv_field`.
+fn render_win_connections(conns: &[memf_windows::WinConnectionInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2934,43 +3027,46 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
                     format_filetime(c.create_time),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} connections", conns.len());
+            format!("{table}\n\nTotal: {} connections", conns.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for c in conns {
                 let json = serde_json::json!({
                     "offset": format!("{:#x}", c.offset),
-                    "protocol": c.protocol,
-                    "local_addr": c.local_addr,
+                    "protocol": jsonguard::JsonSafe(&c.protocol),
+                    "local_addr": jsonguard::JsonSafe(&c.local_addr),
                     "local_port": c.local_port,
-                    "remote_addr": c.remote_addr,
+                    "remote_addr": jsonguard::JsonSafe(&c.remote_addr),
                     "remote_port": c.remote_port,
                     "state": format!("{}", c.state),
                     "pid": c.pid,
-                    "process_name": c.process_name,
+                    "process_name": jsonguard::JsonSafe(&c.process_name),
                     "create_time": format_filetime(c.create_time),
                     "create_time_raw": c.create_time,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("offset,proto,local_addr,local_port,remote_addr,remote_port,state,pid,process,created,created_raw");
+            let mut out = String::from("offset,proto,local_addr,local_port,remote_addr,remote_port,state,pid,process,created,created_raw\n");
             for c in conns {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{:#x},{},{},{},{},{},{},{},{},{},{}",
                     c.offset,
-                    c.protocol,
-                    c.local_addr, c.local_port,
-                    c.remote_addr, c.remote_port,
+                    csv_field(&c.protocol).value,
+                    csv_field(&c.local_addr).value, c.local_port,
+                    csv_field(&c.remote_addr).value, c.remote_port,
                     c.state,
                     c.pid,
-                    c.process_name,
+                    csv_field(&c.process_name).value,
                     format_filetime(c.create_time),
                     c.create_time,
                 );
             }
+            out
         }
     }
 }
@@ -3042,10 +3138,22 @@ fn print_libs(
     dlls: &[memf_windows::WinDllInfo],
     output: OutputFormat,
 ) {
+    print!("{}", render_libs(process_ctx, dlls, output));
+}
+
+/// Humble Object: render loaded libraries (DLLs/.so/dylibs). The process
+/// `image_name` (from `process_ctx`) and each module's `name`/`full_path` are
+/// attacker-controlled, so JSON wraps them in `JsonSafe` and CSV runs them
+/// through `csv_field`.
+fn render_libs(
+    process_ctx: Option<(u64, &str)>,
+    dlls: &[memf_windows::WinDllInfo],
+    output: OutputFormat,
+) -> String {
+    let mut out = String::new();
     if let Some((pid, name)) = process_ctx {
-        match output {
-            OutputFormat::Table => println!("=== {name} (PID {pid}) ==="),
-            OutputFormat::Json | OutputFormat::Ndjson | OutputFormat::Csv => {}
+        if matches!(output, OutputFormat::Table) {
+            let _ = writeln!(out, "=== {} (PID {pid}) ===", table_cell(name));
         }
     }
     match output {
@@ -3062,46 +3170,49 @@ fn print_libs(
                     table_cell(&d.full_path),
                 ]);
             }
-            println!("{table}");
-            println!("Total: {} DLLs\n", dlls.len());
+            let _ = writeln!(out, "{table}");
+            let _ = writeln!(out, "Total: {} DLLs\n", dlls.len());
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
             for d in dlls {
                 let mut json = serde_json::json!({
-                    "name": d.name,
+                    "name": jsonguard::JsonSafe(&d.name),
                     "base_addr": format!("{:#x}", d.base_addr),
                     "size": d.size,
                     "load_order": d.load_order,
-                    "path": d.full_path,
+                    "path": jsonguard::JsonSafe(&d.full_path),
                 });
                 if let Some((pid, name)) = process_ctx {
                     json["pid"] = serde_json::json!(pid);
-                    json["image_name"] = serde_json::json!(name);
+                    json["image_name"] = serde_json::json!(jsonguard::JsonSafe(name));
                 }
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
         }
         OutputFormat::Csv => {
             if process_ctx.is_some() {
-                println!("pid,image_name,name,base_addr,size,load_order,path");
+                out.push_str("pid,image_name,name,base_addr,size,load_order,path\n");
             } else {
-                println!("name,base_addr,size,load_order,path");
+                out.push_str("name,base_addr,size,load_order,path\n");
             }
             for d in dlls {
                 if let Some((pid, name)) = process_ctx {
-                    println!(
-                        "{pid},{name},{},{:#x},{},{},{}",
-                        d.name, d.base_addr, d.size, d.load_order, csv_field(&d.full_path)
+                    let _ = writeln!(
+                        out,
+                        "{pid},{},{},{:#x},{},{},{}",
+                        csv_field(name).value, csv_field(&d.name).value, d.base_addr, d.size, d.load_order, csv_field(&d.full_path).value
                     );
                 } else {
-                    println!(
+                    let _ = writeln!(
+                        out,
                         "{},{:#x},{},{},{}",
-                        d.name, d.base_addr, d.size, d.load_order, csv_field(&d.full_path)
+                        csv_field(&d.name).value, d.base_addr, d.size, d.load_order, csv_field(&d.full_path).value
                     );
                 }
             }
         }
     }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -3109,6 +3220,13 @@ fn print_libs(
 // ---------------------------------------------------------------------------
 
 fn print_strings_table(strings: &[memf_strings::ClassifiedString]) {
+    println!("{}", print_strings_table_render(strings));
+}
+
+/// Humble Object: render the classified-strings table. The carved `value` is
+/// sanitized via `table_cell` and truncated by CHARACTERS (byte-slicing a
+/// decoded String would panic on a multi-byte UTF-8 boundary).
+fn print_strings_table_render(strings: &[memf_strings::ClassifiedString]) -> String {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL_CONDENSED);
     table.set_header(vec!["Offset", "Encoding", "Categories", "Value"]);
@@ -3125,10 +3243,12 @@ fn print_strings_table(strings: &[memf_strings::ClassifiedString]) {
             cats.join(", ")
         };
 
-        let value_display = if s.value.len() > 80 {
-            format!("{}...", &s.value[..77])
+        let cell = table_cell(&s.value);
+        let value_display = if cell.chars().count() > 80 {
+            let head: String = cell.chars().take(77).collect();
+            format!("{head}...")
         } else {
-            table_cell(&s.value)
+            cell
         };
 
         table.add_row(vec![
@@ -3139,41 +3259,57 @@ fn print_strings_table(strings: &[memf_strings::ClassifiedString]) {
         ]);
     }
 
-    println!("{table}");
-    println!(
-        "\nTotal: {} strings ({} classified)",
+    format!(
+        "{table}\n\nTotal: {} strings ({} classified)",
         strings.len(),
         strings.iter().filter(|s| !s.categories.is_empty()).count()
-    );
+    )
 }
 
 fn print_strings_json(strings: &[memf_strings::ClassifiedString]) -> Result<()> {
+    print!("{}", render_strings_json(strings));
+    Ok(())
+}
+
+/// Humble Object: render classified strings as one JSON object per line. The
+/// carved `value` is the canonical attacker-controlled string, so it is wrapped
+/// in `JsonSafe` (bidi/control → U+FFFD) before emission.
+fn render_strings_json(strings: &[memf_strings::ClassifiedString]) -> String {
+    let mut out = String::new();
     for s in strings {
         let json = serde_json::json!({
             "offset": s.physical_offset,
             "encoding": format!("{:?}", s.encoding),
-            "value": s.value,
+            "value": jsonguard::JsonSafe(&s.value),
             "categories": s.categories.iter().map(|(c, conf)| {
                 serde_json::json!({"category": format!("{c:?}"), "confidence": conf})
             }).collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string(&json)?);
+        let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
     }
-    Ok(())
+    out
 }
 
 fn print_strings_csv(strings: &[memf_strings::ClassifiedString]) {
-    println!("offset,encoding,categories,value");
+    print!("{}", render_strings_csv(strings));
+}
+
+/// Humble Object: render classified strings as CSV. The carved `value` runs
+/// through `csv_field` (RFC 4180 quoting + formula-injection guard).
+fn render_strings_csv(strings: &[memf_strings::ClassifiedString]) -> String {
+    let mut out = String::from("offset,encoding,categories,value\n");
     for s in strings {
         let cats: Vec<String> = s.categories.iter().map(|(c, _)| format!("{c:?}")).collect();
-        println!(
+        let _ = writeln!(
+            out,
             "{:#010x},{:?},{},{}",
             s.physical_offset,
             s.encoding,
             cats.join(";"),
-            csv_field(&s.value)
+            csv_field(&s.value).value
         );
     }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -6069,6 +6205,218 @@ mod tests {
         assert!(!json.contains('\u{202e}'), "bidi json: {json}");
         serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
         let csv = render_linux_pstree(&entries, OutputFormat::Csv, &boot);
+        assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
+        assert!(!csv.contains(",=calc"), "formula guarded: {csv}");
+    }
+
+    // ----- modules / drivers / envvars / pstree / masquerade / ppid / yara -----
+
+    /// Shared assertion: JSON has no bidi and its first line is valid JSON; CSV
+    /// has no bidi and no unguarded leading-`=` formula after a comma.
+    fn assert_json_csv_safe(json: &str, csv: &str) {
+        assert!(!json.contains('\u{202e}'), "bidi in JSON: {json}");
+        if let Some(first) = json.lines().next() {
+            serde_json::from_str::<serde_json::Value>(first).expect("valid json object");
+        }
+        assert!(!csv.contains('\u{202e}'), "bidi in CSV: {csv}");
+        assert!(!csv.contains(",=calc"), "formula must be guarded: {csv}");
+    }
+
+    const BIDI_FORMULA: &str = "=calc\u{202e}x";
+
+    #[test]
+    fn render_linux_modules_sanitizes_name() {
+        let mods = vec![memf_linux::ModuleInfo {
+            name: BIDI_FORMULA.into(),
+            base_addr: 0x1000,
+            size: 4096,
+            state: memf_linux::ModuleState::Live,
+        }];
+        assert_json_csv_safe(
+            &render_linux_modules(&mods, OutputFormat::Json),
+            &render_linux_modules(&mods, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_windows_drivers_sanitizes_name_and_path() {
+        let drivers = vec![memf_windows::WinDriverInfo {
+            name: BIDI_FORMULA.into(),
+            full_path: "C:\\\u{202e}evil.sys".into(),
+            base_addr: 0x1000,
+            size: 4096,
+            vaddr: 0x2000,
+        }];
+        assert_json_csv_safe(
+            &render_windows_drivers(&drivers, OutputFormat::Json),
+            &render_windows_drivers(&drivers, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_windows_envvars_sanitizes_all() {
+        let vars = vec![memf_windows::WinEnvVarInfo {
+            pid: 7,
+            image_name: "x.exe".into(),
+            variable: "PATH\u{202e}".into(),
+            value: BIDI_FORMULA.into(),
+        }];
+        assert_json_csv_safe(
+            &render_windows_envvars(&vars, OutputFormat::Json),
+            &render_windows_envvars(&vars, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_pstree_sanitizes_image_name() {
+        let entries = vec![memf_windows::WinPsTreeEntry { process: wpi(7, BIDI_FORMULA), depth: 0 }];
+        assert_json_csv_safe(
+            &render_pstree(&entries, OutputFormat::Json),
+            &render_pstree(&entries, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_masquerade_sanitizes_names() {
+        let results = vec![memf_windows::WinPebMasqueradeInfo {
+            pid: 7,
+            eprocess_name: BIDI_FORMULA.into(),
+            peb_image_path: "C:\\\u{202e}p".into(),
+            suspicious: true,
+        }];
+        assert_json_csv_safe(
+            &render_masquerade(&results, OutputFormat::Json),
+            &render_masquerade(&results, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_ppid_spoof_sanitizes_names_and_expected() {
+        use forensicnomicon::processes::SpoofConfidence;
+        let results = vec![memf_windows::WinPpidSpoofInfo {
+            pid: 7,
+            ppid: 4,
+            name: BIDI_FORMULA.into(),
+            parent_name: "\u{202e}svchost.exe".into(),
+            expected_parents: vec!["services.exe".into(), "=evil\u{202e}".into()],
+            confidence: SpoofConfidence::High,
+        }];
+        assert_json_csv_safe(
+            &render_ppid_spoof(&results, OutputFormat::Json),
+            &render_ppid_spoof(&results, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_yara_hits_sanitizes_names() {
+        let results = vec![memf_windows::WinYaraHit {
+            pid: 7,
+            image_name: BIDI_FORMULA.into(),
+            start_vaddr: 0x1000,
+            end_vaddr: 0x2000,
+            protection_str: "RWX".into(),
+            rule_name: "evil_\u{202e}rule".into(),
+        }];
+        assert_json_csv_safe(
+            &render_yara_hits(&results, OutputFormat::Json),
+            &render_yara_hits(&results, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_arp_entries_sanitizes_fields() {
+        let entries = vec![memf_linux::ArpEntryInfo {
+            ip_addr: "10.0.0.1".into(),
+            mac_addr: "aa:bb:cc:dd:ee:ff".into(),
+            dev_name: BIDI_FORMULA.into(),
+            state: memf_linux::NeighState::Reachable,
+        }];
+        assert_json_csv_safe(
+            &render_arp_entries(&entries, OutputFormat::Json),
+            &render_arp_entries(&entries, OutputFormat::Csv),
+        );
+    }
+
+    #[test]
+    fn render_connections_sanitizes_addrs() {
+        let conns = vec![memf_linux::ConnectionInfo {
+            protocol: memf_linux::Protocol::Tcp,
+            local_addr: "=calc\u{202e}".into(),
+            local_port: 80,
+            remote_addr: "1.2.3.4".into(),
+            remote_port: 443,
+            state: memf_linux::ConnectionState::Established,
+            pid: Some(7),
+        }];
+        let json = render_connections(&conns, OutputFormat::Json);
+        let csv = render_connections(&conns, OutputFormat::Csv);
+        assert!(!json.contains('\u{202e}'), "bidi json: {json}");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
+    }
+
+    #[test]
+    fn render_win_connections_sanitizes_fields() {
+        let conns = vec![memf_windows::WinConnectionInfo {
+            protocol: "TCP".into(),
+            local_addr: "=calc\u{202e}".into(),
+            local_port: 80,
+            remote_addr: "1.2.3.4".into(),
+            remote_port: 443,
+            state: memf_windows::WinTcpState::Established,
+            pid: 7,
+            process_name: "\u{202e}evil.exe".into(),
+            create_time: 0,
+            offset: 0x1000,
+        }];
+        let json = render_win_connections(&conns, OutputFormat::Json);
+        let csv = render_win_connections(&conns, OutputFormat::Csv);
+        assert!(!json.contains('\u{202e}'), "bidi json: {json}");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
+    }
+
+    #[test]
+    fn render_libs_sanitizes_names_and_ctx() {
+        let dlls = vec![memf_windows::WinDllInfo {
+            name: BIDI_FORMULA.into(),
+            full_path: "C:\\\u{202e}evil.dll".into(),
+            base_addr: 0x1000,
+            size: 4096,
+            load_order: 0,
+        }];
+        let json = render_libs(Some((7, "=ctx\u{202e}.exe")), &dlls, OutputFormat::Json);
+        let csv = render_libs(Some((7, "=ctx\u{202e}.exe")), &dlls, OutputFormat::Csv);
+        assert!(!json.contains('\u{202e}'), "bidi json: {json}");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
+        assert!(!csv.lines().nth(1).unwrap_or_default().contains(",=ctx"), "ctx formula guarded: {csv}");
+    }
+
+    #[test]
+    fn render_strings_json_csv_sanitize_value_and_no_panic() {
+        // Multi-byte value longer than the 80-char table cap must not panic the
+        // table arm (it previously byte-sliced &value[..77]).
+        let long = format!("{}\u{4e16}\u{754c}", "A".repeat(79));
+        let strings = vec![
+            memf_strings::ClassifiedString {
+                value: long,
+                physical_offset: 0x1000,
+                encoding: memf_strings::StringEncoding::Ascii,
+                categories: vec![],
+            },
+            memf_strings::ClassifiedString {
+                value: "=calc\u{202e},x".into(),
+                physical_offset: 0x2000,
+                encoding: memf_strings::StringEncoding::Ascii,
+                categories: vec![],
+            },
+        ];
+        let _ = print_strings_table_render(&strings); // must not panic
+        let json = render_strings_json(&strings);
+        let csv = render_strings_csv(&strings);
+        assert!(!json.contains('\u{202e}'), "bidi json: {json}");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
         assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
         assert!(!csv.contains(",=calc"), "formula guarded: {csv}");
     }
