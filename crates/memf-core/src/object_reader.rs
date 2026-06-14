@@ -645,6 +645,54 @@ mod tests {
     }
 
     #[test]
+    fn walk_list_with_tolerates_smeared_null_link() {
+        // Real raw dumps captured live contain "smear": a torn-down EPROCESS
+        // whose ActiveProcessLinks.Flink reads as 0 (validated on
+        // DESKTOP-SDN1RPT.mem at process #83, a duplicate pid-4096 empty-name
+        // rundown entry). The walk must return the processes collected so far —
+        // NOT hard-error and lose all of them, and NOT push a bogus container
+        // derived from the null pointer.
+        let isf = IsfBuilder::new()
+            .add_struct("_EPROCESS", 256)
+            .add_field("_EPROCESS", "ActiveProcessLinks", 0x10, "_LIST_ENTRY")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer");
+
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+        let b_paddr: u64 = 0x0080_2000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let b_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let list_offset: u64 = 0x10;
+
+        // head -> A -> B -> NULL (smear: B.Flink == 0, never loops back to head).
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .map_4k(b_vaddr, b_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, a_vaddr + list_offset)
+            .write_phys_u64(a_paddr + list_offset, b_vaddr + list_offset)
+            .write_phys_u64(b_paddr + list_offset, 0); // smeared null Flink
+
+        let reader = make_reader(&isf, ptb);
+
+        let containers = reader
+            .walk_list_with(
+                head_vaddr,
+                "_LIST_ENTRY",
+                "Flink",
+                "_EPROCESS",
+                "ActiveProcessLinks",
+            )
+            .expect("a smeared null link must terminate the walk gracefully, not error");
+
+        // A and B were reached before the smear; the null link is the terminus.
+        assert_eq!(containers, vec![a_vaddr, b_vaddr]);
+    }
+
+    #[test]
     fn walk_list_with_empty() {
         // Empty list: head.Flink points back to head.
         let isf = IsfBuilder::new()
