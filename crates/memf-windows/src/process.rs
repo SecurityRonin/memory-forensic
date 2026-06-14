@@ -18,10 +18,15 @@ pub fn walk_processes<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinProcessInfo>> {
-    let eproc_addrs = reader.walk_list_with(
+    // Walk ActiveProcessLinks in BOTH directions: a live-acquisition smear can
+    // break the forward (Flink) chain and orphan every process beyond it, yet
+    // those remain reachable backward (Blink) from the head. Unioning both
+    // recovers them without pool-tag scanning.
+    let eproc_addrs = reader.walk_list_bidirectional(
         ps_head_vaddr,
         "_LIST_ENTRY",
         "Flink",
+        "Blink",
         "_EPROCESS",
         "ActiveProcessLinks",
     )?;
@@ -149,10 +154,15 @@ pub fn check_peb_masquerade<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     ps_head_vaddr: u64,
 ) -> Result<Vec<WinPebMasqueradeInfo>> {
-    let eproc_addrs = reader.walk_list_with(
+    // Walk ActiveProcessLinks in BOTH directions: a live-acquisition smear can
+    // break the forward (Flink) chain and orphan every process beyond it, yet
+    // those remain reachable backward (Blink) from the head. Unioning both
+    // recovers them without pool-tag scanning.
+    let eproc_addrs = reader.walk_list_bidirectional(
         ps_head_vaddr,
         "_LIST_ENTRY",
         "Flink",
+        "Blink",
         "_EPROCESS",
         "ActiveProcessLinks",
     )?;
