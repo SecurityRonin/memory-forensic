@@ -87,15 +87,24 @@ pub fn download_isf(
 
 /// Discover a cached ISF or auto-download one, searching `cache_dir` first.
 ///
-/// Returns `None` if both the cache and the download fail (caller logs the error).
+/// `allow_network` gates the phone-home: when `false` (offline mode) a cache
+/// miss returns an error instead of reaching the ISF community server. A cache
+/// hit always resolves regardless of `allow_network`.
 pub fn resolve_isf(
     cache_dir: &Path,
     pdb_name: &str,
     guid: &str,
     age: u32,
+    allow_network: bool,
 ) -> anyhow::Result<PathBuf> {
     if let Some(cached) = find_cached(cache_dir, pdb_name, guid, age) {
         return Ok(cached);
+    }
+    if !allow_network {
+        anyhow::bail!(
+            "{pdb_name} not in symbol cache and network download disabled (offline mode)\n\
+             Hint: run `memf symserver <dump>` while online to populate the cache, then retry."
+        );
     }
     download_isf(cache_dir, pdb_name, guid, age)
 }

@@ -74,6 +74,12 @@ use os_detect::{AnalysisContext, OsProfile};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Offline mode: never contact the ISF symbol server. A cache miss fails
+    /// instead of phoning home. The network capability is always present — this
+    /// only disables it at runtime (for air-gapped / evidence-handling work).
+    #[arg(long, global = true)]
+    offline: bool,
 }
 
 /// Parse a hex address string for Clap's value_parser.
@@ -653,6 +659,7 @@ fn main() -> Result<()> {
         raw
     };
     let cli = Cli::parse_from(&effective);
+    let allow_network = !cli.offline;
 
     match cli.command {
         Commands::Info { dump } => {
@@ -969,7 +976,7 @@ fn main() -> Result<()> {
             let pid_filter = vol_compat::parse_pid(plugin_specific);
             // Auto-download ISF when no --symbols provided.
             let auto_isf: Option<PathBuf> = if symbol_dirs.is_empty() {
-                try_auto_download_isf(&file, quiet)
+                try_auto_download_isf(&file, quiet, allow_network)
             } else {
                 None
             };
@@ -3054,7 +3061,7 @@ fn find_kernel_pdb_in_physmem(
 
 /// Try to auto-download an ISF for the kernel found in `dump`.
 /// Returns the cached ISF path on success, `None` on any failure (with warning).
-fn try_auto_download_isf(dump: &Path, quiet: bool) -> Option<PathBuf> {
+fn try_auto_download_isf(dump: &Path, quiet: bool, allow_network: bool) -> Option<PathBuf> {
     let cache = symbol_dl::default_cache_dir();
 
     let provider = match open_dump_for(dump, true) {
@@ -3069,12 +3076,13 @@ fn try_auto_download_isf(dump: &Path, quiet: bool) -> Option<PathBuf> {
 
     if !quiet {
         eprintln!(
-            "Detected kernel: {} (GUID {}, age {}). Checking ISF cache...",
-            pdb_id.pdb_name, pdb_id.guid, pdb_id.age
+            "Detected kernel: {} (GUID {}, age {}). Checking ISF cache{}...",
+            pdb_id.pdb_name, pdb_id.guid, pdb_id.age,
+            if allow_network { "" } else { " (offline — cache only)" }
         );
     }
 
-    match symbol_dl::resolve_isf(&cache, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age) {
+    match symbol_dl::resolve_isf(&cache, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age, allow_network) {
         Ok(path) => {
             if !quiet { eprintln!("Symbols ready: {}", path.display()); }
             Some(path)
