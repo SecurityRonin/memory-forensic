@@ -36,6 +36,10 @@ pub mod dkom_detect;
 pub mod dll;
 pub mod dns_cache;
 pub mod dpapi_keys;
+// Folded in from the former memf-dpapi crate (DPAPI/Chrome blob decryption).
+// It predates this crate's missing_docs policy; doc backfill is a follow-up.
+#[allow(missing_docs)]
+pub mod dpapi;
 pub mod driver;
 pub mod driver_irp;
 pub mod dse_bypass;

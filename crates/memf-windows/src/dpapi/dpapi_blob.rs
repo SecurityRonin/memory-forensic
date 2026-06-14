@@ -1,4 +1,4 @@
-use crate::DpapiError;
+use crate::dpapi::DpapiError;
 
 #[derive(Debug, Clone)]
 pub struct DpapiBlob {
@@ -72,9 +72,8 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
 
     // HMAC digest size depends on hash algorithm
     let digest_len: usize = match alg_id_hash {
-        0x8004 => 20, // SHA1
         0x800C => 64, // SHA512
-        _ => 20,      // default to SHA1 digest size
+        _ => 20,      // SHA1 (0x8004) and default
     };
 
     if data.len() < pos + digest_len {

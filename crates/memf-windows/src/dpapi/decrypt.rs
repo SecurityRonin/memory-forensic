@@ -4,7 +4,7 @@ use cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 
-use crate::DpapiError;
+use crate::dpapi::DpapiError;
 
 /// Decrypt an AES-256-CBC ciphertext.
 pub fn decrypt_aes256_cbc(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, DpapiError> {
@@ -29,7 +29,7 @@ pub fn verify_hmac_sha1(key: &[u8], data: &[u8], expected: &[u8]) -> Result<(), 
 /// Derives session key via HMAC-SHA1(master_key, blob.hmac_key), expands it,
 /// then decrypts with AES-256-CBC or 3DES-CBC depending on alg_id_encrypt.
 pub fn decrypt_dpapi_blob(
-    blob: &crate::dpapi_blob::DpapiBlob,
+    blob: &crate::dpapi::dpapi_blob::DpapiBlob,
     master_key: &[u8],
 ) -> Result<Vec<u8>, DpapiError> {
     // Derive session key: HMAC-SHA1(master_key, hmac_key_from_blob)

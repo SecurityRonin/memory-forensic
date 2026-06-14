@@ -1826,23 +1826,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memf-dpapi"
-version = "0.1.0"
-dependencies = [
- "aes",
- "aes-gcm",
- "cbc",
- "cipher",
- "des",
- "digest",
- "hmac",
- "pbkdf2",
- "sha1",
- "sha2",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "memf-format"
 version = "0.1.0"
 dependencies = [
@@ -1913,17 +1896,26 @@ dependencies = [
 name = "memf-windows"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "aes-gcm",
+ "cbc",
+ "cipher",
+ "des",
+ "digest",
  "forensicnomicon",
  "goblin",
+ "hmac",
  "memf-core",
  "memf-correlate",
- "memf-dpapi",
  "memf-format",
  "memf-framebuffer",
  "memf-symbols",
+ "pbkdf2",
  "regex",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2",
  "thiserror 2.0.18",
  "winevt-core",
  "yara-x",

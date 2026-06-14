@@ -1,4 +1,4 @@
-use crate::DpapiError;
+use crate::dpapi::DpapiError;
 
 /// How a Chrome/Chromium cookie value is encoded in heap memory.
 #[derive(Debug, PartialEq)]
