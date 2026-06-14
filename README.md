@@ -1,40 +1,72 @@
-[![Stars](https://img.shields.io/github/stars/SecurityRonin/memory-forensic?style=flat-square)](https://github.com/SecurityRonin/memory-forensic/stargazers)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/SecurityRonin/memory-forensic/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/memory-forensic/actions/workflows/ci.yml)
 [![Rust 1.75+](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)](#install)
+[![unsafe: bounded](https://img.shields.io/badge/unsafe-bounded%20(mmap%20only)-green.svg)](#trust-but-verify)
 [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
 # memory-forensic
 
-**Walk any memory dump. Find what's hidden. One binary, zero setup.**
+**A memory forensics toolkit that profiles Windows kernels itself — and is cross-checked, process-for-process, against Volatility 3.**
 
-`memory-forensic` is a Rust library and toolkit that reads LiME, AVML, Windows crash dumps, and six other formats, then walks processes, threads, modules, network connections, and injected memory — from a single static binary you compile once and copy anywhere. Every output channel (table, CSV, JSON) sanitizes free-text data: RFC 4180 CSV quoting, formula-injection guard, and bidi/control-character stripping before it reaches your terminal or pipeline.
+`memf` reads every common dump format (LiME, AVML, ELF core, Windows crash dumps, hibernation files, VMware save-states, kdump, raw…) and walks processes, threads, modules, network connections, and injected memory — from **one static binary** you compile once and copy anywhere, with **no Python, no runtime, no pre-staged symbol catalog**. On Windows it builds its own profile: locate `ntoskrnl` in physical memory, read its PDB GUID from the CodeView record, resolve the matching Volatility-3 ISF, recover the kernel base under modern KASLR, and reconstruct `PsActiveProcessHead` from the symbol table — the same self-profiling chain Volatility 3 and MemProcFS use, reimplemented in Rust.
+
+Because the bar for an evidence tool is *correctness*, the process walker is validated head-to-head against Volatility 3 on a real 2 GB Windows 10 image:
+
+| `windows.pslist` on DESKTOP-SDN1RPT.mem | result |
+|---|---|
+| Processes matched | **83 / 83 shared — exact PID, PPID, name, create-time** |
+| False positives (memf reported, vol3 did not) | **0 — 100% precision** |
+| Reachable-list recall | 84 / 95 (the 11-process gap is a single live-acquisition smear; [details](docs/validation.md)) |
+
+See [`docs/validation.md`](docs/validation.md) for the full differential and reproduction steps.
+
+## Quick start
+
+Not yet on crates.io — build from source (single static binary, ~one command):
 
 ```bash
-cargo install memory-forensic
-
-# Linux — supply an ISF symbol file
-memf ps --symbols linux.json --tree memdump.lime
-
-# Windows — no symbol file needed, PDB auto-downloaded from msdl.microsoft.com
-memf ps --tree win10.dmp
+git clone https://github.com/SecurityRonin/memory-forensic.git
+cd memory-forensic && cargo build --release
+./target/release/memf --help
 ```
 
-> **Windows auto-profile:** `memory-forensic` scans physical pages for the ntoskrnl PE, extracts its PDB GUID via the CodeView debug directory, fetches the exact matching PDB from Microsoft's public symbol server, and parses struct layouts at runtime — all without any pre-staged symbol file. Works for every Windows build automatically.
+```bash
+# Inspect any dump — format, ranges, embedded metadata (no symbols needed)
+memf info win10.mem
 
-**[Full documentation →](https://securityronin.github.io/memory-forensic/)**
+# Windows process tree. The ISF is resolved from the kernel's own PDB GUID;
+# raw .mem dumps take the page-table base via --cr3 (crash dumps carry their own).
+memf ps --symbols ntkrnlmp.json --cr3 0x1ad000 --tree win10.mem
+
+# Linux process tree from a LiME capture
+memf ps --symbols linux.json --tree memdump.lime
+
+# Air-gapped lab? Never touch the network for symbols:
+memf ps --symbols ntkrnlmp.json --offline win10.mem
+```
+
+Symbol files are ISF JSON — the **same packs Volatility 3 uses**, so an existing symbol cache works as-is.
+
+---
+
+## Why memf
+
+| | **memf** | Volatility 3 | MemProcFS |
+|---|---|---|---|
+| Deploy | Rust · **single static binary** | Python · interpreter + deps | C(+Rust) · libraries |
+| Windows self-profiling (scan → PDB GUID → symbols) | ✅ | ✅ | ✅ |
+| Header-less DTB via the boot low stub + page-granular kernel base | ✅ | self-ref PML4 + image scan | ✅ low stub |
+| Offline / air-gapped symbol mode | ✅ `--offline` | ISF pack or network | symbols / network |
+| Panic-free on untrusted dumps (`unsafe`-deny, no `unwrap`/`expect`) | ✅ | — | — |
+| Cross-checked against Volatility 3 | ✅ ([`docs/validation.md`](docs/validation.md)) | — (the reference) | — |
+
+memf is, to our knowledge, the only **Rust** implementation of the full dump → kernel-scan → PDB-GUID → symbol-resolution → DTB chain. The technique lineage — WinDbg's symbol server, Brendan Dolan-Gavitt's `pdbparse`, Rekall, Volatility 3, and Ulf Frisk's MemProcFS — is well established; memf reimplements it clean-room and proves the result against the reference. The boot low-stub / `PROCESSOR_START_BLOCK` anchor follows [Alex Ionescu's REcon 2017 *Getting Physical*](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf).
 
 ---
 
 ## Install
 
-**Cargo**
-```bash
-cargo install memory-forensic
-```
-
-**From source**
 ```bash
 git clone https://github.com/SecurityRonin/memory-forensic.git
 cd memory-forensic
@@ -350,6 +382,17 @@ The nearest alternatives are **Volatility 3** (Python, plugin architecture), **M
 
 ---
 
+## Trust but verify
+
+A tool that parses **untrusted, attacker-controllable** memory images has to refuse to lie and refuse to crash. memf is built to that bar:
+
+- **Panic-free on hostile input.** Production code denies `unwrap`/`expect`/`panic!` and unchecked indexing (`clippy::unwrap_used`/`expect_used` = deny); every length, offset, and pointer read is bounds-checked and degrades gracefully — a smeared process list returns what it found, it does not abort.
+- **Memory-safe by default.** `unsafe_code = "deny"` workspace-wide; the only `unsafe` is the bounded `memmap2` mapping of the dump, individually justified — hence the *bounded (mmap only)* badge rather than *forbidden*.
+- **Validated against an independent oracle, not just our own fixtures.** The Windows process walker is diffed against Volatility 3 on a real 2 GB Win10 image — exact agreement on every shared process, zero false positives ([`docs/validation.md`](docs/validation.md)).
+- **Safe output.** Every channel (table/CSV/JSON) applies RFC 4180 quoting, a spreadsheet formula-injection guard, and bidi/control-character stripping before attacker-controlled strings reach your terminal or pipeline.
+
+---
+
 ## Library Usage
 
 ```rust
@@ -422,7 +465,9 @@ memf-windows = "0.1"
 
 **[S12](https://medium.com/@s12deff)** — the writeup *[Kernel Dynamic Offset Resolution Using PDB Symbols](https://medium.com/@s12deff/kernel-dynamic-offset-resolution-using-pdb-symbols-b0aaa499ac25)* which documented the full chain of scanning a dump for the ntoskrnl PE, extracting the CodeView PDB GUID, and fetching the matching PDB from `msdl.microsoft.com` at runtime. This technique directly inspired the `AutoProfile` implementation in `memf-symbols`.
 
-**[Microsoft Symbol Server](https://learn.microsoft.com/en-us/windows/win32/debug/using-symsrv)** (`msdl.microsoft.com`) for hosting public PDB files for every Windows kernel build, making zero-config Windows analysis possible without pre-staged symbol files.
+**[Alex Ionescu](https://www.alex-ionescu.com/)** — *[Getting Physical With USB Type-C: Windows 10 RAM Forensics and UEFI Attacks](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf)* (REcon Brussels 2017), which documented that the HAL's `HalpLowStub` is the undocumented `PROCESSOR_START_BLOCK` — the low-physical-memory anchor (signature-scanned in `0x1000–0x100000`) carrying the kernel CR3/DTB and a kernel-VA hint. This is the basis for `find_low_stub` and the header-less DTB / kernel-base recovery in `memf-symbols`.
+
+**[Microsoft Symbol Server](https://learn.microsoft.com/en-us/windows/win32/debug/using-symsrv)** (`msdl.microsoft.com`) for hosting public PDB files for every Windows kernel build, the upstream that makes runtime symbol resolution possible without pre-staged symbol files.
 
 ---
 
