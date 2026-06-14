@@ -240,8 +240,8 @@ rule detect_elf {
 
         // Buffer with NOP sled
         let mut data = vec![0u8; 256];
-        for i in 0..16 {
-            data[i] = 0x90; // NOP
+        for slot in data.iter_mut().take(16) {
+            *slot = 0x90; // NOP sled
         }
 
         let matches = scanner.scan_region(&data, 0x4000).unwrap();

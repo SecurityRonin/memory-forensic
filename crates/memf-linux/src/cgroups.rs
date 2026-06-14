@@ -852,7 +852,6 @@ mod tests {
         let css_cgroup_offset: u64 = 0x08;
         let cgroup_kn_offset: u64 = 0x48;
         let kn_name_offset: u64 = 0x48;
-        let _kn_parent_offset: u64 = 0x10;
 
         // task page
         let mut task_page = [0u8; 4096];

@@ -988,7 +988,7 @@ mod tests {
         // PageTableBuilder sets bit0+bit1 (PRESENT+WRITABLE), so AArch64 sees VALID+TABLE.
         // The physical address bits overlap, so the walk should succeed.
         assert!(result.is_ok() || matches!(result, Err(Error::PageNotPresent(_))),
-            "must not panic; got {:?}", result);
+            "must not panic; got {result:?}");
     }
 
     #[test]

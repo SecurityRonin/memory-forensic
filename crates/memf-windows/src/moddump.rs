@@ -383,11 +383,11 @@ mod tests {
 
         // Section data in memory layout
         // .text at VirtualAddress 0x1000
-        for b in buf[0x1000..0x1200].iter_mut() {
+        for b in &mut buf[0x1000..0x1200] {
             *b = 0xCC;
         }
         // .data at VirtualAddress 0x2000
-        for b in buf[0x2000..0x2100].iter_mut() {
+        for b in &mut buf[0x2000..0x2100] {
             *b = 0xDD;
         }
 

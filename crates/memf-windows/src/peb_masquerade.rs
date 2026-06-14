@@ -499,8 +499,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_RTL_USER_PROCESS_PARAMETERS" && field_name == "ImagePathName"
             ),
-            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.ImagePathName), got {:?}",
-            result
+            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.ImagePathName), got {result:?}"
         );
     }
 
@@ -558,8 +557,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_RTL_USER_PROCESS_PARAMETERS" && field_name == "CommandLine"
             ),
-            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.CommandLine), got {:?}",
-            result
+            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.CommandLine), got {result:?}"
         );
     }
 }

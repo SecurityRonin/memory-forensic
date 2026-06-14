@@ -331,7 +331,7 @@ pub fn walk_typed_urls<P: PhysicalMemoryProvider>(
                     if let Ok(Some(cell_idx)) = find_subkey(reader, hive_addr, &cur, component) {
                         let va = cell_address(hive_addr, cell_idx);
                         if let Ok(d) = read_cell_data(reader, va) {
-                            cur = d
+                            cur = d;
                         } else {
                             ok = false;
                             break;

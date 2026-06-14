@@ -163,8 +163,7 @@ mod tests {
         let result = check_tty_hooks(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "tty_drivers"),
-            "expected MissingKernelSymbol {{name: \"tty_drivers\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"tty_drivers\"}}, got {result:?}"
         );
     }
 
@@ -191,8 +190,7 @@ mod tests {
         let result = check_tty_hooks(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_stext"),
-            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {result:?}"
         );
     }
 
@@ -219,8 +217,7 @@ mod tests {
         let result = check_tty_hooks(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_etext"),
-            "expected MissingKernelSymbol {{name: \"_etext\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"_etext\"}}, got {result:?}"
         );
     }
 
@@ -247,8 +244,7 @@ mod tests {
         let result = check_tty_hooks(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "tty_driver" && field_name == "tty_drivers"),
-            "expected MissingField tty_driver.tty_drivers, got {:?}",
-            result
+            "expected MissingField tty_driver.tty_drivers, got {result:?}"
         );
     }
 

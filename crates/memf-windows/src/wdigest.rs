@@ -160,7 +160,7 @@ mod tests {
 
     // Helper: encode a &str as UTF-16LE bytes
     fn utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     // Helper: build a UNICODE_STRING at `addr` pointing to `str_addr`, string = `s`
@@ -238,7 +238,7 @@ mod tests {
 
         // Page 0x3000: string data
         let mut str_page = vec![0u8; 0x1000];
-        str_page[0x000..0x000 + username_bytes.len()].copy_from_slice(&username_bytes);
+        str_page[0x000..username_bytes.len()].copy_from_slice(&username_bytes);
         str_page[0x100..0x100 + domain_bytes.len()].copy_from_slice(&domain_bytes);
         str_page[0x200..0x200 + password_bytes.len()].copy_from_slice(&password_bytes);
 

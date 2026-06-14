@@ -602,8 +602,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_TCP_ENDPOINT" && field_name == "HashEntry"
             ),
-            "expected MissingField(_TCP_ENDPOINT.HashEntry), got {:?}",
-            result
+            "expected MissingField(_TCP_ENDPOINT.HashEntry), got {result:?}"
         );
     }
 }

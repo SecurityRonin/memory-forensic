@@ -177,8 +177,7 @@ mod tests {
         let result = detect_kaslr_offset(&mem, &resolver);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "linux_banner"),
-            "expected MissingKernelSymbol {{name: \"linux_banner\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"linux_banner\"}}, got {result:?}"
         );
     }
 

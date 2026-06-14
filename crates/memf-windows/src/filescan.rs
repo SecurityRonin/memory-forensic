@@ -511,8 +511,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_OBJECT_HEADER" && field_name == "Body"
             ),
-            "expected MissingField(_OBJECT_HEADER.Body), got {:?}",
-            result
+            "expected MissingField(_OBJECT_HEADER.Body), got {result:?}"
         );
     }
 
@@ -527,8 +526,7 @@ mod tests {
                 result,
                 Err(crate::Error::MissingKernelSymbol { ref name }) if name == "PsActiveProcessHead"
             ),
-            "expected MissingKernelSymbol(PsActiveProcessHead), got {:?}",
-            result
+            "expected MissingKernelSymbol(PsActiveProcessHead), got {result:?}"
         );
     }
 }

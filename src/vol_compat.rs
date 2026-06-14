@@ -4,6 +4,7 @@
 //! command keys, plus proxy execution when no native implementation exists.
 
 use jsonguard::tsv_safe;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Vol3 framework version string emitted on stdout before every result set.
@@ -173,7 +174,7 @@ pub fn proxy_to_vol(
     plugin_dirs: &[PathBuf],
     plugin_args: &[String],
 ) -> anyhow::Result<()> {
-    let plugin_name = plugin_args.first().map(|s| s.as_str()).unwrap_or("(unknown)");
+    let plugin_name = plugin_args.first().map_or("(unknown)", std::string::String::as_str);
 
     let mut cmd = std::process::Command::new("vol");
     cmd.arg("-f").arg(dump);
@@ -232,6 +233,8 @@ pub fn proxy_to_vol(
 
 /// Format a Windows FILETIME as `"YYYY-MM-DD HH:MM:SS.ffffff"` (vol3 style,
 /// microsecond precision). Returns `"N/A"` for zero (unset field).
+// h/m/s are standard date-time component abbreviations in this formatter.
+#[allow(clippy::many_single_char_names)]
 fn format_vol3_filetime(ft: u64) -> String {
     if ft == 0 {
         return "N/A".to_string();
@@ -305,12 +308,13 @@ fn vol3_processes_text(procs: &[memf_windows::WinProcessInfo]) -> String {
     for p in procs {
         let create = format_vol3_filetime(p.create_time);
         let exit   = ft_json(p.exit_time).as_str().map_or_else(|| "N/A".to_string(), str::to_string);
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}",
             p.pid, p.ppid, tsv_safe(&p.image_name), p.vaddr,
             p.thread_count, p.handle_count, p.session_id,
             p.is_wow64, create, exit,
-        ));
+        );
     }
     out
 }
@@ -341,8 +345,9 @@ fn vol3_connections_text(conns: &[memf_windows::WinConnectionInfo]) -> String {
     let mut out = "Offset\tProto\tLocalAddr\tLocalPort\tForeignAddr\tForeignPort\tState\tPID\tOwner\tCreated\n".to_string();
     for c in conns {
         let created = if c.create_time == 0 { "N/A".into() } else { format_vol3_filetime(c.create_time) };
-        out.push_str(&format!(
-            "{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        let _ = writeln!(
+            out,
+            "{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             c.offset,
             tsv_safe(&c.protocol),
             tsv_safe(&c.local_addr),
@@ -353,7 +358,7 @@ fn vol3_connections_text(conns: &[memf_windows::WinConnectionInfo]) -> String {
             c.pid,
             tsv_safe(&c.process_name),
             created,
-        ));
+        );
     }
     out
 }
@@ -366,8 +371,9 @@ fn vol3_pstree_text(entries: &[memf_windows::WinPsTreeEntry]) -> String {
         let p = &e.process;
         let create = format_vol3_filetime(p.create_time);
         let exit   = ft_json(p.exit_time).as_str().map_or_else(|| "N/A".to_string(), str::to_string);
-        out.push_str(&format!(
-            "{prefix}{pid}\t{ppid}\t{name}\t{offset:#x}\t{threads}\t{handles}\t{session}\t{wow64}\t{create}\t{exit}\n",
+        let _ = writeln!(
+            out,
+            "{prefix}{pid}\t{ppid}\t{name}\t{offset:#x}\t{threads}\t{handles}\t{session}\t{wow64}\t{create}\t{exit}",
             pid     = p.pid,
             ppid    = p.ppid,
             name    = tsv_safe(&p.image_name),
@@ -376,7 +382,7 @@ fn vol3_pstree_text(entries: &[memf_windows::WinPsTreeEntry]) -> String {
             handles = p.handle_count,
             session = p.session_id,
             wow64   = p.is_wow64,
-        ));
+        );
     }
     out
 }
@@ -539,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_vol3_processes_json_valid_with_backslash_in_name() {
-        let procs = vec![make_proc_with_name(r#"C:\evil\proc"#)];
+        let procs = vec![make_proc_with_name(r"C:\evil\proc")];
         let json = vol3_processes_json(&procs);
         serde_json::from_str::<serde_json::Value>(&json)
             .expect("must produce valid JSON with backslash");

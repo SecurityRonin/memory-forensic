@@ -366,8 +366,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_EPROCESS" && field_name == "Pcb"
             ),
-            "expected MissingField(_EPROCESS.Pcb), got {:?}",
-            result
+            "expected MissingField(_EPROCESS.Pcb), got {result:?}"
         );
     }
 
@@ -389,8 +388,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_KPROCESS" && field_name == "ThreadListHead"
             ),
-            "expected MissingField(_KPROCESS.ThreadListHead), got {:?}",
-            result
+            "expected MissingField(_KPROCESS.ThreadListHead), got {result:?}"
         );
     }
 
@@ -454,8 +452,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_ETHREAD" && field_name == "Cid"
             ),
-            "expected MissingField(_ETHREAD.Cid), got {:?}",
-            result
+            "expected MissingField(_ETHREAD.Cid), got {result:?}"
         );
     }
 }

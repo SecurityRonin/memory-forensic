@@ -625,7 +625,7 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
                 .map_or(0, u32::from_le_bytes);
 
             if let Ok(Some(entry)) = parse_userassist_value(reader, hive_addr, val_cell) {
-                entries.push(entry)
+                entries.push(entry);
             }
         }
     }

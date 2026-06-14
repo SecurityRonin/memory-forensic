@@ -332,8 +332,7 @@ mod tests {
         let result = walk_connections(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "tcp_hashinfo"),
-            "expected MissingKernelSymbol {{name: \"tcp_hashinfo\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"tcp_hashinfo\"}}, got {result:?}"
         );
     }
 }

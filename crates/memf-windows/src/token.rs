@@ -639,8 +639,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_TOKEN" && field_name == "Privileges"
             ),
-            "expected MissingField(_TOKEN.Privileges), got {:?}",
-            result
+            "expected MissingField(_TOKEN.Privileges), got {result:?}"
         );
     }
 
@@ -694,8 +693,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_SEP_TOKEN_PRIVILEGES" && field_name == "Present"
             ),
-            "expected MissingField(_SEP_TOKEN_PRIVILEGES.Present), got {:?}",
-            result
+            "expected MissingField(_SEP_TOKEN_PRIVILEGES.Present), got {result:?}"
         );
     }
 
@@ -749,8 +747,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_SEP_TOKEN_PRIVILEGES" && field_name == "Enabled"
             ),
-            "expected MissingField(_SEP_TOKEN_PRIVILEGES.Enabled), got {:?}",
-            result
+            "expected MissingField(_SEP_TOKEN_PRIVILEGES.Enabled), got {result:?}"
         );
     }
 }

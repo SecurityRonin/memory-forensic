@@ -73,7 +73,7 @@ pub fn find_low_stub<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Option<LowS
                 ) {
                     // LmTarget is a canonical kernel VA; the low two bits must be
                     // clear (it is a code address). Reject otherwise.
-                    if lm_target & 0x3 == 0 {
+                    if lm_target.trailing_zeros() >= 2 {
                         // 48-bit hint → 2 MiB-aligned base → canonical (sign-extend bit 47).
                         let base48 = (lm_target & 0xFFFF_FFFF_FFFF) & !(TWO_MIB - 1);
                         let kernel_base_va = if base48 & (1 << 47) != 0 {
@@ -830,7 +830,7 @@ mod tests {
         rsds.extend_from_slice(&guid);
         rsds.extend_from_slice(&1u32.to_le_bytes());
         rsds.extend_from_slice(b"ntkrnlmp.pdb\0");
-        mem.write_phys(0x05_00_0000, &rsds);
+        mem.write_phys(0x0500_0000, &rsds);
 
         let pdb_id = scan_for_kernel(&mem)
             .expect("kernel profile must be recoverable from a resident physical RSDS");
@@ -1250,6 +1250,21 @@ mod tests {
         let mut mem = SparseMem::new();
         mem.write_phys(0x4000, &[0u8; 0x200]); // present page, no signature
         assert!(find_low_stub(&mem).is_none());
+    }
+
+    /// LmTarget is a kernel *code* address: its low two bits must be clear. A
+    /// stub whose LmTarget is unaligned is rejected by the bit-mask guard —
+    /// pinned here so the `& 0x3 == 0` → `trailing_zeros() >= 2` refactor stays
+    /// behavior-preserving, and to cover the previously-untested reject branch.
+    #[test]
+    fn find_low_stub_rejects_unaligned_lm_target() {
+        let mut mem = SparseMem::new();
+        // Valid signature + CR3, but LmTarget ends ...55 (low 2 bits = 0b01).
+        write_low_stub(&mut mem, 0x3000, 0x001A_7867, 0xFFFF_F800_6421_3455);
+        assert!(
+            find_low_stub(&mem).is_none(),
+            "an unaligned LmTarget must disqualify the stub"
+        );
     }
 
     /// Write a minimal x64 boot Low Stub (`PROCESSOR_START_BLOCK`) at physical

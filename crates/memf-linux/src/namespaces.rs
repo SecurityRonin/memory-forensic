@@ -209,6 +209,7 @@ mod tests {
     }
 
     /// Helper: write an nsproxy struct into physical memory.
+    #[allow(clippy::too_many_arguments)] // one arg per namespace pointer in the struct
     fn write_nsproxy(
         ptb: PageTableBuilder,
         vaddr: u64,

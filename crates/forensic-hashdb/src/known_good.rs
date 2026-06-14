@@ -105,7 +105,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn write_sorted_hashes(hashes: &mut Vec<[u8; 32]>) -> tempfile::NamedTempFile {
+    fn write_sorted_hashes(hashes: &mut [[u8; 32]]) -> tempfile::NamedTempFile {
         hashes.sort_unstable();
         let mut f = tempfile::NamedTempFile::new().unwrap();
         for h in hashes.iter() {

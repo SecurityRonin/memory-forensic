@@ -236,8 +236,7 @@ mod tests {
         let result = walk_threads(&reader, vaddr, 1);
         assert!(
             matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "thread_group"),
-            "expected MissingField task_struct.thread_group, got {:?}",
-            result
+            "expected MissingField task_struct.thread_group, got {result:?}"
         );
     }
 }

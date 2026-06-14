@@ -994,8 +994,7 @@ mod tests {
         let result = walk_library_list(&reader, 0xFFFF_8000_0010_0000, 1, "init");
         assert!(
             matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "file" && field_name == "f_path"),
-            "expected MissingField file.f_path, got {:?}",
-            result
+            "expected MissingField file.f_path, got {result:?}"
         );
     }
 }

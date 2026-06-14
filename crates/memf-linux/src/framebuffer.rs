@@ -39,7 +39,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_base: {e}"),
             })?;
-        b.try_into().map_or(0, u32::from_le_bytes) as u64
+        u64::from(b.try_into().map_or(0, u32::from_le_bytes))
     };
 
     let width = {
@@ -48,7 +48,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_width: {e}"),
             })?;
-        b.try_into().map_or(0, u16::from_le_bytes) as u32
+        u32::from(b.try_into().map_or(0, u16::from_le_bytes))
     };
 
     let height = {
@@ -57,7 +57,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
                 walker: "framebuffer",
                 reason: format!("read lfb_height: {e}"),
             })?;
-        b.try_into().map_or(0, u16::from_le_bytes) as u32
+        u32::from(b.try_into().map_or(0, u16::from_le_bytes))
     };
 
     let depth = {
@@ -168,7 +168,7 @@ mod tests {
         page[0x1a..0x1e].copy_from_slice(&16u32.to_le_bytes());
 
         // 4×4 pixels of XBGR8888
-        let fb_data: Vec<u8> = [0x10u8, 0x20, 0x30, 0xFF].iter().cloned().cycle().take(64).collect();
+        let fb_data: Vec<u8> = [0x10u8, 0x20, 0x30, 0xFF].iter().copied().cycle().take(64).collect();
 
         let isf = IsfBuilder::new()
             .add_symbol("boot_params", BOOT_PARAMS_VA)

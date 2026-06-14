@@ -14,6 +14,7 @@ pub fn default_cache_dir() -> PathBuf {
 }
 
 /// Returns a cache directory rooted at `base` (for testing without touching `~/.cache`).
+#[cfg(test)]
 pub fn cache_dir_for_testing(base: &Path) -> PathBuf {
     base.join("memf/symbols")
 }

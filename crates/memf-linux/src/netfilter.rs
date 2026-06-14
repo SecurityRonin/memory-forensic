@@ -328,7 +328,6 @@ mod tests {
     fn parse_ipt_entries_empty_data_returns_empty() {
         // data_len = 0 → read_bytes will return empty, parse returns Ok([])
         let entry_vaddr: u64 = 0xFFFF_8000_0030_0000;
-        let _entry_paddr: u64 = 0x00A0_0000;
         let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
@@ -390,8 +389,7 @@ mod tests {
         let result = walk_netfilter_rules(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_net"),
-            "expected MissingKernelSymbol {{name: \"init_net\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"init_net\"}}, got {result:?}"
         );
     }
 

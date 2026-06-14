@@ -169,8 +169,7 @@ mod tests {
         let result = check_hidden_modules(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "modules"),
-            "expected MissingKernelSymbol {{name: \"modules\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"modules\"}}, got {result:?}"
         );
     }
 
@@ -195,8 +194,7 @@ mod tests {
         let result = check_hidden_modules(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "module" && field_name == "list"),
-            "expected MissingField module.list, got {:?}",
-            result
+            "expected MissingField module.list, got {result:?}"
         );
     }
 
@@ -251,6 +249,10 @@ mod tests {
 
     #[test]
     fn single_module_not_in_sysfs() {
+        use memf_core::test_builders::{flags as ptflags, PageTableBuilder};
+        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
+        use memf_symbols::isf::IsfResolver;
+
         // Module in the modules list but NOT linked in sysfs (kobj entry.next == 0).
         let vaddr: u64 = 0xFFFF_8000_0011_0000;
         let paddr: u64 = 0x0081_0000;
@@ -288,10 +290,6 @@ mod tests {
             .add_symbol("modules", vaddr + 0x800)
             .add_symbol("module_kset", vaddr + 0x900)
             .build_json();
-
-        use memf_core::test_builders::{flags as ptflags, PageTableBuilder};
-        use memf_core::vas::{TranslationMode, VirtualAddressSpace};
-        use memf_symbols::isf::IsfResolver;
 
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new()

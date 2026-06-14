@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "network integration: downloads a real PDB from the Microsoft symbol server"]
     fn client_download_real() {
         // Integration test: actually downloads from Microsoft.
         // Run with: cargo test --features symserver -- --ignored client_download_real

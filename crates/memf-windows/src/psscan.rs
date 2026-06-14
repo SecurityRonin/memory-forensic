@@ -66,7 +66,7 @@ fn read_phys_exact<P: PhysicalMemoryProvider + ?Sized>(prov: &P, pa: u64, n: usi
 /// True if `pid` looks like a real Windows process id: a small, non-zero
 /// multiple of four (the kernel allocates client ids in steps of four).
 fn plausible_pid(pid: u64) -> bool {
-    pid >= 4 && pid <= 0x4_0000 && pid % 4 == 0
+    (4..=0x4_0000).contains(&pid) && pid % 4 == 0
 }
 
 /// Decode a 15-byte `ImageFileName` to a validated process name, or `None`.
@@ -75,7 +75,7 @@ fn decode_image_name(raw: &[u8]) -> Option<String> {
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
     // A real `ImageFileName` is an executable base name — never a single
     // character; require at least two to reject lone-byte coincidences.
-    if end < 2 || end > 15 {
+    if !(2..=15).contains(&end) {
         return None;
     }
     let name = &raw[..end];
@@ -532,7 +532,7 @@ mod tests {
             serde_json::from_slice(&oracle_bytes).expect("oracle must be valid JSON");
         let vol3_pids: HashSet<u64> = oracle
             .iter()
-            .filter_map(|e| e.get("PID").and_then(|v| v.as_u64()))
+            .filter_map(|e| e.get("PID").and_then(serde_json::Value::as_u64))
             .collect();
 
         let overlap: Vec<u64> = {
@@ -555,8 +555,8 @@ mod tests {
         println!("  Our unique PIDs:  {}", our_pids.len());
         println!("  Vol3 unique PIDs: {}", vol3_pids.len());
         println!("  Overlap:          {} PIDs", overlap.len());
-        println!("  memf-only (FP?):  {:?}", memf_only);
-        println!("  vol3-only (miss): {:?}", vol3_only);
+        println!("  memf-only (FP?):  {memf_only:?}");
+        println!("  vol3-only (miss): {vol3_only:?}");
 
         // memf-only entries are potential false positives — target 0.
         assert!(

@@ -286,7 +286,7 @@ mod tests {
             .write_phys_u64(EPROC_PADDR + EPROCESS_PEB, PEB_VADDR)
             .write_phys(EPROC_PADDR + EPROCESS_IMAGE_NAME, b"test.exe\0")
             // PEB.ProcessParameters at offset 0x20
-            .write_phys_u64(PEB_PADDR + PEB_PROCESS_PARAMETERS as u64, PARAMS_VADDR);
+            .write_phys_u64(PEB_PADDR + PEB_PROCESS_PARAMETERS, PARAMS_VADDR);
         let (cr3, mem) = ptb.build();
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -300,8 +300,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_RTL_USER_PROCESS_PARAMETERS" && field_name == "CommandLine"
             ),
-            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.CommandLine), got {:?}",
-            result
+            "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.CommandLine), got {result:?}"
         );
     }
 }

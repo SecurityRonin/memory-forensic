@@ -588,8 +588,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_DRIVER_OBJECT" && field_name == "DriverName"
             ),
-            "expected MissingField(_DRIVER_OBJECT.DriverName), got {:?}",
-            result
+            "expected MissingField(_DRIVER_OBJECT.DriverName), got {result:?}"
         );
     }
 
@@ -608,8 +607,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_DRIVER_OBJECT" && field_name == "MajorFunction"
             ),
-            "expected MissingField(_DRIVER_OBJECT.MajorFunction), got {:?}",
-            result
+            "expected MissingField(_DRIVER_OBJECT.MajorFunction), got {result:?}"
         );
     }
 }

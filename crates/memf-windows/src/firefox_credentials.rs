@@ -177,9 +177,7 @@ mod tests {
 
     #[test]
     fn scan_firefox_region_multiple_entries() {
-        let json = format!(
-            r#"{{"hostname":"https://site1.com","usernameField":"u","passwordField":"p","encryptedUsername":"AAAA1234567890abcdef==","encryptedPassword":"BBBB1234567890abcdef=="}}xxx{{"hostname":"https://site2.com","usernameField":"u2","passwordField":"p2","encryptedUsername":"CCCC1234567890abcdef==","encryptedPassword":"DDDD1234567890abcdef=="}}"#
-        );
+        let json = r#"{"hostname":"https://site1.com","usernameField":"u","passwordField":"p","encryptedUsername":"AAAA1234567890abcdef==","encryptedPassword":"BBBB1234567890abcdef=="}xxx{"hostname":"https://site2.com","usernameField":"u2","passwordField":"p2","encryptedUsername":"CCCC1234567890abcdef==","encryptedPassword":"DDDD1234567890abcdef=="}"#.to_string();
         let results = scan_firefox_region(json.as_bytes());
         assert_eq!(results.len(), 2);
         let origins: Vec<_> = results.iter().map(|(o, _, _, _, _)| o.as_str()).collect();

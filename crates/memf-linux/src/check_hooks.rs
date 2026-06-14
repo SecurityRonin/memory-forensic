@@ -381,8 +381,7 @@ mod tests {
         let result = check_inline_hooks(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_stext"),
-            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {result:?}"
         );
     }
 
@@ -398,8 +397,7 @@ mod tests {
         let result = check_inline_hooks(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_etext"),
-            "expected MissingKernelSymbol {{name: \"_etext\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"_etext\"}}, got {result:?}"
         );
     }
 }

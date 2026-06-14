@@ -352,8 +352,7 @@ mod tests {
         let result = walk_arp_cache(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "arp_tbl"),
-            "expected MissingKernelSymbol {{name: \"arp_tbl\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"arp_tbl\"}}, got {result:?}"
         );
     }
 
@@ -405,8 +404,7 @@ mod tests {
         let result = walk_arp_cache(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "neighbour" && field_name == "ha"),
-            "expected MissingField neighbour.ha, got {:?}",
-            result
+            "expected MissingField neighbour.ha, got {result:?}"
         );
     }
 }

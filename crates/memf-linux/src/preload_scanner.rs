@@ -54,8 +54,12 @@ pub fn find_globally_loaded_libraries(
     counts
         .into_iter()
         .filter(|(path, count)| {
-            (path.ends_with(".so") || path.contains(".so."))
-                && (*count as f64 / total as f64) >= threshold
+            // Case-sensitive by design: Linux filesystems are case-sensitive and
+            // shared objects are lowercase `.so` — a case-insensitive match would
+            // mis-classify unrelated `.SO` paths as libraries.
+            #[allow(clippy::case_sensitive_file_extension_comparisons)]
+            let is_so = path.ends_with(".so") || path.contains(".so.");
+            is_so && (*count as f64 / total as f64) >= threshold
         })
         .map(|(path, count)| {
             let prevalence = count as f64 / total as f64;

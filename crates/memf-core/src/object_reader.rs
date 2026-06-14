@@ -206,9 +206,8 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
             // field read would fault on. This works for BOTH kernel object lists
             // and user-space lists (PEB/LDR modules), so it must NOT assume a
             // kernel-half address.
-            let next = match self.read_u64_at(current.wrapping_add(next_offset)) {
-                Ok(next) => next,
-                Err(_) => return Ok(result),
+            let Ok(next) = self.read_u64_at(current.wrapping_add(next_offset)) else {
+                return Ok(result);
             };
 
             // container_of: subtract list_offset to get the containing struct base

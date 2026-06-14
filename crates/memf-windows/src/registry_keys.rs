@@ -1681,10 +1681,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "registry_keys"
+                Err(crate::Error::WalkFailed { walker, .. }) if walker == "registry_keys"
             ),
-            "expected WalkFailed(registry_keys) for invalid nk signature, got {:?}",
-            result
+            "expected WalkFailed(registry_keys) for invalid nk signature, got {result:?}"
         );
     }
 
@@ -1715,10 +1714,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "registry_keys"
+                Err(crate::Error::WalkFailed { walker, .. }) if walker == "registry_keys"
             ),
-            "expected WalkFailed(registry_keys) for vk cell too small, got {:?}",
-            result
+            "expected WalkFailed(registry_keys) for vk cell too small, got {result:?}"
         );
     }
 }

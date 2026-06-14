@@ -33,6 +33,9 @@ pub enum FramebufferError {
     ReadFailed,
 }
 
+// r/g/b/v/p/n are conventional pixel- and colour-channel names here; keeping
+// them is clearer than synonyms invented to appease the lint.
+#[allow(clippy::many_single_char_names)]
 pub fn to_rgb24(pixels: &[u8], width: u32, height: u32, format: PixelFormat)
     -> Result<Vec<u8>, FramebufferError>
 {

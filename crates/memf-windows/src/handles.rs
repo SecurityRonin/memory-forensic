@@ -520,10 +520,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "handles"
+                Err(crate::Error::WalkFailed { walker, .. }) if walker == "handles"
             ),
-            "expected WalkFailed(handles), got {:?}",
-            result
+            "expected WalkFailed(handles), got {result:?}"
         );
     }
 
@@ -557,8 +556,7 @@ mod tests {
                 result,
                 Err(crate::Error::MissingKernelSymbol { ref name }) if name == "ObTypeIndexTable"
             ),
-            "expected MissingKernelSymbol(ObTypeIndexTable), got {:?}",
-            result
+            "expected MissingKernelSymbol(ObTypeIndexTable), got {result:?}"
         );
     }
 }

@@ -364,8 +364,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_OBJECT_HEADER" && field_name == "Body"
             ),
-            "expected MissingField(_OBJECT_HEADER.Body), got {:?}",
-            result
+            "expected MissingField(_OBJECT_HEADER.Body), got {result:?}"
         );
     }
 
@@ -405,10 +404,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "object_directory"
+                Err(crate::Error::WalkFailed { walker, .. }) if walker == "object_directory"
             ),
-            "expected WalkFailed(object_directory), got {:?}",
-            result
+            "expected WalkFailed(object_directory), got {result:?}"
         );
     }
 
@@ -447,8 +445,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_OBJECT_HEADER_NAME_INFO" && field_name == "Name"
             ),
-            "expected MissingField(_OBJECT_HEADER_NAME_INFO.Name), got {:?}",
-            result
+            "expected MissingField(_OBJECT_HEADER_NAME_INFO.Name), got {result:?}"
         );
     }
 }

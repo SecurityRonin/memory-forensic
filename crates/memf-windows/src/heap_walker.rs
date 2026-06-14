@@ -55,7 +55,7 @@ where
     let mut result = WalkResult::new(Vec::new(), 0);
     let mut seen: HashSet<K> = HashSet::new();
 
-    for proc in procs.iter().filter(|p| filter_fn(*p)) {
+    for proc in procs.iter().filter(|p| filter_fn(p)) {
         if proc.cr3 == 0 || proc.peb_addr == 0 {
             continue;
         }
@@ -64,12 +64,9 @@ where
         // One skip is recorded per unreadable process VAD tree (not per
         // individual region within it). A single failed walk_vad_tree may
         // represent hundreds of unread regions.
-        let vads = match walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
-            Ok(v) => v,
-            Err(_) => {
-                result.skip();
-                continue;
-            }
+        let vads = if let Ok(v) = walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) { v } else {
+            result.skip();
+            continue;
         };
 
         let proc_reader = reader.with_cr3(proc.cr3);
@@ -91,12 +88,9 @@ where
                 continue;
             }
 
-            let bytes = match proc_reader.read_bytes(vad.start_vaddr, region_size) {
-                Ok(b) => b,
-                Err(_) => {
-                    result.skip();
-                    continue;
-                }
+            let bytes = if let Ok(b) = proc_reader.read_bytes(vad.start_vaddr, region_size) { b } else {
+                result.skip();
+                continue;
             };
 
             for item in scan_fn(&bytes, proc) {

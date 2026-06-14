@@ -988,7 +988,7 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            let symbols: Option<&Path> = symbol_dirs.first().map(|p| p.as_path()).or(auto_isf.as_deref());
+            let symbols: Option<&Path> = symbol_dirs.first().map(std::path::PathBuf::as_path).or(auto_isf.as_deref());
 
             match vol_compat::find_route(plugin) {
                 Some(vol_compat::PluginRoute::Native(key)) => {
@@ -2306,13 +2306,14 @@ fn render_scanned_processes(
             let mut out = String::from("physical_addr,pid,name,dtb\n");
             for p in procs {
                 let dtb = p.dtb.map_or_else(String::new, |d| format!("{d:#x}"));
-                out.push_str(&format!(
-                    "{:#x},{},{},{}\n",
+                let _ = writeln!(
+                    out,
+                    "{:#x},{},{},{}",
                     p.physical_addr,
                     p.pid,
                     csv_field(&p.name).value,
                     dtb,
-                ));
+                );
             }
             out
         }
@@ -3830,7 +3831,10 @@ fn cmd_system(
 // cmd_check — integrity and tampering detection
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
+// One bool per integrity check the `check` subcommand can run; an aggregator by design.
+// Copy so it passes to cmd_check by value without a needless_pass_by_value lint.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Default)]
 struct CheckFlags {
     syscalls: bool,
     hooks: bool,
@@ -4566,7 +4570,7 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
                 let flag = |b: bool| if b { "True" } else { "False" };
                 table.add_row(vec![
                     format!("{pid}"),
-                    table_cell(&image_name),
+                    table_cell(image_name),
                     format!("{:#x}", m.base_addr),
                     flag(m.in_load).to_string(),
                     flag(m.in_mem).to_string(),
@@ -5466,9 +5470,7 @@ fn cmd_framebuffer(
     };
 
     // Write PNG (default to framebuffer.png if not specified)
-    let out_path = png_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("framebuffer.png"));
+    let out_path = png_path.map_or_else(|| std::path::PathBuf::from("framebuffer.png"), std::path::Path::to_path_buf);
     std::fs::write(&out_path, &result.png_bytes)
         .with_context(|| format!("failed to write PNG to {}", out_path.display()))?;
     eprintln!("PNG written: {}", out_path.display());

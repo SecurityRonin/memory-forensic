@@ -177,8 +177,7 @@ mod tests {
         let result = check_syscall_table(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "sys_call_table"),
-            "expected MissingKernelSymbol {{name: \"sys_call_table\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"sys_call_table\"}}, got {result:?}"
         );
     }
 
@@ -196,8 +195,7 @@ mod tests {
         let result = check_syscall_table(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "_stext"),
-            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"_stext\"}}, got {result:?}"
         );
     }
 

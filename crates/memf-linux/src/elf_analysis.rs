@@ -24,7 +24,7 @@ impl std::fmt::Debug for ElfCapabilityReport {
         f.debug_struct("ElfCapabilityReport")
             .field("source", &self.source)
             .field("signals", &self.signals)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -339,6 +339,7 @@ mod tests {
     }
 
     /// Build a SHT64 section header entry (64 bytes).
+    #[allow(clippy::too_many_arguments)] // mirrors the 8-field ELF64 Shdr layout
     fn shdr64(sh_name: u32, sh_type: u32, sh_offset: u64, sh_size: u64, sh_addralign: u64, sh_entsize: u64, sh_link: u32, sh_info: u32) -> Vec<u8> {
         let mut b = vec![0u8; 64];
         // ELF64 Shdr layout:
@@ -474,7 +475,7 @@ mod tests {
     #[test]
     fn scan_elf_strings_detects_password_format_fragment() {
         // Embed the Father format string in a SHT_PROGBITS section so goblin sees it.
-        let mut elf = elf_with_section_data(b"UID:%d:");
+        let elf = elf_with_section_data(b"UID:%d:");
         let results = scan_elf_string_artifacts(&elf)
             .expect("valid elf");
         assert!(
@@ -502,7 +503,7 @@ mod tests {
 
     #[test]
     fn scan_elf_strings_multiple_patterns_all_returned() {
-        let mut data = b"UID:%d:  silly.txt".to_vec();
+        let data = b"UID:%d:  silly.txt".to_vec();
         let elf = elf_with_section_data(&data);
         let results = scan_elf_string_artifacts(&elf).expect("valid elf");
         let patterns: Vec<&str> = results.iter().map(|r| r.matched_pattern).collect();

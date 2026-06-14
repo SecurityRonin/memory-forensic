@@ -244,10 +244,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::WalkFailed { ref walker, .. }) if *walker == "psxview_cid"
+                Err(crate::Error::WalkFailed { walker, .. }) if walker == "psxview_cid"
             ),
-            "expected WalkFailed(psxview_cid), got {:?}",
-            result
+            "expected WalkFailed(psxview_cid), got {result:?}"
         );
     }
 }

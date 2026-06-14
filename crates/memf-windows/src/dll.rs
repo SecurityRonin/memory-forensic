@@ -966,11 +966,10 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::WalkFailed { ref walker, ref reason })
-                if *walker == "dll" && reason == "PEB.Ldr is NULL"
+                Err(crate::Error::WalkFailed { walker, ref reason })
+                if walker == "dll" && reason == "PEB.Ldr is NULL"
             ),
-            "expected WalkFailed(dll, PEB.Ldr is NULL), got {:?}",
-            result
+            "expected WalkFailed(dll, PEB.Ldr is NULL), got {result:?}"
         );
     }
 
@@ -992,11 +991,10 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::WalkFailed { ref walker, ref reason })
-                if *walker == "dll" && reason == "PEB.Ldr is NULL"
+                Err(crate::Error::WalkFailed { walker, ref reason })
+                if walker == "dll" && reason == "PEB.Ldr is NULL"
             ),
-            "expected WalkFailed(dll, PEB.Ldr is NULL), got {:?}",
-            result
+            "expected WalkFailed(dll, PEB.Ldr is NULL), got {result:?}"
         );
     }
 
@@ -1033,8 +1031,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_PEB_LDR_DATA" && field_name == "InLoadOrderModuleList"
             ),
-            "expected MissingField(_PEB_LDR_DATA.InLoadOrderModuleList), got {:?}",
-            result
+            "expected MissingField(_PEB_LDR_DATA.InLoadOrderModuleList), got {result:?}"
         );
     }
 }

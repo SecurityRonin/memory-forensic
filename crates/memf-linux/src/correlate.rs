@@ -1281,6 +1281,8 @@ mod tests {
     // ContainerEscapeCorrelateInfo tests
     // -----------------------------------------------------------------------
 
+    // Test fixture builder: each bool maps 1:1 to a struct field, named at the call site.
+    #[allow(clippy::fn_params_excessive_bools)]
     fn make_container_escape(
         pid: u64,
         comm: &str,
@@ -1423,6 +1425,8 @@ mod tests {
     // SharedMemAnomalyInfo tests
     // -----------------------------------------------------------------------
 
+    // Test fixture builder: each bool maps 1:1 to a struct field, named at the call site.
+    #[allow(clippy::fn_params_excessive_bools)]
     fn make_shared_mem(
         pid: u64,
         comm: &str,

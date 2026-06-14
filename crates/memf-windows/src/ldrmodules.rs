@@ -712,8 +712,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_PEB_LDR_DATA" && field_name == "InLoadOrderModuleList"
             ),
-            "expected MissingField(_PEB_LDR_DATA.InLoadOrderModuleList), got {:?}",
-            result
+            "expected MissingField(_PEB_LDR_DATA.InLoadOrderModuleList), got {result:?}"
         );
     }
 }

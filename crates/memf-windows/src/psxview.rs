@@ -812,8 +812,7 @@ mod tests {
                 result,
                 Err(crate::Error::MissingKernelSymbol { ref name }) if name == "PspCidTable"
             ),
-            "expected MissingKernelSymbol(PspCidTable), got {:?}",
-            result
+            "expected MissingKernelSymbol(PspCidTable), got {result:?}"
         );
     }
 

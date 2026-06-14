@@ -220,7 +220,7 @@ pub fn check_driver_irp_hooks<P: PhysicalMemoryProvider>(
     let limit = driver_obj_addrs.len().min(MAX_DRIVERS);
     for &addr in driver_obj_addrs.iter().take(limit) {
         if let Ok(entries) = check_driver_object(reader, addr, known_modules) {
-            results.extend(entries)
+            results.extend(entries);
         }
     }
     Ok(results)
@@ -602,8 +602,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_DRIVER_OBJECT" && field_name == "DriverName"
             ),
-            "expected MissingField(_DRIVER_OBJECT.DriverName), got {:?}",
-            result
+            "expected MissingField(_DRIVER_OBJECT.DriverName), got {result:?}"
         );
     }
 
@@ -645,8 +644,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_DRIVER_OBJECT" && field_name == "MajorFunction"
             ),
-            "expected MissingField(_DRIVER_OBJECT.MajorFunction), got {:?}",
-            result
+            "expected MissingField(_DRIVER_OBJECT.MajorFunction), got {result:?}"
         );
     }
 }

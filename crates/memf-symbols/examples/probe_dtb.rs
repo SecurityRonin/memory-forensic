@@ -16,6 +16,7 @@ const PRESENT: u64 = 1;
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PAGE: usize = 4096;
 
+#[allow(clippy::too_many_lines)] // a linear debug probe; readability beats decomposition here
 fn main() {
     let path = std::env::args().nth(1).expect("usage: probe_dtb <dump>");
     let prov = open_dump_with_raw_fallback(std::path::Path::new(&path)).expect("open dump");
@@ -179,7 +180,7 @@ fn main() {
                         if l.contains("nt") {
                             println!(
                                 "  va={va:#x} (2MiB-aligned={}) pdb={:?}",
-                                va & 0x1F_FFFF == 0,
+                                va.trailing_zeros() >= 21,
                                 id.pdb_name
                             );
                             hits += 1;

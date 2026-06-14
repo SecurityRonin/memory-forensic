@@ -507,8 +507,7 @@ mod tests {
         let result = extract_ssh_keys(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "init_task"),
-            "expected MissingKernelSymbol {{name: \"init_task\"}}, got {:?}",
-            result
+            "expected MissingKernelSymbol {{name: \"init_task\"}}, got {result:?}"
         );
     }
 
@@ -530,8 +529,7 @@ mod tests {
         let result = extract_ssh_keys(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "task_struct" && field_name == "tasks"),
-            "expected MissingField task_struct.tasks, got {:?}",
-            result
+            "expected MissingField task_struct.tasks, got {result:?}"
         );
     }
 }

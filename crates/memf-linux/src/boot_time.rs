@@ -177,8 +177,7 @@ mod tests {
         let result = extract_boot_time(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingKernelSymbol { ref name }) if name == "tk_core" || name == "timekeeper"),
-            "expected MissingKernelSymbol for tk_core/timekeeper, got {:?}",
-            result
+            "expected MissingKernelSymbol for tk_core/timekeeper, got {result:?}"
         );
     }
 
@@ -212,8 +211,7 @@ mod tests {
         let result = extract_boot_time(&reader);
         assert!(
             matches!(result, Err(crate::Error::MissingField { ref struct_name, ref field_name }) if struct_name == "timekeeper" && field_name == "wall_to_monotonic"),
-            "expected MissingField timekeeper.wall_to_monotonic, got {:?}",
-            result
+            "expected MissingField timekeeper.wall_to_monotonic, got {result:?}"
         );
     }
 }

@@ -158,7 +158,7 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     fn utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     fn make_unicode_string(str_addr: u64, s: &str) -> (Vec<u8>, Vec<u8>) {
@@ -227,7 +227,7 @@ mod tests {
 
         // Page 0x3000: string data
         let mut str_page = vec![0u8; 0x1000];
-        str_page[0x000..0x000 + username_bytes.len()].copy_from_slice(&username_bytes);
+        str_page[0x000..username_bytes.len()].copy_from_slice(&username_bytes);
         str_page[0x100..0x100 + password_bytes.len()].copy_from_slice(&password_bytes);
         str_page[0x200..0x200 + target_bytes.len()].copy_from_slice(&target_bytes);
 

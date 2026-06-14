@@ -198,7 +198,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::Error::Pdb(_)) | Err(crate::Error::Malformed(_))
+                Err(crate::Error::Pdb(_) | crate::Error::Malformed(_))
             ),
             "expected Pdb or Malformed (cache-hit path), got: {}",
             result.err().map(|e| e.to_string()).unwrap_or_default()

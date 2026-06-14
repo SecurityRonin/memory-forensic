@@ -540,8 +540,7 @@ mod tests {
                 Err(crate::Error::MissingField { ref struct_name, ref field_name })
                 if struct_name == "_EPROCESS" && field_name == "VadRoot"
             ),
-            "expected MissingField(_EPROCESS.VadRoot), got {:?}",
-            result
+            "expected MissingField(_EPROCESS.VadRoot), got {result:?}"
         );
     }
 }
