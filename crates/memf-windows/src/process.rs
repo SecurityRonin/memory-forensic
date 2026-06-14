@@ -344,6 +344,50 @@ mod tests {
     }
 
     #[test]
+    fn walk_processes_recovers_forward_smeared_via_blink() {
+        // Live-acquisition smear: A's forward link is torn down (Flink = 0), so a
+        // forward-only walk stops at A and never reaches B. B is still reachable
+        // from the head via Blink. The walker must recover both (the real
+        // DESKTOP-SDN1RPT.mem case, scaled to two processes).
+        let head_paddr: u64 = 0x0080_0000;
+        let a_paddr: u64 = 0x0080_1000;
+        let b_paddr: u64 = 0x0080_2000;
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let a_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let b_vaddr: u64 = 0xFFFF_8000_0010_2000;
+        let a_links = a_vaddr + EPROCESS_LINKS;
+        let b_links = b_vaddr + EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(a_vaddr, a_paddr, flags::WRITABLE)
+            .map_4k(b_vaddr, b_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, a_links) // head.Flink -> A
+            .write_phys_u64(head_paddr + 8, b_links); // head.Blink -> B
+
+        // A: forward link smeared to 0; backward link to head.
+        let ptb = write_eprocess(
+            ptb, a_paddr, a_vaddr, 4, 0, "System", 132800000000000000, 0, 0x1ab000, 0,
+            0,          // Flink = 0 (smear)
+            head_vaddr, // Blink -> head
+        );
+        // B: orphaned forward, but head.Blink -> B and B.Blink -> A.
+        let ptb = write_eprocess(
+            ptb, b_paddr, b_vaddr, 528, 4, "csrss.exe", 132800000000000001, 0, 0x1bb000, 0x1000,
+            head_vaddr, // Flink -> head
+            a_links,    // Blink -> A
+        );
+
+        let reader = make_win_reader(ptb);
+        let procs = walk_processes(&reader, head_vaddr).unwrap();
+
+        let pids: Vec<u64> = procs.iter().map(|p| p.pid).collect();
+        assert_eq!(procs.len(), 2, "forward-smeared B recovered via Blink: {pids:?}");
+        assert!(pids.contains(&4));
+        assert!(pids.contains(&528));
+    }
+
+    #[test]
     fn walk_three_processes() {
         // Three processes: System(4), csrss.exe(528), svchost.exe(700)
         // Circular list: head → A → B → C → head
