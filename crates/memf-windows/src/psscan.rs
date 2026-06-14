@@ -93,10 +93,36 @@ fn decode_image_name(raw: &[u8]) -> Option<String> {
 /// (both `_EPROCESS`-relative, from the ISF). Deduplicated by `(pid, name)`.
 ///
 /// Panic-free and bounded; only structurally valid entries are returned.
+///
+/// This is a convenience wrapper over [`scan_processes_dtb`] with `dtb_off = None`
+/// (no DTB validation). Prefer [`scan_processes_dtb`] when the `_KPROCESS`
+/// `DirectoryTableBase` offset is available from the ISF.
 pub fn scan_processes<P: PhysicalMemoryProvider>(
     prov: &P,
     pid_off: u64,
     name_off: u64,
+) -> Vec<ScannedProcess> {
+    scan_processes_dtb(prov, pid_off, name_off, None)
+}
+
+/// Scan `prov`'s physical memory for `_EPROCESS` objects by their `Proc` /
+/// `Pro\xe3` pool tag, reading `UniqueProcessId` at `pid_off`, `ImageFileName`
+/// at `name_off`, and optionally `_KPROCESS.DirectoryTableBase` at `dtb_off`
+/// (all offsets are `_EPROCESS`-relative, sourced from the ISF).
+///
+/// When `dtb_off` is `Some`, the DTB is read and validated:
+/// - Non-zero (a zero DTB has no valid page-table root)
+/// - 4 KiB-aligned (x86-64 CR3 values are always page-aligned)
+///
+/// Candidates failing either check are silently skipped (false-positive
+/// suppression without a panic). Results are deduplicated by `(pid, name)`.
+///
+/// Panic-free and bounded.
+pub fn scan_processes_dtb<P: PhysicalMemoryProvider>(
+    prov: &P,
+    pid_off: u64,
+    name_off: u64,
+    dtb_off: Option<u64>,
 ) -> Vec<ScannedProcess> {
     const CHUNK: usize = 1 << 20; // 1 MiB
     const OVERLAP: u64 = 4;
@@ -135,7 +161,7 @@ pub fn scan_processes<P: PhysicalMemoryProvider>(
                 // 4 bytes before the tag's physical address.
                 let tag_pa = addr + i as u64;
                 let pool_base = tag_pa.saturating_sub(4);
-                if let Some(p) = try_eprocess(prov, pool_base, pid_off, name_off) {
+                if let Some(p) = try_eprocess(prov, pool_base, pid_off, name_off, dtb_off) {
                     if seen.insert((p.pid, p.name.to_lowercase())) {
                         out.push(p);
                     }
@@ -161,6 +187,7 @@ fn try_eprocess<P: PhysicalMemoryProvider>(
     pool_base: u64,
     pid_off: u64,
     name_off: u64,
+    dtb_off: Option<u64>,
 ) -> Option<ScannedProcess> {
     for &delta in EPROCESS_DELTAS {
         let eproc = pool_base + delta;
@@ -175,6 +202,21 @@ fn try_eprocess<P: PhysicalMemoryProvider>(
         if !plausible_pid(pid) {
             continue;
         }
+        // DTB validation: when the offset is provided, read DirectoryTableBase
+        // from _KPROCESS (at _EPROCESS+0, since Pcb is the first field) and
+        // reject candidates with a zero or non-page-aligned value.
+        let dtb = if let Some(off) = dtb_off {
+            let Some(dtb_raw) = read_phys_exact(prov, eproc + off, 8) else {
+                continue;
+            };
+            let v = u64::from_le_bytes(dtb_raw.try_into().ok()?);
+            if !plausible_dtb(v) {
+                continue;
+            }
+            Some(v)
+        } else {
+            None
+        };
         let Some(name_raw) = read_phys_exact(prov, eproc + name_off, 15) else {
             continue;
         };
@@ -183,14 +225,29 @@ fn try_eprocess<P: PhysicalMemoryProvider>(
                 physical_addr: eproc,
                 pid,
                 name,
+                dtb,
             });
         }
     }
     None
 }
 
-/// Convenience wrapper: pull the `_EPROCESS` field offsets from the reader's
-/// resolver and scan. Empty if the offsets are unavailable.
+/// True if `dtb` looks like a valid page-table root:
+/// - Non-zero (a zero DTB has no valid page table)
+/// - 4 KiB-aligned (x86-64 CR3 values are always page-aligned; low 12 bits = 0)
+///
+/// Source: x86-64 architecture manual §4.5 — CR3 bits 11:0 are ignored (zero);
+/// effectively the physical base of the PML4 table is 4 KiB-aligned.
+fn plausible_dtb(dtb: u64) -> bool {
+    dtb != 0 && dtb & 0xFFF == 0
+}
+
+/// Convenience wrapper: pull the `_EPROCESS` / `_KPROCESS` field offsets from
+/// the reader's resolver and run `scan_processes_dtb`.
+///
+/// `UniqueProcessId` and `ImageFileName` are required; if absent, returns empty.
+/// `_KPROCESS.DirectoryTableBase` is optional — when present, DTB validation is
+/// enabled (recommended for zero false-positives on real dumps).
 #[must_use]
 pub fn psscan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Vec<ScannedProcess> {
     let syms = reader.symbols();
@@ -200,7 +257,9 @@ pub fn psscan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Vec<Scanne
     ) else {
         return Vec::new();
     };
-    scan_processes(reader.vas().physical(), pid_off, name_off)
+    // _KPROCESS.DirectoryTableBase — available in real ISFs; optional for robustness.
+    let dtb_off = syms.field_offset("_KPROCESS", "DirectoryTableBase");
+    scan_processes_dtb(reader.vas().physical(), pid_off, name_off, dtb_off)
 }
 
 #[cfg(test)]
