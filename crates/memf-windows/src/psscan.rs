@@ -289,4 +289,35 @@ mod tests {
             "no process dispatcher header → not a process"
         );
     }
+
+    /// Vol3's `psscan` scans for BOTH `b"Proc"` AND `b"Pro\xe3"` pool tags.
+    /// The `\xe3` variant is the "protected" (high-MSB) non-paged pool allocation
+    /// that Windows 10+ uses for kernel objects — the pool tag bytes 0..3 are `Pro`
+    /// and byte 3 is set to `\xe3` (non-paged + protection flag).
+    ///
+    /// Reference: volatility3/framework/plugins/windows/psscan.py line
+    /// `constraints = poolscanner.PoolScanner.builtin_constraints(…, [b"Pro\xe3", b"Proc"])`
+    ///
+    /// This test places an EPROCESS under the `Pro\xe3` tag and expects it to be
+    /// recovered. It will FAIL until the scanner is extended to match both tags.
+    #[test]
+    fn psscan_finds_eprocess_with_protected_pool_tag() {
+        let mut data = vec![0u8; 0x4000];
+        // Place an EPROCESS with the PROTECTED pool tag (Pro\xe3) at offset 0x200.
+        // _POOL_HEADER: tag at +4, using the protected variant.
+        data[0x204..0x208].copy_from_slice(b"Pro\xe3");
+        let eproc = 0x200 + 0x30;
+        data[eproc] = 0x03; // _DISPATCHER_HEADER.Type = ProcessObject
+        data[eproc + PID_OFF as usize..eproc + PID_OFF as usize + 8]
+            .copy_from_slice(&1234u64.to_le_bytes());
+        let name = b"hidden.exe";
+        data[eproc + NAME_OFF as usize..eproc + NAME_OFF as usize + name.len()]
+            .copy_from_slice(name);
+        let mem = VecMem::new(data);
+        let found = scan_processes(&mem, PID_OFF, NAME_OFF);
+        assert!(
+            found.iter().any(|p| p.pid == 1234 && p.name == "hidden.exe"),
+            "must recover process under Pro\\xe3 (protected) pool tag: {found:?}"
+        );
+    }
 }
