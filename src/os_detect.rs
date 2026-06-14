@@ -175,6 +175,47 @@ mod tests {
         assert_eq!(os, OsProfile::MacOs);
     }
 
+    /// Crash-dump metadata is authoritative for the kernel list heads: when it
+    /// carries PsActiveProcessHead, that value is used verbatim — no scanning.
+    #[test]
+    fn resolve_kernel_list_heads_prefers_metadata() {
+        let meta = DumpMetadata {
+            cr3: Some(0x1ab000),
+            machine_type: Some(MachineType::Amd64),
+            ps_active_process_head: Some(0xFFFF_F800_DEAD_0000),
+            ps_loaded_module_list: Some(0xFFFF_F800_BEEF_0000),
+            ..Default::default()
+        };
+        let resolver = make_resolver(&IsfBuilder::windows_kernel_preset());
+        let dump = memf_format::test_builders::LimeBuilder::new()
+            .add_range(0, &[0u8; 64])
+            .build();
+        let provider = memf_format::lime::LimeProvider::from_bytes(&dump).unwrap();
+        let (head, mods) = resolve_kernel_list_heads(
+            OsProfile::Windows,
+            Some(&meta),
+            resolver.as_ref(),
+            &provider,
+        );
+        assert_eq!(head, Some(0xFFFF_F800_DEAD_0000));
+        assert_eq!(mods, Some(0xFFFF_F800_BEEF_0000));
+    }
+
+    /// On a raw dump with no header value AND no recoverable low stub, the heads
+    /// resolve to None gracefully (no panic, no spurious address).
+    #[test]
+    fn resolve_kernel_list_heads_none_without_header_or_stub() {
+        let resolver = make_resolver(&IsfBuilder::windows_kernel_preset());
+        let dump = memf_format::test_builders::LimeBuilder::new()
+            .add_range(0, &[0u8; 64])
+            .build();
+        let provider = memf_format::lime::LimeProvider::from_bytes(&dump).unwrap();
+        let (head, mods) =
+            resolve_kernel_list_heads(OsProfile::Windows, None, resolver.as_ref(), &provider);
+        assert_eq!(head, None);
+        assert_eq!(mods, None);
+    }
+
     #[test]
     fn extract_cr3_windows_from_metadata() {
         let meta = DumpMetadata {
