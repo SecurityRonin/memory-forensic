@@ -201,6 +201,15 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
                 return Ok(result);
             }
 
+            // Smear tolerance (cont.): a torn-down node's link can hold garbage —
+            // null (above) or a non-canonical / user-half value. Kernel object
+            // lists live entirely in the canonical high half (top 16 bits set);
+            // anything else is not a real list node, so terminate rather than
+            // fabricate a container that a later field read would fault on.
+            if current >> 48 != 0xFFFF {
+                return Ok(result);
+            }
+
             // container_of: subtract list_offset to get the containing struct base
             let container = current.wrapping_sub(list_offset);
             result.push(container);
@@ -214,6 +223,37 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         }
 
         Err(Error::ListCycle(MAX_LIST_ITERATIONS))
+    }
+
+    /// Walk a doubly-linked list in BOTH directions and return the union of
+    /// containers, deduplicated (forward order first, then backward-only nodes).
+    ///
+    /// On a live-acquired dump a single torn-down node can break the forward
+    /// (`next_field`/Flink) chain, orphaning every node beyond it from a
+    /// forward-only walk — yet those nodes remain reachable from the head via the
+    /// backward (`prev_field`/Blink) chain. Walking both directions recovers them
+    /// without resorting to pool-tag scanning. (A node unlinked from *both*
+    /// directions — full DKOM hiding — still requires a pool scan.)
+    pub fn walk_list_bidirectional(
+        &self,
+        head_vaddr: u64,
+        list_struct: &str,
+        next_field: &str,
+        prev_field: &str,
+        container_struct: &str,
+        list_field: &str,
+    ) -> Result<Vec<u64>> {
+        let mut forward =
+            self.walk_list_with(head_vaddr, list_struct, next_field, container_struct, list_field)?;
+        let backward =
+            self.walk_list_with(head_vaddr, list_struct, prev_field, container_struct, list_field)?;
+        let mut seen: std::collections::HashSet<u64> = forward.iter().copied().collect();
+        for container in backward {
+            if seen.insert(container) {
+                forward.push(container);
+            }
+        }
+        Ok(forward)
     }
 
     /// Read `len` raw bytes from virtual memory at `vaddr`.
@@ -704,6 +744,40 @@ mod tests {
 
         // A and B were reached before the smear; the null link is the terminus.
         assert_eq!(containers, vec![a_vaddr, b_vaddr]);
+    }
+
+    #[test]
+    fn walk_list_with_stops_on_non_canonical_kernel_pointer() {
+        // A torn-down node's link can hold a non-canonical / user-half garbage
+        // value (DESKTOP-SDN1RPT.mem: a smeared Blink of 0x5a289000). The walk
+        // must treat it as a terminus — NOT fabricate a container from it (which
+        // a later field read would fault on), NOT error.
+        let isf = IsfBuilder::new()
+            .add_struct("_EPROCESS", 256)
+            .add_field("_EPROCESS", "ActiveProcessLinks", 0x10, "_LIST_ENTRY")
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer");
+
+        let lo: u64 = 0x10;
+        let head_p = 0x0080_0000u64;
+        let a_p = 0x0080_1000u64;
+        let head_v = 0xFFFF_8000_0010_0000u64;
+        let a_v = 0xFFFF_8000_0010_1000u64;
+
+        // head -> A -> (garbage, non-canonical user-half pointer)
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_v, head_p, flags::WRITABLE)
+            .map_4k(a_v, a_p, flags::WRITABLE)
+            .write_phys_u64(head_p, a_v + lo)
+            .write_phys_u64(a_p + lo, 0x0000_0000_5A28_9000); // non-canonical garbage
+
+        let reader = make_reader(&isf, ptb);
+        let containers = reader
+            .walk_list_with(head_v, "_LIST_ENTRY", "Flink", "_EPROCESS", "ActiveProcessLinks")
+            .expect("non-canonical link terminates the walk, not errors");
+
+        assert_eq!(containers, vec![a_v], "only the real node A; no bogus container");
     }
 
     #[test]
