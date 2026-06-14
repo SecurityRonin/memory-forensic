@@ -179,6 +179,12 @@ enum Commands {
         /// Cross-referenced with kernel timekeeper for inconsistency detection.
         #[arg(long)]
         btime: Option<i64>,
+
+        /// Pool-tag EPROCESS scan (Windows only) instead of the linked-list walk.
+        /// Recovers processes unlinked from ActiveProcessLinks in both directions
+        /// (full DKOM hiding) by scanning physical memory for `Proc` pool tags.
+        #[arg(long)]
+        psscan: bool,
     },
     /// List kernel modules/drivers and system-level artifacts.
     #[command(name = "sys", alias = "system")]
@@ -687,6 +693,7 @@ fn main() -> Result<()> {
             all,
             sort,
             btime,
+            psscan,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_ps(
@@ -710,6 +717,7 @@ fn main() -> Result<()> {
                 all,
                 sort,
                 btime,
+                psscan,
                 true,
             )
         }
@@ -1021,37 +1029,37 @@ fn main() -> Result<()> {
                             &file, symbols, fmt, None,
                             false, pid_filter, false, false, false, false, false,
                             false, true, false, false, false, false, false,
-                            PsSortField::Pid, None, true,
+                            PsSortField::Pid, None, false, true,
                         ),
                         "ps:dlls" => cmd_ps(
                             &file, symbols, fmt, None,
                             false, pid_filter, false, false, false, true, false,
                             false, false, false, false, false, false, false,
-                            PsSortField::Pid, None, true,
+                            PsSortField::Pid, None, false, true,
                         ),
                         "ps:envvars" => cmd_ps(
                             &file, symbols, fmt, None,
                             false, pid_filter, false, false, false, false, false,
                             true, false, false, false, false, false, false,
-                            PsSortField::Pid, None, true,
+                            PsSortField::Pid, None, false, true,
                         ),
                         "ps:privileges" => cmd_ps(
                             &file, symbols, fmt, None,
                             false, pid_filter, false, false, false, false, false,
                             false, false, false, true, false, false, false,
-                            PsSortField::Pid, None, true,
+                            PsSortField::Pid, None, false, true,
                         ),
                         "ps:threads" => cmd_ps(
                             &file, symbols, fmt, None,
                             true, pid_filter, false, false, false, false, false,
                             false, false, false, false, false, false, false,
-                            PsSortField::Pid, None, true,
+                            PsSortField::Pid, None, false, true,
                         ),
                         "ps:vad" => cmd_ps(
                             &file, symbols, fmt, None,
                             false, pid_filter, false, false, false, false, false,
                             false, false, true, false, false, false, false,
-                            PsSortField::Pid, None, true,
+                            PsSortField::Pid, None, false, true,
                         ),
                         "net" => {
                             let (_ctx, reader) = setup_analysis(&file, symbols, None, true)?;
@@ -1335,6 +1343,7 @@ fn cmd_ps(
     all: bool,
     sort_field: PsSortField,
     btime: Option<i64>,
+    psscan: bool,
     raw_fallback: bool,
 ) -> Result<()> {
     let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
@@ -1353,6 +1362,9 @@ fn cmd_ps(
             }
             if ppid_spoof {
                 anyhow::bail!("--ppid-spoof is only supported for Windows dumps");
+            }
+            if psscan {
+                anyhow::bail!("--psscan (pool-tag EPROCESS scan) is only supported for Windows dumps");
             }
             if dlls {
                 anyhow::bail!("--dlls is only supported for Windows dumps");
@@ -1490,6 +1502,22 @@ fn cmd_ps(
             }
             if bash_history {
                 anyhow::bail!("--bash-history is only supported for Linux dumps");
+            }
+            // Pool-tag scan deliberately does NOT require PsActiveProcessHead —
+            // it recovers processes the linked-list walk cannot reach (both links
+            // scrubbed). Handle it before the ps_head requirement and return.
+            if psscan {
+                let mut scanned = memf_windows::psscan::psscan(&reader);
+                match sort_field {
+                    PsSortField::Name => scanned
+                        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                    // ScannedProcess carries no PPID/create-time; fall back to PID.
+                    PsSortField::Pid | PsSortField::Ppid | PsSortField::Time => {
+                        scanned.sort_by_key(|p| p.pid);
+                    }
+                }
+                println!("{}", render_scanned_processes(&scanned, output));
+                return Ok(());
             }
             let ps_head = ctx
                 .ps_active_process_head
@@ -2216,6 +2244,77 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
                     p.cr3
                 );
             }
+        }
+    }
+}
+
+/// Render `psscan` pool-tag scan results in the requested output format.
+///
+/// Humble Object: pure and testable — the CLI glue calls this and prints the
+/// returned string. `name` is the attacker-controlled EPROCESS `ImageFileName`,
+/// so it is sanitized (`csv_field` for CSV formula/bidi neutralization,
+/// `table_cell`/`display_safe` for the terminal) before it reaches output.
+fn render_scanned_processes(
+    procs: &[memf_windows::psscan::ScannedProcess],
+    format: OutputFormat,
+) -> String {
+    match format {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_header(vec!["Physical Offset", "PID", "Name", "DTB"]);
+            for p in procs {
+                let dtb = p.dtb.map_or_else(|| "-".to_string(), |d| format!("{d:#x}"));
+                table.add_row(vec![
+                    format!("{:#x}", p.physical_addr),
+                    format!("{}", p.pid),
+                    table_cell(&p.name),
+                    dtb,
+                ]);
+            }
+            format!("{table}\n\nTotal: {} processes", procs.len())
+        }
+        OutputFormat::Json => {
+            let arr: Vec<_> = procs
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "physical_addr": format!("{:#x}", p.physical_addr),
+                        "pid": p.pid,
+                        "name": table_cell(&p.name),
+                        "dtb": p.dtb.map(|d| format!("{d:#x}")),
+                    })
+                })
+                .collect();
+            serde_json::to_string(&arr).unwrap_or_default()
+        }
+        OutputFormat::Ndjson => {
+            let mut out = String::new();
+            for p in procs {
+                let json = serde_json::json!({
+                    "physical_addr": format!("{:#x}", p.physical_addr),
+                    "pid": p.pid,
+                    "name": table_cell(&p.name),
+                    "dtb": p.dtb.map(|d| format!("{d:#x}")),
+                });
+                out.push_str(&serde_json::to_string(&json).unwrap_or_default());
+                out.push('\n');
+            }
+            out
+        }
+        OutputFormat::Csv => {
+            let mut out = String::from("physical_addr,pid,name,dtb\n");
+            for p in procs {
+                let dtb = p.dtb.map_or_else(String::new, |d| format!("{d:#x}"));
+                out.push_str(&format!(
+                    "{:#x},{},{},{}\n",
+                    p.physical_addr,
+                    p.pid,
+                    csv_field(&p.name).value,
+                    dtb,
+                ));
+            }
+            out
         }
     }
 }
@@ -5715,6 +5814,18 @@ mod tests {
     }
 
     #[test]
+    fn render_scanned_processes_strips_bidi_in_every_channel() {
+        // U+202E RIGHT-TO-LEFT OVERRIDE — a terminal/JSON name-spoofing vector
+        // (and itself an IOC in a 15-char EPROCESS ImageFileName). The README
+        // promises bidi/control stripping on table/CSV/JSON alike.
+        let procs = vec![sp(0x1000, 7, "ev\u{202e}il.exe", None)];
+        assert!(!render_scanned_processes(&procs, OutputFormat::Table).contains('\u{202e}'), "table");
+        assert!(!render_scanned_processes(&procs, OutputFormat::Csv).contains('\u{202e}'), "csv");
+        assert!(!render_scanned_processes(&procs, OutputFormat::Json).contains('\u{202e}'), "json");
+        assert!(!render_scanned_processes(&procs, OutputFormat::Ndjson).contains('\u{202e}'), "ndjson");
+    }
+
+    #[test]
     fn render_scanned_processes_json_is_valid_array() {
         let procs = vec![sp(0x5e1000, 4, "System", Some(0x1ad000))];
         let json = render_scanned_processes(&procs, OutputFormat::Json);
@@ -5798,6 +5909,7 @@ mod tests {
             false,            // all
             PsSortField::Pid, // sort
             None,             // btime
+            false,            // psscan
             false,            // raw_fallback
         );
         // May succeed or fail with a walker error, but NOT with old CR3 bail
@@ -5838,6 +5950,7 @@ mod tests {
             true,             // all
             PsSortField::Pid, // sort
             None,             // btime
+            false,            // psscan
             false,            // raw_fallback
         );
         if let Err(e) = &result {
@@ -7683,6 +7796,7 @@ mod tests {
             false,            // all
             PsSortField::Pid,
             None,             // btime
+            false,            // psscan
             false,            // raw_fallback
         );
         let err = result.expect_err("--ppid-spoof on Linux must bail");
@@ -7719,6 +7833,7 @@ mod tests {
             false,            // all
             PsSortField::Pid,
             None,             // btime
+            false,            // psscan
             false,            // raw_fallback
         );
         if let Err(e) = &result {
