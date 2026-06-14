@@ -212,16 +212,16 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(MAX_USERS as u16) {
         let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => {
-                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                    }
-                    _ => continue,
+            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                 }
-            }
+                _ => continue,
+            },
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
+                }
                 _ => continue,
             },
             _ => continue,
@@ -548,16 +548,16 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => {
-                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                    }
-                    _ => continue,
+            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                 }
-            }
+                _ => continue,
+            },
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
+                }
                 _ => continue,
             },
             _ => break,
@@ -606,7 +606,9 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
 
         if val_type == target_rid {
             let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-                Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
+                Ok(bytes) if bytes.len() == 2 => {
+                    bytes[..2].try_into().map_or(0, u16::from_le_bytes)
+                }
                 _ => continue,
             };
 
@@ -1013,16 +1015,16 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => {
-                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                    }
-                    _ => continue,
+            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                 }
-            }
+                _ => continue,
+            },
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
+                }
                 _ => continue,
             },
             _ => return 0,
@@ -1082,7 +1084,9 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
         return Vec::new();
     }
 
-    reader.read_bytes(class_addr, class_len as usize).unwrap_or_default()
+    reader
+        .read_bytes(class_addr, class_len as usize)
+        .unwrap_or_default()
 }
 
 /// Read the named value data from a registry key's value list.
@@ -1255,10 +1259,12 @@ fn resolve_root_cell<P: PhysicalMemoryProvider>(
 /// Format a byte slice as a lowercase hex string.
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 /// Perform a single DES block encryption (used for RID-based hash decryption).

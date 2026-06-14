@@ -298,16 +298,16 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => {
-                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                    }
-                    _ => continue,
+            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                 }
-            }
+                _ => continue,
+            },
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
+                }
                 _ => continue,
             },
             _ => return 0,
@@ -1240,12 +1240,13 @@ mod tests {
 
         // root nk at 0x104
         let ro = 0x104usize;
-        w32(&mut flat_page, ro + 0x18, 1);   // subkey_count=1
+        w32(&mut flat_page, ro + 0x18, 1); // subkey_count=1
         w32(&mut flat_page, ro + 0x20, 0x200); // list_cell_off
 
         // lf1 at 0x204 → Policy nk
         let l1 = 0x204usize;
-        flat_page[l1] = b'l'; flat_page[l1 + 1] = b'f';
+        flat_page[l1] = b'l';
+        flat_page[l1 + 1] = b'f';
         w16(&mut flat_page, l1 + 2, 1);
         w32(&mut flat_page, l1 + 4, 0x300);
         w32(&mut flat_page, l1 + 8, 0);
@@ -1259,7 +1260,8 @@ mod tests {
 
         // lf2 at 0x404 → Secrets nk
         let l2 = 0x404usize;
-        flat_page[l2] = b'l'; flat_page[l2 + 1] = b'f';
+        flat_page[l2] = b'l';
+        flat_page[l2 + 1] = b'f';
         w16(&mut flat_page, l2 + 2, 1);
         w32(&mut flat_page, l2 + 4, 0x500);
         w32(&mut flat_page, l2 + 8, 0);
@@ -1273,7 +1275,8 @@ mod tests {
 
         // lf3 at 0x604 → DPAPI_SYSTEM nk
         let l3 = 0x604usize;
-        flat_page[l3] = b'l'; flat_page[l3 + 1] = b'f';
+        flat_page[l3] = b'l';
+        flat_page[l3 + 1] = b'f';
         w16(&mut flat_page, l3 + 2, 1);
         w32(&mut flat_page, l3 + 4, 0x700);
         w32(&mut flat_page, l3 + 8, 0);
@@ -1288,15 +1291,16 @@ mod tests {
 
         // lf4 at 0x804 → CurrVal nk
         let l4 = 0x804usize;
-        flat_page[l4] = b'l'; flat_page[l4 + 1] = b'f';
+        flat_page[l4] = b'l';
+        flat_page[l4 + 1] = b'f';
         w16(&mut flat_page, l4 + 2, 1);
         w32(&mut flat_page, l4 + 4, 0x900);
         w32(&mut flat_page, l4 + 8, 0);
 
         // CurrVal nk at 0x904: val_count=1, val_list_off=0xA00
         let cv = 0x904usize;
-        w32(&mut flat_page, cv + 0x28, 1);       // val_count
-        w32(&mut flat_page, cv + 0x2C, 0xA00);   // val_list_cell_off
+        w32(&mut flat_page, cv + 0x28, 1); // val_count
+        w32(&mut flat_page, cv + 0x2C, 0xA00); // val_list_cell_off
         w16(&mut flat_page, cv + 0x4A, 7);
         flat_page[cv + 0x4C..cv + 0x53].copy_from_slice(b"CurrVal");
 
@@ -1308,7 +1312,7 @@ mod tests {
         //   +0x08 DataLength = 40
         //   +0x0C DataOffset (cell_off) = 0xC00  → data at flat_base+0xC04
         let vk = 0xB04usize;
-        w32(&mut flat_page, vk + 0x08, 40);    // DataLength (no MSB = non-inline)
+        w32(&mut flat_page, vk + 0x08, 40); // DataLength (no MSB = non-inline)
         w32(&mut flat_page, vk + 0x0C, 0xC00); // DataOffset
 
         // Data cell at 0xC04: 40 bytes = (0u8..40)

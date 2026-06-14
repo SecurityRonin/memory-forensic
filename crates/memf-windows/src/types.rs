@@ -1243,9 +1243,9 @@ pub struct CloudCredentialInfo {
     /// Image name of the owning process (e.g. `chrome.exe`). JSON key `image_name`; renamed from `process_name` for consistency with all other walker output types.
     pub image_name: String,
     /// Cloud provider or service name.
-    pub provider: String,  // "AWS", "GCP", "Azure", "Stripe", "Twilio", "Generic"
+    pub provider: String, // "AWS", "GCP", "Azure", "Stripe", "Twilio", "Generic"
     /// Type of credential within the provider.
-    pub credential_type: String,  // "AccessKeyId", "ApiKey", "StorageKey", "SecretKey", etc.
+    pub credential_type: String, // "AccessKeyId", "ApiKey", "StorageKey", "SecretKey", etc.
     /// The credential value.
     pub value: String,
 }
@@ -1476,10 +1476,13 @@ mod tests {
     #[test]
     fn win_process_info_has_handle_count_and_session_id() {
         let p = WinProcessInfo {
-            pid: 4, ppid: 0,
+            pid: 4,
+            ppid: 0,
             image_name: "System".into(),
-            create_time: 0, exit_time: 0,
-            cr3: 0, peb_addr: 0,
+            create_time: 0,
+            exit_time: 0,
+            cr3: 0,
+            peb_addr: 0,
             vaddr: 0xffff_8000_0000_0000,
             thread_count: 42,
             is_wow64: false,
@@ -1506,5 +1509,4 @@ mod tests {
         };
         assert_eq!(c.offset, 0xffff_8000_0000_1000);
     }
-
 }

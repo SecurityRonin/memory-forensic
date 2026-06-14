@@ -117,8 +117,7 @@ pub fn walk_dpapi_master_keys<P: PhysicalMemoryProvider>(
                 reader.read_bytes(entry_va + 0x30, 4),
             ) {
                 (Ok(ptr_b), Ok(len_b)) => {
-                    let blob_ptr =
-                        u64::from_le_bytes(ptr_b.try_into().unwrap_or([0u8; 8]));
+                    let blob_ptr = u64::from_le_bytes(ptr_b.try_into().unwrap_or([0u8; 8]));
                     let blob_len =
                         u32::from_le_bytes(len_b.try_into().unwrap_or([0u8; 4])) as usize;
                     if blob_len > 0 && blob_len <= 512 && blob_ptr != 0 {
@@ -227,8 +226,8 @@ mod tests {
         const BLOB_PA: u64 = 0x0030_0000;
 
         let guid_bytes = [
-            0xAAu8, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-            0x88, 0x99, 0x00,
+            0xAAu8, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+            0x99, 0x00,
         ];
         let blob_data = [0x42u8; 64];
         const BLOB_LEN: u32 = 64;

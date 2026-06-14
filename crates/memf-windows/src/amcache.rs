@@ -431,7 +431,9 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
         Err(_) => {
             // Fallback: read pointer at offset 0x10 from hive addr.
             match reader.read_bytes(amcache_hive_addr.wrapping_add(0x10), 8) {
-                Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
+                Ok(bytes) if bytes.len() == 8 => {
+                    bytes[..8].try_into().map_or(0, u64::from_le_bytes)
+                }
                 _ => return Ok(Vec::new()),
             }
         }
@@ -449,7 +451,9 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
         Ok(b) if b.len() == 4 => b,
         _ => return Ok(Vec::new()),
     };
-    let root_cell = root_cell_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
+    let root_cell = root_cell_bytes[..4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
     if root_cell == 0 {
         return Ok(Vec::new());
     }
@@ -496,12 +500,17 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
     };
 
     // Enumerate child keys (each represents one tracked executable).
-    let subkey_count = iaf_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
+    let subkey_count = iaf_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes) as usize;
     if subkey_count == 0 {
         return Ok(Vec::new());
     }
 
-    let subkeys_list_index = iaf_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let subkeys_list_index = iaf_data
+        [NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
     let list_data = match read_cell_data(reader, hive_base, subkeys_list_index, 0x4000) {
         Some(d) if d.len() >= 4 => d,
         _ => return Ok(Vec::new()),
@@ -1459,7 +1468,7 @@ mod tests {
         // data cell
         let mut data_page = vec![0u8; 0x1000];
         let cell_off = data_cell_index as usize;
-        let cell_size: i32 = -((4 + 8));
+        let cell_size: i32 = -(4 + 8);
         data_page[cell_off..cell_off + 4].copy_from_slice(&cell_size.to_le_bytes());
         data_page[cell_off + 4..cell_off + 12].copy_from_slice(&qword_bytes);
 
@@ -1503,13 +1512,13 @@ mod tests {
         let mut list_page = vec![0u8; 0x1000];
         // list cell at offset 0x100
         let list_off = list_cell_index as usize;
-        let list_size: i32 = -((4 + 4));
+        let list_size: i32 = -(4 + 4);
         list_page[list_off..list_off + 4].copy_from_slice(&list_size.to_le_bytes());
         list_page[list_off + 4..list_off + 8].copy_from_slice(&vk_cell_index.to_le_bytes());
 
         // vk cell at offset 0x200 with bad sig
         let vk_off = vk_cell_index as usize;
-        let vk_size: i32 = -((4 + 0x20));
+        let vk_size: i32 = -(4 + 0x20);
         list_page[vk_off..vk_off + 4].copy_from_slice(&vk_size.to_le_bytes());
         // sig = 0x0000 (bad), rest zeros
 

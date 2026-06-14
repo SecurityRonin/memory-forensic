@@ -4,9 +4,9 @@
 //! reconstruction of on-disk PE layout from in-memory layout, and enumeration
 //! of memory-mapped (non-private) VAD regions.
 
-use memf_format::PhysicalMemoryProvider;
-use memf_core::object_reader::ObjectReader;
 use crate::types::{WinDllInfo, WinDriverInfo, WinProcessInfo, WinVadInfo};
+use memf_core::object_reader::ObjectReader;
+use memf_format::PhysicalMemoryProvider;
 
 /// A dumped module or process image extracted from memory.
 #[derive(Debug, Clone)]
@@ -156,7 +156,10 @@ pub fn reconstruct_pe(in_memory: &[u8]) -> crate::Result<Vec<u8>> {
         });
     }
     let e_lfanew = u32::from_le_bytes([
-        in_memory[0x3C], in_memory[0x3D], in_memory[0x3E], in_memory[0x3F],
+        in_memory[0x3C],
+        in_memory[0x3D],
+        in_memory[0x3E],
+        in_memory[0x3F],
     ]) as usize;
     if e_lfanew + 24 > in_memory.len() || &in_memory[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
         return Err(crate::Error::WalkFailed {
@@ -165,8 +168,10 @@ pub fn reconstruct_pe(in_memory: &[u8]) -> crate::Result<Vec<u8>> {
         });
     }
 
-    let num_sections = u16::from_le_bytes([in_memory[e_lfanew + 6], in_memory[e_lfanew + 7]]) as usize;
-    let opt_size = u16::from_le_bytes([in_memory[e_lfanew + 20], in_memory[e_lfanew + 21]]) as usize;
+    let num_sections =
+        u16::from_le_bytes([in_memory[e_lfanew + 6], in_memory[e_lfanew + 7]]) as usize;
+    let opt_size =
+        u16::from_le_bytes([in_memory[e_lfanew + 20], in_memory[e_lfanew + 21]]) as usize;
     let sh_offset = e_lfanew + 24 + opt_size;
 
     if sh_offset + num_sections * 40 > in_memory.len() {
@@ -180,8 +185,18 @@ pub fn reconstruct_pe(in_memory: &[u8]) -> crate::Result<Vec<u8>> {
     let mut out_size = sh_offset + num_sections * 40;
     for i in 0..num_sections {
         let s = sh_offset + i * 40;
-        let ptr_raw = u32::from_le_bytes([in_memory[s+20], in_memory[s+21], in_memory[s+22], in_memory[s+23]]) as usize;
-        let raw_sz  = u32::from_le_bytes([in_memory[s+16], in_memory[s+17], in_memory[s+18], in_memory[s+19]]) as usize;
+        let ptr_raw = u32::from_le_bytes([
+            in_memory[s + 20],
+            in_memory[s + 21],
+            in_memory[s + 22],
+            in_memory[s + 23],
+        ]) as usize;
+        let raw_sz = u32::from_le_bytes([
+            in_memory[s + 16],
+            in_memory[s + 17],
+            in_memory[s + 18],
+            in_memory[s + 19],
+        ]) as usize;
         out_size = out_size.max(ptr_raw.saturating_add(raw_sz));
     }
 
@@ -193,10 +208,30 @@ pub fn reconstruct_pe(in_memory: &[u8]) -> crate::Result<Vec<u8>> {
     // Copy each section from VirtualAddress in source to PointerToRawData in output
     for i in 0..num_sections {
         let s = sh_offset + i * 40;
-        let virt_addr = u32::from_le_bytes([in_memory[s+12], in_memory[s+13], in_memory[s+14], in_memory[s+15]]) as usize;
-        let virt_size = u32::from_le_bytes([in_memory[s+8],  in_memory[s+9],  in_memory[s+10], in_memory[s+11]]) as usize;
-        let ptr_raw   = u32::from_le_bytes([in_memory[s+20], in_memory[s+21], in_memory[s+22], in_memory[s+23]]) as usize;
-        let raw_sz    = u32::from_le_bytes([in_memory[s+16], in_memory[s+17], in_memory[s+18], in_memory[s+19]]) as usize;
+        let virt_addr = u32::from_le_bytes([
+            in_memory[s + 12],
+            in_memory[s + 13],
+            in_memory[s + 14],
+            in_memory[s + 15],
+        ]) as usize;
+        let virt_size = u32::from_le_bytes([
+            in_memory[s + 8],
+            in_memory[s + 9],
+            in_memory[s + 10],
+            in_memory[s + 11],
+        ]) as usize;
+        let ptr_raw = u32::from_le_bytes([
+            in_memory[s + 20],
+            in_memory[s + 21],
+            in_memory[s + 22],
+            in_memory[s + 23],
+        ]) as usize;
+        let raw_sz = u32::from_le_bytes([
+            in_memory[s + 16],
+            in_memory[s + 17],
+            in_memory[s + 18],
+            in_memory[s + 19],
+        ]) as usize;
 
         if ptr_raw == 0 || raw_sz == 0 {
             continue;
@@ -205,7 +240,8 @@ pub fn reconstruct_pe(in_memory: &[u8]) -> crate::Result<Vec<u8>> {
         let src_end = virt_addr.saturating_add(copy_len).min(in_memory.len());
         let actual = src_end.saturating_sub(virt_addr);
         if actual > 0 && ptr_raw + actual <= out.len() {
-            out[ptr_raw..ptr_raw + actual].copy_from_slice(&in_memory[virt_addr..virt_addr + actual]);
+            out[ptr_raw..ptr_raw + actual]
+                .copy_from_slice(&in_memory[virt_addr..virt_addr + actual]);
         }
     }
 
@@ -422,7 +458,10 @@ mod tests {
         assert_eq!(result.name, "test.dll");
         assert_eq!(result.base_addr, 0x7FF0_0000);
         assert_eq!(result.raw_bytes.len(), pe.len());
-        assert!(result.reconstructed.is_some(), "valid PE should reconstruct successfully");
+        assert!(
+            result.reconstructed.is_some(),
+            "valid PE should reconstruct successfully"
+        );
     }
 
     // ── procdump_inner tests (GREEN) ──────────────────────────────────────────
@@ -432,14 +471,34 @@ mod tests {
         let pe = build_memory_pe();
         let reader = FakeReader::new(0x4000_0000, pe.clone());
         let process = WinProcessInfo {
-            pid: 100, ppid: 4, image_name: "notepad.exe".into(),
-            create_time: 0, exit_time: 0, cr3: 0,
-            peb_addr: 0, vaddr: 0, thread_count: 2, is_wow64: false,
-            handle_count: 0, session_id: 0,
+            pid: 100,
+            ppid: 4,
+            image_name: "notepad.exe".into(),
+            create_time: 0,
+            exit_time: 0,
+            cr3: 0,
+            peb_addr: 0,
+            vaddr: 0,
+            thread_count: 2,
+            is_wow64: false,
+            handle_count: 0,
+            session_id: 0,
         };
         let dlls = vec![
-            WinDllInfo { name: "ntdll.dll".into(), full_path: String::new(), base_addr: 0x5000_0000, size: 0x200, load_order: 2 },
-            WinDllInfo { name: "notepad.exe".into(), full_path: String::new(), base_addr: 0x4000_0000, size: pe.len() as u64, load_order: 0 },
+            WinDllInfo {
+                name: "ntdll.dll".into(),
+                full_path: String::new(),
+                base_addr: 0x5000_0000,
+                size: 0x200,
+                load_order: 2,
+            },
+            WinDllInfo {
+                name: "notepad.exe".into(),
+                full_path: String::new(),
+                base_addr: 0x4000_0000,
+                size: pe.len() as u64,
+                load_order: 0,
+            },
         ];
         let result = procdump_inner(&reader, &process, &dlls).unwrap();
         assert_eq!(result.name, "notepad.exe");

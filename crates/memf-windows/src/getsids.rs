@@ -119,7 +119,9 @@ fn read_sid_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, sid_ptr: u64
     let sub_authorities: Vec<u32> = (0..sub_count)
         .map(|i| {
             let off = i * 4;
-            sub_bytes[off..off + 4].try_into().map_or(0, u32::from_le_bytes)
+            sub_bytes[off..off + 4]
+                .try_into()
+                .map_or(0, u32::from_le_bytes)
         })
         .collect();
 
@@ -162,14 +164,17 @@ fn read_integrity_level<P: PhysicalMemoryProvider>(
     token_addr: u64,
 ) -> String {
     // Try to get IntegrityLevelIndex first
-    let integrity_index: u32 = if let Ok(v) = reader.read_field(token_addr, "_TOKEN", "IntegrityLevelIndex") { v } else {
-        // Fall back: read UserAndGroupCount - 1 as the integrity entry index
-        let count: u32 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroupCount") {
-            Ok(v) if v > 0 => v,
-            _ => return String::new(),
+    let integrity_index: u32 =
+        if let Ok(v) = reader.read_field(token_addr, "_TOKEN", "IntegrityLevelIndex") {
+            v
+        } else {
+            // Fall back: read UserAndGroupCount - 1 as the integrity entry index
+            let count: u32 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroupCount") {
+                Ok(v) if v > 0 => v,
+                _ => return String::new(),
+            };
+            count - 1
         };
-        count - 1
-    };
 
     let user_and_groups: u64 = match reader.read_field(token_addr, "_TOKEN", "UserAndGroups") {
         Ok(v) if v != 0 => v,

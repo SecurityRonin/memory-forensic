@@ -17,10 +17,7 @@ use std::collections::HashSet;
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{
-    types::CloudCredentialInfo,
-    Result,
-};
+use crate::{types::CloudCredentialInfo, Result};
 
 /// Walk committed, writable heap regions of ALL processes in the dump and
 /// extract any cloud provider credentials found as strings.
@@ -73,7 +70,11 @@ const GENERIC_API_KEY: &str = r#"(?i)api[_\-]?key["\s:=]+([A-Za-z0-9\-_]{32,64})
 /// For patterns with capture groups (Azure, generic API key), use capture
 /// group 1. For others, use full match. Deduplicates by value within the
 /// returned slice.
-pub(crate) fn scan_cloud_region(data: &[u8], pid: u64, process_name: &str) -> Vec<CloudCredentialInfo> {
+pub(crate) fn scan_cloud_region(
+    data: &[u8],
+    pid: u64,
+    process_name: &str,
+) -> Vec<CloudCredentialInfo> {
     let text = String::from_utf8_lossy(data);
     let mut out: Vec<CloudCredentialInfo> = Vec::new();
     let mut seen_values: HashSet<String> = HashSet::new();
@@ -156,7 +157,9 @@ mod tests {
         let data = b"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE123";
         let results = scan_cloud_region(data, 1, "aws.exe");
         assert!(!results.is_empty());
-        assert!(results.iter().any(|c| c.provider == "AWS" && c.credential_type == "AccessKeyId"));
+        assert!(results
+            .iter()
+            .any(|c| c.provider == "AWS" && c.credential_type == "AccessKeyId"));
         assert!(results.iter().any(|c| c.value.starts_with("AKIA")));
     }
 
@@ -164,7 +167,9 @@ mod tests {
     fn scan_detects_aws_sts_temp_key() {
         let data = b"AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE123";
         let results = scan_cloud_region(data, 1, "app.exe");
-        assert!(results.iter().any(|c| c.provider == "AWS" && c.value.starts_with("ASIA")));
+        assert!(results
+            .iter()
+            .any(|c| c.provider == "AWS" && c.value.starts_with("ASIA")));
     }
 
     #[test]
@@ -180,7 +185,9 @@ mod tests {
         let data = b"STRIPE_SECRET_KEY=sk_live_ABCDEFGHIJKLMNOPQRSTUVWXabcdefgh";
         let results = scan_cloud_region(data, 1, "app.exe");
         assert!(!results.is_empty());
-        assert!(results.iter().any(|c| c.provider == "Stripe" && c.credential_type == "SecretKey"));
+        assert!(results
+            .iter()
+            .any(|c| c.provider == "Stripe" && c.credential_type == "SecretKey"));
     }
 
     #[test]

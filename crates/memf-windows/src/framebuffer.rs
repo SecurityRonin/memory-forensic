@@ -5,8 +5,7 @@ use crate::Result;
 
 const EFI_SYSTEM_TABLE_SIG: u64 = 0x5453_5953_2049_4249;
 const GOP_GUID: [u8; 16] = [
-    0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a,
-    0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+    0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
 ];
 const MAX_FB_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -26,7 +25,7 @@ pub(crate) fn walk_framebuffer_from<P: PhysicalMemoryProvider>(
     table_pa: u64,
 ) -> Result<FramebufferResult> {
     // Read ConfigurationTable count and pointer from the EFI System Table.
-    let num_entries    = read_u64_phys(provider, table_pa + 0x40)?;
+    let num_entries = read_u64_phys(provider, table_pa + 0x40)?;
     let config_table_pa = read_u64_phys(provider, table_pa + 0x48)?;
 
     // Walk the EFI_CONFIGURATION_TABLE array for the GOP GUID.
@@ -37,10 +36,10 @@ pub(crate) fn walk_framebuffer_from<P: PhysicalMemoryProvider>(
     let info_pa = read_u64_phys(provider, gop_mode_pa + 0x08)?;
 
     // EFI_GRAPHICS_OUTPUT_MODE_INFORMATION fields.
-    let width  = read_u32_phys(provider, info_pa + 0x04)?;
+    let width = read_u32_phys(provider, info_pa + 0x04)?;
     let height = read_u32_phys(provider, info_pa + 0x08)?;
-    let pf_id  = read_u32_phys(provider, info_pa + 0x0C)?;
-    let pps    = read_u32_phys(provider, info_pa + 0x20)?;
+    let pf_id = read_u32_phys(provider, info_pa + 0x0C)?;
+    let pps = read_u32_phys(provider, info_pa + 0x20)?;
     let stride = pps.saturating_mul(4);
 
     let pixel_format = match pf_id {
@@ -129,19 +128,21 @@ fn find_gop_mode<P: PhysicalMemoryProvider>(
 
 fn read_u64_phys<P: PhysicalMemoryProvider>(p: &P, pa: u64) -> Result<u64> {
     let mut buf = [0u8; 8];
-    p.read_phys(pa, &mut buf).map_err(|_| crate::Error::WalkFailed {
-        walker: "framebuffer_windows",
-        reason: format!("read_phys failed at {pa:#x}"),
-    })?;
+    p.read_phys(pa, &mut buf)
+        .map_err(|_| crate::Error::WalkFailed {
+            walker: "framebuffer_windows",
+            reason: format!("read_phys failed at {pa:#x}"),
+        })?;
     Ok(u64::from_le_bytes(buf))
 }
 
 fn read_u32_phys<P: PhysicalMemoryProvider>(p: &P, pa: u64) -> Result<u32> {
     let mut buf = [0u8; 4];
-    p.read_phys(pa, &mut buf).map_err(|_| crate::Error::WalkFailed {
-        walker: "framebuffer_windows",
-        reason: format!("read_phys failed at {pa:#x}"),
-    })?;
+    p.read_phys(pa, &mut buf)
+        .map_err(|_| crate::Error::WalkFailed {
+            walker: "framebuffer_windows",
+            reason: format!("read_phys failed at {pa:#x}"),
+        })?;
     Ok(u32::from_le_bytes(buf))
 }
 
@@ -155,16 +156,16 @@ mod tests {
     use memf_core::test_builders::SyntheticPhysMem;
 
     const GOP_GUID_T: [u8; 16] = [
-        0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a,
-        0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+        0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51,
+        0x6a,
     ];
 
     // Physical addresses used in the synthetic image
-    const TABLE_PA:     u64 = 0xF000_0000;
+    const TABLE_PA: u64 = 0xF000_0000;
     const CFG_TABLE_PA: u64 = 0xF001_0000;
-    const GOP_MODE_PA:  u64 = 0xF002_0000;
+    const GOP_MODE_PA: u64 = 0xF002_0000;
     const MODE_INFO_PA: u64 = 0xF003_0000;
-    const FB_PA:        u64 = 0xFD00_0000;
+    const FB_PA: u64 = 0xFD00_0000;
 
     // 4×4 framebuffer — small and fast
     const W: u32 = 4;
@@ -177,17 +178,17 @@ mod tests {
         let mut mem = SyntheticPhysMem::new(MEM_SIZE);
 
         // EFI System Table
-        mem.write_u64(TABLE_PA,        EFI_SYSTEM_TABLE_SIG);
-        mem.write_u64(TABLE_PA + 0x40, 1);            // NumberOfTableEntries
+        mem.write_u64(TABLE_PA, EFI_SYSTEM_TABLE_SIG);
+        mem.write_u64(TABLE_PA + 0x40, 1); // NumberOfTableEntries
         mem.write_u64(TABLE_PA + 0x48, CFG_TABLE_PA); // ConfigurationTable ptr
 
         // EFI_CONFIGURATION_TABLE[0] = {GOP_GUID, GOP_MODE_PA}
-        mem.write_bytes(CFG_TABLE_PA,      &GOP_GUID_T);
-        mem.write_u64(CFG_TABLE_PA + 16,   GOP_MODE_PA);
+        mem.write_bytes(CFG_TABLE_PA, &GOP_GUID_T);
+        mem.write_u64(CFG_TABLE_PA + 16, GOP_MODE_PA);
 
         // EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE
-        mem.write_u64(GOP_MODE_PA + 0x08, MODE_INFO_PA);       // Info ptr
-        mem.write_u64(GOP_MODE_PA + 0x18, FB_PA);              // FrameBufferBase
+        mem.write_u64(GOP_MODE_PA + 0x08, MODE_INFO_PA); // Info ptr
+        mem.write_u64(GOP_MODE_PA + 0x18, FB_PA); // FrameBufferBase
         mem.write_u64(GOP_MODE_PA + 0x20, u64::from(W * H * 4)); // FrameBufferSize
 
         // EFI_GRAPHICS_OUTPUT_MODE_INFORMATION
@@ -231,7 +232,11 @@ mod tests {
     fn windows_framebuffer_pixel_format_is_xbgr() {
         let mem = make_provider();
         let result = walk_framebuffer_from(&mem, TABLE_PA).expect("ok");
-        assert!(result.pixel_format.contains("Xbgr"), "got {}", result.pixel_format);
+        assert!(
+            result.pixel_format.contains("Xbgr"),
+            "got {}",
+            result.pixel_format
+        );
     }
 
     #[test]

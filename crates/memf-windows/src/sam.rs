@@ -366,16 +366,16 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => {
-                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                    }
-                    _ => continue,
+            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                 }
-            }
+                _ => continue,
+            },
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
+                }
                 _ => continue,
             },
             _ => return 0,
@@ -448,16 +448,16 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
 
     for i in 0..count.min(4096) {
         let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => {
-                match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                    Ok(bytes) if bytes.len() == 4 => {
-                        bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                    }
-                    _ => continue,
+            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
                 }
-            }
+                _ => continue,
+            },
             [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
+                }
                 _ => continue,
             },
             _ => break,
@@ -511,7 +511,9 @@ fn find_name_for_rid<P: PhysicalMemoryProvider>(
         if val_type == target_rid {
             // Read the key name as the username.
             let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-                Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
+                Ok(bytes) if bytes.len() == 2 => {
+                    bytes[..2].try_into().map_or(0, u16::from_le_bytes)
+                }
                 _ => continue,
             };
 

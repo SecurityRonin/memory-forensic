@@ -1124,15 +1124,9 @@ mod tests {
         let cmd_entry_vaddr = CMD_VADDR + 0x100;
 
         let whoami = "whoami";
-        let whoami_utf16: Vec<u8> = whoami
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let whoami_utf16: Vec<u8> = whoami.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let cmdexe = "cmd.exe";
-        let cmdexe_utf16: Vec<u8> = cmdexe
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let cmdexe_utf16: Vec<u8> = cmdexe.encode_utf16().flat_map(u16::to_le_bytes).collect();
 
         let isf = IsfBuilder::new()
             .add_struct("_PEB", 64)

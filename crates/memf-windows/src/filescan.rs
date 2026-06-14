@@ -28,7 +28,10 @@ pub fn walk_file_objects<P: PhysicalMemoryProvider>(
     let body_offset = reader
         .symbols()
         .field_offset("_OBJECT_HEADER", "Body")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_OBJECT_HEADER".into(), field_name: "Body".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_OBJECT_HEADER".into(),
+            field_name: "Body".into(),
+        })?;
 
     let mut results = Vec::new();
 
@@ -64,7 +67,9 @@ pub fn scan_file_objects<P: PhysicalMemoryProvider>(
     let ps_head = reader
         .symbols()
         .symbol_address("PsActiveProcessHead")
-        .ok_or_else(|| crate::Error::MissingKernelSymbol { name: "PsActiveProcessHead".into() })?;
+        .ok_or_else(|| crate::Error::MissingKernelSymbol {
+            name: "PsActiveProcessHead".into(),
+        })?;
 
     let Ok(handles) = crate::handles::walk_handles(reader, ps_head) else {
         return Ok(Vec::new());
@@ -83,7 +88,10 @@ fn read_file_object<P: PhysicalMemoryProvider>(
     let filename_off = reader
         .symbols()
         .field_offset("_FILE_OBJECT", "FileName")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_FILE_OBJECT".into(), field_name: "FileName".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_FILE_OBJECT".into(),
+            field_name: "FileName".into(),
+        })?;
     let file_name =
         read_unicode_string(reader, file_obj_addr.wrapping_add(filename_off)).unwrap_or_default();
 

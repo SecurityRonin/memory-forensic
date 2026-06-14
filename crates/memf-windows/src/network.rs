@@ -35,7 +35,10 @@ pub fn walk_tcp_endpoints<P: PhysicalMemoryProvider>(
     let hash_entry_off = reader
         .symbols()
         .field_offset("_TCP_ENDPOINT", "HashEntry")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_TCP_ENDPOINT".into(), field_name: "HashEntry".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_TCP_ENDPOINT".into(),
+            field_name: "HashEntry".into(),
+        })?;
 
     let mut results = Vec::new();
 

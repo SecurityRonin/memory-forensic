@@ -27,10 +27,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{
-    types::SshAgentKeyInfo,
-    Result,
-};
+use crate::{types::SshAgentKeyInfo, Result};
 
 /// SSH agent process names to scan.
 pub const SSH_AGENT_PROCESSES: &[&str] = &["ssh-agent.exe", "pageant.exe"];
@@ -46,19 +43,28 @@ const MAX_PEM_BLOB: usize = 8192;
 /// Each entry is the 4-byte big-endian length prefix concatenated with the
 /// key-type ASCII string as specified in RFC 4251.
 const SSH_KEY_SIGS: &[(&[u8], &str)] = &[
-    (b"\x00\x00\x00\x07ssh-rsa",            "ssh-rsa"),
-    (b"\x00\x00\x00\x13ecdsa-sha2-nistp256", "ecdsa-sha2-nistp256"),
-    (b"\x00\x00\x00\x13ecdsa-sha2-nistp384", "ecdsa-sha2-nistp384"),
-    (b"\x00\x00\x00\x13ecdsa-sha2-nistp521", "ecdsa-sha2-nistp521"),
-    (b"\x00\x00\x00\x0bssh-ed25519",         "ssh-ed25519"),
+    (b"\x00\x00\x00\x07ssh-rsa", "ssh-rsa"),
+    (
+        b"\x00\x00\x00\x13ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp256",
+    ),
+    (
+        b"\x00\x00\x00\x13ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp384",
+    ),
+    (
+        b"\x00\x00\x00\x13ecdsa-sha2-nistp521",
+        "ecdsa-sha2-nistp521",
+    ),
+    (b"\x00\x00\x00\x0bssh-ed25519", "ssh-ed25519"),
 ];
 
 /// PEM header patterns: (begin_marker, key_type_name).
 const PEM_SIGS: &[(&[u8], &str)] = &[
     (b"-----BEGIN OPENSSH PRIVATE KEY-----", "pem-openssh"),
-    (b"-----BEGIN RSA PRIVATE KEY-----",     "pem-rsa"),
-    (b"-----BEGIN EC PRIVATE KEY-----",      "pem-ec"),
-    (b"-----BEGIN DSA PRIVATE KEY-----",     "pem-dsa"),
+    (b"-----BEGIN RSA PRIVATE KEY-----", "pem-rsa"),
+    (b"-----BEGIN EC PRIVATE KEY-----", "pem-ec"),
+    (b"-----BEGIN DSA PRIVATE KEY-----", "pem-dsa"),
 ];
 
 /// Walk committed, writable heap regions of `ssh-agent.exe` and `pageant.exe`
@@ -87,7 +93,11 @@ pub fn walk_ssh_agent_keys<P: PhysicalMemoryProvider + Clone>(
         },
         |info: &SshAgentKeyInfo| {
             let prefix_len = info.key_blob.len().min(32);
-            (info.pid, info.key_type.clone(), info.key_blob[..prefix_len].to_vec())
+            (
+                info.pid,
+                info.key_type.clone(),
+                info.key_blob[..prefix_len].to_vec(),
+            )
         },
     )?;
     Ok(wr.items)
@@ -188,12 +198,15 @@ mod tests {
         let results = scan_ssh_agent_region(pem);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].key_type, "pem-openssh");
-        assert!(results[0].key_blob.starts_with(b"-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(results[0]
+            .key_blob
+            .starts_with(b"-----BEGIN OPENSSH PRIVATE KEY-----"));
     }
 
     #[test]
     fn scan_detects_pem_rsa_private_key() {
-        let pem = b"-----BEGIN RSA PRIVATE KEY-----\nfakebase64data\n-----END RSA PRIVATE KEY-----\n";
+        let pem =
+            b"-----BEGIN RSA PRIVATE KEY-----\nfakebase64data\n-----END RSA PRIVATE KEY-----\n";
         let results = scan_ssh_agent_region(pem);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].key_type, "pem-rsa");

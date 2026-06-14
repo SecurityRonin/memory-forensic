@@ -27,10 +27,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 use regex::Regex;
 
-use crate::{
-    types::BrowserSessionEntry,
-    Result,
-};
+use crate::{types::BrowserSessionEntry, Result};
 
 /// Browser process names whose heap is scanned for open-tab URL records.
 pub const SESSION_BROWSERS: &[&str] = &[
@@ -54,9 +51,7 @@ pub(crate) fn scan_session_region(data: &[u8]) -> Vec<(String, String)> {
         Err(_) => return scan_session_region_lossy(data),
     };
 
-    let url_re = match Regex::new(
-        r"https?://[^\x00-\x1f\x7f\s]{4,512}"
-    ) {
+    let url_re = match Regex::new(r"https?://[^\x00-\x1f\x7f\s]{4,512}") {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
@@ -65,7 +60,10 @@ pub(crate) fn scan_session_region(data: &[u8]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
 
     for m in url_re.find_iter(text) {
-        let url = m.as_str().trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/').to_string();
+        let url = m
+            .as_str()
+            .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/')
+            .to_string();
         if url.len() < 10 {
             continue;
         }
@@ -80,9 +78,7 @@ pub(crate) fn scan_session_region(data: &[u8]) -> Vec<(String, String)> {
 fn scan_session_region_lossy(data: &[u8]) -> Vec<(String, String)> {
     let text = String::from_utf8_lossy(data).into_owned();
 
-    let url_re = match Regex::new(
-        r"https?://[^\x00-\x1f\x7f\s]{4,512}"
-    ) {
+    let url_re = match Regex::new(r"https?://[^\x00-\x1f\x7f\s]{4,512}") {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
@@ -91,7 +87,10 @@ fn scan_session_region_lossy(data: &[u8]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
 
     for m in url_re.find_iter(&text) {
-        let url = m.as_str().trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/').to_string();
+        let url = m
+            .as_str()
+            .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/')
+            .to_string();
         if url.len() < 10 {
             continue;
         }
@@ -111,7 +110,11 @@ pub fn walk_browser_sessions<P: PhysicalMemoryProvider + Clone>(
     let wr = crate::heap_walker::for_each_heap_region(
         reader,
         ps_head_vaddr,
-        |proc| SESSION_BROWSERS.iter().any(|b| proc.image_name.eq_ignore_ascii_case(b)),
+        |proc| {
+            SESSION_BROWSERS
+                .iter()
+                .any(|b| proc.image_name.eq_ignore_ascii_case(b))
+        },
         |bytes, proc| {
             scan_session_region(bytes)
                 .into_iter()
@@ -188,7 +191,10 @@ mod tests {
         let data = b"(see https://example.com/page)";
         let results = scan_session_region(data);
         assert!(!results.is_empty());
-        assert!(!results[0].0.ends_with(')'), "trailing ')' must be stripped");
+        assert!(
+            !results[0].0.ends_with(')'),
+            "trailing ')' must be stripped"
+        );
     }
 
     #[test]

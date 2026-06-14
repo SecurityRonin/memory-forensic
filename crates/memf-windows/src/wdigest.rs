@@ -62,21 +62,16 @@ pub fn walk_wdigest<P: PhysicalMemoryProvider + Clone>(
         iterations += 1;
 
         // Read username at current+0x30
-        let username_bytes =
-            read_unicode_string_raw(vas, current + 0x30).unwrap_or_default();
+        let username_bytes = read_unicode_string_raw(vas, current + 0x30).unwrap_or_default();
         // Read domain at current+0x40
-        let domain_bytes =
-            read_unicode_string_raw(vas, current + 0x40).unwrap_or_default();
+        let domain_bytes = read_unicode_string_raw(vas, current + 0x40).unwrap_or_default();
         // Read password (raw) at current+0x58
-        let password_bytes =
-            read_unicode_string_raw(vas, current + 0x58).unwrap_or_default();
+        let password_bytes = read_unicode_string_raw(vas, current + 0x58).unwrap_or_default();
 
         // Skip entries with empty username
         if !username_bytes.is_empty() {
-            let username = decode_utf16le_or_none(&username_bytes)
-                .unwrap_or_default();
-            let domain = decode_utf16le_or_none(&domain_bytes)
-                .unwrap_or_default();
+            let username = decode_utf16le_or_none(&username_bytes).unwrap_or_default();
+            let domain = decode_utf16le_or_none(&domain_bytes).unwrap_or_default();
 
             let (password, password_encrypted) = if password_bytes.is_empty() {
                 (None, None)

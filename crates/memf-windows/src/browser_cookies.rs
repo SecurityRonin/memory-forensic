@@ -29,10 +29,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 use regex::Regex;
 
-use crate::{
-    types::BrowserCookieInfo,
-    Result,
-};
+use crate::{types::BrowserCookieInfo, Result};
 
 /// Browser process names whose heap is scanned for cookie records.
 pub const COOKIE_BROWSERS: &[&str] = &[
@@ -50,14 +47,16 @@ pub const COOKIE_BROWSERS: &[&str] = &[
 /// Returns `(domain, name, value, path, encrypted)` tuples. The `encrypted`
 /// flag is `true` for Chrome v10/v20 AES-GCM blobs whose value is not yet
 /// decrypted (key material unavailable at scan time).
-pub(crate) fn scan_cookie_region(data: &[u8]) -> Vec<(String, String, String, Option<String>, bool)> {
+pub(crate) fn scan_cookie_region(
+    data: &[u8],
+) -> Vec<(String, String, String, Option<String>, bool)> {
     let text = String::from_utf8_lossy(data);
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
     let mut out: Vec<(String, String, String, Option<String>, bool)> = Vec::new();
 
     // Pattern 1: HTTP Set-Cookie header (case-insensitive)
     let set_cookie_re = match Regex::new(
-        r"(?i)Set-Cookie:\s{0,4}([A-Za-z0-9_\-\.]{1,64})=([^\r\n;]{1,512})(?:;[^\r\n]*)?"
+        r"(?i)Set-Cookie:\s{0,4}([A-Za-z0-9_\-\.]{1,64})=([^\r\n;]{1,512})(?:;[^\r\n]*)?",
     ) {
         Ok(r) => r,
         Err(_) => return Vec::new(),
@@ -95,7 +94,7 @@ pub(crate) fn scan_cookie_region(data: &[u8]) -> Vec<(String, String, String, Op
 
     // Pattern 2: Netscape cookie-jar format
     let netscape_re = match Regex::new(
-        r"(\.[A-Za-z0-9\-\.]{3,128})\t(TRUE|FALSE)\t(/[^\t\r\n]{0,256})\t(TRUE|FALSE)\t(\d{1,15})\t([^\t\r\n\x00]{1,128})\t([^\t\r\n\x00]{1,511})"
+        r"(\.[A-Za-z0-9\-\.]{3,128})\t(TRUE|FALSE)\t(/[^\t\r\n]{0,256})\t(TRUE|FALSE)\t(\d{1,15})\t([^\t\r\n\x00]{1,128})\t([^\t\r\n\x00]{1,511})",
     ) {
         Ok(r) => r,
         Err(_) => return out,
@@ -119,10 +118,20 @@ pub(crate) fn scan_cookie_region(data: &[u8]) -> Vec<(String, String, String, Op
     while i + 15 < data.len() {
         let prefix = &data[i..i + 3];
         if prefix == b"v10" || prefix == b"v20" {
-            let tag = if prefix == b"v10" { "(v10-encrypted)" } else { "(v20-encrypted)" };
+            let tag = if prefix == b"v10" {
+                "(v10-encrypted)"
+            } else {
+                "(v20-encrypted)"
+            };
             let key = (String::new(), "(encrypted)".to_string(), tag.to_string());
             if seen.insert(key) {
-                out.push((String::new(), "(encrypted)".to_string(), tag.to_string(), None, true));
+                out.push((
+                    String::new(),
+                    "(encrypted)".to_string(),
+                    tag.to_string(),
+                    None,
+                    true,
+                ));
             }
             i += 15; // step past prefix + nonce
         } else {
@@ -141,7 +150,11 @@ pub fn walk_browser_cookies<P: PhysicalMemoryProvider + Clone>(
     let wr = crate::heap_walker::for_each_heap_region(
         reader,
         ps_head_vaddr,
-        |proc| COOKIE_BROWSERS.iter().any(|b| proc.image_name.eq_ignore_ascii_case(b)),
+        |proc| {
+            COOKIE_BROWSERS
+                .iter()
+                .any(|b| proc.image_name.eq_ignore_ascii_case(b))
+        },
         |bytes, proc| {
             scan_cookie_region(bytes)
                 .into_iter()
@@ -156,7 +169,14 @@ pub fn walk_browser_cookies<P: PhysicalMemoryProvider + Clone>(
                 })
                 .collect()
         },
-        |info: &BrowserCookieInfo| (info.pid, info.domain.clone(), info.name.clone(), info.value.clone()),
+        |info: &BrowserCookieInfo| {
+            (
+                info.pid,
+                info.domain.clone(),
+                info.name.clone(),
+                info.value.clone(),
+            )
+        },
     )?;
     Ok(wr.items)
 }
@@ -204,8 +224,7 @@ mod tests {
 
     #[test]
     fn scan_netscape_format_extracts_cookie() {
-        let data =
-            b".github.com\tTRUE\t/\tFALSE\t9999999999\tuser_session\tsecretvalue999\n";
+        let data = b".github.com\tTRUE\t/\tFALSE\t9999999999\tuser_session\tsecretvalue999\n";
         let results = scan_cookie_region(data);
         assert_eq!(results.len(), 1, "expected 1 netscape cookie match");
         let (domain, name, value, path, _) = &results[0];

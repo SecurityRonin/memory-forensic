@@ -117,14 +117,20 @@ pub fn check_irp_hooks<P: PhysicalMemoryProvider>(
     let driver_name_offset = reader
         .symbols()
         .field_offset("_DRIVER_OBJECT", "DriverName")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_DRIVER_OBJECT".into(), field_name: "DriverName".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_DRIVER_OBJECT".into(),
+            field_name: "DriverName".into(),
+        })?;
     let driver_name = read_unicode_string(reader, driver_obj_addr.wrapping_add(driver_name_offset))
         .unwrap_or_default();
 
     let mf_offset = reader
         .symbols()
         .field_offset("_DRIVER_OBJECT", "MajorFunction")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_DRIVER_OBJECT".into(), field_name: "MajorFunction".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_DRIVER_OBJECT".into(),
+            field_name: "MajorFunction".into(),
+        })?;
     let mf_base = driver_obj_addr.wrapping_add(mf_offset);
     let mf_bytes = reader.read_bytes(mf_base, IRP_MJ_COUNT * 8)?;
 
@@ -132,8 +138,9 @@ pub fn check_irp_hooks<P: PhysicalMemoryProvider>(
 
     for (i, irp_name) in IRP_MJ_NAMES.iter().enumerate() {
         let offset = i * 8;
-        let target_addr =
-            mf_bytes[offset..offset + 8].try_into().map_or(0, u64::from_le_bytes);
+        let target_addr = mf_bytes[offset..offset + 8]
+            .try_into()
+            .map_or(0, u64::from_le_bytes);
 
         if target_addr == 0 {
             continue;

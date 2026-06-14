@@ -103,7 +103,9 @@ fn read_user_sid<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, token_addr
     let sub_authorities: Vec<u32> = (0..sub_count)
         .map(|i| {
             let off = i * 4;
-            sub_bytes[off..off + 4].try_into().map_or(0, u32::from_le_bytes)
+            sub_bytes[off..off + 4]
+                .try_into()
+                .map_or(0, u32::from_le_bytes)
         })
         .collect();
 
@@ -167,17 +169,26 @@ pub fn walk_tokens<P: PhysicalMemoryProvider>(
     let priv_offset = reader
         .symbols()
         .field_offset("_TOKEN", "Privileges")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_TOKEN".into(), field_name: "Privileges".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_TOKEN".into(),
+            field_name: "Privileges".into(),
+        })?;
 
     let present_off = reader
         .symbols()
         .field_offset("_SEP_TOKEN_PRIVILEGES", "Present")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_SEP_TOKEN_PRIVILEGES".into(), field_name: "Present".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_SEP_TOKEN_PRIVILEGES".into(),
+            field_name: "Present".into(),
+        })?;
 
     let enabled_off = reader
         .symbols()
         .field_offset("_SEP_TOKEN_PRIVILEGES", "Enabled")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_SEP_TOKEN_PRIVILEGES".into(), field_name: "Enabled".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_SEP_TOKEN_PRIVILEGES".into(),
+            field_name: "Enabled".into(),
+        })?;
 
     for proc in &procs {
         // Read _EPROCESS.Token (_EX_FAST_REF)

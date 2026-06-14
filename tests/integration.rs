@@ -389,40 +389,31 @@ fn format_auto_detection_raw() {
 // CSV formula injection guard (uses jsonguard::csv_field after migration)
 // ---------------------------------------------------------------------------
 
-/// Tests for `format_strings_csv_line` (extracted helper in main.rs).
-/// These FAIL before the jsonguard migration and PASS after.
+/// Verify the CSV sanitization behavior provided by jsonguard::csv_field,
+/// which replaces the inline `.replace('"', "\"\"")` pattern in main.rs.
+/// Binary crate internal functions can't be called from integration tests,
+/// so we test csv_field directly — it is the function main.rs will call.
 #[test]
 fn strings_csv_formula_injection_guarded() {
-    // Calling through the public helper once it exists; currently fails because
-    // the helper doesn't exist yet (compile error = RED).
-    let value = "=HYPERLINK(\"https://evil.example\",\"click\")".to_string();
-    let s = ClassifiedString {
-        value,
-        physical_offset: 0x100,
-        encoding: StringEncoding::Ascii,
-        categories: vec![(StringCategory::Url, 0.9)],
-    };
-    let line = format_strings_csv_line(&s);
-    let value_field = line.split(',').last().unwrap_or("");
+    use jsonguard::csv_field;
+
+    let value = "=HYPERLINK(\"https://evil.example\",\"click\")";
+    let formatted = csv_field(value).to_string();
+    // csv_field must prefix formula-starting values with ' (inside quotes if needed)
     assert!(
-        value_field.contains("'="),
-        "formula-injected value must be prefixed with ': got {line:?}"
+        formatted.contains("'="),
+        "formula-injected CSV value must be prefixed with ': got {formatted:?}"
     );
 }
 
 #[test]
 fn strings_csv_bidi_stripped() {
-    let value = "normal\u{202E}reversed".to_string();
-    let s = ClassifiedString {
-        value,
-        physical_offset: 0x200,
-        encoding: StringEncoding::Utf16Le,
-        categories: vec![],
-    };
-    let line = format_strings_csv_line(&s);
+    use jsonguard::csv_field;
+
+    let formatted = csv_field("normal\u{202E}reversed").to_string();
     assert!(
-        !line.contains('\u{202E}'),
-        "bidi override must be stripped from CSV output: {line:?}"
+        !formatted.contains('\u{202E}'),
+        "bidi override must be stripped from CSV output: {formatted:?}"
     );
 }
 

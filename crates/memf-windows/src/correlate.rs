@@ -969,7 +969,11 @@ mod tests {
                 matches!(events[0].finding, Finding::NetworkBeaconing),
                 "port {port}"
             );
-            let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+            let ids: Vec<&str> = events[0]
+                .mitre_attack
+                .iter()
+                .map(memf_correlate::mitre::MitreAttackId::as_str)
+                .collect();
             assert!(ids.contains(&"T1071"), "expected T1071 for port {port}");
         }
     }
@@ -980,7 +984,11 @@ mod tests {
         let events = c.into_forensic_events();
         assert_eq!(events[0].severity, Severity::High);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1095"), "expected T1095");
     }
 
@@ -1026,7 +1034,11 @@ mod tests {
         let t = make_token(999, "evil.exe", 1 << 20, "S-1-5-1000");
         let events = t.into_forensic_events();
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1134"), "expected T1134");
     }
 
@@ -1036,7 +1048,11 @@ mod tests {
         let t = make_token(1234, "notepad.exe", 0, "S-1-5-18");
         let events = t.into_forensic_events();
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1078"), "expected T1078");
     }
 
@@ -1102,7 +1118,11 @@ mod tests {
     fn unbacked_apc_has_t1055_mitre_id() {
         let apc = make_apc(1000, 200, ApcType::UserMode, true);
         let events = apc.into_forensic_events();
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
     }
 
@@ -1166,7 +1186,11 @@ mod tests {
     fn unbacked_fls_has_t1055() {
         let f = make_fiber(2000, 300, true, true);
         let events = f.into_forensic_events();
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
     }
 
@@ -1230,7 +1254,11 @@ mod tests {
         ] {
             let d = make_dkom(100, dtype);
             let events = d.into_forensic_events();
-            let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+            let ids: Vec<&str> = events[0]
+                .mitre_attack
+                .iter()
+                .map(memf_correlate::mitre::MitreAttackId::as_str)
+                .collect();
             assert!(ids.contains(&"T1014"), "expected T1014 for dtype");
         }
     }
@@ -1289,7 +1317,11 @@ mod tests {
     fn outside_module_has_t1055_001() {
         let t = make_tls(5000, 1, true);
         let events = t.into_forensic_events();
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
     }
 
@@ -1351,7 +1383,11 @@ mod tests {
     fn dynamic_pe_assembly_has_t1620() {
         let c = make_clr(6000, true, true);
         let events = c.into_forensic_events();
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1620"), "expected T1620 in {ids:?}");
     }
 
@@ -1413,7 +1449,11 @@ mod tests {
     fn heavens_gate_has_t1055() {
         let w = make_wow64(true, false, true);
         let events = w.into_forensic_events();
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055 in {ids:?}");
     }
 

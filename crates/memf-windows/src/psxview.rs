@@ -77,7 +77,13 @@ pub fn psxview<P: PhysicalMemoryProvider>(
     // View 5: CSRSS handle table (graceful: empty if no csrss.exe or ObjectTable absent)
     let csrss_procs = walk_csrss_handle_procs(reader, &active_procs);
 
-    Ok(merge_views(active_procs, cid_procs, pool_procs, session_procs, csrss_procs))
+    Ok(merge_views(
+        active_procs,
+        cid_procs,
+        pool_procs,
+        session_procs,
+        csrss_procs,
+    ))
 }
 
 /// Process info extracted from a single enumeration source.
@@ -121,7 +127,9 @@ fn walk_active_list<P: PhysicalMemoryProvider>(
 fn walk_cid_table<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<RawProcInfo>> {
     // Require PspCidTable symbol; if absent, treat as error (psxview needs it).
     if reader.symbols().symbol_address("PspCidTable").is_none() {
-        return Err(Error::MissingKernelSymbol { name: "PspCidTable".into() });
+        return Err(Error::MissingKernelSymbol {
+            name: "PspCidTable".into(),
+        });
     }
 
     let entries = crate::psxview_cid::walk_psp_cid_table(reader)?;
@@ -153,13 +161,21 @@ fn walk_pool_scan_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> 
     };
 
     let pool_start = {
-        let Ok(b) = reader.read_bytes(start_ptr_va, 8) else { return Vec::new(); };
-        let Ok(arr) = b.try_into() else { return Vec::new(); };
+        let Ok(b) = reader.read_bytes(start_ptr_va, 8) else {
+            return Vec::new();
+        };
+        let Ok(arr) = b.try_into() else {
+            return Vec::new();
+        };
         u64::from_le_bytes(arr)
     };
     let pool_end = {
-        let Ok(b) = reader.read_bytes(end_ptr_va, 8) else { return Vec::new(); };
-        let Ok(arr) = b.try_into() else { return Vec::new(); };
+        let Ok(b) = reader.read_bytes(end_ptr_va, 8) else {
+            return Vec::new();
+        };
+        let Ok(arr) = b.try_into() else {
+            return Vec::new();
+        };
         u64::from_le_bytes(arr)
     };
 
@@ -177,8 +193,7 @@ fn walk_pool_scan_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> 
 
     for hit_va in hits {
         let eprocess_va = hit_va + POOL_HEADER_SIZE + obj_body_offset;
-        let Ok(pid) = reader.read_field::<u64>(eprocess_va, "_EPROCESS", "UniqueProcessId")
-        else {
+        let Ok(pid) = reader.read_field::<u64>(eprocess_va, "_EPROCESS", "UniqueProcessId") else {
             continue;
         };
         if pid == 0 {
@@ -203,7 +218,9 @@ fn walk_pool_scan_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> 
 /// and return one [`RawProcInfo`] per process found across all sessions.
 ///
 /// Returns an empty `Vec` when the `MmSessionList` symbol is absent (graceful degradation).
-fn walk_session_list_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Vec<RawProcInfo> {
+fn walk_session_list_procs<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+) -> Vec<RawProcInfo> {
     let Some(session_list_va) = reader.symbols().symbol_address("MmSessionList") else {
         return Vec::new();
     };
@@ -227,7 +244,10 @@ fn walk_session_list_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) 
         // Walk inner list: _MM_SESSION_SPACE.ProcessList ↔ _EPROCESS.SessionProcessLinks
         // The ProcessList field IS the list head — pass its exact VA so termination works.
         let proc_list_va = {
-            let off = reader.symbols().field_offset("_MM_SESSION_SPACE", "ProcessList").unwrap_or(0x10);
+            let off = reader
+                .symbols()
+                .field_offset("_MM_SESSION_SPACE", "ProcessList")
+                .unwrap_or(0x10);
             session_base.wrapping_add(off)
         };
         let inner = reader.walk_list_with(
@@ -243,10 +263,23 @@ fn walk_session_list_procs<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) 
         };
 
         for eprocess_va in eprocess_addrs {
-            let Ok(pid) = reader.read_field::<u64>(eprocess_va, "_EPROCESS", "UniqueProcessId") else { continue; };
-            if pid == 0 { continue; }
-            let Ok(image_name) = reader.read_field_string(eprocess_va, "_EPROCESS", "ImageFileName", 15) else { continue; };
-            procs.push(RawProcInfo { pid, image_name, eprocess_addr: eprocess_va });
+            let Ok(pid) = reader.read_field::<u64>(eprocess_va, "_EPROCESS", "UniqueProcessId")
+            else {
+                continue;
+            };
+            if pid == 0 {
+                continue;
+            }
+            let Ok(image_name) =
+                reader.read_field_string(eprocess_va, "_EPROCESS", "ImageFileName", 15)
+            else {
+                continue;
+            };
+            procs.push(RawProcInfo {
+                pid,
+                image_name,
+                eprocess_addr: eprocess_va,
+            });
         }
     }
 
@@ -266,7 +299,11 @@ fn walk_csrss_handle_procs<P: PhysicalMemoryProvider>(
     active_procs: &[RawProcInfo],
 ) -> Vec<RawProcInfo> {
     // ObjectTable field offset must be known; if absent, skip gracefully.
-    if reader.symbols().field_offset("_EPROCESS", "ObjectTable").is_none() {
+    if reader
+        .symbols()
+        .field_offset("_EPROCESS", "ObjectTable")
+        .is_none()
+    {
         return Vec::new();
     }
 
@@ -287,7 +324,8 @@ fn walk_csrss_handle_procs<P: PhysicalMemoryProvider>(
         .filter(|p| p.image_name.eq_ignore_ascii_case("csrss.exe"))
     {
         // Read ObjectTable pointer from this csrss _EPROCESS
-        let ot_addr: u64 = match reader.read_field(csrss.eprocess_addr, "_EPROCESS", "ObjectTable") {
+        let ot_addr: u64 = match reader.read_field(csrss.eprocess_addr, "_EPROCESS", "ObjectTable")
+        {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -300,10 +338,11 @@ fn walk_csrss_handle_procs<P: PhysicalMemoryProvider>(
             Ok(v) => v,
             Err(_) => continue,
         };
-        let next_handle: u32 = match reader.read_field(ot_addr, "_HANDLE_TABLE", "NextHandleNeedingPool") {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let next_handle: u32 =
+            match reader.read_field(ot_addr, "_HANDLE_TABLE", "NextHandleNeedingPool") {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
         let level = table_code & 0x3;
         let base_addr = table_code & !0x3;
@@ -315,10 +354,11 @@ fn walk_csrss_handle_procs<P: PhysicalMemoryProvider>(
 
         for idx in 1..num_entries {
             let entry_addr = base_addr + idx * entry_size;
-            let obj_ptr: u64 = match reader.read_field(entry_addr, "_HANDLE_TABLE_ENTRY", "ObjectPointerBits") {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let obj_ptr: u64 =
+                match reader.read_field(entry_addr, "_HANDLE_TABLE_ENTRY", "ObjectPointerBits") {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
             if obj_ptr == 0 {
                 continue;
             }
@@ -336,7 +376,11 @@ fn walk_csrss_handle_procs<P: PhysicalMemoryProvider>(
             let image_name = reader
                 .read_field_string(eprocess_va, "_EPROCESS", "ImageFileName", 15)
                 .unwrap_or_default();
-            procs.push(RawProcInfo { pid, image_name, eprocess_addr: eprocess_va });
+            procs.push(RawProcInfo {
+                pid,
+                image_name,
+                eprocess_addr: eprocess_va,
+            });
         }
     }
 
@@ -798,7 +842,9 @@ mod tests {
     fn write_pool_header(ptb: PageTableBuilder, pool_paddr: u64) -> PageTableBuilder {
         ptb.write_phys(
             pool_paddr,
-            &[0x08, 0x00, 0x00, 0x00, b'P', b'r', b'o', b'c', 0, 0, 0, 0, 0, 0, 0, 0],
+            &[
+                0x08, 0x00, 0x00, 0x00, b'P', b'r', b'o', b'c', 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
         )
     }
 
@@ -828,7 +874,11 @@ mod tests {
         let ptb = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
-            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(
+                eproc1_vaddr + 0x1000,
+                eproc1_paddr + 0x1000,
+                flags::WRITABLE,
+            )
             .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
             .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
             .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
@@ -870,7 +920,10 @@ mod tests {
         let reader = make_reader_with_pool(ptb);
         let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
 
-        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        let system = results
+            .iter()
+            .find(|e| e.pid == 4)
+            .expect("System must appear");
         assert!(
             system.in_pool_scan,
             "System visible in pool must have in_pool_scan=true"
@@ -900,26 +953,53 @@ mod tests {
             .iter()
             .find(|e| e.pid == 100)
             .expect("malware.exe must be discovered via pool scan");
-        assert!(malware.in_pool_scan, "pool-only process must have in_pool_scan=true");
-        assert!(!malware.in_active_list, "pool-only process must not be in active list");
-        assert!(!malware.in_cid_table, "pool-only process must not be in CID table");
-        assert!(malware.is_hidden, "pool-only process must be flagged hidden");
+        assert!(
+            malware.in_pool_scan,
+            "pool-only process must have in_pool_scan=true"
+        );
+        assert!(
+            !malware.in_active_list,
+            "pool-only process must not be in active list"
+        );
+        assert!(
+            !malware.in_cid_table,
+            "pool-only process must not be in CID table"
+        );
+        assert!(
+            malware.is_hidden,
+            "pool-only process must be flagged hidden"
+        );
     }
 
     // Session list (in_session_list) test constants
     const MM_SESSION_LIST_VADDR: u64 = 0xFFFF_F805_5E00_0000;
     const SESSION_SPACE_VADDR: u64 = 0xFFFF_F805_5E10_0000;
     const SESS_LIST_ENTRY_OFFSET: u64 = 0x00; // _MM_SESSION_SPACE.ListEntry
-    const SESS_PROC_LIST_OFFSET: u64 = 0x10;  // _MM_SESSION_SPACE.ProcessList
+    const SESS_PROC_LIST_OFFSET: u64 = 0x10; // _MM_SESSION_SPACE.ProcessList
     const EPROCESS_SESSION_LINKS: u64 = 0x4E0; // _EPROCESS.SessionProcessLinks (Win10 x64)
 
     /// Build a reader with PspCidTable + MmSessionList and session-aware ISF structs.
     fn make_reader_with_session(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
         let isf = IsfBuilder::windows_kernel_preset()
             .add_struct("_MM_SESSION_SPACE", 4096)
-            .add_field("_MM_SESSION_SPACE", "ListEntry", SESS_LIST_ENTRY_OFFSET, "_LIST_ENTRY")
-            .add_field("_MM_SESSION_SPACE", "ProcessList", SESS_PROC_LIST_OFFSET, "_LIST_ENTRY")
-            .add_field("_EPROCESS", "SessionProcessLinks", EPROCESS_SESSION_LINKS, "_LIST_ENTRY")
+            .add_field(
+                "_MM_SESSION_SPACE",
+                "ListEntry",
+                SESS_LIST_ENTRY_OFFSET,
+                "_LIST_ENTRY",
+            )
+            .add_field(
+                "_MM_SESSION_SPACE",
+                "ProcessList",
+                SESS_PROC_LIST_OFFSET,
+                "_LIST_ENTRY",
+            )
+            .add_field(
+                "_EPROCESS",
+                "SessionProcessLinks",
+                EPROCESS_SESSION_LINKS,
+                "_LIST_ENTRY",
+            )
             .add_symbol("PspCidTable", PSP_CID_TABLE_VADDR)
             .add_symbol("MmSessionList", MM_SESSION_LIST_VADDR)
             .build_json();
@@ -957,7 +1037,11 @@ mod tests {
         let ptb = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
-            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(
+                eproc1_vaddr + 0x1000,
+                eproc1_paddr + 0x1000,
+                flags::WRITABLE,
+            )
             .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
             .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
             .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
@@ -979,16 +1063,28 @@ mod tests {
 
         // Session list: MmSessionList ↔ session_space.ListEntry (one session, circular)
         let ptb = ptb
-            .write_phys_u64(session_list_paddr, SESSION_SPACE_VADDR)        // MmSessionList.Flink
-            .write_phys_u64(session_list_paddr + 8, SESSION_SPACE_VADDR)    // MmSessionList.Blink
-            .write_phys_u64(session_space_paddr + SESS_LIST_ENTRY_OFFSET, MM_SESSION_LIST_VADDR)
-            .write_phys_u64(session_space_paddr + SESS_LIST_ENTRY_OFFSET + 8, MM_SESSION_LIST_VADDR);
+            .write_phys_u64(session_list_paddr, SESSION_SPACE_VADDR) // MmSessionList.Flink
+            .write_phys_u64(session_list_paddr + 8, SESSION_SPACE_VADDR) // MmSessionList.Blink
+            .write_phys_u64(
+                session_space_paddr + SESS_LIST_ENTRY_OFFSET,
+                MM_SESSION_LIST_VADDR,
+            )
+            .write_phys_u64(
+                session_space_paddr + SESS_LIST_ENTRY_OFFSET + 8,
+                MM_SESSION_LIST_VADDR,
+            );
 
         // Session process list: ProcessList ↔ target _EPROCESS.SessionProcessLinks
-        ptb.write_phys_u64(session_space_paddr + SESS_PROC_LIST_OFFSET, sess_proc_links_vaddr)
-            .write_phys_u64(session_space_paddr + SESS_PROC_LIST_OFFSET + 8, sess_proc_links_vaddr)
-            .write_phys_u64(sess_proc_links_paddr, sess_proc_list_head_vaddr) // Flink → list head
-            .write_phys_u64(sess_proc_links_paddr + 8, sess_proc_list_head_vaddr) // Blink
+        ptb.write_phys_u64(
+            session_space_paddr + SESS_PROC_LIST_OFFSET,
+            sess_proc_links_vaddr,
+        )
+        .write_phys_u64(
+            session_space_paddr + SESS_PROC_LIST_OFFSET + 8,
+            sess_proc_links_vaddr,
+        )
+        .write_phys_u64(sess_proc_links_paddr, sess_proc_list_head_vaddr) // Flink → list head
+        .write_phys_u64(sess_proc_links_paddr + 8, sess_proc_list_head_vaddr) // Blink
     }
 
     /// RED: System visible in active list + CID + session list → in_session_list = true.
@@ -1010,7 +1106,10 @@ mod tests {
         let reader = make_reader_with_session(ptb);
         let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
 
-        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        let system = results
+            .iter()
+            .find(|e| e.pid == 4)
+            .expect("System must appear");
         assert!(
             system.in_session_list,
             "System visible in session list must have in_session_list=true"
@@ -1038,7 +1137,11 @@ mod tests {
         // Map and write malware.exe _EPROCESS (not in active list, not in CID)
         let ptb = ptb
             .map_4k(malware_vaddr, malware_paddr, flags::WRITABLE)
-            .map_4k(malware_vaddr + 0x1000, malware_paddr + 0x1000, flags::WRITABLE);
+            .map_4k(
+                malware_vaddr + 0x1000,
+                malware_paddr + 0x1000,
+                flags::WRITABLE,
+            );
         let ptb = write_eprocess(ptb, malware_paddr, 100, "malware.exe", 0, 0);
 
         let reader = make_reader_with_session(ptb);
@@ -1048,10 +1151,22 @@ mod tests {
             .iter()
             .find(|e| e.pid == 100)
             .expect("malware.exe must be discovered via session list");
-        assert!(malware.in_session_list, "session-only process must have in_session_list=true");
-        assert!(!malware.in_active_list, "session-only process must not be in active list");
-        assert!(!malware.in_cid_table, "session-only process must not be in CID table");
-        assert!(malware.is_hidden, "session-only process must be flagged hidden");
+        assert!(
+            malware.in_session_list,
+            "session-only process must have in_session_list=true"
+        );
+        assert!(
+            !malware.in_active_list,
+            "session-only process must not be in active list"
+        );
+        assert!(
+            !malware.in_cid_table,
+            "session-only process must not be in CID table"
+        );
+        assert!(
+            malware.is_hidden,
+            "session-only process must be flagged hidden"
+        );
     }
 
     // CSRSS handle table (in_csrss_handles) test constants
@@ -1096,14 +1211,22 @@ mod tests {
         let ptb = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
-            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(
+                eproc1_vaddr + 0x1000,
+                eproc1_paddr + 0x1000,
+                flags::WRITABLE,
+            )
             .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
             .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
             .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
             .map_4k(CSRSS_VADDR, csrss_paddr, flags::WRITABLE)
             .map_4k(CSRSS_VADDR + 0x1000, csrss_paddr + 0x1000, flags::WRITABLE)
             .map_4k(CSRSS_OT_HT_VADDR, csrss_ot_ht_paddr, flags::WRITABLE)
-            .map_4k(CSRSS_OT_ENTRIES_VADDR, csrss_ot_entries_paddr, flags::WRITABLE);
+            .map_4k(
+                CSRSS_OT_ENTRIES_VADDR,
+                csrss_ot_entries_paddr,
+                flags::WRITABLE,
+            );
 
         // Active list: head ↔ System ↔ csrss ↔ head
         let ptb = ptb
@@ -1111,7 +1234,14 @@ mod tests {
             .write_phys_u64(head_paddr + 8, csrss_links);
 
         let ptb = write_eprocess(ptb, eproc1_paddr, 4, "System", csrss_links, head_vaddr);
-        let ptb = write_eprocess(ptb, csrss_paddr, CSRSS_PID, "csrss.exe", head_vaddr, eproc1_links);
+        let ptb = write_eprocess(
+            ptb,
+            csrss_paddr,
+            CSRSS_PID,
+            "csrss.exe",
+            head_vaddr,
+            eproc1_links,
+        );
 
         // csrss.exe ObjectTable → csrss OT _HANDLE_TABLE
         let ptb = ptb.write_phys_u64(csrss_paddr + EPROCESS_OBJECT_TABLE, CSRSS_OT_HT_VADDR);
@@ -1123,8 +1253,14 @@ mod tests {
         let ptb = write_cid_entry(ptb, entries_paddr, 4, eproc1_vaddr);
 
         // csrss OT _HANDLE_TABLE: one entry (idx=1) pointing to System's _EPROCESS
-        let ptb = ptb.write_phys_u64(csrss_ot_ht_paddr + HANDLE_TABLE_CODE, CSRSS_OT_ENTRIES_VADDR);
-        let ptb = ptb.write_phys(csrss_ot_ht_paddr + HANDLE_TABLE_NEXT_HANDLE, &8u32.to_le_bytes());
+        let ptb = ptb.write_phys_u64(
+            csrss_ot_ht_paddr + HANDLE_TABLE_CODE,
+            CSRSS_OT_ENTRIES_VADDR,
+        );
+        let ptb = ptb.write_phys(
+            csrss_ot_ht_paddr + HANDLE_TABLE_NEXT_HANDLE,
+            &8u32.to_le_bytes(),
+        );
 
         let obj_header_vaddr = eproc1_vaddr.wrapping_sub(OBJ_HEADER_BODY_OFFSET);
         let obj_ptr_bits = (obj_header_vaddr & 0x0000_FFFF_FFFF_FFFF) >> 4;
@@ -1138,7 +1274,10 @@ mod tests {
         let reader = make_reader_with_csrss(ptb);
         let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
 
-        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        let system = results
+            .iter()
+            .find(|e| e.pid == 4)
+            .expect("System must appear");
         assert!(
             system.in_csrss_handles,
             "System visible in csrss OT must have in_csrss_handles=true"
@@ -1166,7 +1305,11 @@ mod tests {
         let ptb = PageTableBuilder::new()
             .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
             .map_4k(eproc1_vaddr, eproc1_paddr, flags::WRITABLE)
-            .map_4k(eproc1_vaddr + 0x1000, eproc1_paddr + 0x1000, flags::WRITABLE)
+            .map_4k(
+                eproc1_vaddr + 0x1000,
+                eproc1_paddr + 0x1000,
+                flags::WRITABLE,
+            )
             .map_4k(PSP_CID_TABLE_VADDR, cid_ptr_paddr, flags::WRITABLE)
             .map_4k(ht_vaddr, ht_paddr, flags::WRITABLE)
             .map_4k(entries_vaddr, entries_paddr, flags::WRITABLE)
@@ -1182,7 +1325,10 @@ mod tests {
         let reader = make_reader_with_cid(ptb);
         let results = psxview(&reader, PS_ACTIVE_HEAD_VADDR).unwrap();
 
-        let system = results.iter().find(|e| e.pid == 4).expect("System must appear");
+        let system = results
+            .iter()
+            .find(|e| e.pid == 4)
+            .expect("System must appear");
         assert!(
             !system.in_csrss_handles,
             "no csrss.exe in active list → in_csrss_handles must be false"

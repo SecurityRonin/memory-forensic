@@ -6,8 +6,8 @@
 
 use std::path::PathBuf;
 
-use crate::pe_debug::{extract_pdb_id, PdbId};
 use crate::pdb_resolver::PdbResolver;
+use crate::pe_debug::{extract_pdb_id, PdbId};
 #[cfg(feature = "symserver")]
 use crate::symserver::{self, SymbolServerClient};
 use crate::SymbolResolver;
@@ -42,18 +42,11 @@ impl AutoProfile {
     /// from the Microsoft symbol server and writes it to the cache directory.
     #[cfg(feature = "symserver")]
     pub fn from_pdb_id(&self, pdb_id: &PdbId) -> crate::Result<Box<dyn SymbolResolver>> {
-        let cached = symserver::cache_path(
-            &self.cache_dir,
-            &pdb_id.pdb_name,
-            &pdb_id.guid,
-            pdb_id.age,
-        );
+        let cached =
+            symserver::cache_path(&self.cache_dir, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age);
 
         if !cached.exists() {
-            let client = SymbolServerClient::new(
-                symserver::default_server_url(),
-                &self.cache_dir,
-            );
+            let client = SymbolServerClient::new(symserver::default_server_url(), &self.cache_dir);
             client.get_pdb(&pdb_id.pdb_name, &pdb_id.guid, pdb_id.age)?;
         }
 
@@ -142,12 +135,8 @@ mod tests {
         let pdb_id = test_pdb_id();
 
         // Pre-populate the cache with a zero-byte file at the expected path.
-        let cached = crate::symserver::cache_path(
-            tmp.path(),
-            &pdb_id.pdb_name,
-            &pdb_id.guid,
-            pdb_id.age,
-        );
+        let cached =
+            crate::symserver::cache_path(tmp.path(), &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age);
         std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
         std::fs::write(&cached, b"").unwrap();
 

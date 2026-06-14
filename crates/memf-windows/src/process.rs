@@ -69,7 +69,11 @@ fn read_process_info<P: PhysicalMemoryProvider>(
     let handle_count: u32 = reader
         .read_field::<u64>(eproc_addr, "_EPROCESS", "ObjectTable")
         .ok()
-        .and_then(|ot| reader.read_field::<u32>(ot, "_HANDLE_TABLE", "HandleCount").ok())
+        .and_then(|ot| {
+            reader
+                .read_field::<u32>(ot, "_HANDLE_TABLE", "HandleCount")
+                .ok()
+        })
         .unwrap_or(0);
 
     Ok(WinProcessInfo {
@@ -176,7 +180,10 @@ pub fn check_peb_masquerade<P: PhysicalMemoryProvider>(
         let image_path_offset = reader
             .symbols()
             .field_offset("_RTL_USER_PROCESS_PARAMETERS", "ImagePathName")
-            .ok_or_else(|| Error::MissingField { struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(), field_name: "ImagePathName".into() })?;
+            .ok_or_else(|| Error::MissingField {
+                struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(),
+                field_name: "ImagePathName".into(),
+            })?;
         let image_ustr_addr = params_ptr.wrapping_add(image_path_offset);
         let peb_image_path = read_unicode_string(reader, image_ustr_addr)?;
 

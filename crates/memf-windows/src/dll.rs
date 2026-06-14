@@ -23,14 +23,20 @@ pub fn walk_dlls<P: PhysicalMemoryProvider>(
     let ldr_addr: u64 = reader.read_field(peb_addr, "_PEB", "Ldr")?;
 
     if ldr_addr == 0 {
-        return Err(Error::WalkFailed { walker: "dll", reason: "PEB.Ldr is NULL".into() });
+        return Err(Error::WalkFailed {
+            walker: "dll",
+            reason: "PEB.Ldr is NULL".into(),
+        });
     }
 
     // Get InLoadOrderModuleList offset from _PEB_LDR_DATA
     let in_load_order_offset = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
-        .ok_or_else(|| Error::MissingField { struct_name: "_PEB_LDR_DATA".into(), field_name: "InLoadOrderModuleList".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_PEB_LDR_DATA".into(),
+            field_name: "InLoadOrderModuleList".into(),
+        })?;
 
     let list_head_vaddr = ldr_addr.wrapping_add(in_load_order_offset);
 
@@ -66,22 +72,34 @@ pub fn walk_ldr_modules<P: PhysicalMemoryProvider>(
 
     let ldr_addr: u64 = reader.read_field(peb_addr, "_PEB", "Ldr")?;
     if ldr_addr == 0 {
-        return Err(Error::WalkFailed { walker: "dll", reason: "PEB.Ldr is NULL".into() });
+        return Err(Error::WalkFailed {
+            walker: "dll",
+            reason: "PEB.Ldr is NULL".into(),
+        });
     }
 
     // Resolve list head offsets within _PEB_LDR_DATA.
     let load_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
-        .ok_or_else(|| Error::MissingField { struct_name: "_PEB_LDR_DATA".into(), field_name: "InLoadOrderModuleList".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_PEB_LDR_DATA".into(),
+            field_name: "InLoadOrderModuleList".into(),
+        })?;
     let mem_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InMemoryOrderModuleList")
-        .ok_or_else(|| Error::MissingField { struct_name: "_PEB_LDR_DATA".into(), field_name: "InMemoryOrderModuleList".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_PEB_LDR_DATA".into(),
+            field_name: "InMemoryOrderModuleList".into(),
+        })?;
     let init_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InInitializationOrderModuleList")
-        .ok_or_else(|| Error::MissingField { struct_name: "_PEB_LDR_DATA".into(), field_name: "InInitializationOrderModuleList".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_PEB_LDR_DATA".into(),
+            field_name: "InInitializationOrderModuleList".into(),
+        })?;
 
     // Walk each list, collecting (entry_addr → DllBase).
     let walk_list = |head_off: u64, link_field: &str| -> Result<Vec<u64>> {

@@ -47,8 +47,8 @@ pub fn scan_yara<P: PhysicalMemoryProvider + Clone>(
         let mut scanner = yara_x::Scanner::new(rules);
 
         for vad in &vads {
-            let region_size = (vad.end_vaddr.saturating_sub(vad.start_vaddr) as usize)
-                .min(max_region_bytes);
+            let region_size =
+                (vad.end_vaddr.saturating_sub(vad.start_vaddr) as usize).min(max_region_bytes);
             if region_size == 0 {
                 continue;
             }
@@ -200,8 +200,7 @@ mod tests {
         vad_data[VAD_RIGHT..VAD_RIGHT + 8].copy_from_slice(&0u64.to_le_bytes());
         vad_data[VAD_STARTING_VPN..VAD_STARTING_VPN + 8]
             .copy_from_slice(&starting_vpn.to_le_bytes());
-        vad_data[VAD_ENDING_VPN..VAD_ENDING_VPN + 8]
-            .copy_from_slice(&starting_vpn.to_le_bytes());
+        vad_data[VAD_ENDING_VPN..VAD_ENDING_VPN + 8].copy_from_slice(&starting_vpn.to_le_bytes());
         // Flags: private (VadType=0), PAGE_READWRITE (prot=4) in bits [7:11]
         let vad_flags: u32 = 4 << 7;
         vad_data[VAD_FLAGS..VAD_FLAGS + 4].copy_from_slice(&vad_flags.to_le_bytes());
@@ -245,7 +244,8 @@ mod tests {
 
     #[test]
     fn scan_yara_no_hits_when_no_match() {
-        let rules = compile_rule("rule never { strings: $a = \"NEVER_MATCHES_XYZ\" condition: $a }");
+        let rules =
+            compile_rule("rule never { strings: $a = \"NEVER_MATCHES_XYZ\" condition: $a }");
         // Minimal reader with no processes mapped — walks empty list → no hits.
         let mut head_data = vec![0u8; 4096];
         const HEAD_VADDR: u64 = 0xFFFF_8000_0010_0000;
@@ -284,5 +284,4 @@ mod tests {
         let hits = scan_yara(&reader, HEAD_VADDR, &rules, 1).unwrap();
         assert!(hits.is_empty(), "empty list + tiny cap → no hits, no panic");
     }
-
 }

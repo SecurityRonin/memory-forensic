@@ -28,10 +28,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 use regex::Regex;
 
-use crate::{
-    types::FirefoxCredentialInfo,
-    Result,
-};
+use crate::{types::FirefoxCredentialInfo, Result};
 
 /// Walk committed, writeable VAD regions of all `firefox.exe` processes in the
 /// dump and extract NSS-encrypted credential blobs from logins.json content.
@@ -51,18 +48,24 @@ pub fn walk_firefox_credentials<P: PhysicalMemoryProvider + Clone>(
         |bytes, proc| {
             scan_firefox_region(bytes)
                 .into_iter()
-                .map(|(origin, ufield, pfield, enc_user, enc_pass)| FirefoxCredentialInfo {
-                    pid: proc.pid,
-                    origin,
-                    username_field: ufield,
-                    password_field: pfield,
-                    encrypted_username: enc_user,
-                    encrypted_password: enc_pass,
-                })
+                .map(
+                    |(origin, ufield, pfield, enc_user, enc_pass)| FirefoxCredentialInfo {
+                        pid: proc.pid,
+                        origin,
+                        username_field: ufield,
+                        password_field: pfield,
+                        encrypted_username: enc_user,
+                        encrypted_password: enc_pass,
+                    },
+                )
                 .collect()
         },
         |info: &FirefoxCredentialInfo| {
-            (info.pid, info.encrypted_username.clone(), info.encrypted_password.clone())
+            (
+                info.pid,
+                info.encrypted_username.clone(),
+                info.encrypted_password.clone(),
+            )
         },
     )?;
     Ok(wr.items)

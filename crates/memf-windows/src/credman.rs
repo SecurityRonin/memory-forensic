@@ -58,20 +58,16 @@ pub fn walk_credman<P: PhysicalMemoryProvider + Clone>(
         iterations += 1;
 
         // Username at current+0x60
-        let username_bytes =
-            read_unicode_string_raw(vas, current + 0x60).unwrap_or_default();
+        let username_bytes = read_unicode_string_raw(vas, current + 0x60).unwrap_or_default();
         // Password at current+0x80
-        let password_bytes =
-            read_unicode_string_raw(vas, current + 0x80).unwrap_or_default();
+        let password_bytes = read_unicode_string_raw(vas, current + 0x80).unwrap_or_default();
         // Target/Server at current+0xA0
-        let target_bytes =
-            read_unicode_string_raw(vas, current + 0xA0).unwrap_or_default();
+        let target_bytes = read_unicode_string_raw(vas, current + 0xA0).unwrap_or_default();
 
         if !username_bytes.is_empty() {
             if let Some(username) = decode_utf16le_or_none(&username_bytes) {
                 if !username.is_empty() {
-                    let target = decode_utf16le_or_none(&target_bytes)
-                        .unwrap_or_default();
+                    let target = decode_utf16le_or_none(&target_bytes).unwrap_or_default();
 
                     let (password, credential_blob) = if password_bytes.is_empty() {
                         (None, None)

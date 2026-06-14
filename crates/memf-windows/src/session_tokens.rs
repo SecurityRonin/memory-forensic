@@ -28,10 +28,7 @@ use std::sync::OnceLock;
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{
-    types::SessionTokenInfo,
-    Result,
-};
+use crate::{types::SessionTokenInfo, Result};
 
 struct TokenPattern {
     /// Human-readable token type label emitted in [`SessionTokenInfo::token_type`].
@@ -175,7 +172,9 @@ mod tests {
         let data = b"Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwiaWF0IjoxNzAwMDAwMDAwfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
         let results = scan_for_tokens(data, DUMMY_PID, DUMMY_PROC);
         assert!(!results.is_empty(), "should detect JWT");
-        assert!(results.iter().any(|t| t.token_type == "Jwt" || t.token_type == "Bearer"));
+        assert!(results
+            .iter()
+            .any(|t| t.token_type == "Jwt" || t.token_type == "Bearer"));
     }
 
     #[test]
@@ -221,10 +220,20 @@ mod tests {
         let data = b"Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwiaWF0IjoxNzAwMDAwMDAwfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
         let r1 = scan_for_tokens(data, DUMMY_PID, DUMMY_PROC);
         let r2 = scan_for_tokens(data, DUMMY_PID, DUMMY_PROC);
-        assert_eq!(r1.len(), r2.len(), "second call must return same number of results");
+        assert_eq!(
+            r1.len(),
+            r2.len(),
+            "second call must return same number of results"
+        );
         for (t1, t2) in r1.iter().zip(r2.iter()) {
-            assert_eq!(t1.token_type, t2.token_type, "token_type must be identical across calls");
-            assert_eq!(t1.token_value, t2.token_value, "token_value must be identical across calls");
+            assert_eq!(
+                t1.token_type, t2.token_type,
+                "token_type must be identical across calls"
+            );
+            assert_eq!(
+                t1.token_value, t2.token_value,
+                "token_value must be identical across calls"
+            );
         }
     }
 

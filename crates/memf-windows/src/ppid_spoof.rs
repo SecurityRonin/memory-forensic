@@ -19,8 +19,10 @@ use forensicnomicon::processes;
 /// processes, `Low` for COM Surrogate and other broad-spawner patterns where a
 /// violation is suspicious but not definitive.
 pub fn check_ppid_spoof(procs: &[WinProcessInfo]) -> Vec<WinPpidSpoofInfo> {
-    let pid_to_name: std::collections::HashMap<u64, &str> =
-        procs.iter().map(|p| (p.pid, p.image_name.as_str())).collect();
+    let pid_to_name: std::collections::HashMap<u64, &str> = procs
+        .iter()
+        .map(|p| (p.pid, p.image_name.as_str()))
+        .collect();
 
     let mut results = Vec::new();
 
@@ -65,7 +67,11 @@ mod tests {
             create_time: 0,
             exit_time: 0,
             cr3: 0,
-            peb_addr: if name.eq_ignore_ascii_case("system") { 0 } else { 1 },
+            peb_addr: if name.eq_ignore_ascii_case("system") {
+                0
+            } else {
+                1
+            },
             vaddr: 0,
             thread_count: 1,
             is_wow64: false,
@@ -88,8 +94,8 @@ mod tests {
     ///   540  explorer.exe  (ppid=530 → userinit.exe ✓)
     fn baseline() -> Vec<WinProcessInfo> {
         vec![
-            proc(4,   0,   "System"),
-            proc(300, 4,   "smss.exe"),
+            proc(4, 0, "System"),
+            proc(300, 4, "smss.exe"),
             proc(500, 300, "wininit.exe"),
             proc(600, 500, "services.exe"),
             proc(510, 300, "csrss.exe"),
@@ -113,7 +119,11 @@ mod tests {
         let mut procs = baseline();
         procs.push(proc(1200, 540, "svchost.exe"));
         let hits = check_ppid_spoof(&procs);
-        assert_eq!(hits.len(), 1, "svchost.exe with explorer parent must be flagged");
+        assert_eq!(
+            hits.len(),
+            1,
+            "svchost.exe with explorer parent must be flagged"
+        );
         assert_eq!(hits[0].pid, 1200);
         assert_eq!(hits[0].name, "svchost.exe");
         assert!(
@@ -130,7 +140,11 @@ mod tests {
         let mut procs = baseline();
         procs.push(proc(700, 600, "lsass.exe"));
         let hits = check_ppid_spoof(&procs);
-        assert_eq!(hits.len(), 1, "lsass.exe with services.exe parent must be flagged");
+        assert_eq!(
+            hits.len(),
+            1,
+            "lsass.exe with services.exe parent must be flagged"
+        );
         assert_eq!(hits[0].pid, 700);
         assert!(hits[0].expected_parents.iter().any(|p| p == "wininit.exe"));
     }
@@ -140,7 +154,10 @@ mod tests {
         let mut procs = baseline();
         procs.push(proc(700, 500, "lsass.exe")); // wininit(500) → lsass ✓
         let hits = check_ppid_spoof(&procs);
-        assert!(hits.is_empty(), "lsass.exe with wininit.exe parent must not be flagged");
+        assert!(
+            hits.is_empty(),
+            "lsass.exe with wininit.exe parent must not be flagged"
+        );
     }
 
     #[test]
@@ -155,23 +172,24 @@ mod tests {
     #[test]
     fn unknown_ppid_flagged() {
         // svchost with a ppid that resolves to nothing → "UNKNOWN" parent → flagged.
-        let procs = vec![
-            proc(4, 0, "System"),
-            proc(1200, 9999, "svchost.exe"),
-        ];
+        let procs = vec![proc(4, 0, "System"), proc(1200, 9999, "svchost.exe")];
         let hits = check_ppid_spoof(&procs);
-        assert_eq!(hits.len(), 1, "svchost.exe with missing ppid must be flagged");
+        assert_eq!(
+            hits.len(),
+            1,
+            "svchost.exe with missing ppid must be flagged"
+        );
         assert_eq!(hits[0].parent_name, "UNKNOWN");
     }
 
     #[test]
     fn smss_with_system_parent_not_flagged() {
-        let procs = vec![
-            proc(4, 0, "System"),
-            proc(300, 4, "smss.exe"),
-        ];
+        let procs = vec![proc(4, 0, "System"), proc(300, 4, "smss.exe")];
         let hits = check_ppid_spoof(&procs);
-        assert!(hits.is_empty(), "smss.exe child of System must not be flagged");
+        assert!(
+            hits.is_empty(),
+            "smss.exe child of System must not be flagged"
+        );
     }
 
     #[test]
@@ -183,7 +201,11 @@ mod tests {
             proc(300, 800, "smss.exe"),
         ];
         let hits = check_ppid_spoof(&procs);
-        assert_eq!(hits.len(), 1, "smss.exe with non-System parent must be flagged");
+        assert_eq!(
+            hits.len(),
+            1,
+            "smss.exe with non-System parent must be flagged"
+        );
         assert!(hits[0].expected_parents.iter().any(|p| p == "system"));
     }
 
@@ -207,23 +229,30 @@ mod tests {
         let mut procs = baseline();
         procs.push(proc(900, 540, "notepad.exe")); // explorer(540) → notepad (untracked)
         procs.push(proc(1200, 900, "svchost.exe")); // notepad → svchost = spoof
-        procs.push(proc(1300, 900, "lsass.exe"));   // notepad → lsass  = spoof
+        procs.push(proc(1300, 900, "lsass.exe")); // notepad → lsass  = spoof
         let hits = check_ppid_spoof(&procs);
-        assert_eq!(hits.len(), 2, "both svchost and lsass spoofs must be reported");
+        assert_eq!(
+            hits.len(),
+            2,
+            "both svchost and lsass spoofs must be reported"
+        );
     }
 
     #[test]
     fn case_insensitive_matching() {
         // Mixed-case names must still match the expected-parent table correctly.
         let procs = vec![
-            proc(4,   0,   "System"),
-            proc(300, 4,   "smss.exe"),
-            proc(500, 300, "WinInit.EXE"),   // smss → wininit ✓ (case-insensitive)
+            proc(4, 0, "System"),
+            proc(300, 4, "smss.exe"),
+            proc(500, 300, "WinInit.EXE"), // smss → wininit ✓ (case-insensitive)
             proc(600, 500, "Services.EXE"), // wininit → services ✓
             proc(1200, 600, "SvcHost.exe"), // services → svchost ✓
         ];
         let hits = check_ppid_spoof(&procs);
-        assert!(hits.is_empty(), "case-insensitive parent match must not flag");
+        assert!(
+            hits.is_empty(),
+            "case-insensitive parent match must not flag"
+        );
     }
 
     #[test]
@@ -255,7 +284,11 @@ mod tests {
         procs.push(proc(900, 540, "notepad.exe")); // explorer → notepad (untracked)
         procs.push(proc(1400, 900, "dllhost.exe")); // notepad → dllhost = low-conf
         let hits = check_ppid_spoof(&procs);
-        assert_eq!(hits.len(), 1, "dllhost with unlisted parent must emit a low-confidence hit");
+        assert_eq!(
+            hits.len(),
+            1,
+            "dllhost with unlisted parent must emit a low-confidence hit"
+        );
         assert_eq!(hits[0].confidence, SpoofConfidence::Low);
     }
 

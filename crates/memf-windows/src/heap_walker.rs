@@ -12,12 +12,7 @@ use memf_core::object_reader::ObjectReader;
 use memf_core::WalkResult;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{
-    process::walk_processes,
-    types::WinProcessInfo,
-    vad::walk_vad_tree,
-    Result,
-};
+use crate::{process::walk_processes, types::WinProcessInfo, vad::walk_vad_tree, Result};
 
 /// Maximum bytes consumed from any single VAD region.
 ///
@@ -183,6 +178,9 @@ mod tests {
     /// MAX_REGION_BYTES must be exactly 64 MiB.
     #[test]
     fn max_region_bytes_is_64_mib() {
-        assert_eq!(MAX_REGION_BYTES, 67_108_864, "MAX_REGION_BYTES must be exactly 64 MiB");
+        assert_eq!(
+            MAX_REGION_BYTES, 67_108_864,
+            "MAX_REGION_BYTES must be exactly 64 MiB"
+        );
     }
 }

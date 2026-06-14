@@ -141,7 +141,9 @@ pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
     // Read root cell index from _HBASE_BLOCK
     let root_cell_bytes =
         reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4)?;
-    let root_cell = root_cell_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
+    let root_cell = root_cell_bytes[..4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     if root_cell == 0 {
         return Ok(Vec::new());
@@ -183,13 +185,17 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
         });
     }
 
-    let value_count = nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let value_count = nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     if value_count == 0 {
         return Ok(Vec::new());
     }
 
-    let values_list_cell = nk_data[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let values_list_cell = nk_data[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     // The value list cell contains an array of u32 cell indices (one per value).
     let vl_vaddr = cell_address(hive_addr, values_list_cell);
@@ -204,7 +210,9 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
         if off + 4 > vl_data.len() {
             break;
         }
-        let val_cell = vl_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
+        let val_cell = vl_data[off..off + 4]
+            .try_into()
+            .map_or(0, u32::from_le_bytes);
         if let Ok(v) = read_single_value(reader, hive_addr, val_cell, &key_name) {
             values.push(v); // skip corrupt values silently
         }
@@ -257,7 +265,9 @@ fn read_key_name(nk_data: &[u8]) -> String {
     if nk_data.len() < NK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
+    let name_len = nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+        .try_into()
+        .map_or(0, u16::from_le_bytes) as usize;
 
     let end = NK_NAME_OFFSET + name_len;
     if end > nk_data.len() {
@@ -303,9 +313,15 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
         format!("{parent_path}\\{key_name}")
     };
 
-    let last_write_time = nk_data[NK_LAST_WRITE_TIME_OFFSET..NK_LAST_WRITE_TIME_OFFSET + 8].try_into().map_or(0, u64::from_le_bytes);
-    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
-    let value_count = nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let last_write_time = nk_data[NK_LAST_WRITE_TIME_OFFSET..NK_LAST_WRITE_TIME_OFFSET + 8]
+        .try_into()
+        .map_or(0, u64::from_le_bytes);
+    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
+    let value_count = nk_data[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     keys.push(RegistryKeyInfo {
         path: path.clone(),
@@ -319,7 +335,10 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
         return Ok(());
     }
 
-    let subkeys_list_cell = nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let subkeys_list_cell = nk_data
+        [NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     // The subkeys list cell can be an "lf", "lh", "ri", or "li" index node.
     // For simplicity, we handle "lf"/"lh" (most common) and fall back gracefully.
@@ -344,8 +363,9 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                 if entry_off + 4 > sl_data.len() {
                     break;
                 }
-                let child_cell =
-                    sl_data[entry_off..entry_off + 4].try_into().map_or(0, u32::from_le_bytes);
+                let child_cell = sl_data[entry_off..entry_off + 4]
+                    .try_into()
+                    .map_or(0, u32::from_le_bytes);
                 walk_key_recursive(
                     reader,
                     hive_addr,
@@ -366,8 +386,9 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                 if entry_off + 4 > sl_data.len() {
                     break;
                 }
-                let child_cell =
-                    sl_data[entry_off..entry_off + 4].try_into().map_or(0, u32::from_le_bytes);
+                let child_cell = sl_data[entry_off..entry_off + 4]
+                    .try_into()
+                    .map_or(0, u32::from_le_bytes);
                 walk_key_recursive(
                     reader,
                     hive_addr,
@@ -388,8 +409,9 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                 if entry_off + 4 > sl_data.len() {
                     break;
                 }
-                let sub_list_cell =
-                    sl_data[entry_off..entry_off + 4].try_into().map_or(0, u32::from_le_bytes);
+                let sub_list_cell = sl_data[entry_off..entry_off + 4]
+                    .try_into()
+                    .map_or(0, u32::from_le_bytes);
                 // Read the sub-list and enumerate its children
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
                 let sub_data = read_cell_data(reader, sub_vaddr)?;
@@ -411,7 +433,9 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                     if off + 4 > sub_data.len() {
                         break;
                     }
-                    let child_cell = sub_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
+                    let child_cell = sub_data[off..off + 4]
+                        .try_into()
+                        .map_or(0, u32::from_le_bytes);
                     walk_key_recursive(
                         reader,
                         hive_addr,
@@ -442,7 +466,10 @@ fn read_single_value<P: PhysicalMemoryProvider>(
     let vk_data = read_cell_data(reader, vk_vaddr)?;
 
     if vk_data.len() < VK_NAME_OFFSET {
-        return Err(crate::Error::WalkFailed { walker: "registry_keys", reason: "vk cell too small".into() });
+        return Err(crate::Error::WalkFailed {
+            walker: "registry_keys",
+            reason: "vk cell too small".into(),
+        });
     }
 
     let sig = vk_data[0..2].try_into().map_or(0, u16::from_le_bytes);
@@ -453,13 +480,21 @@ fn read_single_value<P: PhysicalMemoryProvider>(
         });
     }
 
-    let name_length = vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
+    let name_length = vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
+        .try_into()
+        .map_or(0, u16::from_le_bytes) as usize;
 
-    let data_length_raw = vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let data_length_raw = vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
-    let data_offset = vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let data_offset = vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
-    let value_type_raw = vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let value_type_raw = vk_data[VK_TYPE_OFFSET..VK_TYPE_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     let name = if name_length == 0 {
         String::new() // default value
@@ -1631,11 +1666,9 @@ mod tests {
         let cell_data_start: usize = 0x1000 + 0x20 + 4;
         // Allocated cell: size = -64 (0xFFFFFFC0 as i32 LE)
         let cell_size: i32 = -64;
-        hive_page[0x1000 + 0x20..0x1000 + 0x20 + 4]
-            .copy_from_slice(&cell_size.to_le_bytes());
+        hive_page[0x1000 + 0x20..0x1000 + 0x20 + 4].copy_from_slice(&cell_size.to_le_bytes());
         // Write wrong signature: 0xDEAD instead of NK_SIGNATURE (0x6B6E)
-        hive_page[cell_data_start..cell_data_start + 2]
-            .copy_from_slice(&0xDEADu16.to_le_bytes());
+        hive_page[cell_data_start..cell_data_start + 2].copy_from_slice(&0xDEADu16.to_le_bytes());
 
         let ptb = PageTableBuilder::new()
             .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)

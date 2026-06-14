@@ -112,7 +112,10 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
     let driver_name_offset = reader
         .symbols()
         .field_offset("_DRIVER_OBJECT", "DriverName")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_DRIVER_OBJECT".into(), field_name: "DriverName".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_DRIVER_OBJECT".into(),
+            field_name: "DriverName".into(),
+        })?;
     let driver_name = crate::unicode::read_unicode_string(
         reader,
         driver_obj_addr.wrapping_add(driver_name_offset),
@@ -122,14 +125,19 @@ fn check_driver_object<P: PhysicalMemoryProvider>(
     let mf_offset = reader
         .symbols()
         .field_offset("_DRIVER_OBJECT", "MajorFunction")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_DRIVER_OBJECT".into(), field_name: "MajorFunction".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_DRIVER_OBJECT".into(),
+            field_name: "MajorFunction".into(),
+        })?;
     let mf_base = driver_obj_addr.wrapping_add(mf_offset);
     let mf_bytes = reader.read_bytes(mf_base, IRP_MJ_COUNT * 8)?;
 
     let mut results = Vec::new();
     for i in 0..IRP_MJ_COUNT {
         let byte_off = i * 8;
-        let handler_addr = mf_bytes[byte_off..byte_off + 8].try_into().map_or(0, u64::from_le_bytes);
+        let handler_addr = mf_bytes[byte_off..byte_off + 8]
+            .try_into()
+            .map_or(0, u64::from_le_bytes);
         if handler_addr == 0 {
             continue;
         }
@@ -211,7 +219,9 @@ pub fn check_driver_irp_hooks<P: PhysicalMemoryProvider>(
     let mut results = Vec::new();
     let limit = driver_obj_addrs.len().min(MAX_DRIVERS);
     for &addr in driver_obj_addrs.iter().take(limit) {
-        if let Ok(entries) = check_driver_object(reader, addr, known_modules) { results.extend(entries) }
+        if let Ok(entries) = check_driver_object(reader, addr, known_modules) {
+            results.extend(entries)
+        }
     }
     Ok(results)
 }

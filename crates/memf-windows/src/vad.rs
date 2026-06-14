@@ -114,7 +114,10 @@ pub fn walk_malfind<P: PhysicalMemoryProvider>(
     let vad_root_offset = reader
         .symbols()
         .field_offset("_EPROCESS", "VadRoot")
-        .ok_or_else(|| crate::Error::MissingField { struct_name: "_EPROCESS".into(), field_name: "VadRoot".into() })?;
+        .ok_or_else(|| crate::Error::MissingField {
+            struct_name: "_EPROCESS".into(),
+            field_name: "VadRoot".into(),
+        })?;
 
     for proc in &procs {
         if proc.peb_addr == 0 {

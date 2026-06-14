@@ -104,15 +104,24 @@ pub fn walk_ldrmodules<P: PhysicalMemoryProvider>(
     let load_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InLoadOrderModuleList")
-        .ok_or_else(|| Error::MissingField { struct_name: "_PEB_LDR_DATA".into(), field_name: "InLoadOrderModuleList".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_PEB_LDR_DATA".into(),
+            field_name: "InLoadOrderModuleList".into(),
+        })?;
     let mem_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InMemoryOrderModuleList")
-        .ok_or_else(|| Error::MissingField { struct_name: "_PEB_LDR_DATA".into(), field_name: "InMemoryOrderModuleList".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_PEB_LDR_DATA".into(),
+            field_name: "InMemoryOrderModuleList".into(),
+        })?;
     let init_head_off = reader
         .symbols()
         .field_offset("_PEB_LDR_DATA", "InInitializationOrderModuleList")
-        .ok_or_else(|| Error::MissingField { struct_name: "_PEB_LDR_DATA".into(), field_name: "InInitializationOrderModuleList".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_PEB_LDR_DATA".into(),
+            field_name: "InInitializationOrderModuleList".into(),
+        })?;
 
     /// Walk a single linked list, returning `(entry_addr, DllBase)` pairs.
     /// Uses a `HashSet` for cycle detection and caps at `MAX_MODULES`.
@@ -180,7 +189,10 @@ pub fn walk_ldrmodules<P: PhysicalMemoryProvider>(
     let base_dll_name_off = reader
         .symbols()
         .field_offset("_LDR_DATA_TABLE_ENTRY", "BaseDllName")
-        .ok_or_else(|| Error::MissingField { struct_name: "_LDR_DATA_TABLE_ENTRY".into(), field_name: "BaseDllName".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_LDR_DATA_TABLE_ENTRY".into(),
+            field_name: "BaseDllName".into(),
+        })?;
 
     // Cross-reference: for each unique base address, check presence in all three lists.
     let mut results = Vec::new();

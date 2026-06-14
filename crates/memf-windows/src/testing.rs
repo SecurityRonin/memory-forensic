@@ -9,10 +9,7 @@ use memf_symbols::isf::IsfResolver;
 use memf_symbols::test_builders::IsfBuilder;
 
 /// Build an `ObjectReader` from a pre-populated `IsfBuilder` and `PageTableBuilder`.
-pub fn make_reader(
-    isf: &IsfBuilder,
-    ptb: PageTableBuilder,
-) -> ObjectReader<SyntheticPhysMem> {
+pub fn make_reader(isf: &IsfBuilder, ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
     let json = isf.build_json();
     let resolver = IsfResolver::from_value(&json).expect("valid ISF");
     let (cr3, mem) = ptb.build();
@@ -30,7 +27,12 @@ pub fn eprocess_isf() -> IsfBuilder {
         .add_field("_EPROCESS", "CreateTime", 0x458, "unsigned long long")
         .add_field("_EPROCESS", "ExitTime", 0x460, "unsigned long long")
         .add_field("_EPROCESS", "Peb", 0x3f8, "pointer")
-        .add_field("_EPROCESS", "InheritedFromUniqueProcessId", 0x3e0, "pointer")
+        .add_field(
+            "_EPROCESS",
+            "InheritedFromUniqueProcessId",
+            0x3e0,
+            "pointer",
+        )
         .add_field("_EPROCESS", "ActiveThreads", 0x5f0, "unsigned long")
         .add_field("_EPROCESS", "WoW64Process", 0x438, "pointer")
         .add_struct("_LIST_ENTRY", 16)
@@ -48,7 +50,9 @@ mod tests {
         let ptb = PageTableBuilder::new();
         let reader = make_reader(&isf, ptb);
         assert_eq!(
-            reader.symbols().field_offset("_EPROCESS", "UniqueProcessId"),
+            reader
+                .symbols()
+                .field_offset("_EPROCESS", "UniqueProcessId"),
             Some(0x2e8)
         );
     }

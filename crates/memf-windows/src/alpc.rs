@@ -366,10 +366,7 @@ mod tests {
         const NAME_PADDR: u64 = 0x0012_3000;
 
         let name_str = "Port1";
-        let name_utf16: Vec<u8> = name_str
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let name_utf16: Vec<u8> = name_str.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let name_len = name_utf16.len() as u16;
 
         let isf = IsfBuilder::new()

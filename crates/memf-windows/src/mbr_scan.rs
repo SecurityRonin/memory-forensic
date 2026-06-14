@@ -28,10 +28,7 @@ pub fn classify_mbr(bootstrap_bytes: &[u8]) -> bool {
         return false;
     }
     matches!(bootstrap_bytes[0], 0xFA | 0x90)
-        && !matches!(
-            &bootstrap_bytes[..3],
-            [0xFA, 0x33 | 0x31, 0xC0]
-        )
+        && !matches!(&bootstrap_bytes[..3], [0xFA, 0x33 | 0x31, 0xC0])
 }
 
 /// Scans virtual address space at 512-byte intervals starting from offset 0.
@@ -50,7 +47,9 @@ pub fn walk_mbr_scan<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Res
     let mut results = Vec::new();
     let mut offset: u64 = 0;
     while offset + 512 <= 65536 {
-        let sector = if let Ok(b) = reader.read_bytes(offset, 512) { b } else {
+        let sector = if let Ok(b) = reader.read_bytes(offset, 512) {
+            b
+        } else {
             offset += 512;
             continue;
         };

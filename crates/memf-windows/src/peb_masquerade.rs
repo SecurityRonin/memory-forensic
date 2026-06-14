@@ -8,9 +8,9 @@
 //!
 //! MITRE ATT&CK T1036.005 (Masquerading: Match Legitimate Name or Location).
 
+use forensicnomicon::processes::is_masquerade_target;
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
-use forensicnomicon::processes::is_masquerade_target;
 
 use crate::unicode::read_unicode_string;
 use crate::{Error, Result};
@@ -101,7 +101,10 @@ pub fn walk_peb_masquerade<P: PhysicalMemoryProvider>(
     let image_path_offset = reader
         .symbols()
         .field_offset("_RTL_USER_PROCESS_PARAMETERS", "ImagePathName")
-        .ok_or_else(|| Error::MissingField { struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(), field_name: "ImagePathName".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(),
+            field_name: "ImagePathName".into(),
+        })?;
     let image_path_ustr_addr = params_ptr.wrapping_add(image_path_offset);
     let peb_image_path = read_unicode_string(reader, image_path_ustr_addr)?;
 
@@ -109,7 +112,10 @@ pub fn walk_peb_masquerade<P: PhysicalMemoryProvider>(
     let cmdline_offset = reader
         .symbols()
         .field_offset("_RTL_USER_PROCESS_PARAMETERS", "CommandLine")
-        .ok_or_else(|| Error::MissingField { struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(), field_name: "CommandLine".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_RTL_USER_PROCESS_PARAMETERS".into(),
+            field_name: "CommandLine".into(),
+        })?;
     let cmdline_ustr_addr = params_ptr.wrapping_add(cmdline_offset);
     let peb_command_line = read_unicode_string(reader, cmdline_ustr_addr)?;
 
@@ -463,9 +469,21 @@ mod tests {
         let params_vaddr: u64 = 0xFFFF_8000_3000_0000;
 
         let ptb = PageTableBuilder::new()
-            .map_4k(eproc_vaddr, eproc_paddr, memf_core::test_builders::flags::WRITABLE)
-            .map_4k(peb_vaddr, peb_paddr, memf_core::test_builders::flags::WRITABLE)
-            .map_4k(params_vaddr, params_paddr, memf_core::test_builders::flags::WRITABLE)
+            .map_4k(
+                eproc_vaddr,
+                eproc_paddr,
+                memf_core::test_builders::flags::WRITABLE,
+            )
+            .map_4k(
+                peb_vaddr,
+                peb_paddr,
+                memf_core::test_builders::flags::WRITABLE,
+            )
+            .map_4k(
+                params_vaddr,
+                params_paddr,
+                memf_core::test_builders::flags::WRITABLE,
+            )
             // _EPROCESS.Peb at 0x550
             .write_phys_u64(eproc_paddr + 0x550, peb_vaddr)
             // _PEB.ProcessParameters at 0x20
@@ -512,9 +530,21 @@ mod tests {
         let params_vaddr: u64 = 0xFFFF_8000_6000_0000;
 
         let ptb = PageTableBuilder::new()
-            .map_4k(eproc_vaddr, eproc_paddr, memf_core::test_builders::flags::WRITABLE)
-            .map_4k(peb_vaddr, peb_paddr, memf_core::test_builders::flags::WRITABLE)
-            .map_4k(params_vaddr, params_paddr, memf_core::test_builders::flags::WRITABLE)
+            .map_4k(
+                eproc_vaddr,
+                eproc_paddr,
+                memf_core::test_builders::flags::WRITABLE,
+            )
+            .map_4k(
+                peb_vaddr,
+                peb_paddr,
+                memf_core::test_builders::flags::WRITABLE,
+            )
+            .map_4k(
+                params_vaddr,
+                params_paddr,
+                memf_core::test_builders::flags::WRITABLE,
+            )
             .write_phys_u64(eproc_paddr + 0x550, peb_vaddr)
             .write_phys_u64(peb_paddr + 0x20, params_vaddr);
         let (cr3, mem) = ptb.build();

@@ -136,17 +136,23 @@ pub fn walk_timers<P: PhysicalMemoryProvider>(
             let timer_addr = current.wrapping_sub(timer_list_entry_off);
 
             let due_time = match reader.read_bytes(timer_addr.wrapping_add(due_time_off), 8) {
-                Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, i64::from_le_bytes),
+                Ok(bytes) if bytes.len() == 8 => {
+                    bytes[..8].try_into().map_or(0, i64::from_le_bytes)
+                }
                 _ => 0,
             };
 
             let period = match reader.read_bytes(timer_addr.wrapping_add(period_off), 4) {
-                Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
+                Ok(bytes) if bytes.len() == 4 => {
+                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
+                }
                 _ => 0,
             };
 
             let dpc_address = match reader.read_bytes(timer_addr.wrapping_add(dpc_off), 8) {
-                Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
+                Ok(bytes) if bytes.len() == 8 => {
+                    bytes[..8].try_into().map_or(0, u64::from_le_bytes)
+                }
                 _ => 0,
             };
 
@@ -187,7 +193,9 @@ pub fn walk_timers<P: PhysicalMemoryProvider>(
             }
 
             current = match reader.read_bytes(current, 8) {
-                Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
+                Ok(bytes) if bytes.len() == 8 => {
+                    bytes[..8].try_into().map_or(0, u64::from_le_bytes)
+                }
                 _ => break,
             };
         }

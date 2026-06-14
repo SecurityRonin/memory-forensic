@@ -194,12 +194,13 @@ pub fn walk_device_tree<P: PhysicalMemoryProvider>(
 
         let driver_addr = flink.wrapping_sub(driver_section_off);
 
-        let driver_name =
-            read_unicode_string(reader, driver_addr.wrapping_add(driver_name_off))
-                .unwrap_or_default();
+        let driver_name = read_unicode_string(reader, driver_addr.wrapping_add(driver_name_off))
+            .unwrap_or_default();
 
         let dev_ptr_bytes =
-            if let Ok(b) = reader.read_bytes(driver_addr.wrapping_add(device_object_off), 8) { b } else {
+            if let Ok(b) = reader.read_bytes(driver_addr.wrapping_add(device_object_off), 8) {
+                b
+            } else {
                 current = flink;
                 continue;
             };

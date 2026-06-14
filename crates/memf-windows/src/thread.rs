@@ -22,13 +22,19 @@ pub fn walk_threads<P: PhysicalMemoryProvider>(
     let pcb_offset = reader
         .symbols()
         .field_offset("_EPROCESS", "Pcb")
-        .ok_or_else(|| Error::MissingField { struct_name: "_EPROCESS".into(), field_name: "Pcb".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_EPROCESS".into(),
+            field_name: "Pcb".into(),
+        })?;
 
     // ThreadListHead is within _KPROCESS.
     let thread_list_head_offset = reader
         .symbols()
         .field_offset("_KPROCESS", "ThreadListHead")
-        .ok_or_else(|| Error::MissingField { struct_name: "_KPROCESS".into(), field_name: "ThreadListHead".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_KPROCESS".into(),
+            field_name: "ThreadListHead".into(),
+        })?;
 
     let thread_list_head_vaddr = eproc_addr
         .wrapping_add(pcb_offset)
@@ -73,7 +79,10 @@ fn read_thread_info<P: PhysicalMemoryProvider>(
     let cid_offset = reader
         .symbols()
         .field_offset("_ETHREAD", "Cid")
-        .ok_or_else(|| Error::MissingField { struct_name: "_ETHREAD".into(), field_name: "Cid".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "_ETHREAD".into(),
+            field_name: "Cid".into(),
+        })?;
 
     let tid: u64 = reader.read_field(
         ethread_addr.wrapping_add(cid_offset),
@@ -366,9 +375,12 @@ mod tests {
     #[test]
     fn walk_threads_missing_kprocess_thread_list_head_returns_missing_field() {
         // ISF with _EPROCESS.Pcb but no _KPROCESS.ThreadListHead
-        let isf = IsfBuilder::new()
-            .add_struct("_EPROCESS", 0x800)
-            .add_field("_EPROCESS", "Pcb", 0, "pointer");
+        let isf = IsfBuilder::new().add_struct("_EPROCESS", 0x800).add_field(
+            "_EPROCESS",
+            "Pcb",
+            0,
+            "pointer",
+        );
         let reader = memf_core::test_builders::make_reader(&isf);
         let result = walk_threads(&reader, 0, 0);
         assert!(
@@ -412,9 +424,25 @@ mod tests {
         let ptb = PageTableBuilder::new()
             .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
             .map_4k(kthread_vaddr, kthread_paddr, flags::WRITABLE)
-            .write_phys_u64(eproc_paddr + KPROCESS_THREAD_LIST_HEAD, kthread_list_entry_vaddr)
-            .write_phys_u64(eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8, kthread_list_entry_vaddr);
-        let ptb = write_kthread(ptb, kthread_paddr, 8, 4, 0, 0, 0, thread_list_head_vaddr, thread_list_head_vaddr);
+            .write_phys_u64(
+                eproc_paddr + KPROCESS_THREAD_LIST_HEAD,
+                kthread_list_entry_vaddr,
+            )
+            .write_phys_u64(
+                eproc_paddr + KPROCESS_THREAD_LIST_HEAD + 8,
+                kthread_list_entry_vaddr,
+            );
+        let ptb = write_kthread(
+            ptb,
+            kthread_paddr,
+            8,
+            4,
+            0,
+            0,
+            0,
+            thread_list_head_vaddr,
+            thread_list_head_vaddr,
+        );
         let (cr3, mem) = ptb.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));

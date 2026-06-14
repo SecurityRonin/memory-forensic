@@ -103,15 +103,9 @@ fn contains_ip_url(text: &str) -> bool {
         while let Some(pos) = search.find(prefix) {
             let after = &search[pos + prefix.len()..];
             // Check if next char is a digit (start of IP octets)
-            if after
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit())
-            {
+            if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                 // Verify it looks like an IP: at least two dots in the host part
-                let host_end = after
-                    .find(['/', ':', ' ', '\n'])
-                    .unwrap_or(after.len());
+                let host_end = after.find(['/', ':', ' ', '\n']).unwrap_or(after.len());
                 let host = &after[..host_end];
                 if host.chars().filter(|&c| c == '.').count() >= 1
                     && host
@@ -121,12 +115,7 @@ fn contains_ip_url(text: &str) -> bool {
                     return true;
                 }
                 // Even without all-digit parts, if host starts with digit and has a dot, flag it
-                if host.contains('.')
-                    && host
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_digit())
-                {
+                if host.contains('.') && host.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                     return true;
                 }
             }

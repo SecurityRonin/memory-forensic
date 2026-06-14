@@ -228,7 +228,9 @@ fn read_key_name(nk_data: &[u8]) -> String {
     if nk_data.len() < NK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
+    let name_len = nk_data[NK_NAME_LENGTH_OFFSET..NK_NAME_LENGTH_OFFSET + 2]
+        .try_into()
+        .map_or(0, u16::from_le_bytes) as usize;
     let end = NK_NAME_OFFSET + name_len;
     if end > nk_data.len() {
         return String::new();
@@ -241,7 +243,9 @@ fn read_value_name(vk_data: &[u8]) -> String {
     if vk_data.len() < VK_NAME_OFFSET + 1 {
         return String::new();
     }
-    let name_len = vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2].try_into().map_or(0, u16::from_le_bytes) as usize;
+    let name_len = vk_data[VK_NAME_LENGTH_OFFSET..VK_NAME_LENGTH_OFFSET + 2]
+        .try_into()
+        .map_or(0, u16::from_le_bytes) as usize;
     let end = VK_NAME_OFFSET + name_len;
     if end > vk_data.len() {
         return String::new();
@@ -262,13 +266,18 @@ fn find_subkey<P: PhysicalMemoryProvider>(
         return Ok(None);
     }
 
-    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
+    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes) as usize;
 
     if subkey_count == 0 {
         return Ok(None);
     }
 
-    let subkeys_list_cell = nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let subkeys_list_cell = nk_data
+        [NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     // The subkeys list cell may be an index node (lf, lh, ri, li).
     // Read its data and iterate child cell indices.
@@ -291,7 +300,9 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
+                let child_cell = list_data[off..off + 4]
+                    .try_into()
+                    .map_or(0, u32::from_le_bytes);
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
@@ -313,7 +324,9 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let child_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
+                let child_cell = list_data[off..off + 4]
+                    .try_into()
+                    .map_or(0, u32::from_le_bytes);
                 let child_vaddr = cell_address(hive_addr, child_cell);
                 if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                     if child_nk.len() >= NK_NAME_OFFSET {
@@ -336,7 +349,9 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_list_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
+                let sub_list_cell = list_data[off..off + 4]
+                    .try_into()
+                    .map_or(0, u32::from_le_bytes);
                 // Build a synthetic nk_data-like slice so we can call ourselves
                 // with the sub-list. Instead, just read the sub-list directly.
                 let sub_vaddr = cell_address(hive_addr, sub_list_cell);
@@ -357,8 +372,9 @@ fn find_subkey<P: PhysicalMemoryProvider>(
                     if soff + 4 > sub_data.len() {
                         break;
                     }
-                    let child_cell =
-                        sub_data[soff..soff + 4].try_into().map_or(0, u32::from_le_bytes);
+                    let child_cell = sub_data[soff..soff + 4]
+                        .try_into()
+                        .map_or(0, u32::from_le_bytes);
                     let child_vaddr = cell_address(hive_addr, child_cell);
                     if let Ok(child_nk) = read_cell_data(reader, child_vaddr) {
                         if child_nk.len() >= NK_NAME_OFFSET {
@@ -390,13 +406,18 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
+    let subkey_count = nk_data[NK_STABLE_SUBKEY_COUNT_OFFSET..NK_STABLE_SUBKEY_COUNT_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes) as usize;
 
     if subkey_count == 0 {
         return Ok(Vec::new());
     }
 
-    let subkeys_list_cell = nk_data[NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let subkeys_list_cell = nk_data
+        [NK_STABLE_SUBKEYS_LIST_OFFSET..NK_STABLE_SUBKEYS_LIST_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     let list_vaddr = cell_address(hive_addr, subkeys_list_cell);
     let list_data = read_cell_data(reader, list_vaddr)?;
@@ -417,7 +438,11 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                cells.push(list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes));
+                cells.push(
+                    list_data[off..off + 4]
+                        .try_into()
+                        .map_or(0, u32::from_le_bytes),
+                );
             }
         }
         0x696C => {
@@ -426,7 +451,11 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                cells.push(list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes));
+                cells.push(
+                    list_data[off..off + 4]
+                        .try_into()
+                        .map_or(0, u32::from_le_bytes),
+                );
             }
         }
         0x6972 => {
@@ -435,7 +464,9 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                 if off + 4 > list_data.len() {
                     break;
                 }
-                let sub_cell = list_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
+                let sub_cell = list_data[off..off + 4]
+                    .try_into()
+                    .map_or(0, u32::from_le_bytes);
                 let sub_vaddr = cell_address(hive_addr, sub_cell);
                 if let Ok(sub_data) = read_cell_data(reader, sub_vaddr) {
                     if sub_data.len() >= 4 {
@@ -453,7 +484,11 @@ fn list_subkeys<P: PhysicalMemoryProvider>(
                             if soff + 4 > sub_data.len() {
                                 break;
                             }
-                            cells.push(sub_data[soff..soff + 4].try_into().map_or(0, u32::from_le_bytes));
+                            cells.push(
+                                sub_data[soff..soff + 4]
+                                    .try_into()
+                                    .map_or(0, u32::from_le_bytes),
+                            );
                         }
                     }
                 }
@@ -488,7 +523,9 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             Ok(b) => b,
             Err(_) => return Ok(Vec::new()),
         };
-    let root_cell = root_cell_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
+    let root_cell = root_cell_bytes[..4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
     if root_cell == 0 {
         return Ok(Vec::new());
     }
@@ -556,13 +593,17 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        let value_count = count_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes) as usize;
+        let value_count = count_nk[NK_VALUE_COUNT_OFFSET..NK_VALUE_COUNT_OFFSET + 4]
+            .try_into()
+            .map_or(0, u32::from_le_bytes) as usize;
 
         if value_count == 0 {
             continue;
         }
 
-        let values_list_cell = count_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+        let values_list_cell = count_nk[NK_VALUES_LIST_OFFSET..NK_VALUES_LIST_OFFSET + 4]
+            .try_into()
+            .map_or(0, u32::from_le_bytes);
 
         let vl_vaddr = cell_address(hive_addr, values_list_cell);
         let vl_data = match read_cell_data(reader, vl_vaddr) {
@@ -579,9 +620,13 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
             if off + 4 > vl_data.len() {
                 break;
             }
-            let val_cell = vl_data[off..off + 4].try_into().map_or(0, u32::from_le_bytes);
+            let val_cell = vl_data[off..off + 4]
+                .try_into()
+                .map_or(0, u32::from_le_bytes);
 
-            if let Ok(Some(entry)) = parse_userassist_value(reader, hive_addr, val_cell) { entries.push(entry) }
+            if let Ok(Some(entry)) = parse_userassist_value(reader, hive_addr, val_cell) {
+                entries.push(entry)
+            }
         }
     }
 
@@ -614,7 +659,9 @@ fn parse_userassist_value<P: PhysicalMemoryProvider>(
     let decoded_name = rot13_decode(&rot13_name);
 
     // Read the binary value data.
-    let data_length = vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let data_length = vk_data[VK_DATA_LENGTH_OFFSET..VK_DATA_LENGTH_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     // Strip MSB (inline data flag) for size check.
     let actual_length = (data_length & 0x7FFF_FFFF) as usize;
@@ -624,7 +671,9 @@ fn parse_userassist_value<P: PhysicalMemoryProvider>(
     }
 
     // Read the value data from the data cell.
-    let data_cell = vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4].try_into().map_or(0, u32::from_le_bytes);
+    let data_cell = vk_data[VK_DATA_OFFSET_OFFSET..VK_DATA_OFFSET_OFFSET + 4]
+        .try_into()
+        .map_or(0, u32::from_le_bytes);
 
     let data_vaddr = cell_address(hive_addr, data_cell);
     let raw_data = read_cell_data(reader, data_vaddr)?;
