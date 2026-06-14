@@ -1541,9 +1541,12 @@ dependencies = [
 
 [[package]]
 name = "jsonguard"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9f3c7513d3a842fb84b3b4ca5ba0b31bf0593cd4bcc886a59fbbf5a38aefb61"
+checksum = "bca1ea292f95a3c50973d0f4034d110744e781864784b3a37b3072426f0719ec"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "lazy_static"

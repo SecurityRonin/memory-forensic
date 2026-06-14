@@ -150,9 +150,3 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-
-# Temporary: consume the unpublished jsonguard 0.2.3 (adds JsonSafe + serde feature)
-# from the local checkout. FOLLOW-UP: publish jsonguard 0.2.3, then remove this
-# patch so the registry version is used (reproducible builds).
-[patch.crates-io]
-jsonguard = { path = "../jsonguard" }
