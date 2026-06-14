@@ -1795,7 +1795,7 @@ fn cmd_strings(
     // Output
     match output {
         OutputFormat::Table => print_strings_table(&strings),
-        OutputFormat::Json | OutputFormat::Ndjson => print_strings_json(&strings)?,
+        OutputFormat::Json | OutputFormat::Ndjson => print_strings_json(&strings),
         OutputFormat::Csv => print_strings_csv(&strings),
     }
 
@@ -3266,9 +3266,8 @@ fn print_strings_table_render(strings: &[memf_strings::ClassifiedString]) -> Str
     )
 }
 
-fn print_strings_json(strings: &[memf_strings::ClassifiedString]) -> Result<()> {
+fn print_strings_json(strings: &[memf_strings::ClassifiedString]) {
     print!("{}", render_strings_json(strings));
-    Ok(())
 }
 
 /// Humble Object: render classified strings as one JSON object per line. The
@@ -5566,29 +5565,50 @@ fn tag_suspicious_windows(
 /// - ctime: `timestamp_secs` (change time)
 /// - crtime: `timestamp_secs` (creation time, for process_create/thread_create)
 fn print_timeline_bodyfile(events: &[TimelineEvent]) {
+    print!("{}", render_timeline_bodyfile(events));
+}
+
+/// Humble Object: render the mactime bodyfile. The `description` (built from
+/// attacker-controlled process names/paths) and `tags` are sanitized with
+/// `display_safe` so a control character — newline or `|` injection by way of a
+/// C0 control — cannot break a bodyfile row.
+fn render_timeline_bodyfile(events: &[TimelineEvent]) -> String {
+    let mut out = String::new();
     for e in events {
         let tags_suffix = if e.tags.is_empty() {
             String::new()
         } else {
-            format!(" {{{}}}", e.tags.join(","))
+            format!(" {{{}}}", table_cell(&e.tags.join(",")))
         };
         let name = format!(
             "[{}] PID:{} {}{}",
-            e.event_type, e.pid, e.description, tags_suffix
+            e.event_type, e.pid, table_cell(&e.description), tags_suffix
         );
         // atime=0, mtime=0, ctime=timestamp, crtime=timestamp
-        println!(
+        let _ = writeln!(
+            out,
             "0|{}|0|0|0|0|0|0|0|{}|{}",
             name, e.timestamp_secs, e.timestamp_secs
         );
     }
+    out
 }
 
 /// Print a sorted timeline to stdout.
 fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
+    print!("{}", render_timeline(events, output));
+}
+
+/// Humble Object: render a sorted timeline. `description` is attacker-controlled
+/// (built from process names/paths) and `tags` may carry rule-derived strings,
+/// so the table sanitizes via `table_cell`, JSON via `JsonSafe`, and CSV via
+/// `csv_field` (replacing the prior hand-rolled quote-wrapping).
+fn render_timeline(events: &[TimelineEvent], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
-            println!(
+            let mut out = String::new();
+            let _ = writeln!(
+                out,
                 "{:<26} {:<20} {:>8}  DESCRIPTION  TAGS",
                 "TIMESTAMP", "EVENT", "PID"
             );
@@ -5596,36 +5616,43 @@ fn print_timeline(events: &[TimelineEvent], output: OutputFormat) {
                 let tags_str = if e.tags.is_empty() {
                     String::new()
                 } else {
-                    format!("[{}]", e.tags.join(", "))
+                    format!("[{}]", table_cell(&e.tags.join(", ")))
                 };
-                println!(
+                let _ = writeln!(
+                    out,
                     "{:<26} {:<20} {:>8}  {}  {}",
-                    e.timestamp, e.event_type, e.pid, e.description, tags_str
+                    e.timestamp, e.event_type, e.pid, table_cell(&e.description), tags_str
                 );
             }
+            out
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for e in events {
+                let tags: Vec<_> = e.tags.iter().map(|t| jsonguard::JsonSafe(t.as_str())).collect();
                 let json = serde_json::json!({
                     "timestamp": e.timestamp,
                     "timestamp_secs": e.timestamp_secs,
                     "event_type": e.event_type,
                     "pid": e.pid,
-                    "description": e.description,
-                    "tags": e.tags,
+                    "description": jsonguard::JsonSafe(&e.description),
+                    "tags": tags,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("timestamp,timestamp_secs,event_type,pid,description,tags");
+            let mut out = String::from("timestamp,timestamp_secs,event_type,pid,description,tags\n");
             for e in events {
                 let tags_str = e.tags.join(";");
-                println!(
-                    "{},{},{},{},\"{}\",\"{}\"",
-                    e.timestamp, e.timestamp_secs, e.event_type, e.pid, e.description, tags_str
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{},{},{}",
+                    e.timestamp, e.timestamp_secs, e.event_type, e.pid, csv_field(&e.description).value, csv_field(&tags_str).value
                 );
             }
+            out
         }
     }
 }
@@ -5959,6 +5986,17 @@ fn print_browser_sessions(
     entries: &[memf_windows::types::BrowserSessionEntry],
     output: OutputFormat,
 ) {
+    println!("{}", render_browser_sessions(entries, output));
+}
+
+/// Humble Object: render recovered browser session URLs. `image_name`, `url`,
+/// and `source_hint` are attacker-controlled, so JSON is built explicitly with
+/// `JsonSafe` (NOT by serializing the struct directly, which would emit raw
+/// strings) and CSV runs each field through `csv_field`.
+fn render_browser_sessions(
+    entries: &[memf_windows::types::BrowserSessionEntry],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -5971,19 +6009,27 @@ fn print_browser_sessions(
                     table_cell(&e.url),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} URLs", entries.len());
+            format!("{table}\n\nTotal: {} URLs", entries.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for e in entries {
-                println!("{}", serde_json::to_string(e).unwrap_or_default());
+                let json = serde_json::json!({
+                    "pid": e.pid,
+                    "image_name": jsonguard::JsonSafe(&e.image_name),
+                    "url": jsonguard::JsonSafe(&e.url),
+                    "source_hint": jsonguard::JsonSafe(&e.source_hint),
+                });
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,process,url");
+            let mut out = String::from("pid,process,url\n");
             for e in entries {
-                println!("{},{},{}", e.pid, e.image_name, e.url);
+                let _ = writeln!(out, "{},{},{}", e.pid, csv_field(&e.image_name).value, csv_field(&e.url).value);
             }
+            out
         }
     }
 }
@@ -6024,6 +6070,16 @@ fn print_browser_cookies(
     cookies: &[memf_windows::types::BrowserCookieInfo],
     output: OutputFormat,
 ) {
+    println!("{}", render_browser_cookies(cookies, output));
+}
+
+/// Humble Object: render recovered browser cookies. `image_name`, `domain`,
+/// `name`, `value`, and `path` are attacker-controlled, so JSON is built
+/// explicitly with `JsonSafe` and CSV runs each field through `csv_field`.
+fn render_browser_cookies(
+    cookies: &[memf_windows::types::BrowserCookieInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -6039,27 +6095,39 @@ fn print_browser_cookies(
                     if c.encrypted { "Y" } else { "N" }.to_string(),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} cookies", cookies.len());
+            format!("{table}\n\nTotal: {} cookies", cookies.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for c in cookies {
-                println!("{}", serde_json::to_string(c).unwrap_or_default());
+                let json = serde_json::json!({
+                    "pid": c.pid,
+                    "image_name": jsonguard::JsonSafe(&c.image_name),
+                    "domain": jsonguard::JsonSafe(&c.domain),
+                    "name": jsonguard::JsonSafe(&c.name),
+                    "value": jsonguard::JsonSafe(&c.value),
+                    "path": c.path.as_deref().map(jsonguard::JsonSafe),
+                    "encrypted": c.encrypted,
+                });
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,process,domain,name,value,encrypted");
+            let mut out = String::from("pid,process,domain,name,value,encrypted\n");
             for c in cookies {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{},{},{},{}",
                     c.pid,
-                    c.image_name,
-                    c.domain,
-                    c.name,
-                    c.value,
+                    csv_field(&c.image_name).value,
+                    csv_field(&c.domain).value,
+                    csv_field(&c.name).value,
+                    csv_field(&c.value).value,
                     c.encrypted,
                 );
             }
+            out
         }
     }
 }
@@ -6100,6 +6168,16 @@ fn print_browser_creds(
     creds: &[memf_windows::types::BrowserCredentialInfo],
     output: OutputFormat,
 ) {
+    println!("{}", render_browser_creds(creds, output));
+}
+
+/// Humble Object: render recovered browser credentials. `image_name`, `url`,
+/// `username`, and `password` are attacker-controlled, so JSON is built
+/// explicitly with `JsonSafe` and CSV runs each field through `csv_field`.
+fn render_browser_creds(
+    creds: &[memf_windows::types::BrowserCredentialInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -6114,22 +6192,32 @@ fn print_browser_creds(
                     table_cell(&c.password),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} credentials", creds.len());
+            format!("{table}\n\nTotal: {} credentials", creds.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for c in creds {
-                println!("{}", serde_json::to_string(c).unwrap_or_default());
+                let json = serde_json::json!({
+                    "pid": c.pid,
+                    "image_name": jsonguard::JsonSafe(&c.image_name),
+                    "url": jsonguard::JsonSafe(&c.url),
+                    "username": jsonguard::JsonSafe(&c.username),
+                    "password": jsonguard::JsonSafe(&c.password),
+                });
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,process,url,username,password");
+            let mut out = String::from("pid,process,url,username,password\n");
             for c in creds {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{},{},{}",
-                    c.pid, c.image_name, c.url, c.username, c.password,
+                    c.pid, csv_field(&c.image_name).value, csv_field(&c.url).value, csv_field(&c.username).value, csv_field(&c.password).value,
                 );
             }
+            out
         }
     }
 }
@@ -6880,6 +6968,79 @@ mod tests {
             user_sid: "S-1-5-\u{202e}18".into(),
         }];
         assert_json_csv_safe(&render_windows_privileges(&tokens, OutputFormat::Json), &render_windows_privileges(&tokens, OutputFormat::Csv));
+    }
+
+    // ----- timeline + browser artifacts -----
+
+    #[test]
+    fn render_timeline_sanitizes_description_and_tags() {
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1_700_000_000,
+            timestamp: "2023-11-14T22:13:20Z".into(),
+            event_type: "process_create".into(),
+            pid: 7,
+            description: "=calc\u{202e},evil.exe".into(),
+            tags: vec!["singleton\u{202e}".into()],
+        }];
+        let json = render_timeline(&events, OutputFormat::Json);
+        let csv = render_timeline(&events, OutputFormat::Csv);
+        assert_json_csv_safe(&json, &csv);
+        // The bodyfile must not carry a bidi override or a control char that
+        // could break a row.
+        let body = render_timeline_bodyfile(&events);
+        assert!(!body.contains('\u{202e}'), "bidi in bodyfile: {body}");
+    }
+
+    #[test]
+    fn render_timeline_bodyfile_strips_embedded_newline() {
+        // A newline embedded in the description must not split a bodyfile row.
+        let events = vec![TimelineEvent {
+            timestamp_secs: 1,
+            timestamp: "t".into(),
+            event_type: "process_create".into(),
+            pid: 7,
+            description: "evil\ninjected|0|extra".into(),
+            tags: vec![],
+        }];
+        let body = render_timeline_bodyfile(&events);
+        assert_eq!(body.lines().count(), 1, "exactly one bodyfile row: {body:?}");
+    }
+
+    #[test]
+    fn render_browser_sessions_sanitizes_url() {
+        let entries = vec![memf_windows::types::BrowserSessionEntry {
+            pid: 7,
+            image_name: "chrome.exe".into(),
+            url: "=calc\u{202e},http://evil".into(),
+            source_hint: "tab\u{202e}".into(),
+        }];
+        assert_json_csv_safe(&render_browser_sessions(&entries, OutputFormat::Json), &render_browser_sessions(&entries, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_browser_cookies_sanitizes_fields() {
+        let cookies = vec![memf_windows::types::BrowserCookieInfo {
+            pid: 7,
+            image_name: "chrome.exe".into(),
+            domain: "=evil\u{202e}.com".into(),
+            name: "session\u{202e}".into(),
+            value: "=calc,secret".into(),
+            path: Some("/\u{202e}".into()),
+            encrypted: false,
+        }];
+        assert_json_csv_safe(&render_browser_cookies(&cookies, OutputFormat::Json), &render_browser_cookies(&cookies, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_browser_creds_sanitizes_fields() {
+        let creds = vec![memf_windows::types::BrowserCredentialInfo {
+            pid: 7,
+            image_name: "chrome.exe".into(),
+            url: "=calc\u{202e},http://evil".into(),
+            username: "admin\u{202e}".into(),
+            password: "=p455,word".into(),
+        }];
+        assert_json_csv_safe(&render_browser_creds(&creds, OutputFormat::Json), &render_browser_creds(&creds, OutputFormat::Csv));
     }
 
     fn make_temp_lime_dump(suffix: &str) -> std::path::PathBuf {
