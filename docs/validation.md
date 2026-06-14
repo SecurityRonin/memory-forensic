@@ -65,17 +65,38 @@ A single competitor is not ground truth. The plan is to corroborate every
 finding against **at least two independent implementations** plus the raw bytes:
 
 - **Volatility 3** — done (above).
-- **MemProcFS** (Ulf Frisk) — a C/Rust engine with a different code lineage, so
-  agreement is genuinely independent. **Status (2026-06-14): blocked on this
-  macOS arm64 host** — `pip install memprocfs` fails to build the `memprocfs` /
-  `leechcorepyc` native wheels, and the prebuilt macOS binary needs macFUSE (a
-  kernel extension) to mount. The clean path is a **Linux** box: the upstream
-  `MemProcFS_files…linux_aarch64` / `linux_x64` and `LeechCore` prebuilt releases
-  run without a source build; mount `DESKTOP-SDN1RPT.mem` and diff `proc.txt` /
-  the `windows.psscan` equivalent against memf. Tracked as the second-oracle
-  step. (memf is already reconciled with Volatility 3 on *two* independent
-  methods — pslist 95/95 and psscan 95/95, 0 FP — so this adds a third
-  independent tool, not a missing correctness check.)
+- **MemProcFS** (Ulf Frisk) — DONE (2026-06-14). A C/Rust engine of entirely
+  different lineage, so agreement is genuinely independent. Run via the upstream
+  `linux_aarch64` prebuilt (bundled `vmm.so`/`leechcore.so`/`vmmpyc`, Python 3.7
+  ABI) inside a **podman** Linux container with the dump bind-mounted — no source
+  build, no macFUSE. `Vmm(['-device','dump.mem']).process_list()` returned **77**
+  processes.
+
+  | Tool | Processes | vs memf |
+  |---|---|---|
+  | memf | 95 (94 unique) | — |
+  | Volatility 3 | 95 (94 unique) | exact (pslist + psscan) |
+  | **MemProcFS** | **77** (default `process_list`) | **clean subset — 0 MemProcFS-only** |
+
+  MemProcFS's 77 is a strict subset of memf's set: **every process MemProcFS
+  reports, memf also reports** (zero false positives in memf vs a third tool).
+  The 17 memf/vol3 have that MemProcFS's default view omits are **6 terminated**
+  (non-null `ExitTime`, filtered by MemProcFS's default) + **11 smear-orphans**
+  that MemProcFS's list-based `process_list()` cannot reach but memf's
+  *bidirectional* `ActiveProcessLinks` walk recovers. So on this live-acquired
+  (smeared) dump memf's recall is actually **higher** than MemProcFS's default
+  enumeration, while remaining exactly equal to Volatility 3.
+
+  Reproduce:
+  ```sh
+  gh release download --repo ufrisk/MemProcFS --pattern '*linux_aarch64*'
+  tar xzf MemProcFS*linux_aarch64*.tar.gz -C mpfs
+  podman run --rm -v "$PWD:/data:ro" docker.io/library/python:3.7 bash -c \
+    'apt-get update -qq && apt-get install -y -qq libusb-1.0-0 >/dev/null;
+     cp -r /data/mpfs /tmp/mpfs; cd /tmp/mpfs; export LD_LIBRARY_PATH=/tmp/mpfs;
+     python3 -c "import sys; sys.path.insert(0,\".\"); import memprocfs;
+       print(len(memprocfs.Vmm([\"-device\",\"/data/dump.mem\"]).process_list()))"'
+  ```
 - **Published case ground truth** — the DFIR Madness write-up documents the
   incident's process activity, and the paired disk image carries the on-disk
   executables, giving a non-tool cross-reference.
