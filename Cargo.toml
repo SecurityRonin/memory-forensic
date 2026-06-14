@@ -19,7 +19,7 @@ repository = "https://github.com/SecurityRonin/memory-forensic"
 
 [workspace.dependencies]
 forensicnomicon = { version = "0.5", features = ["std", "serde"] }
-jsonguard = { version = "0.2.2", features = ["std"] }
+jsonguard = { version = "0.2.3", features = ["std", "serde"] }
 winevt-core = { path = "../winevt-forensic/crates/winevt-core" }
 forensic-hashdb = { path = "crates/forensic-hashdb" }
 memf-format  = { path = "crates/memf-format" }
@@ -150,3 +150,9 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+# Temporary: consume the unpublished jsonguard 0.2.3 (adds JsonSafe + serde feature)
+# from the local checkout. FOLLOW-UP: publish jsonguard 0.2.3, then remove this
+# patch so the registry version is used (reproducible builds).
+[patch.crates-io]
+jsonguard = { path = "../jsonguard" }

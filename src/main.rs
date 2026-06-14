@@ -2182,6 +2182,15 @@ fn print_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputForm
 // ---------------------------------------------------------------------------
 
 fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: OutputFormat) {
+    println!("{}", render_windows_processes(procs, output));
+}
+
+/// Render Windows processes in the requested format (Humble Object — pure and
+/// testable). The EPROCESS `ImageFileName` is attacker-controlled, so it is
+/// sanitized on every channel: `table_cell`/`display_safe` for the terminal,
+/// `JsonSafe` (bidi/C1/DEL → U+FFFD) for JSON/NDJSON, and `csv_field` (RFC 4180
+/// + formula-injection guard) for CSV.
+fn render_windows_processes(procs: &[memf_windows::WinProcessInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2206,37 +2215,24 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
                     exit,
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} processes", procs.len());
+            format!("{table}\n\nTotal: {} processes", procs.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            // Preserved shape: one JSON object per line (both json and ndjson).
+            let mut out = String::new();
             for p in procs {
-                let exit = if p.exit_time == 0 { None } else { Some(format_filetime(p.exit_time)) };
-                let json = serde_json::json!({
-                    "eprocess": format!("{:#x}", p.vaddr),
-                    "pid": p.pid,
-                    "ppid": p.ppid,
-                    "image_name": p.image_name,
-                    "threads": p.thread_count,
-                    "handles": p.handle_count,
-                    "session": p.session_id,
-                    "wow64": p.is_wow64,
-                    "create_time": format_filetime(p.create_time),
-                    "create_time_raw": p.create_time,
-                    "exit_time": exit,
-                    "exit_time_raw": p.exit_time,
-                    "cr3": format!("{:#x}", p.cr3),
-                });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&win_proc_json(p)).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("eprocess,pid,ppid,image_name,threads,handles,session,wow64,create_time,create_time_raw,exit_time,exit_time_raw,cr3");
+            let mut out = String::from("eprocess,pid,ppid,image_name,threads,handles,session,wow64,create_time,create_time_raw,exit_time,exit_time_raw,cr3\n");
             for p in procs {
                 let exit = if p.exit_time == 0 { "-".into() } else { format_filetime(p.exit_time) };
-                println!(
+                let _ = writeln!(
+                    out,
                     "{:#x},{},{},{},{},{},{},{},{},{},{},{},{:#x}",
-                    p.vaddr, p.pid, p.ppid, p.image_name,
+                    p.vaddr, p.pid, p.ppid, csv_field(&p.image_name).value,
                     p.thread_count, p.handle_count, p.session_id,
                     p.is_wow64,
                     format_filetime(p.create_time), p.create_time,
@@ -2244,8 +2240,31 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
                     p.cr3
                 );
             }
+            out
         }
     }
+}
+
+/// Build the JSON object for one Windows process, with the attacker-controlled
+/// image name wrapped in `JsonSafe` so bidi/control codepoints cannot reach the
+/// emitted JSON.
+fn win_proc_json(p: &memf_windows::WinProcessInfo) -> serde_json::Value {
+    let exit = if p.exit_time == 0 { None } else { Some(format_filetime(p.exit_time)) };
+    serde_json::json!({
+        "eprocess": format!("{:#x}", p.vaddr),
+        "pid": p.pid,
+        "ppid": p.ppid,
+        "image_name": jsonguard::JsonSafe(&p.image_name),
+        "threads": p.thread_count,
+        "handles": p.handle_count,
+        "session": p.session_id,
+        "wow64": p.is_wow64,
+        "create_time": format_filetime(p.create_time),
+        "create_time_raw": p.create_time,
+        "exit_time": exit,
+        "exit_time_raw": p.exit_time,
+        "cr3": format!("{:#x}", p.cr3),
+    })
 }
 
 /// Render `psscan` pool-tag scan results in the requested output format.
@@ -2281,7 +2300,7 @@ fn render_scanned_processes(
                     serde_json::json!({
                         "physical_addr": format!("{:#x}", p.physical_addr),
                         "pid": p.pid,
-                        "name": table_cell(&p.name),
+                        "name": jsonguard::JsonSafe(&p.name),
                         "dtb": p.dtb.map(|d| format!("{d:#x}")),
                     })
                 })
@@ -5840,8 +5859,11 @@ mod tests {
 
         let json = render_windows_processes(&procs, OutputFormat::Json);
         assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
-        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json array");
-        assert_eq!(v[0]["pid"], 666);
+        // One JSON object per line (preserved shape); first line is the bidi proc.
+        let first = json.lines().next().expect("at least one line");
+        let v: serde_json::Value = serde_json::from_str(first).expect("valid json object");
+        assert_eq!(v["pid"], 666);
+        assert!(v["image_name"].as_str().unwrap().contains('\u{FFFD}'), "bidi marked: {v}");
 
         let csv = render_windows_processes(&procs, OutputFormat::Csv);
         assert!(csv.lines().next().unwrap_or_default().contains("image_name"), "csv header");
