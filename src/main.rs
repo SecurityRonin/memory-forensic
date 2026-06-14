@@ -4509,6 +4509,13 @@ fn cmd_handles(
 // ---------------------------------------------------------------------------
 
 fn print_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat) {
+    println!("{}", render_handles(handles, output));
+}
+
+/// Humble Object: render Windows handles. `image_name` and `object_type` are
+/// attacker-controlled, so JSON wraps them in `JsonSafe` and CSV runs them
+/// through `csv_field`.
+fn render_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -4531,35 +4538,38 @@ fn print_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat) 
                     format!("{:#010x}", h.granted_access),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} handles", handles.len());
+            format!("{table}\n\nTotal: {} handles", handles.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for h in handles {
                 let json = serde_json::json!({
                     "pid": h.pid,
-                    "image_name": h.image_name,
+                    "image_name": jsonguard::JsonSafe(&h.image_name),
                     "handle_value": h.handle_value,
-                    "object_type": h.object_type,
+                    "object_type": jsonguard::JsonSafe(&h.object_type),
                     "object_addr": format!("{:#x}", h.object_addr),
                     "granted_access": format!("{:#x}", h.granted_access),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,handle_value,object_type,object_addr,granted_access");
+            let mut out = String::from("pid,image_name,handle_value,object_type,object_addr,granted_access\n");
             for h in handles {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{:#x},{},{:#x},{:#x}",
                     h.pid,
-                    h.image_name,
+                    csv_field(&h.image_name).value,
                     h.handle_value,
-                    h.object_type,
+                    csv_field(&h.object_type).value,
                     h.object_addr,
                     h.granted_access,
                 );
             }
+            out
         }
     }
 }
@@ -4569,14 +4579,18 @@ fn print_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat) 
 // ---------------------------------------------------------------------------
 
 fn print_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputFormat) {
+    println!("{}", render_ssdt_hooks(hooks, output));
+}
+
+/// Humble Object: render SSDT-hook check results. `target_module` is resolved
+/// from memory (attacker-controllable), so the table sanitizes it via
+/// `table_cell`, JSON via `JsonSafe`, and CSV via `csv_field`.
+fn render_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let suspicious: Vec<_> = hooks.iter().filter(|h| h.suspicious).collect();
             if suspicious.is_empty() {
-                println!(
-                    "\nSSDT: {} entries checked, no hooks detected.",
-                    hooks.len()
-                );
+                format!("\nSSDT: {} entries checked, no hooks detected.", hooks.len())
             } else {
                 let mut table = Table::new();
                 table.load_preset(UTF8_FULL_CONDENSED);
@@ -4585,43 +4599,43 @@ fn print_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputForma
                     table.add_row(vec![
                         format!("{}", h.index),
                         format!("{:#x}", h.target_addr),
-                        h.target_module
-                            .as_deref()
-                            .unwrap_or("<unknown>")
-                            .to_string(),
+                        table_cell(h.target_module.as_deref().unwrap_or("<unknown>")),
                         "YES".to_string(),
                     ]);
                 }
-                println!("{table}");
-                println!(
-                    "\nSSDT: {} entries checked, {} suspicious hooks",
+                format!(
+                    "{table}\n\nSSDT: {} entries checked, {} suspicious hooks",
                     hooks.len(),
                     suspicious.len()
-                );
+                )
             }
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for h in hooks {
                 let json = serde_json::json!({
                     "index": h.index,
                     "target_addr": format!("{:#x}", h.target_addr),
-                    "target_module": h.target_module,
+                    "target_module": h.target_module.as_deref().map(jsonguard::JsonSafe),
                     "suspicious": h.suspicious,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("index,target_addr,target_module,suspicious");
+            let mut out = String::from("index,target_addr,target_module,suspicious\n");
             for h in hooks {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{:#x},{},{}",
                     h.index,
                     h.target_addr,
-                    h.target_module.as_deref().unwrap_or(""),
+                    csv_field(h.target_module.as_deref().unwrap_or("")).value,
                     h.suspicious
                 );
             }
+            out
         }
     }
 }
@@ -4631,14 +4645,21 @@ fn print_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputForma
 // ---------------------------------------------------------------------------
 
 fn print_irp_hooks(hooks: &[memf_windows::WinIrpHookInfo], output: OutputFormat) {
+    println!("{}", render_irp_hooks(hooks, output));
+}
+
+/// Humble Object: render IRP-dispatch-hook results. `driver_name`, `irp_name`,
+/// and `target_module` are attacker-controllable, so the table sanitizes via
+/// `table_cell`, JSON via `JsonSafe`, and CSV via `csv_field`.
+fn render_irp_hooks(hooks: &[memf_windows::WinIrpHookInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let suspicious: Vec<_> = hooks.iter().filter(|h| h.suspicious).collect();
             if suspicious.is_empty() {
-                println!(
+                format!(
                     "\nIRP dispatch: {} entries checked across all drivers, no hooks detected.",
                     hooks.len()
-                );
+                )
             } else {
                 let mut table = Table::new();
                 table.load_preset(UTF8_FULL_CONDENSED);
@@ -4656,49 +4677,49 @@ fn print_irp_hooks(hooks: &[memf_windows::WinIrpHookInfo], output: OutputFormat)
                         format!("{}", h.irp_index),
                         table_cell(&h.irp_name),
                         format!("{:#x}", h.target_addr),
-                        h.target_module
-                            .as_deref()
-                            .unwrap_or("<unknown>")
-                            .to_string(),
+                        table_cell(h.target_module.as_deref().unwrap_or("<unknown>")),
                         "YES".to_string(),
                     ]);
                 }
-                println!("{table}");
-                println!(
-                    "\nIRP dispatch: {} entries checked, {} suspicious hooks",
+                format!(
+                    "{table}\n\nIRP dispatch: {} entries checked, {} suspicious hooks",
                     hooks.len(),
                     suspicious.len()
-                );
+                )
             }
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for h in hooks {
                 let json = serde_json::json!({
-                    "driver_name": h.driver_name,
+                    "driver_name": jsonguard::JsonSafe(&h.driver_name),
                     "driver_obj_addr": format!("{:#x}", h.driver_obj_addr),
                     "irp_index": h.irp_index,
-                    "irp_name": h.irp_name,
+                    "irp_name": jsonguard::JsonSafe(&h.irp_name),
                     "target_addr": format!("{:#x}", h.target_addr),
-                    "target_module": h.target_module,
+                    "target_module": h.target_module.as_deref().map(jsonguard::JsonSafe),
                     "suspicious": h.suspicious,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("driver_name,driver_obj_addr,irp_index,irp_name,target_addr,target_module,suspicious");
+            let mut out = String::from("driver_name,driver_obj_addr,irp_index,irp_name,target_addr,target_module,suspicious\n");
             for h in hooks {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{:#x},{},{},{:#x},{},{}",
-                    h.driver_name,
+                    csv_field(&h.driver_name).value,
                     h.driver_obj_addr,
                     h.irp_index,
-                    h.irp_name,
+                    csv_field(&h.irp_name).value,
                     h.target_addr,
-                    h.target_module.as_deref().unwrap_or(""),
+                    csv_field(h.target_module.as_deref().unwrap_or("")).value,
                     h.suspicious
                 );
             }
+            out
         }
     }
 }
@@ -4708,6 +4729,13 @@ fn print_irp_hooks(hooks: &[memf_windows::WinIrpHookInfo], output: OutputFormat)
 // ---------------------------------------------------------------------------
 
 fn print_callbacks(cbs: &[memf_windows::WinCallbackInfo], output: OutputFormat) {
+    println!("{}", render_callbacks(cbs, output));
+}
+
+/// Humble Object: render kernel callbacks. `callback_type` and `owning_module`
+/// are attacker-controllable, so the table sanitizes via `table_cell`, JSON via
+/// `JsonSafe`, and CSV via `csv_field`.
+fn render_callbacks(cbs: &[memf_windows::WinCallbackInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -4718,46 +4746,46 @@ fn print_callbacks(cbs: &[memf_windows::WinCallbackInfo], output: OutputFormat) 
                     table_cell(&cb.callback_type),
                     format!("{}", cb.index),
                     format!("{:#x}", cb.address),
-                    cb.owning_module
-                        .as_deref()
-                        .unwrap_or("<unknown>")
-                        .to_string(),
+                    table_cell(cb.owning_module.as_deref().unwrap_or("<unknown>")),
                 ]);
             }
-            println!("{table}");
             let unknown = cbs.iter().filter(|c| c.owning_module.is_none()).count();
             if unknown > 0 {
-                println!(
-                    "\nTotal: {} callbacks ({} from unknown modules — possible rootkit)",
+                format!(
+                    "{table}\n\nTotal: {} callbacks ({} from unknown modules — possible rootkit)",
                     cbs.len(),
                     unknown
-                );
+                )
             } else {
-                println!("\nTotal: {} callbacks", cbs.len());
+                format!("{table}\n\nTotal: {} callbacks", cbs.len())
             }
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for cb in cbs {
                 let json = serde_json::json!({
-                    "callback_type": cb.callback_type,
+                    "callback_type": jsonguard::JsonSafe(&cb.callback_type),
                     "index": cb.index,
                     "address": format!("{:#x}", cb.address),
-                    "owning_module": cb.owning_module,
+                    "owning_module": cb.owning_module.as_deref().map(jsonguard::JsonSafe),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("callback_type,index,address,owning_module");
+            let mut out = String::from("callback_type,index,address,owning_module\n");
             for cb in cbs {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{:#x},{}",
-                    cb.callback_type,
+                    csv_field(&cb.callback_type).value,
                     cb.index,
                     cb.address,
-                    cb.owning_module.as_deref().unwrap_or("")
+                    csv_field(cb.owning_module.as_deref().unwrap_or("")).value
                 );
             }
+            out
         }
     }
 }
@@ -4767,6 +4795,13 @@ fn print_callbacks(cbs: &[memf_windows::WinCallbackInfo], output: OutputFormat) 
 // ---------------------------------------------------------------------------
 
 fn print_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) {
+    println!("{}", render_windows_vads(vads, output));
+}
+
+/// Humble Object: render the Windows VAD tree. `image_name` and
+/// `protection_str` are attacker-controllable, so JSON wraps them in `JsonSafe`
+/// and CSV runs them through `csv_field`.
+fn render_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -4789,30 +4824,33 @@ fn print_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) {
                     if v.is_private { "Yes" } else { "No" }.to_string(),
                 ]);
             }
-            println!("{table}");
-            println!("\nTotal: {} VAD entries", vads.len());
+            format!("{table}\n\nTotal: {} VAD entries", vads.len())
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for v in vads {
                 let json = serde_json::json!({
                     "pid": v.pid,
-                    "image_name": v.image_name,
+                    "image_name": jsonguard::JsonSafe(&v.image_name),
                     "start_vaddr": format!("{:#x}", v.start_vaddr),
                     "end_vaddr": format!("{:#x}", v.end_vaddr),
-                    "protection": v.protection_str,
+                    "protection": jsonguard::JsonSafe(&v.protection_str),
                     "is_private": v.is_private,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,start_vaddr,end_vaddr,protection,is_private");
+            let mut out = String::from("pid,image_name,start_vaddr,end_vaddr,protection,is_private\n");
             for v in vads {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{:#x},{:#x},{},{}",
-                    v.pid, v.image_name, v.start_vaddr, v.end_vaddr, v.protection_str, v.is_private
+                    v.pid, csv_field(&v.image_name).value, v.start_vaddr, v.end_vaddr, csv_field(&v.protection_str).value, v.is_private
                 );
             }
+            out
         }
     }
 }
@@ -4822,6 +4860,13 @@ fn print_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) {
 // ---------------------------------------------------------------------------
 
 fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: OutputFormat) {
+    println!("{}", render_windows_malfind(findings, output));
+}
+
+/// Humble Object: render Windows malfind results. `image_name` and
+/// `protection_str` are attacker-controllable, so JSON wraps them in `JsonSafe`
+/// and CSV runs them through `csv_field`.
+fn render_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -4836,7 +4881,7 @@ fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Outp
             ]);
             for f in findings {
                 let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
-                    write!(s, "{b:02x}").unwrap();
+                    let _ = write!(s, "{b:02x}");
                     s
                 });
                 table.add_row(vec![
@@ -4848,45 +4893,48 @@ fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Outp
                     hex_header,
                 ]);
             }
-            println!("{table}");
             if findings.is_empty() {
-                println!("\nNo suspicious memory regions found.");
+                format!("{table}\n\nNo suspicious memory regions found.")
             } else {
-                println!(
-                    "\nTotal: {} suspicious regions (private + RWX)",
+                format!(
+                    "{table}\n\nTotal: {} suspicious regions (private + RWX)",
                     findings.len()
-                );
+                )
             }
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for f in findings {
                 let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
-                    write!(s, "{b:02x}").unwrap();
+                    let _ = write!(s, "{b:02x}");
                     s
                 });
                 let json = serde_json::json!({
                     "pid": f.pid,
-                    "image_name": f.image_name,
+                    "image_name": jsonguard::JsonSafe(&f.image_name),
                     "start_vaddr": format!("{:#x}", f.start_vaddr),
                     "end_vaddr": format!("{:#x}", f.end_vaddr),
-                    "protection": f.protection_str,
+                    "protection": jsonguard::JsonSafe(&f.protection_str),
                     "header_hex": hex_header,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,start_vaddr,end_vaddr,protection,header_hex");
+            let mut out = String::from("pid,image_name,start_vaddr,end_vaddr,protection,header_hex\n");
             for f in findings {
                 let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
-                    write!(s, "{b:02x}").unwrap();
+                    let _ = write!(s, "{b:02x}");
                     s
                 });
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{:#x},{:#x},{},{}",
-                    f.pid, f.image_name, f.start_vaddr, f.end_vaddr, f.protection_str, hex_header
+                    f.pid, csv_field(&f.image_name).value, f.start_vaddr, f.end_vaddr, csv_field(&f.protection_str).value, hex_header
                 );
             }
+            out
         }
     }
 }
@@ -4896,6 +4944,13 @@ fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Outp
 // ---------------------------------------------------------------------------
 
 fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output: OutputFormat) {
+    println!("{}", render_ldr_modules(mods, output));
+}
+
+/// Humble Object: render the LdrModules cross-reference. The process
+/// `image_name` and each module's `name`/`full_path` are attacker-controlled,
+/// so JSON wraps them in `JsonSafe` and CSV runs them through `csv_field`.
+fn render_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -4919,49 +4974,52 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
                     },
                 ]);
             }
-            println!("{table}");
             let hidden = mods
                 .iter()
                 .filter(|(_, _, m)| !m.in_load || !m.in_mem || !m.in_init)
                 .count();
             if hidden > 0 {
-                println!(
-                    "\nTotal: {} modules, {} potentially hidden (missing from one or more lists)",
+                format!(
+                    "{table}\n\nTotal: {} modules, {} potentially hidden (missing from one or more lists)",
                     mods.len(),
                     hidden
-                );
+                )
             } else if mods.is_empty() {
-                println!("\nNo user-mode modules found.");
+                format!("{table}\n\nNo user-mode modules found.")
             } else {
-                println!(
-                    "\nTotal: {} modules, all present in all 3 lists",
+                format!(
+                    "{table}\n\nTotal: {} modules, all present in all 3 lists",
                     mods.len()
-                );
+                )
             }
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for (pid, image_name, m) in mods {
                 let json = serde_json::json!({
                     "pid": pid,
-                    "image_name": image_name,
+                    "image_name": jsonguard::JsonSafe(image_name),
                     "base_addr": format!("{:#x}", m.base_addr),
-                    "name": m.name,
-                    "full_path": m.full_path,
+                    "name": jsonguard::JsonSafe(&m.name),
+                    "full_path": jsonguard::JsonSafe(&m.full_path),
                     "in_load": m.in_load,
                     "in_mem": m.in_mem,
                     "in_init": m.in_init,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,base_addr,name,full_path,in_load,in_mem,in_init");
+            let mut out = String::from("pid,image_name,base_addr,name,full_path,in_load,in_mem,in_init\n");
             for (pid, image_name, m) in mods {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{:#x},{},{},{},{},{}",
-                    pid, image_name, m.base_addr, m.name, csv_field(&m.full_path), m.in_load, m.in_mem, m.in_init
+                    pid, csv_field(image_name).value, m.base_addr, csv_field(&m.name).value, csv_field(&m.full_path).value, m.in_load, m.in_mem, m.in_init
                 );
             }
+            out
         }
     }
 }
@@ -4971,6 +5029,13 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
 // ---------------------------------------------------------------------------
 
 fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFormat) {
+    println!("{}", render_hollowing(findings, output));
+}
+
+/// Humble Object: render process-hollowing results. `image_name` and `reason`
+/// are attacker-controllable, so JSON wraps them in `JsonSafe` and CSV runs
+/// them through `csv_field`.
+fn render_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -5004,55 +5069,58 @@ fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFo
                     },
                 ]);
             }
-            println!("{table}");
             let suspicious_count = findings.iter().filter(|f| f.suspicious).count();
             if suspicious_count > 0 {
-                println!(
-                    "\nTotal: {} processes checked, {} suspicious (possible hollowing)",
+                format!(
+                    "{table}\n\nTotal: {} processes checked, {} suspicious (possible hollowing)",
                     findings.len(),
                     suspicious_count
-                );
+                )
             } else if findings.is_empty() {
-                println!("\nNo user-mode processes with PEB found.");
+                format!("{table}\n\nNo user-mode processes with PEB found.")
             } else {
-                println!(
-                    "\nTotal: {} processes checked, no hollowing detected",
+                format!(
+                    "{table}\n\nTotal: {} processes checked, no hollowing detected",
                     findings.len()
-                );
+                )
             }
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for f in findings {
                 let json = serde_json::json!({
                     "pid": f.pid,
-                    "image_name": f.image_name,
+                    "image_name": jsonguard::JsonSafe(&f.image_name),
                     "image_base": format!("{:#x}", f.image_base),
                     "has_mz": f.has_mz,
                     "has_pe": f.has_pe,
                     "pe_size_of_image": format!("{:#x}", f.pe_size_of_image),
                     "ldr_size_of_image": format!("{:#x}", f.ldr_size_of_image),
                     "suspicious": f.suspicious,
-                    "reason": f.reason,
+                    "reason": jsonguard::JsonSafe(&f.reason),
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!("pid,image_name,image_base,has_mz,has_pe,pe_size_of_image,ldr_size_of_image,suspicious,reason");
+            let mut out = String::from("pid,image_name,image_base,has_mz,has_pe,pe_size_of_image,ldr_size_of_image,suspicious,reason\n");
             for f in findings {
-                println!(
+                let _ = writeln!(
+                    out,
                     "{},{},{:#x},{},{},{:#x},{:#x},{},{}",
                     f.pid,
-                    f.image_name,
+                    csv_field(&f.image_name).value,
                     f.image_base,
                     f.has_mz,
                     f.has_pe,
                     f.pe_size_of_image,
                     f.ldr_size_of_image,
                     f.suspicious,
-                    csv_field(&f.reason)
+                    csv_field(&f.reason).value
                 );
             }
+            out
         }
     }
 }
@@ -5062,6 +5130,14 @@ fn print_hollowing(findings: &[memf_windows::WinHollowingInfo], output: OutputFo
 // ---------------------------------------------------------------------------
 
 fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: OutputFormat) {
+    println!("{}", render_windows_privileges(tokens, output));
+}
+
+/// Humble Object: render Windows token privileges. `image_name`, `user_sid`,
+/// and the `privilege_names` strings are attacker-controllable, so JSON wraps
+/// them in `JsonSafe` and CSV runs them through `csv_field` (replacing the prior
+/// hand-rolled quote-wrapping that could be broken by an embedded quote).
+fn render_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: OutputFormat) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -5071,7 +5147,7 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
                 let privs = if t.privilege_names.is_empty() {
                     "(none)".to_string()
                 } else {
-                    t.privilege_names.join(", ")
+                    table_cell(&t.privilege_names.join(", "))
                 };
                 let sid = if t.user_sid.is_empty() {
                     "-".to_string()
@@ -5080,50 +5156,52 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
                 };
                 table.add_row(vec![format!("{}", t.pid), table_cell(&t.image_name), sid, privs]);
             }
-            println!("{table}");
             let elevated: Vec<_> = tokens
                 .iter()
                 .filter(|t| t.privilege_names.contains(&"SeDebugPrivilege".to_string()))
                 .collect();
             if elevated.is_empty() {
-                println!("\nTotal: {} processes", tokens.len());
+                format!("{table}\n\nTotal: {} processes", tokens.len())
             } else {
-                println!(
-                    "\nTotal: {} processes ({} with SeDebugPrivilege)",
+                format!(
+                    "{table}\n\nTotal: {} processes ({} with SeDebugPrivilege)",
                     tokens.len(),
                     elevated.len()
-                );
+                )
             }
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
             for t in tokens {
+                let privs: Vec<_> = t.privilege_names.iter().map(|p| jsonguard::JsonSafe(p.as_str())).collect();
                 let json = serde_json::json!({
                     "pid": t.pid,
-                    "image_name": t.image_name,
-                    "user_sid": t.user_sid,
+                    "image_name": jsonguard::JsonSafe(&t.image_name),
+                    "user_sid": jsonguard::JsonSafe(&t.user_sid),
                     "privileges_enabled": format!("{:#x}", t.privileges_enabled),
                     "privileges_present": format!("{:#x}", t.privileges_present),
-                    "privilege_names": t.privilege_names,
+                    "privilege_names": privs,
                 });
-                println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
             }
+            out
         }
         OutputFormat::Csv => {
-            println!(
-                "pid,image_name,user_sid,privileges_enabled,privileges_present,privilege_names"
-            );
+            let mut out = String::from("pid,image_name,user_sid,privileges_enabled,privileges_present,privilege_names\n");
             for t in tokens {
                 let privs = t.privilege_names.join(";");
-                println!(
-                    "{},{},{},{:#x},{:#x},\"{}\"",
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{:#x},{:#x},{}",
                     t.pid,
-                    t.image_name,
-                    t.user_sid,
+                    csv_field(&t.image_name).value,
+                    csv_field(&t.user_sid).value,
                     t.privileges_enabled,
                     t.privileges_present,
-                    privs
+                    csv_field(&privs).value
                 );
             }
+            out
         }
     }
 }
@@ -6677,6 +6755,131 @@ mod tests {
             in_sysfs: true,
         }];
         assert_json_csv_safe(&render_check_modules(&entries, OutputFormat::Json), &render_check_modules(&entries, OutputFormat::Csv));
+    }
+
+    // ----- windows kernel/process inspectors: handles / hooks / vads / malfind / etc -----
+
+    #[test]
+    fn render_handles_sanitizes_fields() {
+        let handles = vec![memf_windows::WinHandleInfo {
+            pid: 7,
+            image_name: BIDI_FORMULA.into(),
+            handle_value: 4,
+            object_addr: 0x1000,
+            object_type: "File\u{202e}".into(),
+            granted_access: 0x1f,
+        }];
+        assert_json_csv_safe(&render_handles(&handles, OutputFormat::Json), &render_handles(&handles, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_ssdt_hooks_sanitizes_module() {
+        let hooks = vec![memf_windows::WinSsdtHookInfo {
+            index: 1,
+            target_addr: 0x1000,
+            target_module: Some(BIDI_FORMULA.into()),
+            suspicious: true,
+        }];
+        assert_json_csv_safe(&render_ssdt_hooks(&hooks, OutputFormat::Json), &render_ssdt_hooks(&hooks, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_irp_hooks_sanitizes_fields() {
+        let hooks = vec![memf_windows::WinIrpHookInfo {
+            driver_name: BIDI_FORMULA.into(),
+            driver_obj_addr: 0x1000,
+            irp_index: 0,
+            irp_name: "IRP_MJ_\u{202e}CREATE".into(),
+            target_addr: 0x2000,
+            target_module: Some("=evil\u{202e}".into()),
+            suspicious: true,
+        }];
+        assert_json_csv_safe(&render_irp_hooks(&hooks, OutputFormat::Json), &render_irp_hooks(&hooks, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_callbacks_sanitizes_fields() {
+        let cbs = vec![memf_windows::WinCallbackInfo {
+            callback_type: BIDI_FORMULA.into(),
+            index: 0,
+            address: 0x1000,
+            owning_module: Some("=evil\u{202e}.sys".into()),
+        }];
+        assert_json_csv_safe(&render_callbacks(&cbs, OutputFormat::Json), &render_callbacks(&cbs, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_windows_vads_sanitizes_fields() {
+        let vads = vec![memf_windows::WinVadInfo {
+            pid: 7,
+            image_name: BIDI_FORMULA.into(),
+            start_vaddr: 0x1000,
+            end_vaddr: 0x2000,
+            protection: 0x40,
+            protection_str: "RWX\u{202e}".into(),
+            is_private: true,
+        }];
+        assert_json_csv_safe(&render_windows_vads(&vads, OutputFormat::Json), &render_windows_vads(&vads, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_windows_malfind_sanitizes_fields() {
+        let findings = vec![memf_windows::WinMalfindInfo {
+            pid: 7,
+            image_name: BIDI_FORMULA.into(),
+            start_vaddr: 0x1000,
+            end_vaddr: 0x2000,
+            protection_str: "RWX\u{202e}".into(),
+            first_bytes: vec![0x4d, 0x5a],
+        }];
+        assert_json_csv_safe(&render_windows_malfind(&findings, OutputFormat::Json), &render_windows_malfind(&findings, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_ldr_modules_sanitizes_fields() {
+        let mods = vec![(
+            7u64,
+            "=ctx\u{202e}.exe".to_string(),
+            memf_windows::LdrModuleInfo {
+                base_addr: 0x1000,
+                name: BIDI_FORMULA.into(),
+                full_path: "C:\\\u{202e}evil.dll".into(),
+                in_load: false,
+                in_mem: true,
+                in_init: true,
+            },
+        )];
+        assert_json_csv_safe(&render_ldr_modules(&mods, OutputFormat::Json), &render_ldr_modules(&mods, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_hollowing_sanitizes_fields() {
+        let findings = vec![memf_windows::WinHollowingInfo {
+            pid: 7,
+            image_name: BIDI_FORMULA.into(),
+            image_base: 0x1000,
+            has_mz: true,
+            has_pe: false,
+            pe_size_of_image: 0x1000,
+            ldr_size_of_image: 0x2000,
+            suspicious: true,
+            reason: "MZ \u{202e}mismatch".into(),
+        }];
+        assert_json_csv_safe(&render_hollowing(&findings, OutputFormat::Json), &render_hollowing(&findings, OutputFormat::Csv));
+    }
+
+    #[test]
+    fn render_windows_privileges_sanitizes_fields() {
+        let tokens = vec![memf_windows::WinTokenInfo {
+            pid: 7,
+            image_name: BIDI_FORMULA.into(),
+            privileges_enabled: 0x20,
+            privileges_present: 0x20,
+            privilege_names: vec!["SeDebugPrivilege".into(), "=evil\u{202e}".into()],
+            session_id: 0,
+            user_sid: "S-1-5-\u{202e}18".into(),
+        }];
+        assert_json_csv_safe(&render_windows_privileges(&tokens, OutputFormat::Json), &render_windows_privileges(&tokens, OutputFormat::Csv));
     }
 
     fn make_temp_lime_dump(suffix: &str) -> std::path::PathBuf {
