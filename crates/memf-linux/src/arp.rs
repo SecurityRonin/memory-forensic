@@ -17,10 +17,13 @@ use crate::{ArpEntryInfo, Error, NeighState, Result};
 pub fn walk_arp_cache<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<ArpEntryInfo>> {
-    let arp_tbl_addr = reader
-        .symbols()
-        .symbol_address("arp_tbl")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "arp_tbl".into() })?;
+    let arp_tbl_addr =
+        reader
+            .symbols()
+            .symbol_address("arp_tbl")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "arp_tbl".into(),
+            })?;
 
     // neigh_table.nht → pointer to neigh_hash_table
     let nht_ptr: u64 = reader.read_field(arp_tbl_addr, "neigh_table", "nht")?;
@@ -87,7 +90,10 @@ fn read_neighbour<P: PhysicalMemoryProvider>(
     let ha_offset = reader
         .symbols()
         .field_offset("neighbour", "ha")
-        .ok_or_else(|| Error::MissingField { struct_name: "neighbour".into(), field_name: "ha".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "neighbour".into(),
+            field_name: "ha".into(),
+        })?;
     let mac_bytes = reader.read_bytes(neigh_addr + ha_offset, 6)?;
     let mac_addr = format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",

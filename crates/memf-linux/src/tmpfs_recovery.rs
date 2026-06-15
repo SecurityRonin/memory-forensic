@@ -81,7 +81,9 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
         let sb_addr = sb_cursor.saturating_sub(sb_list_offset);
 
         // Read s_type pointer → file_system_type → name string.
-        let s_type_ptr: u64 = if let Ok(v) = reader.read_field(sb_addr, "super_block", "s_type") { v } else {
+        let s_type_ptr: u64 = if let Ok(v) = reader.read_field(sb_addr, "super_block", "s_type") {
+            v
+        } else {
             sb_cursor = match reader.read_bytes(sb_cursor, 8) {
                 Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
                 Err(_) => break,
@@ -114,23 +116,29 @@ pub fn walk_tmpfs_files<P: PhysicalMemoryProvider>(
 
         if is_tmpfs {
             // Walk s_inodes list: inode.i_sb_list list_head.
-            let s_inodes_offset = if let Some(off) = reader.symbols().field_offset("super_block", "s_inodes") { off } else {
-                sb_cursor = match reader.read_bytes(sb_cursor, 8) {
-                    Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
-                    Err(_) => break,
+            let s_inodes_offset =
+                if let Some(off) = reader.symbols().field_offset("super_block", "s_inodes") {
+                    off
+                } else {
+                    sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                        Err(_) => break,
+                    };
+                    sb_guard += 1;
+                    continue;
                 };
-                sb_guard += 1;
-                continue;
-            };
 
-            let inode_sb_list_offset = if let Some(off) = reader.symbols().field_offset("inode", "i_sb_list") { off } else {
-                sb_cursor = match reader.read_bytes(sb_cursor, 8) {
-                    Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
-                    Err(_) => break,
+            let inode_sb_list_offset =
+                if let Some(off) = reader.symbols().field_offset("inode", "i_sb_list") {
+                    off
+                } else {
+                    sb_cursor = match reader.read_bytes(sb_cursor, 8) {
+                        Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
+                        Err(_) => break,
+                    };
+                    sb_guard += 1;
+                    continue;
                 };
-                sb_guard += 1;
-                continue;
-            };
 
             let inode_list_head = sb_addr + s_inodes_offset;
             let first_inode_list: u64 = reader

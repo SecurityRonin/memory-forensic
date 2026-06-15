@@ -31,8 +31,6 @@ pub mod dmesg;
 pub mod ebpf_progs;
 pub mod elf_analysis;
 pub mod elfinfo;
-pub mod preload_scanner;
-pub mod vma_walker;
 pub mod envvars;
 pub mod files;
 /// Linux EFI/VESA linear framebuffer recovery — locates the framebuffer via
@@ -40,9 +38,9 @@ pub mod files;
 pub mod framebuffer;
 pub mod fs;
 pub mod ftrace;
-pub mod heuristics;
 pub mod fuse_abuse;
 pub mod futex_forensics;
+pub mod heuristics;
 pub mod io_uring;
 pub mod iomem;
 pub mod ipc;
@@ -67,6 +65,7 @@ pub mod network;
 pub mod oom_events;
 pub mod pam_hooks;
 pub mod perf_event;
+pub mod preload_scanner;
 pub mod proc_cmdline;
 pub mod proc_hidden;
 pub mod process;
@@ -88,6 +87,7 @@ pub mod types;
 pub mod unix_sockets;
 pub mod user_ns_escalation;
 pub mod vdso_tamper;
+pub mod vma_walker;
 pub mod zombie_orphan;
 
 #[cfg(test)]
@@ -196,7 +196,9 @@ mod tests {
 
     #[test]
     fn error_missing_kernel_symbol_contains_name() {
-        let e = Error::MissingKernelSymbol { name: "init_task".to_owned() };
+        let e = Error::MissingKernelSymbol {
+            name: "init_task".to_owned(),
+        };
         assert!(e.to_string().contains("init_task"));
     }
 

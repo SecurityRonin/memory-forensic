@@ -264,8 +264,15 @@ pub fn classify_hidden_dentry(nlink: u32, filename: &str) -> bool {
 
 /// eBPF map name substrings associated with known rootkits.
 const SUSPICIOUS_MAP_NAMES: &[&str] = &[
-    "rootkit", "hide_", "hook", "intercept", "stealth", "secret", "covert",
-    "keylog", "exfil",
+    "rootkit",
+    "hide_",
+    "hook",
+    "intercept",
+    "stealth",
+    "secret",
+    "covert",
+    "keylog",
+    "exfil",
 ];
 
 /// Classify whether an eBPF map is suspicious.
@@ -562,7 +569,9 @@ pub fn classify_library(lib_path: &str) -> bool {
     }
 
     // Not a standard shared library name.
-    if !std::path::Path::new(clean).extension().is_some_and(|e| e.eq_ignore_ascii_case("so"))
+    if !std::path::Path::new(clean)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("so"))
         && !clean.contains(".so.")
     {
         return true;
@@ -666,8 +675,7 @@ pub fn classify_mount(fs_type: &str, dev_name: &str, mnt_root: &str) -> bool {
                 && !mnt_root.starts_with("/dev/")
         }
         "overlay" | "overlayfs" => {
-            !mnt_root.starts_with("/var/lib/docker")
-                && !mnt_root.starts_with("/var/lib/containerd")
+            !mnt_root.starts_with("/var/lib/docker") && !mnt_root.starts_with("/var/lib/containerd")
         }
         _ => false,
     }
@@ -799,7 +807,14 @@ pub fn classify_ptrace(tracer_name: &str, tracee_name: &str) -> bool {
 
 /// Known-benign process names that legitimately use `AF_PACKET` sockets.
 const BENIGN_AF_PACKET: &[&str] = &[
-    "tcpdump", "wireshark", "dumpcap", "dhclient", "dhcpcd", "arping", "ping", "ping6",
+    "tcpdump",
+    "wireshark",
+    "dumpcap",
+    "dhclient",
+    "dhcpcd",
+    "arping",
+    "ping",
+    "ping6",
 ];
 
 /// Known-benign process names that legitimately use `SOCK_RAW` sockets.
@@ -961,8 +976,20 @@ pub fn classify_unix_socket(path: &str, owner_pid: u32) -> bool {
 
 /// Daemon names considered suspicious when found as orphan processes.
 const SUSPICIOUS_DAEMON_NAMES: &[&str] = &[
-    "sshd", "httpd", "nginx", "apache", "mysqld", "postgres", "redis", "memcached", "mongod",
-    "named", "bind", "cupsd", "cron", "atd",
+    "sshd",
+    "httpd",
+    "nginx",
+    "apache",
+    "mysqld",
+    "postgres",
+    "redis",
+    "memcached",
+    "mongod",
+    "named",
+    "bind",
+    "cupsd",
+    "cron",
+    "atd",
 ];
 
 /// Classify whether a zombie or orphan process is suspicious.
@@ -1074,7 +1101,11 @@ mod tests {
 
     #[test]
     fn heuristics_afinfo_outside_range_suspicious() {
-        assert!(classify_afinfo_hook(0x0000_dead_beef, 0xffff0000, 0xffff8000));
+        assert!(classify_afinfo_hook(
+            0x0000_dead_beef,
+            0xffff0000,
+            0xffff8000
+        ));
     }
 
     // --- classify_shared_creds ---
@@ -1121,7 +1152,10 @@ mod tests {
 
     #[test]
     fn heuristics_container_escape_kernel_thread_benign() {
-        assert!(!classify_container_escape("kworker/0:0", "namespace_mismatch"));
+        assert!(!classify_container_escape(
+            "kworker/0:0",
+            "namespace_mismatch"
+        ));
     }
 
     #[test]

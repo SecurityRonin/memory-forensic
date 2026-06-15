@@ -58,12 +58,17 @@ pub fn walk_deleted_exe<P: PhysicalMemoryProvider>(
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "init_task".into() })?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "init_task".into(),
+        })?;
 
     let tasks_offset = reader
         .symbols()
         .field_offset("task_struct", "tasks")
-        .ok_or_else(|| Error::MissingField { struct_name: "task_struct".into(), field_name: "tasks".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "task_struct".into(),
+            field_name: "tasks".into(),
+        })?;
 
     let head_vaddr = init_task_addr + tasks_offset;
     let task_addrs = reader.walk_list(head_vaddr, "task_struct", "tasks")?;
@@ -202,8 +207,18 @@ mod tests {
     use memf_core::object_reader::ObjectReader;
 
     const KNOWN_BENIGN_COMMS: &[&str] = &[
-        "apt", "apt-get", "apt-check", "aptd", "dpkg", "dpkg-deb",
-        "yum", "dnf", "rpm", "rpmdb", "packagekitd", "unattended-upgr",
+        "apt",
+        "apt-get",
+        "apt-check",
+        "aptd",
+        "dpkg",
+        "dpkg-deb",
+        "yum",
+        "dnf",
+        "rpm",
+        "rpmdb",
+        "packagekitd",
+        "unattended-upgr",
     ];
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
@@ -832,12 +847,18 @@ mod tests {
 
     #[test]
     fn strip_deleted_suffix_removes_space_prefix() {
-        assert_eq!(strip_deleted_suffix("/usr/bin/xmrig (deleted)"), "/usr/bin/xmrig");
+        assert_eq!(
+            strip_deleted_suffix("/usr/bin/xmrig (deleted)"),
+            "/usr/bin/xmrig"
+        );
     }
 
     #[test]
     fn strip_deleted_suffix_removes_bare_suffix() {
-        assert_eq!(strip_deleted_suffix("/usr/bin/xmrig(deleted)"), "/usr/bin/xmrig");
+        assert_eq!(
+            strip_deleted_suffix("/usr/bin/xmrig(deleted)"),
+            "/usr/bin/xmrig"
+        );
     }
 
     #[test]

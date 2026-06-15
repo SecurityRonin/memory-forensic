@@ -35,8 +35,7 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
-    fn make_minimal_reader(
-    ) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+    fn make_minimal_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
@@ -49,7 +48,10 @@ mod tests {
         let reader = make_minimal_reader();
         let result = scan_fd_abuse(&reader);
         assert!(result.is_ok(), "should succeed with minimal reader");
-        assert!(result.unwrap().is_empty(), "empty memory → no fd abuse hits");
+        assert!(
+            result.unwrap().is_empty(),
+            "empty memory → no fd abuse hits"
+        );
     }
 
     #[test]

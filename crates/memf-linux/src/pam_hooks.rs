@@ -92,7 +92,9 @@ fn scan_process_pam<P: PhysicalMemoryProvider>(
 
     let mut vma_addr = mmap_ptr;
     while vma_addr != 0 {
-        let vm_file: u64 = if let Ok(v) = reader.read_field(vma_addr, "vm_area_struct", "vm_file") { v } else {
+        let vm_file: u64 = if let Ok(v) = reader.read_field(vma_addr, "vm_area_struct", "vm_file") {
+            v
+        } else {
             vma_addr = reader
                 .read_field(vma_addr, "vm_area_struct", "vm_next")
                 .unwrap_or(0);

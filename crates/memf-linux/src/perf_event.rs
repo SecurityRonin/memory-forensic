@@ -165,7 +165,10 @@ pub fn walk_perf_events<P: PhysicalMemoryProvider>(
                     .field_offset("perf_event", "attr")
                     .map_or(0x20, |o| o);
 
-                let event_type: u32 = if let Ok(b) = reader.read_bytes(event_addr + attr_offset, 4) { u32::from_le_bytes(b.try_into().unwrap_or([0u8; 4])) } else {
+                let event_type: u32 = if let Ok(b) = reader.read_bytes(event_addr + attr_offset, 4)
+                {
+                    u32::from_le_bytes(b.try_into().unwrap_or([0u8; 4]))
+                } else {
                     cursor = match reader.read_bytes(cursor, 8) {
                         Ok(b) => u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8])),
                         Err(_) => break,

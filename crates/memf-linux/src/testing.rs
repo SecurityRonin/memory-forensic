@@ -9,10 +9,7 @@ use memf_symbols::isf::IsfResolver;
 use memf_symbols::test_builders::IsfBuilder;
 
 /// Build an `ObjectReader` from `IsfBuilder` + `PageTableBuilder`.
-pub fn make_reader(
-    isf: &IsfBuilder,
-    ptb: PageTableBuilder,
-) -> ObjectReader<SyntheticPhysMem> {
+pub fn make_reader(isf: &IsfBuilder, ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
     let json = isf.build_json();
     let resolver = IsfResolver::from_value(&json).expect("valid ISF");
     let (cr3, mem) = ptb.build();
@@ -47,10 +44,7 @@ mod tests {
         let isf = task_struct_isf();
         let ptb = PageTableBuilder::new();
         let reader = make_reader(&isf, ptb);
-        assert_eq!(
-            reader.symbols().field_offset("task_struct", "pid"),
-            Some(0)
-        );
+        assert_eq!(reader.symbols().field_offset("task_struct", "pid"), Some(0));
     }
 
     #[test]
@@ -60,7 +54,10 @@ mod tests {
         let reader = make_reader(&isf, ptb);
         for field in &["pid", "state", "tasks", "comm", "mm", "real_parent", "tgid"] {
             assert!(
-                reader.symbols().field_offset("task_struct", field).is_some(),
+                reader
+                    .symbols()
+                    .field_offset("task_struct", field)
+                    .is_some(),
                 "missing field: {field}"
             );
         }

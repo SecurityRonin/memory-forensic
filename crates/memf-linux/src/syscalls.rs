@@ -23,17 +23,25 @@ pub fn check_syscall_table<P: PhysicalMemoryProvider>(
     let table_addr = reader
         .symbols()
         .symbol_address("sys_call_table")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "sys_call_table".into() })?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "sys_call_table".into(),
+        })?;
 
-    let stext = reader
-        .symbols()
-        .symbol_address("_stext")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "_stext".into() })?;
+    let stext =
+        reader
+            .symbols()
+            .symbol_address("_stext")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "_stext".into(),
+            })?;
 
-    let etext = reader
-        .symbols()
-        .symbol_address("_etext")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "_etext".into() })?;
+    let etext =
+        reader
+            .symbols()
+            .symbol_address("_etext")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "_etext".into(),
+            })?;
 
     // Determine number of syscalls: prefer __NR_syscall_max + 1, else default
     let nr_syscalls = reader
@@ -49,7 +57,9 @@ pub fn check_syscall_table<P: PhysicalMemoryProvider>(
 
     for i in 0..nr_syscalls {
         let off = (i as usize) * 8;
-        let handler = table_raw[off..off + 8].try_into().map_or(0, u64::from_le_bytes);
+        let handler = table_raw[off..off + 8]
+            .try_into()
+            .map_or(0, u64::from_le_bytes);
 
         let hooked = handler < stext || handler > etext;
 

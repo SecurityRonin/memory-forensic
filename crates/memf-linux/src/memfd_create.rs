@@ -102,7 +102,8 @@ fn collect_memfd_for_task<P: PhysicalMemoryProvider>(
             if let Some(existing) = existing {
                 existing.size_bytes += info.size_bytes;
                 existing.is_executable |= info.is_executable;
-                existing.is_suspicious = classify_memfd(&existing.memfd_name, existing.is_executable);
+                existing.is_suspicious =
+                    classify_memfd(&existing.memfd_name, existing.is_executable);
             } else {
                 out.push(info);
             }

@@ -57,7 +57,10 @@ pub fn is_ssh_tunnel_cmdline(cmdline: &ProcessCmdline) -> bool {
     if !cmdline.exe.contains("ssh") {
         return false;
     }
-    cmdline.args.iter().any(|a| matches!(a.as_str(), "-L" | "-R" | "-D"))
+    cmdline
+        .args
+        .iter()
+        .any(|a| matches!(a.as_str(), "-L" | "-R" | "-D"))
 }
 
 /// Returns `true` if this cmdline looks like a cryptominer.
@@ -166,11 +169,7 @@ mod tests {
 
     #[test]
     fn stratum_arg_is_miner() {
-        let cmdline = parse_proc_cmdline(
-            201,
-            "miner",
-            b"./miner\0stratum+tcp://pool:3333\0",
-        );
+        let cmdline = parse_proc_cmdline(201, "miner", b"./miner\0stratum+tcp://pool:3333\0");
         assert!(is_miner_cmdline(&cmdline));
     }
 

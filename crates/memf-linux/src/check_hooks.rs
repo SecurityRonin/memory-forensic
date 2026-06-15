@@ -35,14 +35,20 @@ const FUNCTIONS_TO_CHECK: &[&str] = &[
 pub fn check_inline_hooks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<KernelHookInfo>> {
-    let stext = reader
-        .symbols()
-        .symbol_address("_stext")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "_stext".into() })?;
-    let etext = reader
-        .symbols()
-        .symbol_address("_etext")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "_etext".into() })?;
+    let stext =
+        reader
+            .symbols()
+            .symbol_address("_stext")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "_stext".into(),
+            })?;
+    let etext =
+        reader
+            .symbols()
+            .symbol_address("_etext")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "_etext".into(),
+            })?;
 
     let mut results = Vec::new();
 

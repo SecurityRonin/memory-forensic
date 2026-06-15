@@ -130,7 +130,9 @@ fn scan_heap_for_entries<P: PhysicalMemoryProvider>(
     let mut off = 0;
     while off < limit {
         let line_ptr = data[off..off + 8].try_into().map_or(0, u64::from_le_bytes);
-        let ts_ptr = data[off + 8..off + 16].try_into().map_or(0, u64::from_le_bytes);
+        let ts_ptr = data[off + 8..off + 16]
+            .try_into()
+            .map_or(0, u64::from_le_bytes);
 
         // Quick reject: line_ptr must be non-zero and within a VMA
         if line_ptr == 0 || !addr_in_vmas(line_ptr, vma_ranges) {
@@ -292,7 +294,7 @@ mod tests {
 
         // HIST_ENTRY structs (24 bytes each: line ptr, timestamp ptr, data ptr)
         let entries: &[(u64, u64)] = &[
-            (heap_vaddr, heap_vaddr + 0x010), // ls -la
+            (heap_vaddr, heap_vaddr + 0x010),         // ls -la
             (heap_vaddr + 0x020, heap_vaddr + 0x030), // whoami
             (heap_vaddr + 0x040, heap_vaddr + 0x050), // cat /etc/shadow
         ];

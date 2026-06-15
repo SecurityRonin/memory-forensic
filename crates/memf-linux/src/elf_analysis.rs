@@ -1,9 +1,9 @@
 //! ELF dynamic symbol analysis for LD_PRELOAD rootkit detection.
 
-use goblin::elf::Elf;
-use forensicnomicon::heuristics::linux_rootkit::ROOTKIT_HOOK_SYMBOLS;
 use forensicnomicon::heuristics::linux_rootkit::FATHER_CLASS_ELF_PATTERNS;
+use forensicnomicon::heuristics::linux_rootkit::ROOTKIT_HOOK_SYMBOLS;
 use forensicnomicon::threat_intel::signals as S;
+use goblin::elf::Elf;
 
 /// Capability report for a single ELF binary.
 pub struct ElfCapabilityReport {
@@ -68,7 +68,10 @@ pub struct ElfStringArtifact {
 ///
 /// Returns `None` if bytes are not a valid ELF.
 /// Returns `Some(report)` with empty `signals` if valid ELF but no hook matches.
-pub fn analyse_elf_capabilities(bytes: &[u8], source: impl Into<String>) -> Option<ElfCapabilityReport> {
+pub fn analyse_elf_capabilities(
+    bytes: &[u8],
+    source: impl Into<String>,
+) -> Option<ElfCapabilityReport> {
     let elf = Elf::parse(bytes).ok()?;
 
     let mut matched_hooks = Vec::new();
@@ -112,7 +115,11 @@ pub fn analyse_elf_capabilities(bytes: &[u8], source: impl Into<String>) -> Opti
     let mut seen_tt = std::collections::HashSet::new();
     let mitre_techniques: Vec<&'static str> = matched_hooks
         .iter()
-        .filter_map(|h| seen_tt.insert(h.mitre_technique).then_some(h.mitre_technique))
+        .filter_map(|h| {
+            seen_tt
+                .insert(h.mitre_technique)
+                .then_some(h.mitre_technique)
+        })
         .collect();
 
     Some(ElfCapabilityReport {
@@ -153,7 +160,13 @@ pub fn scan_elf_string_artifacts(bytes: &[u8]) -> Option<Vec<ElfStringArtifact>>
                 let ctx_end = (pos + pattern_def.pattern.len() + 20).min(section_str.len());
                 let context: String = section_str[ctx_start..ctx_end]
                     .chars()
-                    .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '.' })
+                    .map(|c| {
+                        if c.is_ascii_graphic() || c == ' ' {
+                            c
+                        } else {
+                            '.'
+                        }
+                    })
                     .collect();
                 results.push(ElfStringArtifact {
                     matched_pattern: pattern_def.pattern,
@@ -177,13 +190,15 @@ mod tests {
     fn minimal_elf() -> Vec<u8> {
         let mut e = vec![0u8; 64];
         e[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-        e[4] = 2;   // class 64
-        e[5] = 1;   // LE
-        e[6] = 1;   // ELF version
-        e[7] = 0;   // OS/ABI
-        e[16] = 3; e[17] = 0;  // e_type = ET_DYN
-        e[18] = 62; e[19] = 0; // e_machine = EM_X86_64
-        e[20] = 1;             // e_version
+        e[4] = 2; // class 64
+        e[5] = 1; // LE
+        e[6] = 1; // ELF version
+        e[7] = 0; // OS/ABI
+        e[16] = 3;
+        e[17] = 0; // e_type = ET_DYN
+        e[18] = 62;
+        e[19] = 0; // e_machine = EM_X86_64
+        e[20] = 1; // e_version
         e
     }
 
@@ -222,7 +237,7 @@ mod tests {
         let mut dynsym_bytes = vec![0u8; 24]; // sym[0] = null
         dynsym_bytes.extend_from_slice(&sym_name_idx.to_le_bytes()); // st_name
         dynsym_bytes.push(0x12); // st_info = STB_GLOBAL|STT_FUNC
-        dynsym_bytes.push(0);    // st_other
+        dynsym_bytes.push(0); // st_other
         dynsym_bytes.extend_from_slice(&0u16.to_le_bytes()); // st_shndx = SHN_UNDEF (import)
         dynsym_bytes.extend_from_slice(&[0u8; 16]); // st_value, st_size
         let dynsym_size = dynsym_bytes.len() as u64;
@@ -238,12 +253,12 @@ mod tests {
             buf.extend_from_slice(&val.to_le_bytes());
         };
         // Virtual addresses == file offsets because PT_LOAD maps vaddr=0 → offset=0
-        push_dyn(4,  HASH_OFFSET,   &mut dyn_bytes); // DT_HASH (vaddr = file offset)
-        push_dyn(5,  DYNSTR_OFFSET, &mut dyn_bytes); // DT_STRTAB
-        push_dyn(10, dynstr_size,   &mut dyn_bytes); // DT_STRSZ
-        push_dyn(6,  dynsym_offset, &mut dyn_bytes); // DT_SYMTAB
-        push_dyn(11, 24,            &mut dyn_bytes); // DT_SYMENT
-        push_dyn(0,  0,             &mut dyn_bytes); // DT_NULL
+        push_dyn(4, HASH_OFFSET, &mut dyn_bytes); // DT_HASH (vaddr = file offset)
+        push_dyn(5, DYNSTR_OFFSET, &mut dyn_bytes); // DT_STRTAB
+        push_dyn(10, dynstr_size, &mut dyn_bytes); // DT_STRSZ
+        push_dyn(6, dynsym_offset, &mut dyn_bytes); // DT_SYMTAB
+        push_dyn(11, 24, &mut dyn_bytes); // DT_SYMENT
+        push_dyn(0, 0, &mut dyn_bytes); // DT_NULL
         let dynamic_size = dyn_bytes.len() as u64;
 
         // .shstrtab
@@ -272,11 +287,47 @@ mod tests {
 
         let mut shdrs = Vec::new();
         shdrs.extend_from_slice(&[0u8; 64]); // [0] null
-        shdrs.extend_from_slice(&shdr64(idx_hash,     5,  HASH_OFFSET,    20,          4, 4,  0, 0)); // .hash SHT_HASH
-        shdrs.extend_from_slice(&shdr64(idx_dynstr,   3,  DYNSTR_OFFSET,  dynstr_size, 1, 0,  0, 0)); // .dynstr
-        shdrs.extend_from_slice(&shdr64(idx_dynsym,   11, dynsym_offset,  dynsym_size, 8, 24, 2, 1)); // .dynsym, link→.dynstr[2]
-        shdrs.extend_from_slice(&shdr64(idx_dynamic,  6,  dynamic_offset, dynamic_size,8, 16, 2, 0)); // .dynamic
-        shdrs.extend_from_slice(&shdr64(idx_shstrtab, 3,  shstrtab_offset,shstrtab_size,1,0,  0, 0)); // .shstrtab
+        shdrs.extend_from_slice(&shdr64(idx_hash, 5, HASH_OFFSET, 20, 4, 4, 0, 0)); // .hash SHT_HASH
+        shdrs.extend_from_slice(&shdr64(
+            idx_dynstr,
+            3,
+            DYNSTR_OFFSET,
+            dynstr_size,
+            1,
+            0,
+            0,
+            0,
+        )); // .dynstr
+        shdrs.extend_from_slice(&shdr64(
+            idx_dynsym,
+            11,
+            dynsym_offset,
+            dynsym_size,
+            8,
+            24,
+            2,
+            1,
+        )); // .dynsym, link→.dynstr[2]
+        shdrs.extend_from_slice(&shdr64(
+            idx_dynamic,
+            6,
+            dynamic_offset,
+            dynamic_size,
+            8,
+            16,
+            2,
+            0,
+        )); // .dynamic
+        shdrs.extend_from_slice(&shdr64(
+            idx_shstrtab,
+            3,
+            shstrtab_offset,
+            shstrtab_size,
+            1,
+            0,
+            0,
+            0,
+        )); // .shstrtab
 
         // .hash: [nbuckets=1, nchain=2, bucket[0]=1, chain[0]=0, chain[1]=0]
         let mut hash_bytes = Vec::new();
@@ -286,47 +337,51 @@ mod tests {
 
         // PT_LOAD (56 bytes) — identity map: vaddr=0, offset=0, covers whole file
         let mut phdr_load = vec![0u8; 56];
-        phdr_load[0..4].copy_from_slice(&1u32.to_le_bytes());          // PT_LOAD
-        phdr_load[4..8].copy_from_slice(&5u32.to_le_bytes());          // PF_R|PF_X
-        // p_offset=0, p_vaddr=0, p_paddr=0 (all zero)
-        phdr_load[32..40].copy_from_slice(&total_size.to_le_bytes());  // p_filesz
-        phdr_load[40..48].copy_from_slice(&total_size.to_le_bytes());  // p_memsz
-        phdr_load[48..56].copy_from_slice(&0x1000u64.to_le_bytes());   // p_align
+        phdr_load[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        phdr_load[4..8].copy_from_slice(&5u32.to_le_bytes()); // PF_R|PF_X
+                                                              // p_offset=0, p_vaddr=0, p_paddr=0 (all zero)
+        phdr_load[32..40].copy_from_slice(&total_size.to_le_bytes()); // p_filesz
+        phdr_load[40..48].copy_from_slice(&total_size.to_le_bytes()); // p_memsz
+        phdr_load[48..56].copy_from_slice(&0x1000u64.to_le_bytes()); // p_align
 
         // PT_DYNAMIC (56 bytes)
         let mut phdr_dyn = vec![0u8; 56];
-        phdr_dyn[0..4].copy_from_slice(&2u32.to_le_bytes());                  // PT_DYNAMIC
-        phdr_dyn[4..8].copy_from_slice(&6u32.to_le_bytes());                  // PF_R|PF_W
-        phdr_dyn[8..16].copy_from_slice(&dynamic_offset.to_le_bytes());       // p_offset
-        phdr_dyn[16..24].copy_from_slice(&dynamic_offset.to_le_bytes());      // p_vaddr
-        phdr_dyn[24..32].copy_from_slice(&dynamic_offset.to_le_bytes());      // p_paddr
-        phdr_dyn[32..40].copy_from_slice(&dynamic_size.to_le_bytes());        // p_filesz
-        phdr_dyn[40..48].copy_from_slice(&dynamic_size.to_le_bytes());        // p_memsz
-        phdr_dyn[48..56].copy_from_slice(&8u64.to_le_bytes());                // p_align
+        phdr_dyn[0..4].copy_from_slice(&2u32.to_le_bytes()); // PT_DYNAMIC
+        phdr_dyn[4..8].copy_from_slice(&6u32.to_le_bytes()); // PF_R|PF_W
+        phdr_dyn[8..16].copy_from_slice(&dynamic_offset.to_le_bytes()); // p_offset
+        phdr_dyn[16..24].copy_from_slice(&dynamic_offset.to_le_bytes()); // p_vaddr
+        phdr_dyn[24..32].copy_from_slice(&dynamic_offset.to_le_bytes()); // p_paddr
+        phdr_dyn[32..40].copy_from_slice(&dynamic_size.to_le_bytes()); // p_filesz
+        phdr_dyn[40..48].copy_from_slice(&dynamic_size.to_le_bytes()); // p_memsz
+        phdr_dyn[48..56].copy_from_slice(&8u64.to_le_bytes()); // p_align
 
         // ELF header (e_phoff=64, e_phnum=2, e_shstrndx=5)
         let mut hdr = vec![0u8; 64];
         hdr[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-        hdr[4] = 2; hdr[5] = 1; hdr[6] = 1; // class64, LE, ELF version
-        hdr[16] = 3;  hdr[17] = 0;  // ET_DYN
-        hdr[18] = 62; hdr[19] = 0;  // EM_X86_64
-        hdr[20] = 1;                 // e_version
-        hdr[32..40].copy_from_slice(&64u64.to_le_bytes());  // e_phoff = 64
-        hdr[40..48].copy_from_slice(&shoff.to_le_bytes());  // e_shoff
-        hdr[52..54].copy_from_slice(&64u16.to_le_bytes());  // e_ehsize
-        hdr[54..56].copy_from_slice(&56u16.to_le_bytes());  // e_phentsize
-        hdr[56..58].copy_from_slice(&2u16.to_le_bytes());   // e_phnum = 2
-        hdr[58..60].copy_from_slice(&64u16.to_le_bytes());  // e_shentsize
-        hdr[60..62].copy_from_slice(&6u16.to_le_bytes());   // e_shnum = 6
-        hdr[62..64].copy_from_slice(&5u16.to_le_bytes());   // e_shstrndx = 5
+        hdr[4] = 2;
+        hdr[5] = 1;
+        hdr[6] = 1; // class64, LE, ELF version
+        hdr[16] = 3;
+        hdr[17] = 0; // ET_DYN
+        hdr[18] = 62;
+        hdr[19] = 0; // EM_X86_64
+        hdr[20] = 1; // e_version
+        hdr[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff = 64
+        hdr[40..48].copy_from_slice(&shoff.to_le_bytes()); // e_shoff
+        hdr[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        hdr[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        hdr[56..58].copy_from_slice(&2u16.to_le_bytes()); // e_phnum = 2
+        hdr[58..60].copy_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        hdr[60..62].copy_from_slice(&6u16.to_le_bytes()); // e_shnum = 6
+        hdr[62..64].copy_from_slice(&5u16.to_le_bytes()); // e_shstrndx = 5
 
         // Assemble
-        let mut out = hdr;                                   // [0x00..0x40)
-        out.extend_from_slice(&phdr_load);                   // [0x40..0x78)
-        out.extend_from_slice(&phdr_dyn);                    // [0x78..0xB0)
-        out.extend_from_slice(&hash_bytes);                  // [0xB0..0xC4)
-        out.extend_from_slice(&[0u8; 4]);                    // pad [0xC4..0xC8)
-        out.extend_from_slice(&dynstr);                      // [0xC8..)
+        let mut out = hdr; // [0x00..0x40)
+        out.extend_from_slice(&phdr_load); // [0x40..0x78)
+        out.extend_from_slice(&phdr_dyn); // [0x78..0xB0)
+        out.extend_from_slice(&hash_bytes); // [0xB0..0xC4)
+        out.extend_from_slice(&[0u8; 4]); // pad [0xC4..0xC8)
+        out.extend_from_slice(&dynstr); // [0xC8..)
         out.extend_from_slice(&vec![0u8; dynstr_pad]);
         out.extend_from_slice(&dynsym_bytes);
         out.extend_from_slice(&vec![0u8; dynsym_pad]);
@@ -340,7 +395,16 @@ mod tests {
 
     /// Build a SHT64 section header entry (64 bytes).
     #[allow(clippy::too_many_arguments)] // mirrors the 8-field ELF64 Shdr layout
-    fn shdr64(sh_name: u32, sh_type: u32, sh_offset: u64, sh_size: u64, sh_addralign: u64, sh_entsize: u64, sh_link: u32, sh_info: u32) -> Vec<u8> {
+    fn shdr64(
+        sh_name: u32,
+        sh_type: u32,
+        sh_offset: u64,
+        sh_size: u64,
+        sh_addralign: u64,
+        sh_entsize: u64,
+        sh_link: u32,
+        sh_info: u32,
+    ) -> Vec<u8> {
         let mut b = vec![0u8; 64];
         // ELF64 Shdr layout:
         // 0: sh_name(4), 4: sh_type(4), 8: sh_flags(8), 16: sh_addr(8),
@@ -406,7 +470,9 @@ mod tests {
         let report = analyse_elf_capabilities(&elf, "test").expect("valid elf");
         // Import of a hook symbol → process_hiding signal OR libc_shadow_exports signal
         assert!(
-            report.signals.contains(&forensicnomicon::threat_intel::signals::ELF_HOOKS_PROCESS_HIDING)
+            report
+                .signals
+                .contains(&forensicnomicon::threat_intel::signals::ELF_HOOKS_PROCESS_HIDING)
                 || report.signals.contains(&ELF_LIBC_SHADOW_EXPORTS)
         );
     }
@@ -416,7 +482,9 @@ mod tests {
         // readdir64 alone emits ELF_HOOKS_PROCESS_HIDING once
         let elf = elf_with_dynamic_import("readdir64");
         let report = analyse_elf_capabilities(&elf, "test").expect("valid elf");
-        let count = report.signals.iter()
+        let count = report
+            .signals
+            .iter()
             .filter(|&&s| s == forensicnomicon::threat_intel::signals::ELF_HOOKS_PROCESS_HIDING)
             .count();
         assert!(count <= 1, "duplicate signal IDs must be deduplicated");
@@ -426,10 +494,15 @@ mod tests {
     fn analyse_elf_multiple_hooks_deduplicates_mitre_techniques() {
         let elf = elf_with_dynamic_import("readdir64");
         let report = analyse_elf_capabilities(&elf, "test").expect("valid elf");
-        let t1014_count = report.mitre_techniques.iter()
+        let t1014_count = report
+            .mitre_techniques
+            .iter()
             .filter(|&&t| t == "T1014")
             .count();
-        assert!(t1014_count <= 1, "duplicate MITRE techniques must be deduplicated");
+        assert!(
+            t1014_count <= 1,
+            "duplicate MITRE techniques must be deduplicated"
+        );
     }
 
     #[test]
@@ -438,11 +511,15 @@ mod tests {
         // together requires confirming each individual signal appears independently.
         let elf_ph = elf_with_dynamic_import("readdir64");
         let report_ph = analyse_elf_capabilities(&elf_ph, "test").expect("valid elf");
-        assert!(report_ph.signals.contains(&forensicnomicon::threat_intel::signals::ELF_HOOKS_PROCESS_HIDING));
+        assert!(report_ph
+            .signals
+            .contains(&forensicnomicon::threat_intel::signals::ELF_HOOKS_PROCESS_HIDING));
 
         let elf_pam = elf_with_dynamic_import("pam_get_item");
         let report_pam = analyse_elf_capabilities(&elf_pam, "test").expect("valid elf");
-        assert!(report_pam.signals.contains(&forensicnomicon::threat_intel::signals::ELF_HOOKS_PAM_CREDENTIAL));
+        assert!(report_pam
+            .signals
+            .contains(&forensicnomicon::threat_intel::signals::ELF_HOOKS_PAM_CREDENTIAL));
     }
 
     #[test]
@@ -452,7 +529,10 @@ mod tests {
         if let Some(report) = analyse_elf_capabilities(&elf, "test") {
             for sig in &report.signals {
                 assert!(!sig.is_empty(), "signal ID must not be empty");
-                assert!(sig.contains('.'), "signal ID '{sig}' must be dot-namespaced");
+                assert!(
+                    sig.contains('.'),
+                    "signal ID '{sig}' must be dot-namespaced"
+                );
             }
         }
     }
@@ -476,8 +556,7 @@ mod tests {
     fn scan_elf_strings_detects_password_format_fragment() {
         // Embed the Father format string in a SHT_PROGBITS section so goblin sees it.
         let elf = elf_with_section_data(b"UID:%d:");
-        let results = scan_elf_string_artifacts(&elf)
-            .expect("valid elf");
+        let results = scan_elf_string_artifacts(&elf).expect("valid elf");
         assert!(
             results.iter().any(|r| r.matched_pattern == "UID:%d:"),
             "Father UID format string must be detected"
@@ -507,7 +586,10 @@ mod tests {
         let elf = elf_with_section_data(&data);
         let results = scan_elf_string_artifacts(&elf).expect("valid elf");
         let patterns: Vec<&str> = results.iter().map(|r| r.matched_pattern).collect();
-        assert!(patterns.contains(&"UID:%d:"), "UID format string must be found");
+        assert!(
+            patterns.contains(&"UID:%d:"),
+            "UID format string must be found"
+        );
         assert!(patterns.contains(&"silly.txt"), "silly.txt must be found");
     }
 
@@ -516,7 +598,10 @@ mod tests {
         // Stripping removes symbol table but leaves section data — patterns still fire
         let elf = elf_with_section_data(b"UID:%d:");
         let results = scan_elf_string_artifacts(&elf).expect("valid elf");
-        assert!(!results.is_empty(), "pattern must be found even in stripped-style binary");
+        assert!(
+            !results.is_empty(),
+            "pattern must be found even in stripped-style binary"
+        );
     }
 
     /// Helper: build a minimal ELF with one SHT_PROGBITS section containing `data`.
@@ -542,23 +627,45 @@ mod tests {
 
         let mut shdrs = Vec::new();
         shdrs.extend_from_slice(&[0u8; 64]); // null
-        // .rodata: SHT_PROGBITS=1
-        shdrs.extend_from_slice(&shdr64(idx_rodata, 1, data_offset, data_size as u64, 1, 0, 0, 0));
+                                             // .rodata: SHT_PROGBITS=1
+        shdrs.extend_from_slice(&shdr64(
+            idx_rodata,
+            1,
+            data_offset,
+            data_size as u64,
+            1,
+            0,
+            0,
+            0,
+        ));
         // .shstrtab: SHT_STRTAB=3
-        shdrs.extend_from_slice(&shdr64(idx_shstrtab, 3, shstrtab_offset as u64, shstrtab_size as u64, 1, 0, 0, 0));
+        shdrs.extend_from_slice(&shdr64(
+            idx_shstrtab,
+            3,
+            shstrtab_offset as u64,
+            shstrtab_size as u64,
+            1,
+            0,
+            0,
+            0,
+        ));
 
         let mut hdr = vec![0u8; 64];
         hdr[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-        hdr[4] = 2; hdr[5] = 1; hdr[6] = 1;
-        hdr[16] = 3; hdr[17] = 0;  // ET_DYN
-        hdr[18] = 62; hdr[19] = 0; // EM_X86_64
+        hdr[4] = 2;
+        hdr[5] = 1;
+        hdr[6] = 1;
+        hdr[16] = 3;
+        hdr[17] = 0; // ET_DYN
+        hdr[18] = 62;
+        hdr[19] = 0; // EM_X86_64
         hdr[20] = 1;
         hdr[40..48].copy_from_slice(&(shoff as u64).to_le_bytes());
         hdr[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
         hdr[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
         hdr[58..60].copy_from_slice(&64u16.to_le_bytes()); // e_shentsize
-        hdr[60..62].copy_from_slice(&3u16.to_le_bytes());  // e_shnum = 3
-        hdr[62..64].copy_from_slice(&2u16.to_le_bytes());  // e_shstrndx = 2
+        hdr[60..62].copy_from_slice(&3u16.to_le_bytes()); // e_shnum = 3
+        hdr[62..64].copy_from_slice(&2u16.to_le_bytes()); // e_shstrndx = 2
 
         let mut out = hdr;
         out.extend_from_slice(data);

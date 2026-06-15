@@ -16,10 +16,10 @@ use crate::Result;
 
 const MAX_FB_BYTES: u64 = 32 * 1024 * 1024; // 32 MiB hard cap
 
-const LFB_BASE_OFF:   u64 = 0x10;
-const LFB_WIDTH_OFF:  u64 = 0x14;
+const LFB_BASE_OFF: u64 = 0x10;
+const LFB_WIDTH_OFF: u64 = 0x14;
 const LFB_HEIGHT_OFF: u64 = 0x16;
-const LFB_DEPTH_OFF:  u64 = 0x18;
+const LFB_DEPTH_OFF: u64 = 0x18;
 const LFB_STRIDE_OFF: u64 = 0x1A;
 
 /// Walk the Linux `boot_params.screen_info` structure to locate and capture
@@ -27,14 +27,17 @@ const LFB_STRIDE_OFF: u64 = 0x1A;
 pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
 ) -> Result<FramebufferResult> {
-    let boot_params_va = reader.required_symbol("boot_params")
-        .map_err(|_| crate::Error::WalkFailed {
-            walker: "framebuffer",
-            reason: "boot_params symbol not found".into(),
-        })?;
+    let boot_params_va =
+        reader
+            .required_symbol("boot_params")
+            .map_err(|_| crate::Error::WalkFailed {
+                walker: "framebuffer",
+                reason: "boot_params symbol not found".into(),
+            })?;
 
     let lfb_base = {
-        let b = reader.read_bytes(boot_params_va + LFB_BASE_OFF, 4)
+        let b = reader
+            .read_bytes(boot_params_va + LFB_BASE_OFF, 4)
             .map_err(|e| crate::Error::WalkFailed {
                 walker: "framebuffer",
                 reason: format!("read lfb_base: {e}"),
@@ -43,7 +46,8 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
     };
 
     let width = {
-        let b = reader.read_bytes(boot_params_va + LFB_WIDTH_OFF, 2)
+        let b = reader
+            .read_bytes(boot_params_va + LFB_WIDTH_OFF, 2)
             .map_err(|e| crate::Error::WalkFailed {
                 walker: "framebuffer",
                 reason: format!("read lfb_width: {e}"),
@@ -52,7 +56,8 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
     };
 
     let height = {
-        let b = reader.read_bytes(boot_params_va + LFB_HEIGHT_OFF, 2)
+        let b = reader
+            .read_bytes(boot_params_va + LFB_HEIGHT_OFF, 2)
             .map_err(|e| crate::Error::WalkFailed {
                 walker: "framebuffer",
                 reason: format!("read lfb_height: {e}"),
@@ -61,7 +66,8 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
     };
 
     let depth = {
-        let b = reader.read_bytes(boot_params_va + LFB_DEPTH_OFF, 2)
+        let b = reader
+            .read_bytes(boot_params_va + LFB_DEPTH_OFF, 2)
             .map_err(|e| crate::Error::WalkFailed {
                 walker: "framebuffer",
                 reason: format!("read lfb_depth: {e}"),
@@ -70,7 +76,8 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
     };
 
     let stride = {
-        let b = reader.read_bytes(boot_params_va + LFB_STRIDE_OFF, 4)
+        let b = reader
+            .read_bytes(boot_params_va + LFB_STRIDE_OFF, 4)
             .map_err(|e| crate::Error::WalkFailed {
                 walker: "framebuffer",
                 reason: format!("read lfb_linelength: {e}"),
@@ -89,7 +96,7 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
         32 => PixelFormat::Xbgr8888,
         24 => PixelFormat::Bgr24,
         16 => PixelFormat::Rgb565,
-        d  => PixelFormat::Unknown(d as u8),
+        d => PixelFormat::Unknown(d as u8),
     };
 
     let fb_size = u64::from(stride) * u64::from(height);
@@ -101,17 +108,21 @@ pub fn walk_framebuffer_linux<P: PhysicalMemoryProvider + Clone>(
     }
 
     let mut fb_bytes = vec![0u8; fb_size as usize];
-    reader.vas().physical().read_phys(lfb_base, &mut fb_bytes)
+    reader
+        .vas()
+        .physical()
+        .read_phys(lfb_base, &mut fb_bytes)
         .map_err(|_| crate::Error::WalkFailed {
             walker: "framebuffer",
             reason: format!("could not read {fb_size} bytes from PA {lfb_base:#x}"),
         })?;
 
-    let png_bytes = encode_png(&fb_bytes, width, height, pixel_format)
-        .map_err(|e| crate::Error::WalkFailed {
+    let png_bytes = encode_png(&fb_bytes, width, height, pixel_format).map_err(|e| {
+        crate::Error::WalkFailed {
             walker: "framebuffer",
             reason: format!("PNG encode: {e}"),
-        })?;
+        }
+    })?;
 
     Ok(FramebufferResult {
         width,
@@ -151,7 +162,7 @@ mod tests {
 
     const BOOT_PARAMS_VA: u64 = 0xFFFF_8800_00A0_0000;
     const BOOT_PARAMS_PA: u64 = 0x00A0_0000; // 10 MiB
-    const FB_PA:          u64 = 0x00B0_0000; // 11 MiB
+    const FB_PA: u64 = 0x00B0_0000; // 11 MiB
 
     fn build_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         let mut page = [0u8; 4096];
@@ -168,7 +179,12 @@ mod tests {
         page[0x1a..0x1e].copy_from_slice(&16u32.to_le_bytes());
 
         // 4×4 pixels of XBGR8888
-        let fb_data: Vec<u8> = [0x10u8, 0x20, 0x30, 0xFF].iter().copied().cycle().take(64).collect();
+        let fb_data: Vec<u8> = [0x10u8, 0x20, 0x30, 0xFF]
+            .iter()
+            .copied()
+            .cycle()
+            .take(64)
+            .collect();
 
         let isf = IsfBuilder::new()
             .add_symbol("boot_params", BOOT_PARAMS_VA)
@@ -218,6 +234,9 @@ mod tests {
     fn linux_framebuffer_missing_symbol_returns_err() {
         let reader = build_reader_no_sym();
         let result = walk_framebuffer_linux(&reader);
-        assert!(result.is_err(), "expected Err when boot_params symbol absent");
+        assert!(
+            result.is_err(),
+            "expected Err when boot_params symbol absent"
+        );
     }
 }

@@ -117,9 +117,9 @@ mod tests {
 
     #[test]
     fn father_magic_gid_constant_matches_known_table() {
-        let found = KNOWN_MAGIC_GIDS.iter().any(|&(gid, name)| {
-            gid == FATHER_MAGIC_GID && name == "Father"
-        });
+        let found = KNOWN_MAGIC_GIDS
+            .iter()
+            .any(|&(gid, name)| gid == FATHER_MAGIC_GID && name == "Father");
         assert!(found, "FATHER_MAGIC_GID must appear in KNOWN_MAGIC_GIDS");
     }
 }

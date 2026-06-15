@@ -51,8 +51,7 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
-    fn make_minimal_reader(
-    ) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
+    fn make_minimal_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
@@ -202,7 +201,7 @@ mod tests {
         page[0x200..0x204].copy_from_slice(&99u32.to_le_bytes()); // fake pid
         let fake_pid_links_va = vaddr + 0x238;
         page[0x800..0x808].copy_from_slice(&fake_pid_links_va.to_le_bytes()); // bucket 0 → hlist_node
-        // fake_pid_links.next = NULL (end of chain)
+                                                                              // fake_pid_links.next = NULL (end of chain)
         page[0x238..0x240].copy_from_slice(&0u64.to_le_bytes());
         // fake_pid_links.pprev → points back to bucket head (standard hlist bookkeeping)
         page[0x240..0x248].copy_from_slice(&(vaddr + 0x800).to_le_bytes());
@@ -229,6 +228,9 @@ mod tests {
         let reader = make_proc_hidden_reader(&page, vaddr, paddr);
 
         let hidden = find_hidden_processes(&reader).unwrap();
-        assert!(hidden.is_empty(), "process visible in all sources must not be flagged");
+        assert!(
+            hidden.is_empty(),
+            "process visible in all sources must not be flagged"
+        );
     }
 }

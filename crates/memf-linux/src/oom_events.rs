@@ -140,10 +140,15 @@ pub fn walk_oom_events<P: PhysicalMemoryProvider>(
         //  u16 dict_len    @ 12
         //  u8  facility    @ 14
         //  u8  flags_level @ 15
-        let ts_nsec = raw[offset..offset + 8].try_into().map_or(0, u64::from_le_bytes);
-        let len = raw[offset + 8..offset + 10].try_into().map_or(0, u16::from_le_bytes) as usize;
-        let text_len =
-            raw[offset + 10..offset + 12].try_into().map_or(0, u16::from_le_bytes) as usize;
+        let ts_nsec = raw[offset..offset + 8]
+            .try_into()
+            .map_or(0, u64::from_le_bytes);
+        let len = raw[offset + 8..offset + 10]
+            .try_into()
+            .map_or(0, u16::from_le_bytes) as usize;
+        let text_len = raw[offset + 10..offset + 12]
+            .try_into()
+            .map_or(0, u16::from_le_bytes) as usize;
 
         if len == 0 || offset + len > raw.len() {
             break;

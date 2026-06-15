@@ -88,11 +88,18 @@ pub fn extract_dmesg<P: PhysicalMemoryProvider>(
 
     while offset + PRINTK_HEADER_SIZE <= buf_len && entries.len() < MAX_ENTRIES {
         // Parse header fields (all little-endian).
-        let ts_nsec = ring[offset..offset + 8].try_into().map_or(0, u64::from_le_bytes);
-        let len = ring[offset + 8..offset + 10].try_into().map_or(0, u16::from_le_bytes) as usize;
-        let text_len =
-            ring[offset + 10..offset + 12].try_into().map_or(0, u16::from_le_bytes) as usize;
-        let _dict_len = ring[offset + 12..offset + 14].try_into().map_or(0, u16::from_le_bytes);
+        let ts_nsec = ring[offset..offset + 8]
+            .try_into()
+            .map_or(0, u64::from_le_bytes);
+        let len = ring[offset + 8..offset + 10]
+            .try_into()
+            .map_or(0, u16::from_le_bytes) as usize;
+        let text_len = ring[offset + 10..offset + 12]
+            .try_into()
+            .map_or(0, u16::from_le_bytes) as usize;
+        let _dict_len = ring[offset + 12..offset + 14]
+            .try_into()
+            .map_or(0, u16::from_le_bytes);
         let facility = ring[offset + 14];
         let level = ring[offset + 15];
 

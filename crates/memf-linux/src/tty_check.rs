@@ -21,22 +21,33 @@ pub fn check_tty_hooks<P: PhysicalMemoryProvider>(
     let tty_drivers_addr = reader
         .symbols()
         .symbol_address("tty_drivers")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "tty_drivers".into() })?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "tty_drivers".into(),
+        })?;
 
-    let stext = reader
-        .symbols()
-        .symbol_address("_stext")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "_stext".into() })?;
+    let stext =
+        reader
+            .symbols()
+            .symbol_address("_stext")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "_stext".into(),
+            })?;
 
-    let etext = reader
-        .symbols()
-        .symbol_address("_etext")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "_etext".into() })?;
+    let etext =
+        reader
+            .symbols()
+            .symbol_address("_etext")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "_etext".into(),
+            })?;
 
     let _tty_drivers_offset = reader
         .symbols()
         .field_offset("tty_driver", "tty_drivers")
-        .ok_or_else(|| Error::MissingField { struct_name: "tty_driver".into(), field_name: "tty_drivers".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "tty_driver".into(),
+            field_name: "tty_drivers".into(),
+        })?;
 
     // Walk the tty_drivers linked list
     let driver_addrs = reader.walk_list(tty_drivers_addr, "tty_driver", "tty_drivers")?;

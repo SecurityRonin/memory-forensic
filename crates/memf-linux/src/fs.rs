@@ -20,16 +20,24 @@ pub fn walk_filesystems<P: PhysicalMemoryProvider>(
     let init_task_addr = reader
         .symbols()
         .symbol_address("init_task")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "init_task".into() })?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "init_task".into(),
+        })?;
 
     let nsproxy_ptr: u64 = reader.read_field(init_task_addr, "task_struct", "nsproxy")?;
     if nsproxy_ptr == 0 {
-        return Err(Error::WalkFailed { walker: "walk_filesystems", reason: "init_task has NULL nsproxy".into() });
+        return Err(Error::WalkFailed {
+            walker: "walk_filesystems",
+            reason: "init_task has NULL nsproxy".into(),
+        });
     }
 
     let mnt_ns_ptr: u64 = reader.read_field(nsproxy_ptr, "nsproxy", "mnt_ns")?;
     if mnt_ns_ptr == 0 {
-        return Err(Error::WalkFailed { walker: "walk_filesystems", reason: "nsproxy has NULL mnt_ns".into() });
+        return Err(Error::WalkFailed {
+            walker: "walk_filesystems",
+            reason: "nsproxy has NULL mnt_ns".into(),
+        });
     }
 
     // mnt_namespace.list is the head of a circular list of mount.mnt_list
@@ -38,17 +46,26 @@ pub fn walk_filesystems<P: PhysicalMemoryProvider>(
     let d_name_offset = reader
         .symbols()
         .field_offset("dentry", "d_name")
-        .ok_or_else(|| Error::MissingField { struct_name: "dentry".into(), field_name: "d_name".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "dentry".into(),
+            field_name: "d_name".into(),
+        })?;
 
     let name_in_qstr_offset = reader
         .symbols()
         .field_offset("qstr", "name")
-        .ok_or_else(|| Error::MissingField { struct_name: "qstr".into(), field_name: "name".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "qstr".into(),
+            field_name: "name".into(),
+        })?;
 
     let mnt_offset = reader
         .symbols()
         .field_offset("mount", "mnt")
-        .ok_or_else(|| Error::MissingField { struct_name: "mount".into(), field_name: "mnt".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "mount".into(),
+            field_name: "mnt".into(),
+        })?;
 
     let mut mounts = Vec::new();
 

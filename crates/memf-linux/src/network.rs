@@ -15,7 +15,9 @@ pub fn walk_connections<P: PhysicalMemoryProvider>(
     let tcp_hashinfo_addr = reader
         .symbols()
         .symbol_address("tcp_hashinfo")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "tcp_hashinfo".into() })?;
+        .ok_or_else(|| Error::MissingKernelSymbol {
+            name: "tcp_hashinfo".into(),
+        })?;
 
     let ehash_ptr: u64 = reader.read_field(tcp_hashinfo_addr, "inet_hashinfo", "ehash")?;
     let ehash_mask: u32 = reader.read_field(tcp_hashinfo_addr, "inet_hashinfo", "ehash_mask")?;

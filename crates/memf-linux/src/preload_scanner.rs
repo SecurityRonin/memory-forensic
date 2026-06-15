@@ -141,13 +141,28 @@ mod tests {
     #[test]
     fn find_globally_loaded_library_in_all_pids_found() {
         let maps = vec![
-            (1u32, vec!["/lib/evil.so".to_string(), "/lib/libc.so.6".to_string()]),
-            (2u32, vec!["/lib/evil.so".to_string(), "/lib/libc.so.6".to_string()]),
-            (3u32, vec!["/lib/evil.so".to_string(), "/lib/libpthread.so.0".to_string()]),
+            (
+                1u32,
+                vec!["/lib/evil.so".to_string(), "/lib/libc.so.6".to_string()],
+            ),
+            (
+                2u32,
+                vec!["/lib/evil.so".to_string(), "/lib/libc.so.6".to_string()],
+            ),
+            (
+                3u32,
+                vec![
+                    "/lib/evil.so".to_string(),
+                    "/lib/libpthread.so.0".to_string(),
+                ],
+            ),
         ];
         let result = find_globally_loaded_libraries(&maps, 1.0);
         let paths: Vec<&str> = result.iter().map(|l| l.path.as_str()).collect();
-        assert!(paths.contains(&"/lib/evil.so"), "evil.so present in all pids should be found");
+        assert!(
+            paths.contains(&"/lib/evil.so"),
+            "evil.so present in all pids should be found"
+        );
     }
 
     #[test]
@@ -159,7 +174,10 @@ mod tests {
         // 50% prevalence should be excluded at threshold=0.9
         let result = find_globally_loaded_libraries(&maps, 0.9);
         let paths: Vec<&str> = result.iter().map(|l| l.path.as_str()).collect();
-        assert!(!paths.contains(&"/lib/half.so"), "half.so at 50% should not pass 90% threshold");
+        assert!(
+            !paths.contains(&"/lib/half.so"),
+            "half.so at 50% should not pass 90% threshold"
+        );
     }
 
     #[test]
@@ -172,10 +190,16 @@ mod tests {
         ];
         // 50% threshold → both should appear (half.so in 50% of pids)
         let result = find_globally_loaded_libraries(&maps, 0.5);
-        assert!(!result.is_empty(), "at 50% threshold, libraries at 50% prevalence should appear");
+        assert!(
+            !result.is_empty(),
+            "at 50% threshold, libraries at 50% prevalence should appear"
+        );
         let result_75 = find_globally_loaded_libraries(&maps, 0.75);
         let paths_75: Vec<&str> = result_75.iter().map(|l| l.path.as_str()).collect();
-        assert!(!paths_75.contains(&"/lib/half.so"), "at 75% threshold, 50% library should be excluded");
+        assert!(
+            !paths_75.contains(&"/lib/half.so"),
+            "at 75% threshold, 50% library should be excluded"
+        );
     }
 
     #[test]
@@ -198,7 +222,10 @@ mod tests {
     fn parse_linux_elfs_tsv_skips_header_line() {
         let tsv = "PID\tProcess\tStart\tEnd\tFile\n";
         let entries = parse_linux_elfs_tsv(tsv);
-        assert!(entries.is_empty(), "header-only TSV should parse to empty vec");
+        assert!(
+            entries.is_empty(),
+            "header-only TSV should parse to empty vec"
+        );
     }
 
     #[test]
@@ -213,9 +240,27 @@ mod tests {
     #[test]
     fn find_globally_loaded_from_elfs_library_in_all_pids() {
         let entries = vec![
-            VolatilityElfEntry { pid: 1, process_name: "a".into(), start: 0, end: 0, path: "/lib/evil.so".into() },
-            VolatilityElfEntry { pid: 2, process_name: "b".into(), start: 0, end: 0, path: "/lib/evil.so".into() },
-            VolatilityElfEntry { pid: 3, process_name: "c".into(), start: 0, end: 0, path: "/lib/evil.so".into() },
+            VolatilityElfEntry {
+                pid: 1,
+                process_name: "a".into(),
+                start: 0,
+                end: 0,
+                path: "/lib/evil.so".into(),
+            },
+            VolatilityElfEntry {
+                pid: 2,
+                process_name: "b".into(),
+                start: 0,
+                end: 0,
+                path: "/lib/evil.so".into(),
+            },
+            VolatilityElfEntry {
+                pid: 3,
+                process_name: "c".into(),
+                start: 0,
+                end: 0,
+                path: "/lib/evil.so".into(),
+            },
         ];
         let result = find_globally_loaded_from_elfs(&entries, 1.0);
         assert_eq!(result.len(), 1);
@@ -226,12 +271,33 @@ mod tests {
     #[test]
     fn find_globally_loaded_from_elfs_sorted_by_prevalence() {
         let entries = vec![
-            VolatilityElfEntry { pid: 1, process_name: "a".into(), start: 0, end: 0, path: "/lib/always.so".into() },
-            VolatilityElfEntry { pid: 2, process_name: "b".into(), start: 0, end: 0, path: "/lib/always.so".into() },
-            VolatilityElfEntry { pid: 1, process_name: "a".into(), start: 0, end: 0, path: "/lib/sometimes.so".into() },
+            VolatilityElfEntry {
+                pid: 1,
+                process_name: "a".into(),
+                start: 0,
+                end: 0,
+                path: "/lib/always.so".into(),
+            },
+            VolatilityElfEntry {
+                pid: 2,
+                process_name: "b".into(),
+                start: 0,
+                end: 0,
+                path: "/lib/always.so".into(),
+            },
+            VolatilityElfEntry {
+                pid: 1,
+                process_name: "a".into(),
+                start: 0,
+                end: 0,
+                path: "/lib/sometimes.so".into(),
+            },
         ];
         let result = find_globally_loaded_from_elfs(&entries, 0.1);
-        assert!(result.len() >= 2, "both libraries should appear at 10% threshold");
+        assert!(
+            result.len() >= 2,
+            "both libraries should appear at 10% threshold"
+        );
         // Sorted descending: always.so (100%) before sometimes.so (50%)
         assert_eq!(result[0].0, "/lib/always.so");
     }

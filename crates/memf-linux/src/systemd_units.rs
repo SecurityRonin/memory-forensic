@@ -206,7 +206,9 @@ fn scan_vma_for_units<P: PhysicalMemoryProvider>(
     while offset < total {
         let chunk_size = SCAN_CHUNK.min((total - offset) as usize);
         let chunk_addr = vm_start + offset;
-        let bytes = if let Ok(b) = reader.read_bytes(chunk_addr, chunk_size) { b } else {
+        let bytes = if let Ok(b) = reader.read_bytes(chunk_addr, chunk_size) {
+            b
+        } else {
             offset += chunk_size as u64;
             continue;
         };

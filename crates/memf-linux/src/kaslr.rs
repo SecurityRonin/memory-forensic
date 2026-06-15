@@ -22,9 +22,12 @@ pub fn detect_kaslr_offset(
     physical: &dyn PhysicalMemoryProvider,
     symbols: &dyn SymbolResolver,
 ) -> Result<u64> {
-    let banner_symbol_vaddr = symbols
-        .symbol_address("linux_banner")
-        .ok_or_else(|| Error::MissingKernelSymbol { name: "linux_banner".into() })?;
+    let banner_symbol_vaddr =
+        symbols
+            .symbol_address("linux_banner")
+            .ok_or_else(|| Error::MissingKernelSymbol {
+                name: "linux_banner".into(),
+            })?;
 
     let banner_phys = scan_for_banner(physical)?;
 
@@ -42,9 +45,13 @@ fn scan_for_banner(physical: &dyn PhysicalMemoryProvider) -> Result<u64> {
         let mut addr = range.start;
         while addr < range.end {
             let to_read = ((range.end - addr) as usize).min(buf.len());
-            let n = physical
-                .read_phys(addr, &mut buf[..to_read])
-                .map_err(|e| Error::WalkFailed { walker: "scan_for_banner", reason: format!("physical read error: {e}") })?;
+            let n =
+                physical
+                    .read_phys(addr, &mut buf[..to_read])
+                    .map_err(|e| Error::WalkFailed {
+                        walker: "scan_for_banner",
+                        reason: format!("physical read error: {e}"),
+                    })?;
             if n == 0 {
                 break;
             }
@@ -168,7 +175,10 @@ mod tests {
     fn missing_linux_banner_symbol_returns_missing_kernel_symbol() {
         let data = vec![0u8; 4096];
         let mem = BannerPhysMem {
-            ranges: vec![PhysicalRange { start: 0, end: 4096 }],
+            ranges: vec![PhysicalRange {
+                start: 0,
+                end: 4096,
+            }],
             data,
         };
         // No linux_banner symbol

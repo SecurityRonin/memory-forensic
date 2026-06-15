@@ -66,13 +66,14 @@ pub fn walk_library_list<P: PhysicalMemoryProvider>(
             struct_name: "file".into(),
             field_name: "f_path".into(),
         })?;
-    let dentry_in_path_offset = reader
-        .symbols()
-        .field_offset("path", "dentry")
-        .ok_or_else(|| Error::MissingField {
-            struct_name: "path".into(),
-            field_name: "dentry".into(),
-        })?;
+    let dentry_in_path_offset =
+        reader
+            .symbols()
+            .field_offset("path", "dentry")
+            .ok_or_else(|| Error::MissingField {
+                struct_name: "path".into(),
+                field_name: "dentry".into(),
+            })?;
     let d_name_offset = reader
         .symbols()
         .field_offset("dentry", "d_name")

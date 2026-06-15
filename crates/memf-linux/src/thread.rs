@@ -29,7 +29,10 @@ pub fn walk_threads<P: PhysicalMemoryProvider>(
     let thread_group_offset = reader
         .symbols()
         .field_offset("task_struct", "thread_group")
-        .ok_or_else(|| Error::MissingField { struct_name: "task_struct".into(), field_name: "thread_group".into() })?;
+        .ok_or_else(|| Error::MissingField {
+            struct_name: "task_struct".into(),
+            field_name: "thread_group".into(),
+        })?;
 
     let head_vaddr = leader_task_addr + thread_group_offset;
     let sibling_addrs = reader.walk_list(head_vaddr, "task_struct", "thread_group")?;
@@ -214,7 +217,7 @@ mod tests {
         // Write minimal valid task_struct (pid=1, state=1, comm="init") — no thread_group field in ISF
         data[0..4].copy_from_slice(&1u32.to_le_bytes()); // pid
         data[4..12].copy_from_slice(&1i64.to_le_bytes()); // state
-        data[32..36].copy_from_slice(b"init");            // comm
+        data[32..36].copy_from_slice(b"init"); // comm
 
         let isf = IsfBuilder::new()
             .add_struct("task_struct", 128)

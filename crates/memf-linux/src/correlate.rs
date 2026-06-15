@@ -700,7 +700,11 @@ mod tests {
     fn rwx_vma_mitre_id_is_process_injection() {
         let vma = make_vma(999, "evil", true, true, false);
         let events = vma.into_forensic_events();
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(
             ids.contains(&"T1055"),
             "expected T1055 (Process Injection), got {ids:?}"
@@ -770,7 +774,11 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
         assert!((events[0].confidence - 0.7).abs() < 1e-9);
     }
@@ -782,7 +790,11 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
         assert!((events[0].confidence - 0.9).abs() < 1e-9);
     }
@@ -844,7 +856,11 @@ mod tests {
                 matches!(events[0].finding, Finding::NetworkBeaconing),
                 "port {port}"
             );
-            let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+            let ids: Vec<&str> = events[0]
+                .mitre_attack
+                .iter()
+                .map(memf_correlate::mitre::MitreAttackId::as_str)
+                .collect();
             assert!(
                 ids.contains(&"T1071"),
                 "expected T1071 for port {port}, got {ids:?}"
@@ -860,7 +876,11 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1095"), "expected T1095, got {ids:?}");
         assert!((events[0].confidence - 0.85).abs() < 1e-9);
     }
@@ -924,7 +944,11 @@ mod tests {
         let events = m.into_forensic_events();
         assert_eq!(events[0].severity, Severity::Medium);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1014"), "expected T1014");
     }
 
@@ -934,7 +958,11 @@ mod tests {
         let m = make_module("", ModuleState::Live);
         let events = m.into_forensic_events();
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1014"), "expected T1014");
     }
 
@@ -971,7 +999,11 @@ mod tests {
         let events = h.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Critical);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1014"), "expected T1014, got {ids:?}");
         assert!((events[0].confidence - 0.95).abs() < 1e-9);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
@@ -983,7 +1015,11 @@ mod tests {
         let events = h.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1014"), "expected T1014, got {ids:?}");
         assert!((events[0].confidence - 0.8).abs() < 1e-9);
     }
@@ -994,7 +1030,11 @@ mod tests {
         let events = h.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1014"), "expected T1014, got {ids:?}");
         assert!((events[0].confidence - 0.85).abs() < 1e-9);
     }
@@ -1035,7 +1075,11 @@ mod tests {
         let events = v.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Critical);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
         assert!((events[0].confidence - 0.95).abs() < 1e-9);
         assert!(matches!(events[0].finding, Finding::ProcessHollowing));
@@ -1047,7 +1091,11 @@ mod tests {
         let events = v.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
         assert!((events[0].confidence - 0.8).abs() < 1e-9);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
@@ -1065,7 +1113,11 @@ mod tests {
     fn tampered_vdso_has_t1055() {
         let v = make_vdso(77, "sshd", true, 100);
         let events = v.into_forensic_events();
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(
             ids.contains(&"T1055"),
             "expected T1055 for tampered vDSO, got {ids:?}"
@@ -1108,7 +1160,11 @@ mod tests {
         let events = u.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Critical);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
         assert!((events[0].confidence - 0.9).abs() < 1e-9);
     }
@@ -1119,7 +1175,11 @@ mod tests {
         let events = u.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
         assert!((events[0].confidence - 0.7).abs() < 1e-9);
     }
@@ -1131,7 +1191,11 @@ mod tests {
         let events = u.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1548"), "expected T1548, got {ids:?}");
         assert!((events[0].confidence - 0.6).abs() < 1e-9);
     }
@@ -1176,7 +1240,11 @@ mod tests {
         let events = a.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Critical);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1562"), "expected T1562, got {ids:?}");
         assert!((events[0].confidence - 0.95).abs() < 1e-9);
     }
@@ -1187,7 +1255,11 @@ mod tests {
         let events = a.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1562"), "expected T1562, got {ids:?}");
         assert!((events[0].confidence - 0.85).abs() < 1e-9);
     }
@@ -1198,7 +1270,11 @@ mod tests {
         let events = a.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1562"), "expected T1562, got {ids:?}");
         assert!((events[0].confidence - 0.6).abs() < 1e-9);
     }
@@ -1246,7 +1322,11 @@ mod tests {
         let events = c.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1496"), "expected T1496, got {ids:?}");
         assert!((events[0].confidence - 0.8).abs() < 1e-9);
     }
@@ -1257,7 +1337,11 @@ mod tests {
         let events = c.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1496"), "expected T1496, got {ids:?}");
         assert!((events[0].confidence - 0.5).abs() < 1e-9);
     }
@@ -1308,7 +1392,11 @@ mod tests {
         let events = c.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Critical);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
         assert!((events[0].confidence - 0.9).abs() < 1e-9);
     }
@@ -1319,7 +1407,11 @@ mod tests {
         let events = c.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
         assert!((events[0].confidence - 0.8).abs() < 1e-9);
     }
@@ -1330,7 +1422,11 @@ mod tests {
         let events = c.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1611"), "expected T1611, got {ids:?}");
         assert!((events[0].confidence - 0.75).abs() < 1e-9);
     }
@@ -1379,7 +1475,11 @@ mod tests {
         let events = f.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1205"), "expected T1205, got {ids:?}");
         assert!((events[0].confidence - 0.8).abs() < 1e-9);
     }
@@ -1390,7 +1490,11 @@ mod tests {
         let events = f.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1071"), "expected T1071, got {ids:?}");
         assert!((events[0].confidence - 0.5).abs() < 1e-9);
     }
@@ -1401,7 +1505,11 @@ mod tests {
         let events = f.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1071"), "expected T1071, got {ids:?}");
         assert!((events[0].confidence - 0.6).abs() < 1e-9);
     }
@@ -1453,7 +1561,11 @@ mod tests {
         let events = s.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Critical);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1027"), "expected T1027, got {ids:?}");
         assert!((events[0].confidence - 0.9).abs() < 1e-9);
         assert!(matches!(events[0].finding, Finding::ProcessHollowing));
@@ -1465,7 +1577,11 @@ mod tests {
         let events = s.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
         assert!((events[0].confidence - 0.85).abs() < 1e-9);
         assert!(matches!(events[0].finding, Finding::ProcessHollowing));
@@ -1477,7 +1593,11 @@ mod tests {
         let events = s.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1055"), "expected T1055, got {ids:?}");
         assert!((events[0].confidence - 0.6).abs() < 1e-9);
         assert!(matches!(events[0].finding, Finding::DefenseEvasion));
@@ -1526,7 +1646,11 @@ mod tests {
         let events = f.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::High);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
         assert!((events[0].confidence - 0.9).abs() < 1e-9);
     }
@@ -1537,7 +1661,11 @@ mod tests {
         let events = f.into_forensic_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].severity, Severity::Medium);
-        let ids: Vec<&str> = events[0].mitre_attack.iter().map(memf_correlate::mitre::MitreAttackId::as_str).collect();
+        let ids: Vec<&str> = events[0]
+            .mitre_attack
+            .iter()
+            .map(memf_correlate::mitre::MitreAttackId::as_str)
+            .collect();
         assert!(ids.contains(&"T1564"), "expected T1564, got {ids:?}");
         assert!((events[0].confidence - 0.6).abs() < 1e-9);
     }

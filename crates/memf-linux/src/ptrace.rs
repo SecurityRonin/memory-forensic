@@ -43,7 +43,9 @@ pub fn scan_ptrace_relationships<P: PhysicalMemoryProvider>(
     let mut results = Vec::new();
 
     for proc in processes {
-        if let Ok(Some(rel)) = read_ptrace_info(reader, proc) { results.push(rel) }
+        if let Ok(Some(rel)) = read_ptrace_info(reader, proc) {
+            results.push(rel)
+        }
     }
 
     Ok(results)
