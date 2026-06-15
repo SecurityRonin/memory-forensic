@@ -13,8 +13,8 @@ memf check memdump.dmp --symbols ntkrnlmp.json --dpapi-keys --browser-cookies
 
 Highlights: ELF dynamic symbol analysis for LD_PRELOAD rootkit behavioral fingerprinting, DPAPI master key extraction from LSASS `g_MasterKeyCache`, Chrome v10/v20 AES-GCM cookie detection, framebuffer screenshot extraction, and injection-proof output — RFC 4180 CSV with formula-injection guard, bidi/control-character stripping on all table and terminal output.
 
-**[GitHub Repository →](https://github.com/SecurityRonin/memory-forensic)** · **[API Docs →](memf_core/index.html)**
+See the [Validation](validation.md) report for cross-checks against Volatility 3 on genuine memory images.
 
 ---
 
-[Privacy Policy](privacy/) · [Terms of Service](terms/) · [GitHub](https://github.com/SecurityRonin/memory-forensic) · © 2026 Security Ronin Ltd.
+[Privacy Policy](privacy.md) · [Terms of Service](terms.md) · [GitHub](https://github.com/SecurityRonin/memory-forensic) · © 2026 Security Ronin Ltd.
