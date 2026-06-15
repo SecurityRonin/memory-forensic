@@ -5,10 +5,17 @@
 //! Any walker that needs to inspect VMAs for a single task can delegate to
 //! this function instead of reimplementing the linked-list traversal.
 
+use std::collections::HashSet;
+
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 use crate::types::VmaFlags;
+
+/// Hard cap on VMAs walked for one task — defence in depth against a corrupt
+/// `vm_next` chain that is absurdly long but not strictly cyclic. The Linux
+/// default `vm.max_map_count` is 65 530, so this never trips on real data.
+const MAX_VMAS: usize = 1_000_000;
 
 /// Data read from a single `vm_area_struct` entry.
 #[derive(Debug, Clone)]
@@ -53,8 +60,16 @@ where
         Err(_) => return,
     };
 
+    // Cycle / runaway guard: an attacker-controllable image can have a `vm_next`
+    // that points back into the list (e.g. a VMA whose vm_next is itself). Track
+    // visited VMA addresses and stop on revisit, plus a hard cap, so a corrupt
+    // chain can never spin forever.
+    let mut seen: HashSet<u64> = HashSet::new();
     let mut vma_addr = mmap_ptr;
     while vma_addr != 0 {
+        if seen.len() >= MAX_VMAS || !seen.insert(vma_addr) {
+            break;
+        }
         let start: u64 = match reader.read_field(vma_addr, "vm_area_struct", "vm_start") {
             Ok(v) => v,
             Err(_) => break,
@@ -112,9 +127,12 @@ mod tests {
     #[test]
     fn task_with_null_mm_produces_no_vmas() {
         // A task_struct where mm == 0 (kernel thread) must yield no entries.
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 32)
-            .add_field("task_struct", "mm", 0, "pointer");
+        let isf = IsfBuilder::new().add_struct("task_struct", 32).add_field(
+            "task_struct",
+            "mm",
+            0,
+            "pointer",
+        );
         let task_vaddr: u64 = 0xFFFF_8000_0010_0000;
         let task_paddr: u64 = 0x0010_0000;
         let mut page = [0u8; 4096];
@@ -127,15 +145,21 @@ mod tests {
 
         let mut entries: Vec<VmaEntry> = Vec::new();
         for_each_task_vma(&reader, task_vaddr, &mut |e| entries.push(e));
-        assert!(entries.is_empty(), "kernel thread (mm=0) should yield no VMAs");
+        assert!(
+            entries.is_empty(),
+            "kernel thread (mm=0) should yield no VMAs"
+        );
     }
 
     #[test]
     fn unreadable_mm_field_produces_no_vmas() {
         // If the task_struct itself is not mapped, no VMAs should be yielded.
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 32)
-            .add_field("task_struct", "mm", 0, "pointer");
+        let isf = IsfBuilder::new().add_struct("task_struct", 32).add_field(
+            "task_struct",
+            "mm",
+            0,
+            "pointer",
+        );
         let reader = memf_core::test_builders::make_reader(&isf);
 
         let mut entries: Vec<VmaEntry> = Vec::new();
@@ -212,6 +236,60 @@ mod tests {
         assert!(e.flags.read, "read flag should be set");
         assert!(e.flags.write, "write flag should be set");
         assert!(!e.flags.exec, "exec flag should not be set");
+    }
+
+    #[test]
+    fn cyclic_vm_next_terminates_after_one_visit() {
+        // An attacker-controllable image can have a vm_next that points back into
+        // the list. A VMA whose vm_next is itself must be visited once and then
+        // the cycle guard must stop the walk — never loop forever.
+        let task_vaddr: u64 = 0xFFFF_8000_0001_0000;
+        let task_paddr: u64 = 0x0001_0000;
+        let mm_vaddr: u64 = 0xFFFF_8000_0002_0000;
+        let mm_paddr: u64 = 0x0002_0000;
+        let vma_vaddr: u64 = 0xFFFF_8000_0003_0000;
+        let vma_paddr: u64 = 0x0003_0000;
+
+        let isf = IsfBuilder::new()
+            .add_struct("task_struct", 16)
+            .add_field("task_struct", "mm", 0, "pointer")
+            .add_struct("mm_struct", 16)
+            .add_field("mm_struct", "mmap", 0, "pointer")
+            .add_struct("vm_area_struct", 48)
+            .add_field("vm_area_struct", "vm_start", 0, "unsigned long")
+            .add_field("vm_area_struct", "vm_end", 8, "unsigned long")
+            .add_field("vm_area_struct", "vm_flags", 16, "unsigned long")
+            .add_field("vm_area_struct", "vm_file", 24, "pointer")
+            .add_field("vm_area_struct", "vm_next", 32, "pointer");
+
+        let mut task_page = [0u8; 4096];
+        task_page[0..8].copy_from_slice(&mm_vaddr.to_le_bytes());
+        let mut mm_page = [0u8; 4096];
+        mm_page[0..8].copy_from_slice(&vma_vaddr.to_le_bytes());
+
+        let mut vma_page = [0u8; 4096];
+        vma_page[0..8].copy_from_slice(&0x0000_7FFF_0000_0000u64.to_le_bytes()); // vm_start
+        vma_page[8..16].copy_from_slice(&0x0000_7FFF_0001_0000u64.to_le_bytes()); // vm_end
+        vma_page[16..24].copy_from_slice(&3u64.to_le_bytes()); // vm_flags
+        vma_page[24..32].copy_from_slice(&0u64.to_le_bytes()); // vm_file = anonymous
+        vma_page[32..40].copy_from_slice(&vma_vaddr.to_le_bytes()); // vm_next = self (cycle!)
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(task_vaddr, task_paddr, ptflags::WRITABLE)
+            .write_phys(task_paddr, &task_page)
+            .map_4k(mm_vaddr, mm_paddr, ptflags::WRITABLE)
+            .write_phys(mm_paddr, &mm_page)
+            .map_4k(vma_vaddr, vma_paddr, ptflags::WRITABLE)
+            .write_phys(vma_paddr, &vma_page);
+
+        let reader = make_reader_with_isf(&isf, ptb);
+
+        let mut count = 0usize;
+        for_each_task_vma(&reader, task_vaddr, &mut |_| count += 1);
+        assert_eq!(
+            count, 1,
+            "self-referencing vm_next must be visited once, then the walk stops"
+        );
     }
 
     #[test]
