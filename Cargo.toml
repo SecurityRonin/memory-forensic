@@ -20,15 +20,17 @@ repository = "https://github.com/SecurityRonin/memory-forensic"
 [workspace.dependencies]
 forensicnomicon = { version = "0.5", features = ["std", "serde"] }
 jsonguard = { version = "0.2.3", features = ["std", "serde"] }
-winevt-core = { path = "../winevt-forensic/crates/winevt-core" }
-forensic-hashdb = { path = "crates/forensic-hashdb" }
-memf-format  = { path = "crates/memf-format" }
-memf-strings = { path = "crates/memf-strings" }
-memf-symbols = { path = "crates/memf-symbols" }
-memf-core    = { path = "crates/memf-core" }
-memf-linux   = { path = "crates/memf-linux" }
-memf-windows = { path = "crates/memf-windows" }
-memf-correlate    = { path = "crates/memf-correlate" }
+# winevt-core is now published — use the registry (drops the cross-repo path).
+winevt-core = "0.2"
+# Internal (version + path: path drives local dev, version is used on publish).
+forensic-hashdb = { version = "0.1.0", path = "crates/forensic-hashdb" }
+memf-format  = { version = "0.1.0", path = "crates/memf-format" }
+memf-strings = { version = "0.1.0", path = "crates/memf-strings" }
+memf-symbols = { version = "0.1.0", path = "crates/memf-symbols" }
+memf-core    = { version = "0.1.0", path = "crates/memf-core" }
+memf-linux   = { version = "0.1.0", path = "crates/memf-linux" }
+memf-windows = { version = "0.1.0", path = "crates/memf-windows" }
+memf-correlate    = { version = "0.2.0", path = "crates/memf-correlate" }
 assert_cmd = "2"
 aes            = "0.8"
 aes-gcm        = "0.10"
