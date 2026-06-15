@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BTF_HEADER_SIZE","BTF_MAGIC"],"enum":["BtfKind"],"fn":["extract_btf_from_elf","extract_btf_from_elf64","le_u16","le_u32","le_u64","parse_type_section","read_btf_string","resolve_type_name"],"struct":["BtfMember","BtfResolver","BtfType"]};

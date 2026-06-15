@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_CLIP_ENTRIES"],"fn":["classify_clipboard","contains_ip_url","format_name","read_ansi_preview","read_unicode_preview","walk_clipboard"],"struct":["ClipboardEntry"]};

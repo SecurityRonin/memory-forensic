@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["product_type_name","read_u32_symbol","walk_sysinfo"],"struct":["SystemInfo"]};

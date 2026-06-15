@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_CHAIN_LENGTH","MAX_HASH_BUCKETS","MAX_WIDE_CHARS"],"fn":["read_cache_entry","read_record_data","read_wide_string","walk_dns_cache"]};

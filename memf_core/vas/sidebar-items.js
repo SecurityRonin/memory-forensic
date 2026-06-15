@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AARCH64_OA_MASK","AARCH64_TABLE","AARCH64_VALID","ADDR_MASK","PRESENT","PS","TRANSLATION_CACHE_CAPACITY"],"enum":["TranslationMode","TranslationResult"],"struct":["VirtualAddressSpace"]};

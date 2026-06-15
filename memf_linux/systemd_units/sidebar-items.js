@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["EXEC_SEARCH_WINDOW","KNOWN_SAFE_UNITS","SAFE_EXEC_PREFIXES","SCAN_CHUNK","SUSPICIOUS_EXEC_PATTERNS","UNIT_EXTENSIONS"],"fn":["classify_systemd_unit","find_exec_start","find_name_start","find_subsequence","scan_systemd_vmas","scan_vma_for_units","walk_systemd_units"],"struct":["SystemdUnitInfo"]};

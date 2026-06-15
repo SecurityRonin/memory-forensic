@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_ATOMS","MAX_BUCKETS"],"fn":["classify_atom","is_guid_like","walk_atom_table"],"struct":["AtomInfo"]};

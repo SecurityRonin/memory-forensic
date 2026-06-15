@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_BUF_LEN","MAX_RECORDS"],"fn":["extract_kb","parse_oom_line","walk_oom_events"],"struct":["OomEventInfo"]};

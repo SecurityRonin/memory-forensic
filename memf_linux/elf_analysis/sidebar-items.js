@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["analyse_elf_capabilities","scan_elf_string_artifacts"],"struct":["ElfCapabilityReport","ElfStringArtifact","HookMatch"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["classify_etw_patch","walk_etw_patches"],"struct":["EtwPatchInfo"]};

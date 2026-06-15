@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CHUNK_SIZE"],"fn":["build_utf16_pairs","emit_ascii","emit_utf16","extract_strings","is_printable_ascii","is_printable_utf16"],"struct":["ExtractConfig"]};

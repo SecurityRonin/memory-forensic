@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["VAD_PROTECTION_MASK","VAD_PROTECTION_SHIFT","VAD_TYPE_MASK"],"fn":["is_execute_write","is_private_vad","protection_to_string","walk_malfind","walk_vad_tree"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_audit_tampered","scan_audit_tampering"]};

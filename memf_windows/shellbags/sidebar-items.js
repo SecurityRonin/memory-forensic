@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_DEPTH","MAX_SUBKEYS_PER_LEVEL"],"fn":["classify_shellbag","extract_folder_name","find_extension_timestamps","parse_shitemid","walk_bagmru_node","walk_shellbags"],"struct":["ShellbagEntry"]};

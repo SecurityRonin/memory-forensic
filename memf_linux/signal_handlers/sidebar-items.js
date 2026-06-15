@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_SIGNALS"],"fn":["handler_type","signal_name","walk_signal_handlers"],"struct":["SignalHandlerInfo"]};

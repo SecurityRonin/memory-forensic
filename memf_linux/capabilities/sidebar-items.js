@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ALL_CAPS","CAP_DAC_OVERRIDE","CAP_NET_ADMIN","CAP_NET_RAW","CAP_SYS_ADMIN","CAP_SYS_MODULE","CAP_SYS_PTRACE"],"fn":["cap_name","read_process_caps","walk_capabilities"],"struct":["ProcessCapabilities"]};

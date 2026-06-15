@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["classify_bash_command","extract_bash_history_from_bytes"],"struct":["BashHistoryEntry"]};

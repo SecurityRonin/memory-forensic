@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CACHE_CAPACITY","COMPRESS_LZO","COMPRESS_SNAPPY","COMPRESS_ZLIB","COMPRESS_ZSTD","DISKDUMP_SIG","KDUMP_SIG","PAGE_DESC_SIZE"],"fn":["bitmap_popcount_before","bitmap_test","decompress_page","is_kdump_signature","parse_page_desc","ranges_from_bitmap","read_i32","read_i64","read_u32"],"struct":["KdumpPlugin","KdumpProvider","PageDesc"]};

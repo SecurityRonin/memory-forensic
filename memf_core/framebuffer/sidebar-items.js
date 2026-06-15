@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["FramebufferError","PixelFormat"],"fn":["encode_png","to_rgb24"],"struct":["FramebufferResult"]};

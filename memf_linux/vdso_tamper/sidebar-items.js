@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_vdso_tampered","scan_vdso_tampering"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DpapiError"],"mod":["chrome","decrypt","dpapi_blob"]};

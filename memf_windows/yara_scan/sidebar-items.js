@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_REGION_BYTES"],"fn":["scan_yara"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["EXE_NAME_LEN","EXE_NAME_OFFSET","HASH_OFFSET","LAST_RUN_TIME_OFFSET","MAX_ENTRIES","MIN_HEADER_SIZE","MIN_PARSE_SIZE","PREFETCH_MAGIC","RUN_COUNT_OFFSET","SCAN_ALIGNMENT"],"fn":["parse_prefetch_header","read_u32_at","read_u64_at","scan_prefetch","utf16le_to_string"],"struct":["PrefetchInfo"]};

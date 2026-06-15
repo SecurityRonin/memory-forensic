@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["INTEGRITY_LEVELS"],"fn":["classify_process_sid","integrity_level_name","read_integrity_level","read_sid_at","read_token_user_sid","walk_getsids","well_known_sid"]};

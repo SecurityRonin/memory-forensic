@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["scan_firefox_region","walk_firefox_credentials"]};

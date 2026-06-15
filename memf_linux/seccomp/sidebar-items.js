@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_FILTER_CHAIN"],"fn":["count_filter_chain","walk_seccomp_profiles"],"struct":["SeccompInfo"]};

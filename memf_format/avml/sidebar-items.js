@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AVML_MAGIC","AVML_VERSION","HEADER_SIZE"],"fn":["le_u32","le_u64","parse_blocks"],"struct":["AvmlBlock","AvmlPlugin","AvmlProvider"]};

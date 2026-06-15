@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PATTERN_SPECS"],"fn":["patterns"],"struct":["PatternEntry","RegexClassifier"]};

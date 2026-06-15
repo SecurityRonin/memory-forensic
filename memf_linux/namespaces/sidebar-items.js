@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["read_namespace_info","walk_namespaces"],"struct":["NamespaceInfo"]};

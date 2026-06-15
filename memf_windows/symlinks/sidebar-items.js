@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_DIR_DEPTH","STANDARD_DOSDEVICE_TARGETS","SUSPICIOUS_TARGETS"],"fn":["classify_symlink","resolve_type_name","walk_dir_recursive","walk_symlinks"],"struct":["SymlinkInfo"]};

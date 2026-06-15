@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ChromeCookieEncoding"],"fn":["decrypt_v10_cookie","detect_chrome_cookie_encoding"]};

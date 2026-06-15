@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_IPC_IDS","MAX_XA_DEPTH","XA_NODE_SLOTS"],"fn":["walk_semaphores","walk_shm_segments","walk_xarray"],"struct":["IpcSemInfo","IpcShmInfo"]};

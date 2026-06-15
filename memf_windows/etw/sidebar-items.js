@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_BUFFERS","MAX_LOGGERS"],"fn":["scan_etw_buffers","walk_etw_sessions"],"struct":["EtwBufferEvent","EtwSessionInfo"]};

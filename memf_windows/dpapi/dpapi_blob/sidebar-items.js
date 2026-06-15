@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["parse_dpapi_blob","read_u32"],"struct":["DpapiBlob"]};

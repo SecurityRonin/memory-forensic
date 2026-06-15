@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["GROUP_ENTRY_SIZE","HEADER_SIZE","TAG_FLAGS_INDEXED_8BYTE","TAG_FLAGS_LARGE_DATA","VMSN_MAGIC_1","VMSN_MAGIC_2","VMSN_MAGIC_3","VMSS_MAGIC"],"fn":["is_vmware_magic","parse_tags","read_u32","read_u64"],"struct":["MemoryRegion","VmwarePlugin","VmwareStateProvider"]};

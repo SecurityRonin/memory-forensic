@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["EFI_SYSTEM_TABLE_SIG","GOP_GUID","MAX_FB_BYTES"],"fn":["find_efi_system_table","find_gop_mode","read_u32_phys","read_u64_phys","walk_framebuffer_from","walk_framebuffer_windows"]};

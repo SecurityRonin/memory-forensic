@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CONSOLE_HOST_NAMES","MAX_COMMANDS_PER_HISTORY","MAX_HISTORY_ENTRIES","SCAN_WINDOW_SIZE"],"fn":["classify_console_command","extract_console_commands","is_plausible_pointer","read_ptr","read_u16","read_u32","read_utf16_string","scan_for_console_info","walk_consoles","walk_history_list"],"struct":["ConsoleHistoryInfo"]};

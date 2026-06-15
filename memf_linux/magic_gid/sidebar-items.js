@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["FATHER_MAGIC_GID","KNOWN_MAGIC_GIDS"],"fn":["classify_magic_gid","has_magic_gid"],"struct":["MagicGidFinding"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["FUNCTIONS_TO_CHECK","PROLOGUE_SIZE"],"fn":["analyze_prologue","check_inline_hooks"]};

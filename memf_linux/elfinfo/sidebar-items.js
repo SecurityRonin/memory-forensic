@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ELF64_HEADER_SIZE","ELF_MAGIC"],"fn":["parse_elf64_header","scan_process_elfs","walk_elfinfo"]};

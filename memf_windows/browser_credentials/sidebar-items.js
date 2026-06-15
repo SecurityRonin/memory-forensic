@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CHROMIUM_BROWSERS"],"fn":["cred_re","scan_region","walk_browser_credentials"],"static":["CRED_RE"]};

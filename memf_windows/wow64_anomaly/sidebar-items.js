@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_wow64_suspicious","scan_wow64_anomalies"]};

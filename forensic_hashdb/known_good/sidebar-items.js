@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["KnownGoodError"],"struct":["KnownGoodDb"]};

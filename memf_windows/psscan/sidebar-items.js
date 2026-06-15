@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DISPATCHER_TYPE_PROCESS","EPROCESS_DELTAS","POOL_TAGS","PROC_PROTECTED_TAG","PROC_TAG"],"fn":["decode_image_name","plausible_dtb","plausible_pid","psscan","read_phys_exact","scan_processes","scan_processes_dtb","try_eprocess"],"struct":["ScannedProcess"]};

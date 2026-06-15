@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["NOP_SLED_THRESHOLD","TARGET_MODULES","TEXT_SECTION_SCAN_SIZE"],"fn":["classify_skeleton_key_pattern","find_nop_sled","find_patched_conditional_jump","is_suspicious_dll_path","scan_kdc_patterns","scan_module_patterns","scan_nop_sled","walk_skeleton_key"],"struct":["SkeletonKeyIndicator"]};

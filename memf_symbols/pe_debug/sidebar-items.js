@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_PDB_NAME_LEN","RSDS_MAGIC","RSDS_MIN_LEN"],"fn":["extract_pdb_id","extract_pdb_id_tolerant","extract_pdb_id_tolerant_where","find_subslice","format_guid"],"struct":["PdbId"]};

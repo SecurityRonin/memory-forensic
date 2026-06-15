@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AWS_KEY_ID","AZURE_SAS","AZURE_STORAGE_KEY","GCP_API_KEY","GENERIC_API_KEY","STRIPE_PK","STRIPE_SECRET","TWILIO_SID"],"fn":["scan_cloud_region","walk_cloud_credentials"]};

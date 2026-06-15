@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_BINDINGS"],"fn":["classify_wmi_consumer","walk_wmi_subscriptions"],"struct":["WmiSubscriptionInfo"]};

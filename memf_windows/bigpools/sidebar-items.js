@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_BIGPOOL_ENTRIES"],"fn":["classify_bigpool","pool_type_name","walk_bigpools"],"struct":["BigPoolEntry"]};

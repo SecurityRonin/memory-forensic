@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AWS_STS_PATTERN","BEARER_PATTERN","GENERIC_TOKEN_PATTERN","GITHUB_PATTERN","GITLAB_PATTERN","JWT_PATTERN","SLACK_PATTERN","TOKEN_PATTERN_SPECS"],"fn":["scan_for_tokens","token_patterns","walk_session_tokens"],"static":["TOKEN_PATTERNS"],"struct":["TokenPattern"]};

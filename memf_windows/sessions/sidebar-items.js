@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_SESSIONS"],"fn":["classify_session","logon_type_name","walk_sessions"],"struct":["SessionInfo"]};

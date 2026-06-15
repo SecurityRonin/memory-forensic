@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_deleted_exe","read_deleted_exe_info","read_file_dentry_name","strip_deleted_suffix","walk_deleted_exe"],"struct":["DeletedExeFinding","DeletedExeInfo"]};

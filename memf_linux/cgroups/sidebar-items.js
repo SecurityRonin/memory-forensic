@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["build_kernfs_path","is_suspicious_cgroup","walk_cgroups"],"struct":["CgroupInfo"]};

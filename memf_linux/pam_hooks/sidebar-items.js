@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["SYSTEM_LIB_PREFIXES"],"fn":["read_dentry_name","scan_process_pam","walk_pam_hooks"],"struct":["PamHookInfo"]};

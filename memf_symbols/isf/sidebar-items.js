@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["collect_json_files","discover_isf_files","home_dir"],"struct":["IsfBaseType","IsfDocument","IsfField","IsfFieldType","IsfResolver","IsfSymbol","IsfUserType"]};

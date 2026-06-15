@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_escalation_suspicious","scan_user_ns_escalation"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["IRP_MJ_COUNT","MAX_DRIVERS"],"fn":["check_driver_irp_hooks","check_driver_object","classify_irp_hook","irp_name","resolve_module","walk_driver_irp"],"struct":["DriverIrpHookInfo"]};
