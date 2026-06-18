@@ -57,6 +57,40 @@ pub fn find_loaded_module<P: PhysicalMemoryProvider>(
     Ok(None)
 }
 
+/// Cap on bytes read from a module image when scanning for its CodeView record.
+const MODULE_IMAGE_SCAN_CAP: usize = 4 * 1024 * 1024;
+
+/// Read a loaded module's PE image (at its base VA) and extract its CodeView
+/// RSDS PDB identification ([`PdbId`]) — the input to resolving that module's own
+/// symbols (e.g. `tcpip.sys` for `netstat`).
+///
+/// `image_size` is the PE `SizeOfImage` (from the `_KLDR_DATA_TABLE_ENTRY`); the
+/// read is capped at [`MODULE_IMAGE_SCAN_CAP`] and done page-by-page so a
+/// partially paged-out image (unmapped pages → zero-filled) still yields the RSDS
+/// when its page is resident.
+pub fn module_pdb_id<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    base_va: u64,
+    image_size: u32,
+) -> Result<memf_symbols::pe_debug::PdbId> {
+    // RED stub — replaced by the real read+extract in GREEN.
+    if true {
+        let _ = (reader, base_va, image_size);
+        return Err(Error::Symbol(memf_symbols::Error::NotFound("stub".into())));
+    }
+    let cap = (image_size as usize).clamp(0x1000, MODULE_IMAGE_SCAN_CAP);
+    let mut image = vec![0u8; cap];
+    let mut off = 0usize;
+    while off < cap {
+        let chunk = 0x1000.min(cap - off);
+        if let Ok(page) = reader.read_bytes(base_va.wrapping_add(off as u64), chunk) {
+            image[off..off + page.len()].copy_from_slice(&page);
+        }
+        off += chunk;
+    }
+    Ok(memf_symbols::pe_debug::extract_pdb_id(&image)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +188,75 @@ mod tests {
 
         let missing = find_loaded_module(&reader, "nope.sys").expect("walk ok");
         assert_eq!(missing, None, "absent module returns None");
+    }
+
+    /// Minimal PE32+/AMD64 image (one page) with a CodeView RSDS debug record.
+    fn build_pe(guid: [u8; 16], age: u32, pdb_name: &str) -> Vec<u8> {
+        let mut buf = vec![0u8; 4096];
+        buf[0] = b'M';
+        buf[1] = b'Z';
+        buf[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes()); // e_lfanew
+        let mut pos = 0x80usize;
+        buf[pos..pos + 4].copy_from_slice(b"PE\0\0");
+        pos += 4;
+        buf[pos..pos + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // Machine AMD64
+        buf[pos + 2..pos + 4].copy_from_slice(&1u16.to_le_bytes()); // NumberOfSections
+        let opt_size: u16 = 240;
+        buf[pos + 16..pos + 18].copy_from_slice(&opt_size.to_le_bytes());
+        buf[pos + 18..pos + 20].copy_from_slice(&0x0022u16.to_le_bytes());
+        pos += 20;
+        let opt = pos;
+        buf[opt..opt + 2].copy_from_slice(&0x020Bu16.to_le_bytes()); // PE32+
+        buf[opt + 32..opt + 36].copy_from_slice(&0x1000u32.to_le_bytes()); // SectionAlignment
+        buf[opt + 36..opt + 40].copy_from_slice(&0x200u32.to_le_bytes()); // FileAlignment
+        buf[opt + 56..opt + 60].copy_from_slice(&0x2000u32.to_le_bytes()); // SizeOfImage
+        buf[opt + 60..opt + 64].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfHeaders
+        buf[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes()); // NumberOfRvaAndSizes
+        buf[opt + 160..opt + 164].copy_from_slice(&0x200u32.to_le_bytes()); // Debug dir RVA (idx 6)
+        buf[opt + 164..opt + 168].copy_from_slice(&28u32.to_le_bytes()); // Debug dir size
+                                                                         // IMAGE_DEBUG_DIRECTORY @ 0x200
+        let dd = 0x200usize;
+        let cv_rva: u32 = 0x220;
+        let name = pdb_name.as_bytes();
+        let cv_size = (24 + name.len() + 1) as u32;
+        buf[dd + 12..dd + 16].copy_from_slice(&2u32.to_le_bytes()); // Type CODEVIEW
+        buf[dd + 16..dd + 20].copy_from_slice(&cv_size.to_le_bytes());
+        buf[dd + 20..dd + 24].copy_from_slice(&cv_rva.to_le_bytes()); // AddressOfRawData
+        buf[dd + 24..dd + 28].copy_from_slice(&cv_rva.to_le_bytes()); // PointerToRawData (RVA 1:1)
+                                                                      // RSDS @ 0x220
+        let cv = 0x220usize;
+        buf[cv..cv + 4].copy_from_slice(b"RSDS");
+        buf[cv + 4..cv + 20].copy_from_slice(&guid);
+        buf[cv + 20..cv + 24].copy_from_slice(&age.to_le_bytes());
+        buf[cv + 24..cv + 24 + name.len()].copy_from_slice(name);
+        buf
+    }
+
+    #[test]
+    fn module_pdb_id_extracts_rsds_from_image() {
+        // A tcpip.sys image mapped at its base VA; module_pdb_id reads it and
+        // recovers the CodeView RSDS PDB id (the input to per-module symbols).
+        let base_va = 0xFFFF_F800_C0DE_0000u64;
+        let paddr = 0x12_0000u64;
+        let guid = [
+            0x4D, 0x22, 0x72, 0x1B, 0xB8, 0x37, 0x92, 0x17, 0x28, 0x20, 0x0E, 0xD8, 0x99, 0x44,
+            0x98, 0xB2,
+        ];
+        let image = build_pe(guid, 1, "tcpip.pdb");
+
+        let isf = IsfBuilder::windows_kernel_preset().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(base_va, paddr, flags::WRITABLE)
+            .write_phys(paddr, &image)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // image_size 0x1000 — one mapped page covering the RSDS at 0x220.
+        let id = module_pdb_id(&reader, base_va, 0x1000).expect("extract pdb id");
+        assert_eq!(id.pdb_name, "tcpip.pdb");
+        assert_eq!(id.age, 1);
+        assert!(id.guid.contains("1B72224D"), "guid decoded: {}", id.guid);
     }
 }
