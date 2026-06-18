@@ -31,26 +31,48 @@ pub fn find_loaded_module<P: PhysicalMemoryProvider>(
         .symbol_address("PsLoadedModuleList")
         .ok_or_else(|| Error::Core(memf_core::Error::MissingSymbol("PsLoadedModuleList".into())))?;
 
-    let name_off = reader
-        .symbols()
-        .field_offset("_KLDR_DATA_TABLE_ENTRY", "BaseDllName")
+    // The loaded-module entry struct is `_LDR_DATA_TABLE_ENTRY` in real ntoskrnl
+    // PDBs (the kernel uses _KLDR internally, but that's the exported symbol);
+    // some synthetic/older ISFs name it `_KLDR_DATA_TABLE_ENTRY`. Use whichever
+    // the resolver actually carries (both share these field offsets).
+    let entry_struct = ["_LDR_DATA_TABLE_ENTRY", "_KLDR_DATA_TABLE_ENTRY"]
+        .into_iter()
+        .find(|s| reader.symbols().field_offset(s, "BaseDllName").is_some())
         .ok_or_else(|| Error::MissingField {
-            struct_name: "_KLDR_DATA_TABLE_ENTRY".into(),
+            struct_name: "_LDR_DATA_TABLE_ENTRY".into(),
             field_name: "BaseDllName".into(),
         })?;
 
-    let entries = reader.walk_list_with(
+    let name_off = reader
+        .symbols()
+        .field_offset(entry_struct, "BaseDllName")
+        .ok_or_else(|| Error::MissingField {
+            struct_name: entry_struct.into(),
+            field_name: "BaseDllName".into(),
+        })?;
+
+    // Bidirectional (Flink + Blink): a torn-down node breaks the forward chain on
+    // live-acquired dumps, orphaning every driver past it from a forward-only walk;
+    // the Blink leg recovers them.
+    let entries = reader.walk_list_bidirectional(
         head,
         "_LIST_ENTRY",
         "Flink",
-        "_KLDR_DATA_TABLE_ENTRY",
+        "Blink",
+        entry_struct,
         "InLoadOrderLinks",
     )?;
 
     for entry in entries {
-        let modname = read_unicode_string(reader, entry.wrapping_add(name_off))?;
+        // Tolerate paged-out entries: a driver whose name buffer is not resident
+        // must not abort the search for one (e.g. tcpip.sys) that is.
+        let Ok(modname) = read_unicode_string(reader, entry.wrapping_add(name_off)) else {
+            continue;
+        };
         if modname.eq_ignore_ascii_case(name) {
-            let base: u64 = reader.read_field(entry, "_KLDR_DATA_TABLE_ENTRY", "DllBase")?;
+            let Ok(base) = reader.read_field::<u64>(entry, entry_struct, "DllBase") else {
+                continue;
+            };
             return Ok(Some(base));
         }
     }
