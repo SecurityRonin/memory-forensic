@@ -83,7 +83,10 @@ pub fn module_pdb_id<P: PhysicalMemoryProvider>(
         }
         off += chunk;
     }
-    Ok(memf_symbols::pe_debug::extract_pdb_id(&image)?)
+    // Use the *tolerant* (RSDS-scanning) extractor: a memory-mapped image has its
+    // sections at their RVAs (file-offset section mapping no longer applies), so
+    // the RVA→file-offset parser cannot locate the CodeView record — scanning can.
+    Ok(memf_symbols::pe_debug::extract_pdb_id_tolerant(&image)?)
 }
 
 #[cfg(test)]
