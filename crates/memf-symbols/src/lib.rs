@@ -215,6 +215,69 @@ mod tests {
         assert_eq!(r.symbol_address("Missing"), None);
     }
 
+    /// A second mock owning a *different* module's symbols (e.g. tcpip.sys),
+    /// already rebased by that module's base.
+    struct TcpipMock;
+    impl SymbolResolver for TcpipMock {
+        fn field_offset(&self, s: &str, f: &str) -> Option<u64> {
+            (s == "_TCP_ENDPOINT" && f == "LocalPort").then_some(0x7c)
+        }
+        fn struct_size(&self, s: &str) -> Option<u64> {
+            (s == "_TCP_ENDPOINT").then_some(0x200)
+        }
+        fn symbol_address(&self, n: &str) -> Option<u64> {
+            (n == "PartitionTable").then_some(0xFFFF_F800_BBBB_0000)
+        }
+        fn struct_info(&self, _: &str) -> Option<StructInfo> {
+            None
+        }
+        fn backend_name(&self) -> &str {
+            "tcpip-mock"
+        }
+        fn clone_boxed(&self) -> Box<dyn SymbolResolver> {
+            Box::new(TcpipMock)
+        }
+    }
+
+    /// The multi-module resolver routes each symbol/struct lookup to whichever
+    /// member resolver knows it (kernel ntoskrnl + tcpip), so a netstat walker
+    /// can resolve `PartitionTable`/`_TCP_ENDPOINT` the kernel ISF lacks.
+    #[test]
+    fn multi_module_resolver_routes_to_owning_module() {
+        let multi = MultiModuleResolver::new(vec![
+            Box::new(RebasedResolver::new(
+                Box::new(MockResolver),
+                0xFFFF_F800_CBE0_0000,
+            )),
+            Box::new(TcpipMock),
+        ]);
+        // Kernel symbol via module 1 (rebased).
+        assert_eq!(
+            multi.symbol_address("PsActiveProcessHead"),
+            Some(0xFFFF_F800_CC0B_00A0)
+        );
+        // tcpip symbol via module 2.
+        assert_eq!(
+            multi.symbol_address("PartitionTable"),
+            Some(0xFFFF_F800_BBBB_0000)
+        );
+        // Struct fields from either module.
+        assert_eq!(
+            multi.field_offset("_EPROCESS", "UniqueProcessId"),
+            Some(0x2e0)
+        );
+        assert_eq!(multi.field_offset("_TCP_ENDPOINT", "LocalPort"), Some(0x7c));
+        assert_eq!(multi.struct_size("_TCP_ENDPOINT"), Some(0x200));
+        // Unknown to all members.
+        assert_eq!(multi.symbol_address("Nonexistent"), None);
+        // clone_boxed preserves routing.
+        let cloned = multi.clone_boxed();
+        assert_eq!(
+            cloned.symbol_address("PartitionTable"),
+            Some(0xFFFF_F800_BBBB_0000)
+        );
+    }
+
     #[test]
     fn error_display() {
         let e = Error::NotFound("init_task".into());
