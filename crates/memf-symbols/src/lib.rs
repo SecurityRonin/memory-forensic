@@ -167,6 +167,50 @@ impl SymbolResolver for RebasedResolver {
     }
 }
 
+/// A [`SymbolResolver`] composed of several member resolvers — one per loaded
+/// module (e.g. the kernel `ntoskrnl` ISF + a `tcpip.sys` ISF), each already
+/// rebased by its own module base. Every lookup is routed to the first member
+/// that knows it, so a walker can resolve symbols (e.g. `PartitionTable`,
+/// `_TCP_ENDPOINT`) that no single module's ISF contains.
+pub struct MultiModuleResolver {
+    members: Vec<Box<dyn SymbolResolver>>,
+}
+
+impl MultiModuleResolver {
+    /// Build from per-module resolvers; earlier members win on name collisions.
+    #[must_use]
+    pub fn new(members: Vec<Box<dyn SymbolResolver>>) -> Self {
+        Self { members }
+    }
+}
+
+impl SymbolResolver for MultiModuleResolver {
+    fn field_offset(&self, struct_name: &str, field_name: &str) -> Option<u64> {
+        self.members
+            .iter()
+            .find_map(|m| m.field_offset(struct_name, field_name))
+    }
+    fn struct_size(&self, struct_name: &str) -> Option<u64> {
+        self.members.iter().find_map(|m| m.struct_size(struct_name))
+    }
+    fn symbol_address(&self, symbol_name: &str) -> Option<u64> {
+        self.members
+            .iter()
+            .find_map(|m| m.symbol_address(symbol_name))
+    }
+    fn struct_info(&self, struct_name: &str) -> Option<StructInfo> {
+        self.members.iter().find_map(|m| m.struct_info(struct_name))
+    }
+    fn backend_name(&self) -> &str {
+        "multi-module"
+    }
+    fn clone_boxed(&self) -> Box<dyn SymbolResolver> {
+        Box::new(MultiModuleResolver {
+            members: self.members.iter().map(|m| m.clone_boxed()).collect(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
