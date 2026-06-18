@@ -122,6 +122,14 @@ fn read_addresses<P: PhysicalMemoryProvider>(
     ep_addr: u64,
 ) -> Result<(String, String)> {
     let addr_info: u64 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "AddrInfo")?;
+    addresses_from_addr_info(reader, addr_info)
+}
+
+/// Resolve (local, remote) IPv4 from an `_ADDR_INFO` virtual address.
+fn addresses_from_addr_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    addr_info: u64,
+) -> Result<(String, String)> {
     if addr_info == 0 {
         return Ok(("0.0.0.0".to_string(), "0.0.0.0".to_string()));
     }
@@ -154,6 +162,14 @@ fn read_owner<P: PhysicalMemoryProvider>(
     ep_addr: u64,
 ) -> Result<(u64, String)> {
     let owner: u64 = reader.read_field(ep_addr, "_TCP_ENDPOINT", "Owner")?;
+    owner_info(reader, owner)
+}
+
+/// Resolve (pid, process name) from an owning `_EPROCESS` virtual address.
+fn owner_info<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    owner: u64,
+) -> Result<(u64, String)> {
     if owner == 0 {
         return Ok((0, "<unknown>".to_string()));
     }
@@ -177,6 +193,142 @@ fn read_owner<P: PhysicalMemoryProvider>(
 fn ipv4_to_string(addr: u32) -> String {
     let bytes = addr.to_le_bytes();
     format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
+}
+
+/// `_TCP_ENDPOINT` pool tag.
+const TCPE_TAG: &[u8; 4] = b"TcpE";
+/// Candidate `_TCP_ENDPOINT` start offsets relative to the pool block base.
+const TCPE_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
+/// Physical scan chunk.
+const SCAN_CHUNK: usize = 1 << 20;
+
+/// True for a canonical x64 kernel-half virtual address.
+fn is_kernel_va(x: u64) -> bool {
+    (x >> 48) == 0xFFFF && ((x >> 40) & 0xFF) >= 0xF8
+}
+
+/// Enumerate active TCP connections by **physically pool-tag scanning** for
+/// `_TCP_ENDPOINT` objects (`TcpE`), independent of the tcpip partition/hash
+/// table layout (which is version-specific). Each object's own fields are read
+/// from its physical location; the `AddrInfo` and `Owner` pointers are followed
+/// through the address space.
+///
+/// Returns an empty vec when the tcpip `_TCP_ENDPOINT` schema is unavailable.
+///
+/// # Errors
+/// Propagates address-space read failures encountered while following pointers.
+pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+) -> Result<Vec<WinConnectionInfo>> {
+    return Ok(Vec::new()); // RED stub
+    #[allow(unreachable_code)]
+    let syms = reader.symbols();
+    let off = |s: &str| syms.field_offset("_TCP_ENDPOINT", s);
+    let (Some(state_o), Some(lp_o), Some(rp_o), Some(ai_o), Some(ow_o)) = (
+        off("State"),
+        off("LocalPort"),
+        off("RemotePort"),
+        off("AddrInfo"),
+        off("Owner"),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let ct_o = off("CreateTime").unwrap_or(0);
+    let prov = reader.vas().physical();
+
+    let ranges: Vec<(u64, u64)> = {
+        let r = prov.ranges();
+        if r.is_empty() {
+            vec![(0, prov.total_size())]
+        } else {
+            r.iter().map(|x| (x.start, x.end)).collect()
+        }
+    };
+
+    let read_phys_u = |pa: u64, n: usize| -> Option<u64> {
+        let mut b = [0u8; 8];
+        if prov.read_phys(pa, &mut b[..n]).unwrap_or(0) < n {
+            return None;
+        }
+        Some(u64::from_le_bytes(b))
+    };
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut buf = vec![0u8; SCAN_CHUNK + 4];
+    for (start, end) in ranges {
+        let mut addr = start;
+        while addr < end {
+            let n = prov.read_phys(addr, &mut buf).unwrap_or(0);
+            if n < 4 {
+                addr = addr.saturating_add(SCAN_CHUNK as u64);
+                continue;
+            }
+            let mut i = 0usize;
+            while i + 4 <= n {
+                if &buf[i..i + 4] != TCPE_TAG {
+                    i += 1;
+                    continue;
+                }
+                let pool_base = (addr + i as u64).saturating_sub(4);
+                i += 1;
+                for &delta in TCPE_DELTAS {
+                    let ep = pool_base + delta;
+                    // State gate: a real endpoint has a small MIB_TCP_STATE value.
+                    let Some(state_raw) = read_phys_u(ep + state_o, 4) else {
+                        continue;
+                    };
+                    if state_raw == 0 || state_raw > 12 {
+                        continue;
+                    }
+                    // AddrInfo / Owner must be kernel pointers for a live endpoint.
+                    let (Some(ai), Some(owner)) =
+                        (read_phys_u(ep + ai_o, 8), read_phys_u(ep + ow_o, 8))
+                    else {
+                        continue;
+                    };
+                    if !is_kernel_va(ai) || !is_kernel_va(owner) {
+                        continue;
+                    }
+                    let local_port =
+                        read_phys_u(ep + lp_o, 2).map_or(0, |v| u16::from_be(v as u16));
+                    let remote_port =
+                        read_phys_u(ep + rp_o, 2).map_or(0, |v| u16::from_be(v as u16));
+                    let Ok((local_addr, remote_addr)) = addresses_from_addr_info(reader, ai) else {
+                        continue;
+                    };
+                    let (pid, process_name) =
+                        owner_info(reader, owner).unwrap_or((0, "<unknown>".to_string()));
+                    let create_time = read_phys_u(ep + ct_o, 8).unwrap_or(0);
+                    // Dedup on the 4-tuple.
+                    let key = (
+                        local_addr.clone(),
+                        local_port,
+                        remote_addr.clone(),
+                        remote_port,
+                    );
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    out.push(WinConnectionInfo {
+                        protocol: "TCPv4".to_string(),
+                        local_addr,
+                        local_port,
+                        remote_addr,
+                        remote_port,
+                        state: WinTcpState::from_raw(state_raw as u32),
+                        pid,
+                        process_name,
+                        create_time,
+                        offset: ep,
+                    });
+                    break;
+                }
+            }
+            addr = addr.saturating_add(SCAN_CHUNK as u64 - 4);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -209,7 +361,15 @@ mod tests {
     const EPROC_IMAGE_NAME: usize = 0x5A8;
 
     fn make_net_reader(ptb: PageTableBuilder) -> ObjectReader<SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
+        let isf = net_isf();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    fn net_isf() -> serde_json::Value {
+        IsfBuilder::new()
             // _LIST_ENTRY
             .add_struct("_LIST_ENTRY", 16)
             .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
@@ -264,11 +424,7 @@ mod tests {
                 EPROC_IMAGE_NAME as u64,
                 "array",
             )
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = ptb.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
+            .build_json()
     }
 
     /// Write a _TCP_ENDPOINT into a byte buffer at the given offset.
@@ -608,5 +764,91 @@ mod tests {
             ),
             "expected MissingField(_TCP_ENDPOINT.HashEntry), got {result:?}"
         );
+    }
+
+    /// Wrap `SyntheticPhysMem` so it advertises a physical range (needed for the
+    /// physical pool-tag scan; the builder's mem reports none).
+    struct RangedMem {
+        inner: SyntheticPhysMem,
+        ranges: Vec<memf_format::PhysicalRange>,
+    }
+    impl PhysicalMemoryProvider for RangedMem {
+        fn read_phys(&self, addr: u64, buf: &mut [u8]) -> memf_format::Result<usize> {
+            self.inner.read_phys(addr, buf)
+        }
+        fn ranges(&self) -> &[memf_format::PhysicalRange] {
+            &self.ranges
+        }
+        fn format_name(&self) -> &str {
+            "RangedSynthetic"
+        }
+    }
+
+    #[test]
+    fn scan_tcp_endpoints_recovers_a_connection_from_a_tcpe_pool_object() {
+        // VA-mapped pointer targets (kernel half so the is_kernel_va gate passes).
+        let ai_va = 0xFFFF_F800_0200_0000u64;
+        let la_va = 0xFFFF_F800_0200_1000u64;
+        let pdata_va = 0xFFFF_F800_0200_2000u64;
+        let ep_va = 0xFFFF_F800_0200_3000u64;
+        let (pa_ai, pa_la, pa_pdata, pa_ep) = (0x60_000u64, 0x61_000, 0x62_000, 0x63_000);
+
+        let mut ai = vec![0u8; 0x1000];
+        ai[AI_REMOTE..AI_REMOTE + 4].copy_from_slice(&[1, 2, 3, 4]); // remote 1.2.3.4
+        ai[AI_LOCAL..AI_LOCAL + 8].copy_from_slice(&la_va.to_le_bytes());
+        let mut la = vec![0u8; 0x1000];
+        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&pdata_va.to_le_bytes());
+        let mut pdata = vec![0u8; 0x1000];
+        pdata[0..4].copy_from_slice(&[10, 0, 0, 5]); // local 10.0.0.5
+        let mut ep = vec![0u8; 0x1000];
+        ep[EPROC_PID..EPROC_PID + 8].copy_from_slice(&1337u64.to_le_bytes());
+        ep[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 11].copy_from_slice(b"coreupdater");
+
+        // The _TCP_ENDPOINT pool object, read PHYSICALLY by the scan.
+        let tag_phys = 0x50_004u64;
+        let ep_obj = 0x50_010u64; // pool_base(0x50000) + delta 0x10
+        let mut obj = vec![0u8; 0x100];
+        obj[(EP_STATE)..(EP_STATE + 4)].copy_from_slice(&5u32.to_le_bytes()); // ESTABLISHED
+        obj[(EP_LOCAL_PORT)..(EP_LOCAL_PORT + 2)].copy_from_slice(&1234u16.to_be_bytes());
+        obj[(EP_REMOTE_PORT)..(EP_REMOTE_PORT + 2)].copy_from_slice(&443u16.to_be_bytes());
+        obj[(EP_ADDR_INFO)..(EP_ADDR_INFO + 8)].copy_from_slice(&ai_va.to_le_bytes());
+        obj[(EP_OWNER)..(EP_OWNER + 8)].copy_from_slice(&ep_va.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(ai_va, pa_ai, flags::WRITABLE)
+            .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(pdata_va, pa_pdata, flags::WRITABLE)
+            .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_ai, &ai)
+            .write_phys(pa_la, &la)
+            .write_phys(pa_pdata, &pdata)
+            .write_phys(pa_ep, &ep)
+            .write_phys(tag_phys, b"TcpE")
+            .write_phys(ep_obj, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_tcp_endpoints(&reader).expect("scan ok");
+        assert_eq!(conns.len(), 1, "exactly one endpoint, got {conns:?}");
+        let c = &conns[0];
+        assert_eq!(c.remote_addr, "1.2.3.4");
+        assert_eq!(c.remote_port, 443);
+        assert_eq!(c.local_addr, "10.0.0.5");
+        assert_eq!(c.local_port, 1234);
+        assert_eq!(c.pid, 1337);
+        assert_eq!(c.process_name, "coreupdater");
+        assert_eq!(c.state, WinTcpState::Established);
     }
 }
