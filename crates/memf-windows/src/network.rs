@@ -202,36 +202,84 @@ const TCPE_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
 /// Physical scan chunk.
 const SCAN_CHUNK: usize = 1 << 20;
 
-/// True for a canonical x64 kernel-half virtual address.
+/// `_TCP_ENDPOINT` / `_ADDRINFO` / `_LOCAL_ADDRESS` / `_INETAF` field offsets for
+/// the **Windows 10 / Server 2016 build 14393 x64** tcpip.sys. The public
+/// tcpip.pdb ships symbols but no struct *types*, so these come from the
+/// Volatility 3 maintained overlay
+/// `volatility3/framework/symbols/windows/netscan/netscan-win10-x64.json`
+/// (build map `(10,0,14393,0) -> netscan-win10-x64`). A general implementation
+/// would select the overlay by NT build, mirroring Volatility's `netscan-*`
+/// files; this constant set targets the 14393 corpus.
+mod tcpe14393 {
+    pub const INETAF: u64 = 0x10;
+    pub const ADDR_INFO: u64 = 0x18;
+    pub const STATE: u64 = 0x6C;
+    pub const LOCAL_PORT: u64 = 0x70;
+    pub const REMOTE_PORT: u64 = 0x72;
+    pub const OWNER: u64 = 0x258;
+    pub const CREATE_TIME: u64 = 0x268;
+    /// `_ADDRINFO.Local` (-> `_LOCAL_ADDRESS`) and `.Remote` (-> `_IN_ADDR`).
+    pub const AI_LOCAL: u64 = 0x0;
+    pub const AI_REMOTE: u64 = 0x10;
+    /// `_LOCAL_ADDRESS.pData`.
+    pub const LA_PDATA: u64 = 0x10;
+    /// `_INETAF.AddressFamily`.
+    pub const INETAF_AF: u64 = 0x18;
+}
+
+/// `AF_INET`.
+const AF_INET: u16 = 2;
+
+/// True for a canonical x64 kernel-half virtual address (bits 47..63 all set,
+/// i.e. `>= 0xFFFF_8000_0000_0000`). Pool pointers live across the whole kernel
+/// half, not only the `0xFFFF_F8…` ntoskrnl band.
 fn is_kernel_va(x: u64) -> bool {
-    (x >> 48) == 0xFFFF && ((x >> 40) & 0xFF) >= 0xF8
+    (x >> 47) == 0x1_FFFF
+}
+
+/// Map the in-memory `_TCP_ENDPOINT.State` (`TCPStateEnum`, 0-based) to
+/// [`WinTcpState`]. This is NOT the 1-based `MIB_TCP_STATE` that
+/// [`WinTcpState::from_raw`] decodes.
+fn tcp_state_from_enum(v: u32) -> WinTcpState {
+    match v {
+        0 => WinTcpState::Closed,
+        1 => WinTcpState::Listen,
+        2 => WinTcpState::SynSent,
+        3 => WinTcpState::SynReceived,
+        4 => WinTcpState::Established,
+        5 => WinTcpState::FinWait1,
+        6 => WinTcpState::FinWait2,
+        7 => WinTcpState::CloseWait,
+        8 => WinTcpState::Closing,
+        9 => WinTcpState::LastAck,
+        12 => WinTcpState::TimeWait,
+        other => WinTcpState::Unknown(other),
+    }
 }
 
 /// Enumerate active TCP connections by **physically pool-tag scanning** for
 /// `_TCP_ENDPOINT` objects (`TcpE`), independent of the tcpip partition/hash
 /// table layout (which is version-specific). Each object's own fields are read
-/// from its physical location; the `AddrInfo` and `Owner` pointers are followed
-/// through the address space.
-///
-/// Returns an empty vec when the tcpip `_TCP_ENDPOINT` schema is unavailable.
+/// from its physical location; `AddrInfo`/`Owner`/`InetAF` pointers are followed
+/// through the address space using the build-14393 struct overlay.
 ///
 /// # Errors
 /// Propagates address-space read failures encountered while following pointers.
 pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
-    let syms = reader.symbols();
-    let off = |s: &str| syms.field_offset("_TCP_ENDPOINT", s);
-    let (Some(state_o), Some(lp_o), Some(rp_o), Some(ai_o), Some(ow_o)) = (
-        off("State"),
-        off("LocalPort"),
-        off("RemotePort"),
-        off("AddrInfo"),
-        off("Owner"),
-    ) else {
-        return Ok(Vec::new());
-    };
-    let ct_o = off("CreateTime").unwrap_or(0);
+    #![allow(unreachable_code, unused)]
+    return Ok(Vec::new()); // RED stub
+    use tcpe14393 as t;
+    // `_EPROCESS` offsets come from the (typed) kernel ISF.
+    let pid_off = reader
+        .symbols()
+        .field_offset("_EPROCESS", "UniqueProcessId")
+        .unwrap_or(0x2E0);
+    let name_off = reader
+        .symbols()
+        .field_offset("_EPROCESS", "ImageFileName")
+        .unwrap_or(0x450);
     let prov = reader.vas().physical();
 
     let ranges: Vec<(u64, u64)> = {
@@ -249,6 +297,19 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
             return None;
         }
         Some(u64::from_le_bytes(b))
+    };
+    // Read a pointer-sized value from a virtual address (follows transition PTEs).
+    let read_virt_u64 = |va: u64| -> Option<u64> {
+        reader
+            .read_bytes(va, 8)
+            .ok()
+            .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])))
+    };
+    let read_ipv4 = |va: u64| -> Option<String> {
+        reader
+            .read_bytes(va, 4)
+            .ok()
+            .map(|b| format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]))
     };
 
     let mut out = Vec::new();
@@ -272,38 +333,72 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                 i += 1;
                 for &delta in TCPE_DELTAS {
                     let ep = pool_base + delta;
-                    // State gate: a real endpoint has a small MIB_TCP_STATE value.
-                    let Some(state_raw) = read_phys_u(ep + state_o, 4) else {
+                    // State gate: a valid TCPStateEnum value (0..=12).
+                    let Some(state_raw) = read_phys_u(ep + t::STATE, 4) else {
                         continue;
                     };
-                    if state_raw == 0 || state_raw > 12 {
+                    if state_raw > 12 {
                         continue;
                     }
-                    // AddrInfo / Owner must be kernel pointers for a live endpoint.
-                    let (Some(ai), Some(owner)) =
-                        (read_phys_u(ep + ai_o, 8), read_phys_u(ep + ow_o, 8))
-                    else {
+                    // AddrInfo / Owner / InetAF must be kernel pointers.
+                    let (Some(ai), Some(owner), Some(inetaf)) = (
+                        read_phys_u(ep + t::ADDR_INFO, 8),
+                        read_phys_u(ep + t::OWNER, 8),
+                        read_phys_u(ep + t::INETAF, 8),
+                    ) else {
                         continue;
                     };
-                    if !is_kernel_va(ai) || !is_kernel_va(owner) {
+                    if !is_kernel_va(ai) || !is_kernel_va(owner) || !is_kernel_va(inetaf) {
                         continue;
                     }
+                    // Address family must be AF_INET (this walker emits IPv4).
+                    let Some(af) = read_phys_u_via(reader, inetaf + t::INETAF_AF, 2) else {
+                        continue;
+                    };
+                    if af as u16 != AF_INET {
+                        continue;
+                    }
+                    // Owner must reference a plausible process.
+                    let Some(pid) = read_virt_u64(owner + pid_off) else {
+                        continue;
+                    };
+                    if pid == 0 || pid > 0xFFFF {
+                        continue;
+                    }
+
+                    // Remote: _ADDRINFO.Remote (ptr) -> _IN_ADDR(addr4).
+                    let remote_addr = read_virt_u64(ai + t::AI_REMOTE)
+                        .filter(|&p| is_kernel_va(p))
+                        .and_then(read_ipv4)
+                        .unwrap_or_else(|| "0.0.0.0".to_string());
+                    // Local: _ADDRINFO.Local -> _LOCAL_ADDRESS.pData -> ptr -> _IN_ADDR.
+                    let local_addr = read_virt_u64(ai + t::AI_LOCAL)
+                        .filter(|&p| is_kernel_va(p))
+                        .and_then(|la| read_virt_u64(la + t::LA_PDATA))
+                        .and_then(|pd| read_virt_u64(pd))
+                        .and_then(read_ipv4)
+                        .unwrap_or_else(|| "0.0.0.0".to_string());
+
                     let local_port =
-                        read_phys_u(ep + lp_o, 2).map_or(0, |v| u16::from_be(v as u16));
+                        read_phys_u(ep + t::LOCAL_PORT, 2).map_or(0, |v| u16::from_be(v as u16));
                     let remote_port =
-                        read_phys_u(ep + rp_o, 2).map_or(0, |v| u16::from_be(v as u16));
-                    let Ok((local_addr, remote_addr)) = addresses_from_addr_info(reader, ai) else {
-                        continue;
-                    };
-                    let (pid, process_name) =
-                        owner_info(reader, owner).unwrap_or((0, "<unknown>".to_string()));
-                    let create_time = read_phys_u(ep + ct_o, 8).unwrap_or(0);
-                    // Dedup on the 4-tuple.
+                        read_phys_u(ep + t::REMOTE_PORT, 2).map_or(0, |v| u16::from_be(v as u16));
+                    let process_name = reader
+                        .read_bytes(owner + name_off, 15)
+                        .map(|b| {
+                            String::from_utf8_lossy(&b)
+                                .trim_end_matches('\0')
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    let create_time = read_phys_u(ep + t::CREATE_TIME, 8).unwrap_or(0);
+
                     let key = (
                         local_addr.clone(),
                         local_port,
                         remote_addr.clone(),
                         remote_port,
+                        pid,
                     );
                     if !seen.insert(key) {
                         continue;
@@ -314,7 +409,7 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                         local_port,
                         remote_addr,
                         remote_port,
-                        state: WinTcpState::from_raw(state_raw as u32),
+                        state: tcp_state_from_enum(state_raw as u32),
                         pid,
                         process_name,
                         create_time,
@@ -327,6 +422,18 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
         }
     }
     Ok(out)
+}
+
+/// Read `n` bytes (<= 8) at virtual address `va` as a little-endian integer.
+fn read_phys_u_via<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    va: u64,
+    n: usize,
+) -> Option<u64> {
+    let b = reader.read_bytes(va, n).ok()?;
+    let mut buf = [0u8; 8];
+    buf[..n].copy_from_slice(&b[..n]);
+    Some(u64::from_le_bytes(buf))
 }
 
 #[cfg(test)]
@@ -784,42 +891,74 @@ mod tests {
 
     #[test]
     fn scan_tcp_endpoints_recovers_a_connection_from_a_tcpe_pool_object() {
-        // VA-mapped pointer targets (kernel half so the is_kernel_va gate passes).
-        let ai_va = 0xFFFF_F800_0200_0000u64;
-        let la_va = 0xFFFF_F800_0200_1000u64;
-        let pdata_va = 0xFFFF_F800_0200_2000u64;
-        let ep_va = 0xFFFF_F800_0200_3000u64;
-        let (pa_ai, pa_la, pa_pdata, pa_ep) = (0x60_000u64, 0x61_000, 0x62_000, 0x63_000);
+        use tcpe14393 as t;
+        // VA-mapped pointer targets — use 0xFFFFC0.. to exercise the full
+        // kernel-half is_kernel_va range (pool lives outside the 0xFFFFF8.. band).
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let ai_va = 0xFFFF_C000_0001_1000u64;
+        let remote_in_va = 0xFFFF_C000_0001_2000u64;
+        let la_va = 0xFFFF_C000_0001_3000u64;
+        let pdata_va = 0xFFFF_C000_0001_4000u64;
+        let local_in_va = 0xFFFF_C000_0001_5000u64;
+        let ep_va = 0xFFFF_C000_0001_6000u64;
+        let (pa_inetaf, pa_ai, pa_rin, pa_la, pa_pdata, pa_lin, pa_ep) = (
+            0x70_000u64,
+            0x71_000,
+            0x72_000,
+            0x73_000,
+            0x74_000,
+            0x75_000,
+            0x76_000,
+        );
 
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[t::INETAF_AF as usize..t::INETAF_AF as usize + 2]
+            .copy_from_slice(&2u16.to_le_bytes());
         let mut ai = vec![0u8; 0x1000];
-        ai[AI_REMOTE..AI_REMOTE + 4].copy_from_slice(&[1, 2, 3, 4]); // remote 1.2.3.4
-        ai[AI_LOCAL..AI_LOCAL + 8].copy_from_slice(&la_va.to_le_bytes());
+        ai[t::AI_LOCAL as usize..t::AI_LOCAL as usize + 8].copy_from_slice(&la_va.to_le_bytes());
+        ai[t::AI_REMOTE as usize..t::AI_REMOTE as usize + 8]
+            .copy_from_slice(&remote_in_va.to_le_bytes());
+        let mut rin = vec![0u8; 0x1000];
+        rin[0..4].copy_from_slice(&[203, 78, 103, 109]); // remote (C2)
+                                                         // Local chain: _ADDRINFO.Local -> _LOCAL_ADDRESS.pData -> (deref) ptr ->
+                                                         // (deref) _IN_ADDR. la.pData = pdata_va; *pdata_va = local_in_va; *local_in_va = IP.
         let mut la = vec![0u8; 0x1000];
-        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&pdata_va.to_le_bytes());
+        la[t::LA_PDATA as usize..t::LA_PDATA as usize + 8].copy_from_slice(&pdata_va.to_le_bytes());
         let mut pdata = vec![0u8; 0x1000];
-        pdata[0..4].copy_from_slice(&[10, 0, 0, 5]); // local 10.0.0.5
+        pdata[0..8].copy_from_slice(&local_in_va.to_le_bytes());
+        let mut lin = vec![0u8; 0x1000];
+        lin[0..4].copy_from_slice(&[10, 42, 85, 10]); // local
         let mut ep = vec![0u8; 0x1000];
-        ep[EPROC_PID..EPROC_PID + 8].copy_from_slice(&1337u64.to_le_bytes());
-        ep[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 11].copy_from_slice(b"coreupdater");
+        ep[EPROC_PID..EPROC_PID + 8].copy_from_slice(&3644u64.to_le_bytes());
+        ep[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 15].copy_from_slice(b"coreupdater.exe");
 
-        // The _TCP_ENDPOINT pool object, read PHYSICALLY by the scan.
+        // The _TCP_ENDPOINT pool object, read PHYSICALLY by the scan (14393 layout).
         let tag_phys = 0x50_004u64;
         let ep_obj = 0x50_010u64; // pool_base(0x50000) + delta 0x10
-        let mut obj = vec![0u8; 0x100];
-        obj[(EP_STATE)..(EP_STATE + 4)].copy_from_slice(&5u32.to_le_bytes()); // ESTABLISHED
-        obj[(EP_LOCAL_PORT)..(EP_LOCAL_PORT + 2)].copy_from_slice(&1234u16.to_be_bytes());
-        obj[(EP_REMOTE_PORT)..(EP_REMOTE_PORT + 2)].copy_from_slice(&443u16.to_be_bytes());
-        obj[(EP_ADDR_INFO)..(EP_ADDR_INFO + 8)].copy_from_slice(&ai_va.to_le_bytes());
-        obj[(EP_OWNER)..(EP_OWNER + 8)].copy_from_slice(&ep_va.to_le_bytes());
+        let mut obj = vec![0u8; 0x300];
+        obj[t::STATE as usize..t::STATE as usize + 4].copy_from_slice(&4u32.to_le_bytes()); // ESTABLISHED
+        obj[t::LOCAL_PORT as usize..t::LOCAL_PORT as usize + 2]
+            .copy_from_slice(&62613u16.to_be_bytes());
+        obj[t::REMOTE_PORT as usize..t::REMOTE_PORT as usize + 2]
+            .copy_from_slice(&443u16.to_be_bytes());
+        obj[t::INETAF as usize..t::INETAF as usize + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[t::ADDR_INFO as usize..t::ADDR_INFO as usize + 8].copy_from_slice(&ai_va.to_le_bytes());
+        obj[t::OWNER as usize..t::OWNER as usize + 8].copy_from_slice(&ep_va.to_le_bytes());
 
         let ptb = PageTableBuilder::new()
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
             .map_4k(ai_va, pa_ai, flags::WRITABLE)
+            .map_4k(remote_in_va, pa_rin, flags::WRITABLE)
             .map_4k(la_va, pa_la, flags::WRITABLE)
             .map_4k(pdata_va, pa_pdata, flags::WRITABLE)
+            .map_4k(local_in_va, pa_lin, flags::WRITABLE)
             .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_inetaf, &inetaf)
             .write_phys(pa_ai, &ai)
+            .write_phys(pa_rin, &rin)
             .write_phys(pa_la, &la)
             .write_phys(pa_pdata, &pdata)
+            .write_phys(pa_lin, &lin)
             .write_phys(pa_ep, &ep)
             .write_phys(tag_phys, b"TcpE")
             .write_phys(ep_obj, &obj);
@@ -841,12 +980,12 @@ mod tests {
         let conns = scan_tcp_endpoints(&reader).expect("scan ok");
         assert_eq!(conns.len(), 1, "exactly one endpoint, got {conns:?}");
         let c = &conns[0];
-        assert_eq!(c.remote_addr, "1.2.3.4");
+        assert_eq!(c.remote_addr, "203.78.103.109");
         assert_eq!(c.remote_port, 443);
-        assert_eq!(c.local_addr, "10.0.0.5");
-        assert_eq!(c.local_port, 1234);
-        assert_eq!(c.pid, 1337);
-        assert_eq!(c.process_name, "coreupdater");
+        assert_eq!(c.local_addr, "10.42.85.10");
+        assert_eq!(c.local_port, 62613);
+        assert_eq!(c.pid, 3644);
+        assert_eq!(c.process_name, "coreupdater.exe");
         assert_eq!(c.state, WinTcpState::Established);
     }
 }
