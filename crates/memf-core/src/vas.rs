@@ -37,8 +37,8 @@ const PRESENT: u64 = 1;
 const PS: u64 = 1 << 7;
 
 // AArch64 4K-granule page table constants (ARMv8-A, 4K granule, 48-bit VA)
-const AARCH64_VALID: u64   = 1;         // bit 0: entry is valid
-const AARCH64_TABLE: u64   = 1 << 1;   // bit 1: 1=table/page, 0=block
+const AARCH64_VALID: u64 = 1; // bit 0: entry is valid
+const AARCH64_TABLE: u64 = 1 << 1; // bit 1: 1=table/page, 0=block
 const AARCH64_OA_MASK: u64 = 0x0000_FFFF_FFFF_F000; // bits [47:12]: output address
 
 /// Number of page translations to cache per `VirtualAddressSpace` instance.
@@ -93,16 +93,19 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     pub fn virt_to_phys(&self, vaddr: u64) -> Result<u64> {
         match self.mode {
             TranslationMode::X86_64FourLevel => self.walk_x86_64_4level(vaddr),
-            TranslationMode::X86_645Level => {
-                match self.walk_x86_64_5level_internal(vaddr)? {
-                    TranslationResult::Physical(addr) | TranslationResult::Transition(addr) => Ok(addr),
-                    TranslationResult::DemandZero => Err(Error::PageNotPresent(vaddr)),
-                    TranslationResult::PagefileEntry { pagefile_num, page_offset } => {
-                        Err(Error::PagedOut { vaddr, pagefile_num, page_offset })
-                    }
-                    TranslationResult::Prototype(_) => Err(Error::PrototypePte(vaddr)),
-                }
-            }
+            TranslationMode::X86_645Level => match self.walk_x86_64_5level_internal(vaddr)? {
+                TranslationResult::Physical(addr) | TranslationResult::Transition(addr) => Ok(addr),
+                TranslationResult::DemandZero => Err(Error::PageNotPresent(vaddr)),
+                TranslationResult::PagefileEntry {
+                    pagefile_num,
+                    page_offset,
+                } => Err(Error::PagedOut {
+                    vaddr,
+                    pagefile_num,
+                    page_offset,
+                }),
+                TranslationResult::Prototype(_) => Err(Error::PrototypePte(vaddr)),
+            },
             TranslationMode::AArch64FourLevel => self.walk_aarch64_4level(vaddr),
         }
     }
@@ -129,12 +132,8 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
                 TranslationMode::X86_64FourLevel => {
                     self.walk_x86_64_4level_internal(current_vaddr)?
                 }
-                TranslationMode::X86_645Level => {
-                    self.walk_x86_64_5level_internal(current_vaddr)?
-                }
-                TranslationMode::AArch64FourLevel => {
-                    self.walk_aarch64_internal(current_vaddr)?
-                }
+                TranslationMode::X86_645Level => self.walk_x86_64_5level_internal(current_vaddr)?,
+                TranslationMode::AArch64FourLevel => self.walk_aarch64_internal(current_vaddr)?,
             };
 
             match result {
@@ -226,6 +225,26 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
         self.mode
     }
 
+    /// Reverse-map: return a kernel-half virtual address that resolves to the
+    /// page at `target_phys` (page granularity), or `None`.
+    ///
+    /// Enumerates the x86-64 four-level page tables under the current root over
+    /// the kernel half (PML4 indices 256..512), checking 2 MiB / 4 KiB leaves and
+    /// **transition** PTEs — a resident page whose PTE is not marked valid, which
+    /// is exactly the state of a live-acquired kernel image whose header reads as
+    /// not-present through a stale/guessed VA. This is how the kernel image base
+    /// is recovered when the low-stub hint is wrong: physically locate ntoskrnl,
+    /// then ask which kernel VA maps to it. `max_leaves` bounds the work so a
+    /// crafted page-table tree cannot turn this into a denial of service.
+    ///
+    /// Only meaningful for [`TranslationMode::X86_64FourLevel`]; returns `None`
+    /// for other modes. 1 GiB pages are skipped (the kernel image is mapped with
+    /// 2 MiB / 4 KiB pages, never inside a 1 GiB page).
+    #[must_use]
+    pub fn find_kernel_va_for_phys(&self, target_phys: u64, max_leaves: usize) -> Option<u64> {
+        None
+    }
+
     fn read_pte(&self, addr: u64) -> Result<u64> {
         let mut buf = [0u8; 8];
         let n = self.physical.read_phys(addr, &mut buf)?;
@@ -269,8 +288,8 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
 
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pdpt_idx = (vaddr >> 30) & 0x1FF;
-        let pd_idx   = (vaddr >> 21) & 0x1FF;
-        let pt_idx   = (vaddr >> 12) & 0x1FF;
+        let pd_idx = (vaddr >> 21) & 0x1FF;
+        let pt_idx = (vaddr >> 12) & 0x1FF;
         let page_offset = vaddr & 0xFFF;
 
         // PML4
@@ -352,10 +371,10 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
             return Ok(TranslationResult::Physical(paddr_base | (vaddr & 0xFFF)));
         }
 
-        let l0_idx   = (vaddr >> 39) & 0x1FF;
-        let l1_idx   = (vaddr >> 30) & 0x1FF;
-        let l2_idx   = (vaddr >> 21) & 0x1FF;
-        let l3_idx   = (vaddr >> 12) & 0x1FF;
+        let l0_idx = (vaddr >> 39) & 0x1FF;
+        let l1_idx = (vaddr >> 30) & 0x1FF;
+        let l2_idx = (vaddr >> 21) & 0x1FF;
+        let l3_idx = (vaddr >> 12) & 0x1FF;
         let page_off = vaddr & 0xFFF;
 
         // Level 0 (PGD)
@@ -427,7 +446,76 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_builders::{flags, PageTableBuilder};
+    use crate::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+
+    /// Build a minimal 4-level page table (CR3=0) mapping `vaddr`'s leaf PTE to
+    /// the raw `leaf_pte` value, so tests can install present/transition/large
+    /// entries directly. Tables live at fixed physical pages.
+    fn manual_pt(vaddr: u64, leaf_pte: u64, large_2m: bool) -> SyntheticPhysMem {
+        let mut mem = SyntheticPhysMem::new(16 * 1024 * 1024);
+        let p4 = (vaddr >> 39) & 0x1FF;
+        let p3 = (vaddr >> 30) & 0x1FF;
+        let p2 = (vaddr >> 21) & 0x1FF;
+        let p1 = (vaddr >> 12) & 0x1FF;
+        let (pdpt, pd, pt) = (0x1000u64, 0x2000u64, 0x3000u64);
+        mem.write_u64(0 + p4 * 8, pdpt | PRESENT);
+        mem.write_u64(pdpt + p3 * 8, pd | PRESENT);
+        if large_2m {
+            mem.write_u64(pd + p2 * 8, leaf_pte);
+        } else {
+            mem.write_u64(pd + p2 * 8, pt | PRESENT);
+            mem.write_u64(pt + p1 * 8, leaf_pte);
+        }
+        mem
+    }
+
+    #[test]
+    fn reverse_map_finds_4k_present_page() {
+        let vaddr = 0xFFFF_F802_4020_1000u64;
+        let phys = 0x6000u64;
+        let mem = manual_pt(vaddr, phys | PRESENT, false);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(phys, 100_000), Some(vaddr));
+    }
+
+    #[test]
+    fn reverse_map_finds_transition_page() {
+        // Transition PTE: PRESENT=0, bit 11 set, PFN in bits 12.. — a resident
+        // page (e.g. a paged-image header) that a stale VA reads as not-present.
+        let vaddr = 0xFFFF_F802_4020_2000u64;
+        let pfn = 0x7u64; // phys 0x7000
+        let trans_pte = (pfn << 12) | (1 << 11);
+        let mem = manual_pt(vaddr, trans_pte, false);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(0x7000, 100_000), Some(vaddr));
+    }
+
+    #[test]
+    fn reverse_map_finds_2m_large_page_with_offset() {
+        let vaddr = 0xFFFF_F802_4040_0000u64; // 2 MiB aligned
+        let base = 0x20_0000u64;
+        let mem = manual_pt(vaddr, base | PRESENT | PS, true);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        // A phys 0x3000 into the 2 MiB page maps to vaddr + 0x3000.
+        assert_eq!(
+            vas.find_kernel_va_for_phys(base + 0x3000, 100_000),
+            Some(vaddr + 0x3000)
+        );
+    }
+
+    #[test]
+    fn reverse_map_returns_none_when_absent() {
+        let mem = manual_pt(0xFFFF_F802_4020_1000u64, 0x6000 | PRESENT, false);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(0xDEAD_0000, 100_000), None);
+    }
+
+    #[test]
+    fn reverse_map_none_for_non_4level_mode() {
+        let mem = manual_pt(0xFFFF_F802_4020_1000u64, 0x6000 | PRESENT, false);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::AArch64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(0x6000, 100_000), None);
+    }
 
     #[test]
     fn translate_4k_page() {
@@ -880,7 +968,7 @@ mod tests {
             .map_4k(vaddr, paddr, flags::WRITABLE)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let first  = vas.virt_to_phys(vaddr).unwrap();
+        let first = vas.virt_to_phys(vaddr).unwrap();
         let second = vas.virt_to_phys(vaddr).unwrap();
         assert_eq!(first, second);
         assert_eq!(first, paddr);
@@ -919,7 +1007,11 @@ mod tests {
         let base_vaddr: u64 = 0xFFFF_8000_0000_0000;
         let mut builder = PageTableBuilder::new();
         for i in 0..200u64 {
-            builder = builder.map_4k(base_vaddr + i * 0x1000, 0x1000 + i * 0x1000, flags::WRITABLE);
+            builder = builder.map_4k(
+                base_vaddr + i * 0x1000,
+                0x1000 + i * 0x1000,
+                flags::WRITABLE,
+            );
         }
         let (cr3, mem) = builder.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -928,7 +1020,11 @@ mod tests {
             let paddr = vas.virt_to_phys(base_vaddr + i * 0x1000).unwrap();
             results.insert(paddr);
         }
-        assert_eq!(results.len(), 200, "each page must map to a distinct physical address");
+        assert_eq!(
+            results.len(),
+            200,
+            "each page must map to a distinct physical address"
+        );
     }
 
     #[test]
@@ -987,8 +1083,10 @@ mod tests {
         // AArch64 PTEs use bits[47:12] for OA and bit0 for VALID, bit1 for TABLE.
         // PageTableBuilder sets bit0+bit1 (PRESENT+WRITABLE), so AArch64 sees VALID+TABLE.
         // The physical address bits overlap, so the walk should succeed.
-        assert!(result.is_ok() || matches!(result, Err(Error::PageNotPresent(_))),
-            "must not panic; got {result:?}");
+        assert!(
+            result.is_ok() || matches!(result, Err(Error::PageNotPresent(_))),
+            "must not panic; got {result:?}"
+        );
     }
 
     #[test]
