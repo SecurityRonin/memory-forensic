@@ -250,8 +250,6 @@ impl TcpEndpointLayout {
 /// unsupported rather than reading at guessed offsets. Extend this table (a data
 /// update, not an algorithm change) when a new build's overlay is published.
 fn tcp_endpoint_layout_x64(build: u32) -> Option<TcpEndpointLayout> {
-    return None; // RED stub
-    #[allow(unreachable_code)]
     Some(match build {
         // Win7: _TCP_ENDPOINT differs throughout (netscan-win7-x64).
         7600 | 7601 | 8400 => TcpEndpointLayout {
