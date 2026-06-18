@@ -31,8 +31,22 @@ const KERNEL_PDB: &[u8] = b"ntkrnlmp.pdb\0";
 /// Requires `vas` to be configured with the kernel DTB (so kernel VAs translate).
 #[must_use]
 pub fn resolve_kernel_base_via_rsds<P: PhysicalMemoryProvider>(
-    _vas: &VirtualAddressSpace<P>,
+    vas: &VirtualAddressSpace<P>,
 ) -> Option<u64> {
+    for rsds_phys in scan_phys_kernel_rsds_pages(vas.physical()) {
+        let Some(rsds_va) = vas.find_kernel_va_for_phys(rsds_phys, REVMAP_BUDGET) else {
+            continue;
+        };
+        let top = rsds_va & !0xFFF;
+        let floor = top.saturating_sub(MZ_SCAN_BELOW);
+        let mut va = top;
+        while va >= floor {
+            if is_amd64_pe_at(vas, va) {
+                return Some(va);
+            }
+            va -= 0x1000;
+        }
+    }
     None
 }
 
