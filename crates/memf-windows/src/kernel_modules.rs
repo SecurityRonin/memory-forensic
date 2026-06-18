@@ -73,11 +73,6 @@ pub fn module_pdb_id<P: PhysicalMemoryProvider>(
     base_va: u64,
     image_size: u32,
 ) -> Result<memf_symbols::pe_debug::PdbId> {
-    // RED stub — replaced by the real read+extract in GREEN.
-    if true {
-        let _ = (reader, base_va, image_size);
-        return Err(Error::Symbol(memf_symbols::Error::NotFound("stub".into())));
-    }
     let cap = (image_size as usize).clamp(0x1000, MODULE_IMAGE_SCAN_CAP);
     let mut image = vec![0u8; cap];
     let mut off = 0usize;
