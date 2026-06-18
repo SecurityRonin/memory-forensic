@@ -268,8 +268,6 @@ fn tcp_state_from_enum(v: u32) -> WinTcpState {
 pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
-    #![allow(unreachable_code, unused)]
-    return Ok(Vec::new()); // RED stub
     use tcpe14393 as t;
     // `_EPROCESS` offsets come from the (typed) kernel ISF.
     let pid_off = reader
