@@ -26,11 +26,6 @@ pub fn find_loaded_module<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     name: &str,
 ) -> Result<Option<u64>> {
-    // RED stub — replaced by the real walk in GREEN.
-    if true {
-        let _ = (reader, name);
-        return Ok(None);
-    }
     let head = reader
         .symbols()
         .symbol_address("PsLoadedModuleList")
