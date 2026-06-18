@@ -202,33 +202,100 @@ const TCPE_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
 /// Physical scan chunk.
 const SCAN_CHUNK: usize = 1 << 20;
 
-/// `_TCP_ENDPOINT` / `_ADDRINFO` / `_LOCAL_ADDRESS` / `_INETAF` field offsets for
-/// the **Windows 10 / Server 2016 build 14393 x64** tcpip.sys. The public
-/// tcpip.pdb ships symbols but no struct *types*, so these come from the
-/// Volatility 3 maintained overlay
-/// `volatility3/framework/symbols/windows/netscan/netscan-win10-x64.json`
-/// (build map `(10,0,14393,0) -> netscan-win10-x64`). A general implementation
-/// would select the overlay by NT build, mirroring Volatility's `netscan-*`
-/// files; this constant set targets the 14393 corpus.
-mod tcpe14393 {
-    pub const INETAF: u64 = 0x10;
-    pub const ADDR_INFO: u64 = 0x18;
-    pub const STATE: u64 = 0x6C;
-    pub const LOCAL_PORT: u64 = 0x70;
-    pub const REMOTE_PORT: u64 = 0x72;
-    pub const OWNER: u64 = 0x258;
-    pub const CREATE_TIME: u64 = 0x268;
-    /// `_ADDRINFO.Local` (-> `_LOCAL_ADDRESS`) and `.Remote` (-> `_IN_ADDR`).
-    pub const AI_LOCAL: u64 = 0x0;
-    pub const AI_REMOTE: u64 = 0x10;
-    /// `_LOCAL_ADDRESS.pData`.
-    pub const LA_PDATA: u64 = 0x10;
-    /// `_INETAF.AddressFamily`.
-    pub const INETAF_AF: u64 = 0x18;
+/// x64 `_TCP_ENDPOINT` / `_ADDRINFO` / `_LOCAL_ADDRESS` / `_INETAF` field offsets
+/// for one Windows build. The public tcpip.pdb ships symbols but no struct
+/// *types*, so these come from the Volatility 3 maintained overlays
+/// `volatility3/framework/symbols/windows/netscan/netscan-*-x64.json`. The
+/// Win8/8.1/10 family shares most offsets and differs only in `Owner`/`CreateTime`
+/// (the struct grew over time); Win7 differs throughout, so every field is carried
+/// explicitly. `create_time == 0` means the build has no `CreateTime` field.
+#[derive(Clone, Copy)]
+pub struct TcpEndpointLayout {
+    pub inet_af: u64,
+    pub addr_info: u64,
+    pub state: u64,
+    pub local_port: u64,
+    pub remote_port: u64,
+    pub owner: u64,
+    pub create_time: u64,
+    pub ai_local: u64,
+    pub ai_remote: u64,
+    pub la_pdata: u64,
+    pub inetaf_af: u64,
+}
+
+impl TcpEndpointLayout {
+    /// Win8/8.1/10 family base: only `owner`/`create_time` move between builds.
+    const fn modern(owner: u64, create_time: u64) -> Self {
+        Self {
+            inet_af: 0x10,
+            addr_info: 0x18,
+            state: 0x6C,
+            local_port: 0x70,
+            remote_port: 0x72,
+            owner,
+            create_time,
+            ai_local: 0x0,
+            ai_remote: 0x10,
+            la_pdata: 0x10,
+            inetaf_af: 0x18,
+        }
+    }
+}
+
+/// Select the `_TCP_ENDPOINT` layout for an NT `build` number (x64), mirroring
+/// Volatility 3's `netscan` build→symbol-file table
+/// (`volatility3/framework/plugins/windows/netscan.py`). Returns `None` for
+/// builds with no maintained overlay — the caller then reports the build as
+/// unsupported rather than reading at guessed offsets. Extend this table (a data
+/// update, not an algorithm change) when a new build's overlay is published.
+fn tcp_endpoint_layout_x64(build: u32) -> Option<TcpEndpointLayout> {
+    return None; // RED stub
+    #[allow(unreachable_code)]
+    Some(match build {
+        // Win7: _TCP_ENDPOINT differs throughout (netscan-win7-x64).
+        7600 | 7601 | 8400 => TcpEndpointLayout {
+            inet_af: 0x18,
+            addr_info: 0x20,
+            state: 0x68,
+            local_port: 0x6C,
+            remote_port: 0x6E,
+            owner: 0x238,
+            create_time: 0x0,
+            ai_local: 0x0,
+            ai_remote: 0x10,
+            la_pdata: 0x10,
+            inetaf_af: 0x14,
+        },
+        9200 => TcpEndpointLayout::modern(0x250, 0x0), // Win8 / Server 2012
+        9600 => TcpEndpointLayout::modern(0x258, 0x0), // Win8.1 / Server 2012 R2
+        10240 | 10586 | 14393 => TcpEndpointLayout::modern(0x258, 0x268), // Win10 / Server 2016
+        15063 => TcpEndpointLayout::modern(0x270, 0x268),
+        16299 => TcpEndpointLayout::modern(0x270, 0x280),
+        17134 => TcpEndpointLayout::modern(0x278, 0x288),
+        17763 => TcpEndpointLayout::modern(0x2C8, 0x2D8),
+        18362 | 18363 => TcpEndpointLayout::modern(0x290, 0x2A0),
+        19041 => TcpEndpointLayout::modern(0x2D8, 0x2E8),
+        20348 => TcpEndpointLayout::modern(0x2F0, 0x308), // Server 2022
+        _ => return None,
+    })
 }
 
 /// `AF_INET`.
 const AF_INET: u16 = 2;
+
+/// Read the OS build number from the `NtBuildNumber` kernel global (its low 16
+/// bits hold the build; the high bits are checked/free-build flags). Validated
+/// on citadeldc01.mem: reads `0xF0002580` -> build `9600` (Server 2012 R2),
+/// cross-checked against the kernel `NtBuildLab` string (`9600.winblue_gdr…`).
+///
+/// (The fixed-VA `_KUSER_SHARED_DATA.NtBuildNumber` field was found unreliable —
+/// it read 0 on that dump — so the kernel symbol is the source of truth.)
+fn nt_build_number<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Option<u32> {
+    let va = reader.symbols().symbol_address("NtBuildNumber")?;
+    let build = (read_phys_u_via(reader, va, 4)? as u32) & 0xFFFF;
+    (build >= 2600).then_some(build)
+}
 
 /// True for a canonical x64 kernel-half virtual address (bits 47..63 all set,
 /// i.e. `>= 0xFFFF_8000_0000_0000`). Pool pointers live across the whole kernel
@@ -261,14 +328,18 @@ fn tcp_state_from_enum(v: u32) -> WinTcpState {
 /// `_TCP_ENDPOINT` objects (`TcpE`), independent of the tcpip partition/hash
 /// table layout (which is version-specific). Each object's own fields are read
 /// from its physical location; `AddrInfo`/`Owner`/`InetAF` pointers are followed
-/// through the address space using the build-14393 struct overlay.
+/// through the address space. The `_TCP_ENDPOINT` overlay is selected from the
+/// dump's `NtBuildNumber`; an unrecognized build yields an empty result (no
+/// guessed offsets).
 ///
 /// # Errors
 /// Propagates address-space read failures encountered while following pointers.
 pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
-    use tcpe14393 as t;
+    let Some(t) = nt_build_number(reader).and_then(tcp_endpoint_layout_x64) else {
+        return Ok(Vec::new());
+    };
     // `_EPROCESS` offsets come from the (typed) kernel ISF.
     let pid_off = reader
         .symbols()
@@ -332,7 +403,7 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                 for &delta in TCPE_DELTAS {
                     let ep = pool_base + delta;
                     // State gate: a valid TCPStateEnum value (0..=12).
-                    let Some(state_raw) = read_phys_u(ep + t::STATE, 4) else {
+                    let Some(state_raw) = read_phys_u(ep + t.state, 4) else {
                         continue;
                     };
                     if state_raw > 12 {
@@ -340,9 +411,9 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                     }
                     // AddrInfo / Owner / InetAF must be kernel pointers.
                     let (Some(ai), Some(owner), Some(inetaf)) = (
-                        read_phys_u(ep + t::ADDR_INFO, 8),
-                        read_phys_u(ep + t::OWNER, 8),
-                        read_phys_u(ep + t::INETAF, 8),
+                        read_phys_u(ep + t.addr_info, 8),
+                        read_phys_u(ep + t.owner, 8),
+                        read_phys_u(ep + t.inet_af, 8),
                     ) else {
                         continue;
                     };
@@ -350,7 +421,7 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                         continue;
                     }
                     // Address family must be AF_INET (this walker emits IPv4).
-                    let Some(af) = read_phys_u_via(reader, inetaf + t::INETAF_AF, 2) else {
+                    let Some(af) = read_phys_u_via(reader, inetaf + t.inetaf_af, 2) else {
                         continue;
                     };
                     if af as u16 != AF_INET {
@@ -365,22 +436,22 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                     }
 
                     // Remote: _ADDRINFO.Remote (ptr) -> _IN_ADDR(addr4).
-                    let remote_addr = read_virt_u64(ai + t::AI_REMOTE)
+                    let remote_addr = read_virt_u64(ai + t.ai_remote)
                         .filter(|&p| is_kernel_va(p))
                         .and_then(read_ipv4)
                         .unwrap_or_else(|| "0.0.0.0".to_string());
                     // Local: _ADDRINFO.Local -> _LOCAL_ADDRESS.pData -> ptr -> _IN_ADDR.
-                    let local_addr = read_virt_u64(ai + t::AI_LOCAL)
+                    let local_addr = read_virt_u64(ai + t.ai_local)
                         .filter(|&p| is_kernel_va(p))
-                        .and_then(|la| read_virt_u64(la + t::LA_PDATA))
+                        .and_then(|la| read_virt_u64(la + t.la_pdata))
                         .and_then(|pd| read_virt_u64(pd))
                         .and_then(read_ipv4)
                         .unwrap_or_else(|| "0.0.0.0".to_string());
 
                     let local_port =
-                        read_phys_u(ep + t::LOCAL_PORT, 2).map_or(0, |v| u16::from_be(v as u16));
+                        read_phys_u(ep + t.local_port, 2).map_or(0, |v| u16::from_be(v as u16));
                     let remote_port =
-                        read_phys_u(ep + t::REMOTE_PORT, 2).map_or(0, |v| u16::from_be(v as u16));
+                        read_phys_u(ep + t.remote_port, 2).map_or(0, |v| u16::from_be(v as u16));
                     let process_name = reader
                         .read_bytes(owner + name_off, 15)
                         .map(|b| {
@@ -389,7 +460,12 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                                 .to_string()
                         })
                         .unwrap_or_default();
-                    let create_time = read_phys_u(ep + t::CREATE_TIME, 8).unwrap_or(0);
+                    // create_time == 0 means the build has no CreateTime field.
+                    let create_time = if t.create_time != 0 {
+                        read_phys_u(ep + t.create_time, 8).unwrap_or(0)
+                    } else {
+                        0
+                    };
 
                     let key = (
                         local_addr.clone(),
@@ -527,8 +603,13 @@ mod tests {
                 EPROC_IMAGE_NAME as u64,
                 "array",
             )
+            // Kernel NtBuildNumber global (the scan reads its low 16 bits).
+            .add_symbol("NtBuildNumber", NT_BUILD_NUMBER_VA)
             .build_json()
     }
+
+    /// VA the synthetic `NtBuildNumber` symbol resolves to (mapped by the test).
+    const NT_BUILD_NUMBER_VA: u64 = 0xFFFF_C000_0002_0000;
 
     /// Write a _TCP_ENDPOINT into a byte buffer at the given offset.
     // Test builder mirroring the _TCP_ENDPOINT fields; arity matches the struct.
@@ -888,8 +969,36 @@ mod tests {
     }
 
     #[test]
+    fn tcp_endpoint_layout_selected_per_build() {
+        // Win7: distinct layout throughout.
+        let w7 = tcp_endpoint_layout_x64(7601).unwrap();
+        assert_eq!((w7.inet_af, w7.addr_info, w7.state), (0x18, 0x20, 0x68));
+        assert_eq!(
+            (w7.local_port, w7.remote_port, w7.owner),
+            (0x6C, 0x6E, 0x238)
+        );
+        assert_eq!((w7.inetaf_af, w7.create_time), (0x14, 0x0));
+
+        // Win8.1 / Server 2012 R2 (the DC): modern base, Owner 0x258, no CreateTime.
+        let w81 = tcp_endpoint_layout_x64(9600).unwrap();
+        assert_eq!((w81.addr_info, w81.state, w81.owner), (0x18, 0x6C, 0x258));
+        assert_eq!(w81.create_time, 0x0);
+
+        // Win10 1607 (Server 2016) and 2004 differ only in Owner/CreateTime.
+        assert_eq!(tcp_endpoint_layout_x64(14393).unwrap().owner, 0x258);
+        assert_eq!(tcp_endpoint_layout_x64(14393).unwrap().create_time, 0x268);
+        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().owner, 0x2D8);
+        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().create_time, 0x2E8);
+
+        // Unknown build: no overlay (caller must not read at guessed offsets).
+        assert!(tcp_endpoint_layout_x64(12345).is_none());
+    }
+
+    #[test]
     fn scan_tcp_endpoints_recovers_a_connection_from_a_tcpe_pool_object() {
-        use tcpe14393 as t;
+        // Build 9600 (Server 2012 R2 — the real CITADEL-DC01 build); the scan
+        // selects this layout from the NtBuildNumber symbol at runtime.
+        let t = tcp_endpoint_layout_x64(9600).unwrap();
         // VA-mapped pointer targets — use 0xFFFFC0.. to exercise the full
         // kernel-half is_kernel_va range (pool lives outside the 0xFFFFF8.. band).
         let inetaf_va = 0xFFFF_C000_0001_0000u64;
@@ -910,18 +1019,17 @@ mod tests {
         );
 
         let mut inetaf = vec![0u8; 0x1000];
-        inetaf[t::INETAF_AF as usize..t::INETAF_AF as usize + 2]
-            .copy_from_slice(&2u16.to_le_bytes());
+        inetaf[t.inetaf_af as usize..t.inetaf_af as usize + 2].copy_from_slice(&2u16.to_le_bytes());
         let mut ai = vec![0u8; 0x1000];
-        ai[t::AI_LOCAL as usize..t::AI_LOCAL as usize + 8].copy_from_slice(&la_va.to_le_bytes());
-        ai[t::AI_REMOTE as usize..t::AI_REMOTE as usize + 8]
+        ai[t.ai_local as usize..t.ai_local as usize + 8].copy_from_slice(&la_va.to_le_bytes());
+        ai[t.ai_remote as usize..t.ai_remote as usize + 8]
             .copy_from_slice(&remote_in_va.to_le_bytes());
         let mut rin = vec![0u8; 0x1000];
         rin[0..4].copy_from_slice(&[203, 78, 103, 109]); // remote (C2)
                                                          // Local chain: _ADDRINFO.Local -> _LOCAL_ADDRESS.pData -> (deref) ptr ->
                                                          // (deref) _IN_ADDR. la.pData = pdata_va; *pdata_va = local_in_va; *local_in_va = IP.
         let mut la = vec![0u8; 0x1000];
-        la[t::LA_PDATA as usize..t::LA_PDATA as usize + 8].copy_from_slice(&pdata_va.to_le_bytes());
+        la[t.la_pdata as usize..t.la_pdata as usize + 8].copy_from_slice(&pdata_va.to_le_bytes());
         let mut pdata = vec![0u8; 0x1000];
         pdata[0..8].copy_from_slice(&local_in_va.to_le_bytes());
         let mut lin = vec![0u8; 0x1000];
@@ -934,16 +1042,23 @@ mod tests {
         let tag_phys = 0x50_004u64;
         let ep_obj = 0x50_010u64; // pool_base(0x50000) + delta 0x10
         let mut obj = vec![0u8; 0x300];
-        obj[t::STATE as usize..t::STATE as usize + 4].copy_from_slice(&4u32.to_le_bytes()); // ESTABLISHED
-        obj[t::LOCAL_PORT as usize..t::LOCAL_PORT as usize + 2]
+        obj[t.state as usize..t.state as usize + 4].copy_from_slice(&4u32.to_le_bytes()); // ESTABLISHED
+        obj[t.local_port as usize..t.local_port as usize + 2]
             .copy_from_slice(&62613u16.to_be_bytes());
-        obj[t::REMOTE_PORT as usize..t::REMOTE_PORT as usize + 2]
+        obj[t.remote_port as usize..t.remote_port as usize + 2]
             .copy_from_slice(&443u16.to_be_bytes());
-        obj[t::INETAF as usize..t::INETAF as usize + 8].copy_from_slice(&inetaf_va.to_le_bytes());
-        obj[t::ADDR_INFO as usize..t::ADDR_INFO as usize + 8].copy_from_slice(&ai_va.to_le_bytes());
-        obj[t::OWNER as usize..t::OWNER as usize + 8].copy_from_slice(&ep_va.to_le_bytes());
+        obj[t.inet_af as usize..t.inet_af as usize + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[t.addr_info as usize..t.addr_info as usize + 8].copy_from_slice(&ai_va.to_le_bytes());
+        obj[t.owner as usize..t.owner as usize + 8].copy_from_slice(&ep_va.to_le_bytes());
+
+        // NtBuildNumber global = 0xF0002580 (free-build flags | build 9600), so
+        // the scan selects the build-9600 overlay from the dump itself.
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_2580u32.to_le_bytes());
 
         let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
             .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
             .map_4k(ai_va, pa_ai, flags::WRITABLE)
             .map_4k(remote_in_va, pa_rin, flags::WRITABLE)
@@ -951,6 +1066,7 @@ mod tests {
             .map_4k(pdata_va, pa_pdata, flags::WRITABLE)
             .map_4k(local_in_va, pa_lin, flags::WRITABLE)
             .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
             .write_phys(pa_inetaf, &inetaf)
             .write_phys(pa_ai, &ai)
             .write_phys(pa_rin, &rin)
