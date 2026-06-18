@@ -220,8 +220,6 @@ fn is_kernel_va(x: u64) -> bool {
 pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
-    return Ok(Vec::new()); // RED stub
-    #[allow(unreachable_code)]
     let syms = reader.symbols();
     let off = |s: &str| syms.field_offset("_TCP_ENDPOINT", s);
     let (Some(state_o), Some(lp_o), Some(rp_o), Some(ai_o), Some(ow_o)) = (
