@@ -242,6 +242,75 @@ impl<P: PhysicalMemoryProvider> VirtualAddressSpace<P> {
     /// 2 MiB / 4 KiB pages, never inside a 1 GiB page).
     #[must_use]
     pub fn find_kernel_va_for_phys(&self, target_phys: u64, max_leaves: usize) -> Option<u64> {
+        if !matches!(self.mode, TranslationMode::X86_64FourLevel) {
+            return None;
+        }
+        let target = target_phys & !0xFFF;
+        let root = self.page_table_root;
+        let mut budget = max_leaves;
+        // p4 >= 256 ⇒ bit 47 is always set, so canonicalization always
+        // sign-extends into the kernel half.
+        let canon = |p4: u64, p3: u64, p2: u64, p1: u64| -> u64 {
+            ((p4 << 39) | (p3 << 30) | (p2 << 21) | (p1 << 12)) | 0xFFFF_0000_0000_0000
+        };
+        for p4 in 256u64..512 {
+            let Ok(pml4e) = self.read_pte(root + p4 * 8) else {
+                continue;
+            };
+            if pml4e & PRESENT == 0 {
+                continue;
+            }
+            let pdpt = pml4e & ADDR_MASK;
+            for p3 in 0u64..512 {
+                let Ok(pdpte) = self.read_pte(pdpt + p3 * 8) else {
+                    continue;
+                };
+                if pdpte & PRESENT == 0 {
+                    continue;
+                }
+                // 1 GiB pages are not used to map the kernel image; skip them.
+                if pdpte & PS != 0 {
+                    continue;
+                }
+                let pd = pdpte & ADDR_MASK;
+                for p2 in 0u64..512 {
+                    let Ok(pde) = self.read_pte(pd + p2 * 8) else {
+                        continue;
+                    };
+                    if pde & PRESENT == 0 {
+                        continue;
+                    }
+                    if pde & PS != 0 {
+                        let base = pde & 0x000F_FFFF_FFE0_0000;
+                        if target >= base && target < base + (1 << 21) {
+                            return Some(canon(p4, p3, p2, 0) | (target - base));
+                        }
+                        budget = budget.checked_sub(1)?;
+                        continue;
+                    }
+                    let pt = pde & ADDR_MASK;
+                    for p1 in 0u64..512 {
+                        let Ok(pte) = self.read_pte(pt + p1 * 8) else {
+                            continue;
+                        };
+                        // Match present OR transition leaves: a transition PTE
+                        // (PRESENT=0, bit 11 set) still points at a resident page.
+                        let leaf = if pte & PRESENT != 0 {
+                            Some(pte & ADDR_MASK)
+                        } else if pte & (1 << 11) != 0 {
+                            Some(((pte >> 12) & 0xF_FFFF_FFFF) * 0x1000)
+                        } else {
+                            None
+                        };
+                        match leaf {
+                            Some(phys) if phys == target => return Some(canon(p4, p3, p2, p1)),
+                            Some(_) => budget = budget.checked_sub(1)?,
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -508,6 +577,58 @@ mod tests {
         let mem = manual_pt(0xFFFF_F802_4020_1000u64, 0x6000 | PRESENT, false);
         let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
         assert_eq!(vas.find_kernel_va_for_phys(0xDEAD_0000, 100_000), None);
+    }
+
+    #[test]
+    fn reverse_map_respects_max_leaves_budget() {
+        // Two present leaves, neither matching; a budget of 1 must give up
+        // (the second non-matching leaf exhausts the budget) and return None.
+        let vaddr = 0xFFFF_F802_4020_1000u64;
+        let mut mem = manual_pt(vaddr, 0x6000 | PRESENT, false);
+        let p2 = (vaddr >> 21) & 0x1FF;
+        let pt = 0x3000u64;
+        // Add a second present leaf in the same PT at index +1.
+        let p1b = ((vaddr >> 12) & 0x1FF) + 1;
+        let _ = p2;
+        mem.write_u64(pt + p1b * 8, 0x9000 | PRESENT);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(0xABCD_0000, 1), None);
+    }
+
+    #[test]
+    fn reverse_map_skips_1g_huge_page() {
+        // A present 1 GiB PDPTE is skipped (the kernel image is never mapped in
+        // a 1 GiB page); the search returns None even if target falls inside it.
+        let vaddr = 0xFFFF_F802_4000_0000u64;
+        let mut mem = SyntheticPhysMem::new(16 * 1024 * 1024);
+        let p4 = (vaddr >> 39) & 0x1FF;
+        let p3 = (vaddr >> 30) & 0x1FF;
+        mem.write_u64(p4 * 8, 0x1000 | PRESENT);
+        mem.write_u64(0x1000 + p3 * 8, 0x4000_0000 | PRESENT | PS); // 1 GiB page
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(0x4000_1000, 100_000), None);
+    }
+
+    #[test]
+    fn reverse_map_skips_read_error_branch() {
+        // A PML4E pointing past the synthetic image makes the PDPT read fail;
+        // the walk must skip that subtree, then find the valid mapping elsewhere.
+        let vaddr = 0xFFFF_F802_4020_1000u64;
+        let mut mem = manual_pt(vaddr, 0x6000 | PRESENT, false);
+        // Point PML4 index 256 at an out-of-range PDPT (16 MiB image, this is 64 MiB).
+        mem.write_u64(256 * 8, 0x400_0000 | PRESENT);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(0x6000, 100_000), Some(vaddr));
+    }
+
+    #[test]
+    fn reverse_map_skips_non_matching_2m_page() {
+        // A present 2 MiB page that does not contain the target is skipped; the
+        // search then finds nothing (covers the large-page non-match branch).
+        let vaddr = 0xFFFF_F802_4040_0000u64;
+        let mem = manual_pt(vaddr, 0x20_0000 | PRESENT | PS, true);
+        let vas = VirtualAddressSpace::new(mem, 0, TranslationMode::X86_64FourLevel);
+        assert_eq!(vas.find_kernel_va_for_phys(0x40_0000, 100_000), None);
     }
 
     #[test]
