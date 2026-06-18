@@ -89,6 +89,31 @@ pub fn module_pdb_id<P: PhysicalMemoryProvider>(
     Ok(memf_symbols::pe_debug::extract_pdb_id_tolerant(&image)?)
 }
 
+/// Build a ready-to-use [`SymbolResolver`](memf_symbols::SymbolResolver) for a
+/// loaded kernel module (e.g. `tcpip.sys`): locate it via `PsLoadedModuleList`,
+/// extract its RSDS [`PdbId`], resolve the matching PDB
+/// ([`AutoProfile`](memf_symbols::AutoProfile), download/cache), and rebase its
+/// RVA symbols by the module's base.
+///
+/// Returns `Ok(None)` when the module is not loaded. The resulting resolver is
+/// intended as a member of a `MultiModuleResolver` alongside the kernel one, so a
+/// walker can resolve that module's own symbols (e.g. `TcpPortPool`).
+pub fn module_resolver<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    name: &str,
+) -> Result<Option<Box<dyn memf_symbols::SymbolResolver>>> {
+    let Some(base) = find_loaded_module(reader, name)? else {
+        return Ok(None);
+    };
+    // SizeOfImage is read tolerantly via the cap; a large cap covers any driver.
+    let pdb_id = module_pdb_id(reader, base, MODULE_IMAGE_SCAN_CAP as u32)?;
+    let auto = memf_symbols::AutoProfile::new()?;
+    let inner = auto.from_pdb_id(&pdb_id)?;
+    Ok(Some(Box::new(memf_symbols::RebasedResolver::new(
+        inner, base,
+    ))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +211,78 @@ mod tests {
 
         let missing = find_loaded_module(&reader, "nope.sys").expect("walk ok");
         assert_eq!(missing, None, "absent module returns None");
+    }
+
+    /// Real ntoskrnl PDBs expose the loaded-module entry as `_LDR_DATA_TABLE_ENTRY`,
+    /// NOT `_KLDR_DATA_TABLE_ENTRY` (validated on citadeldc01.mem — the kernel ISF
+    /// carries only `_LDR_DATA_TABLE_ENTRY`). The walk must pick whichever the ISF
+    /// actually defines. With the same field offsets, the byte layout built by
+    /// `build_kldr_entry` is valid for either name.
+    #[test]
+    fn finds_module_when_isf_names_entry_ldr_not_kldr() {
+        let head_va = 0xFFFF_F805_5A41_0000u64;
+        let entries_va = 0xFFFF_F800_AAB0_0000u64;
+        let entry_b_va = entries_va + 256;
+        let tcpip_base = 0xFFFF_F800_C0DE_0000u64;
+
+        let mut head_page = vec![0u8; 4096];
+        let mut entries_page = vec![0u8; 4096];
+        head_page[0..8].copy_from_slice(&entry_b_va.to_le_bytes());
+        head_page[8..16].copy_from_slice(&entry_b_va.to_le_bytes());
+
+        let name_b = utf16le("tcpip.sys");
+        let str_b_off = 1100usize;
+        entries_page[str_b_off..str_b_off + name_b.len()].copy_from_slice(&name_b);
+        build_kldr_entry(
+            &mut entries_page,
+            256,
+            head_va,
+            head_va,
+            tcpip_base,
+            entries_va + str_b_off as u64,
+            name_b.len() as u16,
+        );
+
+        // ISF defines `_LDR_DATA_TABLE_ENTRY` (real-kernel name) — NO `_KLDR`.
+        let isf = IsfBuilder::new()
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
+            .add_struct("_UNICODE_STRING", 16)
+            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
+            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
+            .add_struct("_LDR_DATA_TABLE_ENTRY", 256)
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "InLoadOrderLinks",
+                0,
+                "_LIST_ENTRY",
+            )
+            .add_field("_LDR_DATA_TABLE_ENTRY", "DllBase", 48, "pointer")
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "BaseDllName",
+                88,
+                "_UNICODE_STRING",
+            )
+            .add_symbol("PsLoadedModuleList", head_va)
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(head_va, 0x10_0000, flags::WRITABLE)
+            .map_4k(entries_va, 0x11_0000, flags::WRITABLE)
+            .write_phys(0x10_0000, &head_page)
+            .write_phys(0x11_0000, &entries_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let found = find_loaded_module(&reader, "tcpip.sys").expect("walk ok");
+        assert_eq!(
+            found,
+            Some(tcpip_base),
+            "must use _LDR_DATA_TABLE_ENTRY schema"
+        );
     }
 
     /// Minimal PE32+/AMD64 image (one page) with a CodeView RSDS debug record.
