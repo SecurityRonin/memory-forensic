@@ -59,6 +59,7 @@ pub(crate) mod heap_walker;
 pub mod hollowing;
 pub mod iat_hooks;
 pub mod kerberos_tickets;
+pub mod kernel_base;
 pub mod kernel_modules;
 pub mod ldrmodules;
 pub mod lsadump;
