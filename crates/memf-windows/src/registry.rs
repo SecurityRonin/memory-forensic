@@ -161,8 +161,42 @@ pub(crate) fn cell_index_to_va<P: PhysicalMemoryProvider>(
     hhive_addr: u64,
     cell_index: u32,
 ) -> Option<u64> {
-    let _ = (reader, hhive_addr, cell_index);
-    None
+    let syms = reader.symbols();
+    let volatile = u64::from((cell_index >> 31) & 1);
+    let dir_index = u64::from((cell_index >> 21) & 0x3FF);
+    let table_index = u64::from((cell_index >> 12) & 0x1FF);
+    let suboffset = u64::from(cell_index & 0xFFF);
+
+    // Storage[volatile] is an embedded _DUAL array; its .Map points at the
+    // _HMAP_DIRECTORY (an array of _HMAP_TABLE pointers at offset 0).
+    let storage_off = syms.field_offset("_HHIVE", "Storage")?;
+    let dual_size = syms.struct_size("_DUAL")?;
+    let map_off = syms.field_offset("_DUAL", "Map")?;
+    let storage_base = hhive_addr
+        .wrapping_add(storage_off)
+        .wrapping_add(volatile.wrapping_mul(dual_size));
+    let map_dir = le_u64(reader, storage_base.wrapping_add(map_off))?;
+    if map_dir == 0 {
+        return None;
+    }
+
+    // Directory[dir_index] → _HMAP_TABLE*; Table[table_index] → _HMAP_ENTRY.
+    let table = le_u64(reader, map_dir.wrapping_add(dir_index.wrapping_mul(8)))?;
+    if table == 0 {
+        return None;
+    }
+    let entry_size = syms.struct_size("_HMAP_ENTRY")?;
+    let entry = table.wrapping_add(table_index.wrapping_mul(entry_size));
+
+    let perm_off = syms.field_offset("_HMAP_ENTRY", "PermanentBinAddress")?;
+    let perm_bin = le_u64(reader, entry.wrapping_add(perm_off))?;
+    // The cell may live in the volatile/stable bin; PermanentBinAddress carries
+    // flags in its low nibble. BlockOffset is the cell's offset within the bin.
+    let block_off_off = syms.field_offset("_HMAP_ENTRY", "BlockOffset")?;
+    let block_offset = le_u32(reader, entry.wrapping_add(block_off_off))?;
+    let block_va = (perm_bin & !0xF).wrapping_add(u64::from(block_offset));
+
+    Some(block_va.wrapping_add(suboffset))
 }
 
 #[cfg(test)]
