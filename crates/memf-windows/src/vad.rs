@@ -309,6 +309,38 @@ mod tests {
         assert_eq!(protection_shift(None), 3); // build unresolved -> modern
     }
 
+    /// VAD pointers come from untrusted memory: a corrupt/crafted tree can share
+    /// a child between two parents (or form a cycle). The walk must visit each
+    /// node at most once and terminate. Diamond: root -> {A, B}, A -> C, B -> C.
+    /// Without a visited-set, C is enumerated twice (len 5); with it, len 4.
+    #[test]
+    fn vad_walk_dedups_shared_nodes() {
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+        let (root, a, b, c) = (0x100usize, 0x200usize, 0x300usize, 0x400usize);
+        let va = |o: usize| page_vaddr + o as u64;
+
+        let mut page = vec![0u8; 4096];
+        page[AVL_ROOT..AVL_ROOT + 8].copy_from_slice(&va(root).to_le_bytes());
+        let f = make_vad_flags(4, 0); // PAGE_READWRITE
+        build_vad_node(&mut page, root, va(a), va(b), 0x10, 0x1F, f);
+        build_vad_node(&mut page, a, va(c), 0, 0x20, 0x2F, f);
+        build_vad_node(&mut page, b, va(c), 0, 0x30, 0x3F, f);
+        build_vad_node(&mut page, c, 0, 0, 0x40, 0x4F, f);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page);
+        let reader = make_win_reader(ptb);
+
+        let results = walk_vad_tree(&reader, page_vaddr, 1, "p.exe").unwrap();
+        assert_eq!(
+            results.len(),
+            4,
+            "shared child C must be visited once, not twice"
+        );
+    }
+
     /// Real Win8+/Server 2012 R2 `_MMVAD_SHORT`: no direct `Left`/`Right`/`Flags`;
     /// the AVL links live in `VadNode` (`_RTL_BALANCED_NODE`) and the flags in the
     /// `u` union. Exercises the VadNode and `u`-union branches of the readers.
