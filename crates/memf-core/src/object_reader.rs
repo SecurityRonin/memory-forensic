@@ -67,6 +67,21 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         }
     }
 
+    /// Consume this reader and return one over the **same** address space (the
+    /// physical memory is moved, not cloned — so this works even when the
+    /// provider is not `Clone`) but with its symbol resolver transformed by `f`.
+    ///
+    /// Used to wrap the kernel-only resolver in a multi-module resolver carrying
+    /// e.g. `tcpip.sys` symbols before a netstat walk.
+    #[must_use]
+    pub fn map_symbols(
+        self,
+        f: impl FnOnce(Box<dyn SymbolResolver>) -> Box<dyn SymbolResolver>,
+    ) -> Self {
+        let _ = f; // STUB (RED): does not yet apply the transform
+        self
+    }
+
     /// Read a field from a struct at `base_vaddr` and interpret it as type `T`.
     ///
     /// Looks up the field offset from the symbol resolver, reads `size_of::<T>()`
@@ -236,10 +251,20 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         container_struct: &str,
         list_field: &str,
     ) -> Result<Vec<u64>> {
-        let mut forward =
-            self.walk_list_with(head_vaddr, list_struct, next_field, container_struct, list_field)?;
-        let backward =
-            self.walk_list_with(head_vaddr, list_struct, prev_field, container_struct, list_field)?;
+        let mut forward = self.walk_list_with(
+            head_vaddr,
+            list_struct,
+            next_field,
+            container_struct,
+            list_field,
+        )?;
+        let backward = self.walk_list_with(
+            head_vaddr,
+            list_struct,
+            prev_field,
+            container_struct,
+            list_field,
+        )?;
         let mut seen: std::collections::HashSet<u64> = forward.iter().copied().collect();
         for container in backward {
             if seen.insert(container) {
@@ -302,10 +327,7 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
             .symbols
             .field_offset(container_struct, list_field)
             .unwrap_or(0);
-        let next_offset = self
-            .symbols
-            .field_offset("list_head", "next")
-            .unwrap_or(0);
+        let next_offset = self.symbols.field_offset("list_head", "next").unwrap_or(0);
 
         let current = match self.read_u64_at(head_vaddr.wrapping_add(next_offset)) {
             Ok(v) => v,
@@ -456,6 +478,32 @@ mod tests {
             Error::MissingSymbol(s) => assert_eq!(s, "task_struct.nonexistent"),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn map_symbols_applies_the_transform() {
+        // Reader's resolver knows `old_sym` but not `new_sym`.
+        let isf_old = IsfBuilder::new().add_symbol("old_sym", 0x1000);
+        let reader = make_reader(&isf_old, PageTableBuilder::new());
+        assert_eq!(reader.symbols().symbol_address("old_sym"), Some(0x1000));
+        assert_eq!(reader.symbols().symbol_address("new_sym"), None);
+
+        // `map_symbols` must hand the existing resolver to `f` and install the
+        // result — here a fresh resolver that knows `new_sym` instead.
+        let new_json = IsfBuilder::new().add_symbol("new_sym", 0x2000).build_json();
+        let reader =
+            reader.map_symbols(|_old| Box::new(IsfResolver::from_value(&new_json).unwrap()));
+
+        assert_eq!(
+            reader.symbols().symbol_address("new_sym"),
+            Some(0x2000),
+            "map_symbols must apply f to the resolver"
+        );
+        assert_eq!(
+            reader.symbols().symbol_address("old_sym"),
+            None,
+            "the old resolver must be replaced by f's result"
+        );
     }
 
     #[test]
@@ -767,10 +815,20 @@ mod tests {
 
         let reader = make_reader(&isf, ptb);
         let containers = reader
-            .walk_list_with(head_v, "_LIST_ENTRY", "Flink", "_EPROCESS", "ActiveProcessLinks")
+            .walk_list_with(
+                head_v,
+                "_LIST_ENTRY",
+                "Flink",
+                "_EPROCESS",
+                "ActiveProcessLinks",
+            )
             .expect("non-canonical link terminates the walk, not errors");
 
-        assert_eq!(containers, vec![a_v], "only the real node A; no bogus container");
+        assert_eq!(
+            containers,
+            vec![a_v],
+            "only the real node A; no bogus container"
+        );
     }
 
     #[test]
@@ -831,10 +889,17 @@ mod tests {
 
         // Forward gives [A, B]; backward adds [C]. Order: forward first, then
         // backward-only, deduplicated.
-        assert_eq!(containers.len(), 3, "all three nodes recovered: {containers:x?}");
+        assert_eq!(
+            containers.len(),
+            3,
+            "all three nodes recovered: {containers:x?}"
+        );
         assert!(containers.contains(&a_v));
         assert!(containers.contains(&b_v));
-        assert!(containers.contains(&c_v), "forward-orphaned C recovered via Blink");
+        assert!(
+            containers.contains(&c_v),
+            "forward-orphaned C recovered via Blink"
+        );
     }
 
     #[test]
@@ -945,8 +1010,8 @@ mod tests {
         let isf = IsfBuilder::new()
             .add_struct("x", 1)
             .add_symbol("PsActiveProcessHead", 0x002b_00a0);
-        let reader = make_reader(&isf, PageTableBuilder::new())
-            .with_kernel_base(0xFFFF_F800_CBE0_0000);
+        let reader =
+            make_reader(&isf, PageTableBuilder::new()).with_kernel_base(0xFFFF_F800_CBE0_0000);
         assert_eq!(
             reader.required_symbol("PsActiveProcessHead").unwrap(),
             0xFFFF_F800_CC0B_00A0
@@ -967,9 +1032,12 @@ mod tests {
 
     #[test]
     fn required_field_offset_ok() {
-        let isf = IsfBuilder::new()
-            .add_struct("task_struct", 128)
-            .add_field("task_struct", "pid", 4, "int");
+        let isf = IsfBuilder::new().add_struct("task_struct", 128).add_field(
+            "task_struct",
+            "pid",
+            4,
+            "int",
+        );
 
         let vaddr: u64 = 0xFFFF_8000_0010_0000;
         let paddr: u64 = 0x0080_0000;
