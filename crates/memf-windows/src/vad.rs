@@ -50,6 +50,11 @@ fn is_execute_write(prot: u32) -> bool {
 /// VadFlags.VadType is bits [0:2] (3 bits).
 const VAD_TYPE_MASK: u32 = 0x7;
 
+/// Hard upper bound on VAD nodes enumerated per process — a backstop so a corrupt
+/// or crafted tree can never make the walk hang. Far above any real process's VAD
+/// count (typically a few thousand).
+const MAX_VAD_NODES: usize = 10_000_000;
+
 /// Whether a VAD is private (type 0 = VadNone → private allocation).
 fn is_private_vad(flags: u32) -> bool {
     (flags & VAD_TYPE_MASK) == 0
@@ -120,10 +125,17 @@ pub fn walk_vad_tree<P: PhysicalMemoryProvider>(
 
     let mut results = Vec::new();
     let mut stack = vec![root];
+    // VAD pointers are untrusted: a corrupt or crafted tree can share a child or
+    // form a cycle. A visited-set makes the iterative walk process each node once
+    // and terminate; `MAX_VAD_NODES` is a hard backstop so the walk can never hang.
+    let mut visited: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
     // Iterative in-order traversal of the AVL tree
     while let Some(node_addr) = stack.pop() {
-        if node_addr == 0 {
+        if results.len() >= MAX_VAD_NODES {
+            break; // cov:unreachable: real VAD counts are far below the 10M backstop
+        }
+        if node_addr == 0 || !visited.insert(node_addr) {
             continue;
         }
 
