@@ -104,6 +104,30 @@ fn vad_flags<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, node_addr: u64
     Ok(reader.read_field::<u32>(node_addr, "_MMVAD_SHORT", "u")?)
 }
 
+/// Read a VAD page-number field. On Win8+/Win10 `StartingVpn`/`EndingVpn` are
+/// 32-bit (`unsigned long`); a separate `…VpnHigh` byte carries bits 32-39 for
+/// regions above 16 TiB (present on Win8.1+). Mirrors Volatility3's
+/// `get_start`/`get_end`. Reading the base as `u64` would fuse the two adjacent
+/// 32-bit fields, so it must be read as `u32`.
+fn read_vpn<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    node_addr: u64,
+    low_field: &str,
+    high_field: &str,
+) -> Result<u64> {
+    let low: u32 = reader.read_field(node_addr, "_MMVAD_SHORT", low_field)?;
+    let mut vpn = u64::from(low);
+    if reader
+        .symbols()
+        .field_offset("_MMVAD_SHORT", high_field)
+        .is_some()
+    {
+        let high: u8 = reader.read_field(node_addr, "_MMVAD_SHORT", high_field)?;
+        vpn |= u64::from(high) << 32;
+    }
+    Ok(vpn)
+}
+
 /// Walk the VAD AVL tree for a process and return all VAD entries.
 ///
 /// `vad_root_vaddr` is the address of `_EPROCESS.VadRoot` (an `_RTL_AVL_TREE`).
@@ -143,8 +167,8 @@ pub fn walk_vad_tree<P: PhysicalMemoryProvider>(
         // `_MMVAD_SHORT.VadNode` (a `_RTL_BALANCED_NODE` at offset 0); only older
         // builds (Win7) expose `Left`/`Right` directly on `_MMVAD_SHORT`.
         let (left, right) = vad_child_links(reader, node_addr)?;
-        let starting_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "StartingVpn")?;
-        let ending_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "EndingVpn")?;
+        let starting_vpn = read_vpn(reader, node_addr, "StartingVpn", "StartingVpnHigh")?;
+        let ending_vpn = read_vpn(reader, node_addr, "EndingVpn", "EndingVpnHigh")?;
         let flags_raw: u32 = vad_flags(reader, node_addr)?;
 
         let protection = (flags_raw >> prot_shift) & VAD_PROTECTION_MASK;
