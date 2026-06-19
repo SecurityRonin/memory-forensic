@@ -78,8 +78,16 @@ impl<P: PhysicalMemoryProvider> ObjectReader<P> {
         self,
         f: impl FnOnce(Box<dyn SymbolResolver>) -> Box<dyn SymbolResolver>,
     ) -> Self {
-        let _ = f; // STUB (RED): does not yet apply the transform
-        self
+        let Self {
+            vas,
+            symbols,
+            kernel_base,
+        } = self;
+        Self {
+            vas,
+            symbols: f(symbols),
+            kernel_base,
+        }
     }
 
     /// Read a field from a struct at `base_vaddr` and interpret it as type `T`.
