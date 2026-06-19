@@ -13,7 +13,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.75"
 license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 
