@@ -188,13 +188,25 @@ pub(crate) fn cell_index_to_va<P: PhysicalMemoryProvider>(
     let entry_size = syms.struct_size("_HMAP_ENTRY")?;
     let entry = table.wrapping_add(table_index.wrapping_mul(entry_size));
 
-    let perm_off = syms.field_offset("_HMAP_ENTRY", "PermanentBinAddress")?;
-    let perm_bin = le_u64(reader, entry.wrapping_add(perm_off))?;
-    // The cell may live in the volatile/stable bin; PermanentBinAddress carries
-    // flags in its low nibble. BlockOffset is the cell's offset within the bin.
-    let block_off_off = syms.field_offset("_HMAP_ENTRY", "BlockOffset")?;
-    let block_offset = le_u32(reader, entry.wrapping_add(block_off_off))?;
-    let block_va = (perm_bin & !0xF).wrapping_add(u64::from(block_offset));
+    // Compute the bin's base VA. Mirrors Volatility3 `_HMAP_ENTRY.get_block_offset`:
+    // Win10 has `PermanentBinAddress` (flags in the low nibble) + `BlockOffset`;
+    // Win8.1/Server 2012 R2 (build 9600) and older have only `BlockAddress`, the
+    // bin VA directly. The real 9600 PDB lacks PermanentBinAddress, so the
+    // BlockAddress fallback is mandatory — without it every hive cell read fails.
+    let block_va = match (
+        syms.field_offset("_HMAP_ENTRY", "PermanentBinAddress"),
+        syms.field_offset("_HMAP_ENTRY", "BlockOffset"),
+    ) {
+        (Some(perm_off), Some(block_off_off)) => {
+            let perm_bin = le_u64(reader, entry.wrapping_add(perm_off))?;
+            let block_offset = le_u32(reader, entry.wrapping_add(block_off_off))?;
+            (perm_bin & !0xF).wrapping_add(u64::from(block_offset))
+        }
+        _ => {
+            let ba_off = syms.field_offset("_HMAP_ENTRY", "BlockAddress")?;
+            le_u64(reader, entry.wrapping_add(ba_off))?
+        }
+    };
 
     Some(block_va.wrapping_add(suboffset))
 }
