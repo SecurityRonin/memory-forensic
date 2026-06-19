@@ -222,7 +222,12 @@ pub fn walk_malfind<P: PhysicalMemoryProvider>(
         }
 
         let vad_root_addr = proc.vaddr.wrapping_add(vad_root_offset);
-        let vads = walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name)?;
+        // A smeared/terminated process can have a paged-out or corrupt VAD tree;
+        // skip it rather than aborting the whole scan (real dumps routinely carry
+        // a handful of such processes).
+        let Ok(vads) = walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) else {
+            continue;
+        };
 
         for vad in &vads {
             if vad.is_private && is_execute_write(vad.protection) {
