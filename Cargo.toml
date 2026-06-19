@@ -13,7 +13,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 
@@ -24,13 +24,13 @@ jsonguard = { version = "0.2.3", features = ["std", "serde"] }
 winevt-core = "0.2"
 # Internal (version + path: path drives local dev, version is used on publish).
 forensic-hashdb = { version = "0.1.0", path = "crates/forensic-hashdb" }
-memf-format  = { version = "0.1.0", path = "crates/memf-format" }
-memf-strings = { version = "0.1.0", path = "crates/memf-strings" }
-memf-symbols = { version = "0.1.0", path = "crates/memf-symbols" }
-memf-core    = { version = "0.1.0", path = "crates/memf-core" }
-memf-linux   = { version = "0.1.0", path = "crates/memf-linux" }
-memf-windows = { version = "0.1.0", path = "crates/memf-windows" }
-memf-correlate    = { version = "0.2.0", path = "crates/memf-correlate" }
+memf-format  = { version = "0.2.1", path = "crates/memf-format" }
+memf-strings = { version = "0.2.1", path = "crates/memf-strings" }
+memf-symbols = { version = "0.2.1", path = "crates/memf-symbols" }
+memf-core    = { version = "0.2.1", path = "crates/memf-core" }
+memf-linux   = { version = "0.2.1", path = "crates/memf-linux" }
+memf-windows = { version = "0.2.1", path = "crates/memf-windows" }
+memf-correlate    = { version = "0.2.1", path = "crates/memf-correlate" }
 assert_cmd = "2"
 aes            = "0.8"
 aes-gcm        = "0.10"
