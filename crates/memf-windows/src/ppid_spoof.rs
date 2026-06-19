@@ -33,7 +33,8 @@ pub fn check_ppid_spoof(procs: &[WinProcessInfo]) -> Vec<WinPpidSpoofInfo> {
         };
 
         let parent_lower = pid_to_name
-            .get(&proc.ppid).map_or_else(|| "unknown".to_string(), |s| s.to_ascii_lowercase());
+            .get(&proc.ppid)
+            .map_or_else(|| "unknown".to_string(), |s| s.to_ascii_lowercase());
 
         if !allowed.contains(&parent_lower.as_str()) {
             results.push(WinPpidSpoofInfo {
@@ -41,7 +42,8 @@ pub fn check_ppid_spoof(procs: &[WinProcessInfo]) -> Vec<WinPpidSpoofInfo> {
                 ppid: proc.ppid,
                 name: proc.image_name.clone(),
                 parent_name: pid_to_name
-                    .get(&proc.ppid).map_or_else(|| "UNKNOWN".to_string(), |s| (*s).to_string()),
+                    .get(&proc.ppid)
+                    .map_or_else(|| "UNKNOWN".to_string(), |s| (*s).to_string()),
                 expected_parents: allowed.iter().map(|s| (*s).to_string()).collect(),
                 confidence,
             });

@@ -382,13 +382,31 @@ mod tests {
 
         // A: forward link smeared to 0; backward link to head.
         let ptb = write_eprocess(
-            ptb, a_paddr, a_vaddr, 4, 0, "System", 132800000000000000, 0, 0x1ab000, 0,
+            ptb,
+            a_paddr,
+            a_vaddr,
+            4,
+            0,
+            "System",
+            132800000000000000,
+            0,
+            0x1ab000,
+            0,
             0,          // Flink = 0 (smear)
             head_vaddr, // Blink -> head
         );
         // B: orphaned forward, but head.Blink -> B and B.Blink -> A.
         let ptb = write_eprocess(
-            ptb, b_paddr, b_vaddr, 528, 4, "csrss.exe", 132800000000000001, 0, 0x1bb000, 0x1000,
+            ptb,
+            b_paddr,
+            b_vaddr,
+            528,
+            4,
+            "csrss.exe",
+            132800000000000001,
+            0,
+            0x1bb000,
+            0x1000,
             head_vaddr, // Flink -> head
             a_links,    // Blink -> A
         );
@@ -397,7 +415,11 @@ mod tests {
         let procs = walk_processes(&reader, head_vaddr).unwrap();
 
         let pids: Vec<u64> = procs.iter().map(|p| p.pid).collect();
-        assert_eq!(procs.len(), 2, "forward-smeared B recovered via Blink: {pids:?}");
+        assert_eq!(
+            procs.len(),
+            2,
+            "forward-smeared B recovered via Blink: {pids:?}"
+        );
         assert!(pids.contains(&4));
         assert!(pids.contains(&528));
     }

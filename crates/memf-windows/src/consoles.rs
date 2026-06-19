@@ -666,7 +666,6 @@ mod tests {
         assert!(CONSOLE_HOST_NAMES.contains(&"conhost.exe"));
     }
 
-
     // ---------------------------------------------------------------
     // Private helper function coverage (read_ptr, read_u32, read_u16,
     // read_utf16_string, walk_history_list, scan_for_console_info)

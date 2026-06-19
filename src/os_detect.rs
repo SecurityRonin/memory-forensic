@@ -268,7 +268,10 @@ mod tests {
         let resolver = make_resolver(&IsfBuilder::windows_kernel_preset());
 
         let cr3 = extract_cr3(OsProfile::Windows, None, resolver.as_ref(), &provider).unwrap();
-        assert_eq!(cr3, 0x1AD000, "CR3 recovered from the low stub, 4 KiB-masked");
+        assert_eq!(
+            cr3, 0x1AD000,
+            "CR3 recovered from the low stub, 4 KiB-masked"
+        );
     }
 
     #[test]

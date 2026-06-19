@@ -1,6 +1,6 @@
 use aes::Aes256;
 use cbc::Decryptor;
-use cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+use cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 
@@ -9,8 +9,8 @@ use crate::dpapi::DpapiError;
 /// Decrypt an AES-256-CBC ciphertext.
 pub fn decrypt_aes256_cbc(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, DpapiError> {
     let mut buf = ciphertext.to_vec();
-    let decryptor = Decryptor::<Aes256>::new_from_slices(key, iv)
-        .map_err(|_| DpapiError::InvalidKeyLength)?;
+    let decryptor =
+        Decryptor::<Aes256>::new_from_slices(key, iv).map_err(|_| DpapiError::InvalidKeyLength)?;
     let plaintext = decryptor
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .map_err(|_| DpapiError::DecryptionFailed)?;
@@ -19,10 +19,10 @@ pub fn decrypt_aes256_cbc(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Ve
 
 /// Verify HMAC-SHA1 over `data` using `key`; return Err if mismatch.
 pub fn verify_hmac_sha1(key: &[u8], data: &[u8], expected: &[u8]) -> Result<(), DpapiError> {
-    let mut mac = Hmac::<Sha1>::new_from_slice(key)
-        .map_err(|_| DpapiError::InvalidKeyLength)?;
+    let mut mac = Hmac::<Sha1>::new_from_slice(key).map_err(|_| DpapiError::InvalidKeyLength)?;
     mac.update(data);
-    mac.verify_slice(expected).map_err(|_| DpapiError::HmacMismatch)
+    mac.verify_slice(expected)
+        .map_err(|_| DpapiError::HmacMismatch)
 }
 
 /// Decrypt a DPAPI blob using the provided master key bytes.
@@ -33,8 +33,8 @@ pub fn decrypt_dpapi_blob(
     master_key: &[u8],
 ) -> Result<Vec<u8>, DpapiError> {
     // Derive session key: HMAC-SHA1(master_key, hmac_key_from_blob)
-    let mut mac = Hmac::<Sha1>::new_from_slice(master_key)
-        .map_err(|_| DpapiError::InvalidKeyLength)?;
+    let mut mac =
+        Hmac::<Sha1>::new_from_slice(master_key).map_err(|_| DpapiError::InvalidKeyLength)?;
     mac.update(&blob.hmac_key);
     let session_key = mac.finalize().into_bytes();
 
@@ -78,8 +78,8 @@ fn decrypt_3des_cbc(key_material: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, D
     let key = &expanded[..24];
     let iv = &expanded[24..32];
     let mut buf = ciphertext.to_vec();
-    let dec = CbcDec::<TdesEde3>::new_from_slices(key, iv)
-        .map_err(|_| DpapiError::InvalidKeyLength)?;
+    let dec =
+        CbcDec::<TdesEde3>::new_from_slices(key, iv).map_err(|_| DpapiError::InvalidKeyLength)?;
     let out = dec
         .decrypt_padded_mut::<NoPadding>(&mut buf)
         .map_err(|_| DpapiError::DecryptionFailed)?;
@@ -91,7 +91,7 @@ mod tests {
     use super::*;
     use aes::Aes256;
     use cbc::Encryptor;
-    use cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 
     fn aes256_cbc_encrypt(key: &[u8; 32], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
         let enc = Encryptor::<Aes256>::new_from_slices(key, iv).unwrap();

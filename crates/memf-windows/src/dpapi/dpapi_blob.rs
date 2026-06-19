@@ -16,7 +16,10 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
     // Minimum fixed header: 4 (version) + 16 (provider GUID) + 16 (mk GUID)
     //                      + 4 (flags) + 4 (desc len) = 44 bytes
     if data.len() < 44 {
-        return Err(DpapiError::TooShort { needed: 44, got: data.len() });
+        return Err(DpapiError::TooShort {
+            needed: 44,
+            got: data.len(),
+        });
     }
 
     let mut pos = 0usize;
@@ -26,8 +29,8 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
         return Err(DpapiError::UnsupportedVersion(version));
     }
     pos += 16; // skip provider GUID
-    // Guarded by the `data.len() < 44` check above (here pos == 20, pos+16 == 36);
-    // the fallback keeps construction panic-free if that invariant ever changes.
+               // Guarded by the `data.len() < 44` check above (here pos == 20, pos+16 == 36);
+               // the fallback keeps construction panic-free if that invariant ever changes.
     let master_key_guid: [u8; 16] = data
         .get(pos..pos + 16)
         .and_then(|s| s.try_into().ok())
@@ -37,7 +40,10 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
     let desc_len = read_u32(data, &mut pos) as usize;
 
     if pos + desc_len > data.len() {
-        return Err(DpapiError::TooShort { needed: pos + desc_len, got: data.len() });
+        return Err(DpapiError::TooShort {
+            needed: pos + desc_len,
+            got: data.len(),
+        });
     }
     let desc_bytes = &data[pos..pos + desc_len];
     pos += desc_len;
@@ -56,7 +62,10 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
 
     // Need 20 more bytes: algIdEncrypt(4) + algIdHash(4) + dataLen(4) + hmacKeyLen(4) + algIdHash2(4)
     if pos + 20 > data.len() {
-        return Err(DpapiError::TooShort { needed: pos + 20, got: data.len() });
+        return Err(DpapiError::TooShort {
+            needed: pos + 20,
+            got: data.len(),
+        });
     }
     let alg_id_encrypt = read_u32(data, &mut pos);
     let alg_id_hash = read_u32(data, &mut pos);
@@ -65,7 +74,10 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
     pos += 4; // skip repeated algIdHash
 
     if pos + hmac_key_len > data.len() {
-        return Err(DpapiError::TooShort { needed: pos + hmac_key_len, got: data.len() });
+        return Err(DpapiError::TooShort {
+            needed: pos + hmac_key_len,
+            got: data.len(),
+        });
     }
     let hmac_key = data[pos..pos + hmac_key_len].to_vec();
     pos += hmac_key_len;
@@ -77,7 +89,10 @@ pub fn parse_dpapi_blob(data: &[u8]) -> Result<DpapiBlob, DpapiError> {
     };
 
     if data.len() < pos + digest_len {
-        return Err(DpapiError::TooShort { needed: pos + digest_len, got: data.len() });
+        return Err(DpapiError::TooShort {
+            needed: pos + digest_len,
+            got: data.len(),
+        });
     }
     let hmac = data[data.len() - digest_len..].to_vec();
     let ciphertext = data[pos..data.len() - digest_len].to_vec();
@@ -111,12 +126,17 @@ fn read_u32(data: &[u8], pos: &mut usize) -> u32 {
 mod tests {
     use super::*;
 
-    fn make_minimal_blob(desc_bytes: &[u8], hmac_key: &[u8], ciphertext: &[u8], hmac: &[u8]) -> Vec<u8> {
+    fn make_minimal_blob(
+        desc_bytes: &[u8],
+        hmac_key: &[u8],
+        ciphertext: &[u8],
+        hmac: &[u8],
+    ) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend_from_slice(&2u32.to_le_bytes()); // version
-        v.extend_from_slice(&[0u8; 16]);           // provider GUID
-        v.extend_from_slice(&[0xAAu8; 16]);        // master key GUID
-        v.extend_from_slice(&0u32.to_le_bytes());  // flags
+        v.extend_from_slice(&[0u8; 16]); // provider GUID
+        v.extend_from_slice(&[0xAAu8; 16]); // master key GUID
+        v.extend_from_slice(&0u32.to_le_bytes()); // flags
         v.extend_from_slice(&(desc_bytes.len() as u32).to_le_bytes()); // desc length
         v.extend_from_slice(desc_bytes);
         v.extend_from_slice(&0x6610u32.to_le_bytes()); // AES-256

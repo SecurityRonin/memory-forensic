@@ -55,7 +55,11 @@ const EPROCESS_DELTAS: &[u64] = &[
 ];
 
 /// Read `n` bytes at physical `pa`, returning `None` on a short read.
-fn read_phys_exact<P: PhysicalMemoryProvider + ?Sized>(prov: &P, pa: u64, n: usize) -> Option<Vec<u8>> {
+fn read_phys_exact<P: PhysicalMemoryProvider + ?Sized>(
+    prov: &P,
+    pa: u64,
+    n: usize,
+) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; n];
     if prov.read_phys(pa, &mut buf).unwrap_or(0) < n {
         return None;
@@ -403,7 +407,10 @@ mod tests {
         place_proc_dtb(&mut data, 0x100, 4, "System", 0x0000_0000_001a_d000);
         let mem = VecMem::new(data);
         let found = scan_processes_dtb(&mem, PID_OFF, NAME_OFF, Some(DTB_OFF));
-        let sys = found.iter().find(|p| p.pid == 4).expect("System must be found");
+        let sys = found
+            .iter()
+            .find(|p| p.pid == 4)
+            .expect("System must be found");
         assert_eq!(
             sys.dtb,
             Some(0x0000_0000_001a_d000),
@@ -504,8 +511,7 @@ mod tests {
         let isf_bytes = std::fs::read(isf_path).expect("ISF must exist at {isf_path}");
         let isf_json: serde_json::Value =
             serde_json::from_slice(&isf_bytes).expect("ISF must be valid JSON");
-        let resolver =
-            IsfResolver::from_value(&isf_json).expect("IsfResolver must parse the ISF");
+        let resolver = IsfResolver::from_value(&isf_json).expect("IsfResolver must parse the ISF");
 
         // Offsets from the real ISF (ntkrnlmp_81BC5C37.json):
         //   _EPROCESS.UniqueProcessId  offset=1088 (0x440)
@@ -593,7 +599,7 @@ mod tests {
         data[0x204..0x208].copy_from_slice(b"Pro\xe3");
         let eproc = 0x200 + 0x30;
         data[eproc] = 0x03; // _DISPATCHER_HEADER.Type = ProcessObject
-        // pid=1236 is a valid Windows process id: non-zero, <= 0x40000, multiple of 4.
+                            // pid=1236 is a valid Windows process id: non-zero, <= 0x40000, multiple of 4.
         data[eproc + PID_OFF as usize..eproc + PID_OFF as usize + 8]
             .copy_from_slice(&1236u64.to_le_bytes());
         let name = b"hidden.exe";
@@ -602,7 +608,9 @@ mod tests {
         let mem = VecMem::new(data);
         let found = scan_processes(&mem, PID_OFF, NAME_OFF);
         assert!(
-            found.iter().any(|p| p.pid == 1236 && p.name == "hidden.exe"),
+            found
+                .iter()
+                .any(|p| p.pid == 1236 && p.name == "hidden.exe"),
             "must recover process under Pro\\xe3 (protected) pool tag: {found:?}"
         );
     }

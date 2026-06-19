@@ -8,9 +8,15 @@ pub enum ChromeCookieEncoding {
     /// Classic DPAPI blob (prefix `DPAPI`, 5 bytes). Windows 7 / no App-Bound.
     DpapiBlob(Vec<u8>),
     /// AES-256-GCM v10: `v10` + 12-byte nonce + ciphertext + 16-byte tag.
-    V10 { nonce: [u8; 12], ciphertext: Vec<u8> },
+    V10 {
+        nonce: [u8; 12],
+        ciphertext: Vec<u8>,
+    },
     /// AES-256-GCM v20 (Chrome 127+): same wire format as v10.
-    V20 { nonce: [u8; 12], ciphertext: Vec<u8> },
+    V20 {
+        nonce: [u8; 12],
+        ciphertext: Vec<u8>,
+    },
 }
 
 /// Detect the encoding of a raw `encrypted_value` blob from Chrome's Cookies DB.
@@ -47,8 +53,12 @@ pub fn decrypt_v10_cookie(
     ciphertext: &[u8],
     key: &[u8; 32],
 ) -> Result<Vec<u8>, DpapiError> {
-    #[allow(deprecated)] // from_slice deprecated in generic-array 1.x; aes-gcm 0.10 still uses 0.14
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::{Aead, Nonce}};
+    #[allow(deprecated)]
+    // from_slice deprecated in generic-array 1.x; aes-gcm 0.10 still uses 0.14
+    use aes_gcm::{
+        aead::{Aead, Nonce},
+        Aes256Gcm, KeyInit,
+    };
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| DpapiError::InvalidKeyLength)?;
     #[allow(deprecated)]
     let nonce_ga = Nonce::<Aes256Gcm>::from_slice(nonce);
@@ -93,7 +103,10 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn decrypt_v10_roundtrip() {
-        use aes_gcm::{Aes256Gcm, KeyInit, aead::{Aead, Nonce}};
+        use aes_gcm::{
+            aead::{Aead, Nonce},
+            Aes256Gcm, KeyInit,
+        };
         let key = [0x42u8; 32];
         let nonce_bytes = [0x11u8; 12];
         let plaintext = b"session_token_value";

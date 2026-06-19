@@ -1,8 +1,8 @@
 //! DPAPI decryption utilities for Windows memory forensics.
 
 pub mod chrome;
-pub mod dpapi_blob;
 pub mod decrypt;
+pub mod dpapi_blob;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DpapiError {

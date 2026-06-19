@@ -417,10 +417,7 @@ mod tests {
         // Surrogate at offset 0: [0x00, 0xD8]
         data[0x00..0x02].copy_from_slice(&[0x00, 0xD8]);
         // "OK\0" as UTF-16LE at offset 0x10
-        let ok_utf16: Vec<u8> = "OKAY"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let ok_utf16: Vec<u8> = "OKAY".encode_utf16().flat_map(u16::to_le_bytes).collect();
         data[0x10..0x10 + ok_utf16.len()].copy_from_slice(&ok_utf16);
 
         let provider = RawProvider::from_bytes(&data);

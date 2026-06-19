@@ -23,130 +23,226 @@ pub enum PluginRoute {
 /// Every officially-known plugin appears here; unknown plugins are proxied.
 pub static DISPATCH: &[(&str, PluginRoute)] = &[
     // ── process & thread ─────────────────────────────────────────────────
-    ("windows.pslist.PsList",              PluginRoute::Native("ps")),
-    ("windows.psscan.PsScan",              PluginRoute::Native("ps")),
-    ("windows.pstree.PsTree",              PluginRoute::Native("ps:tree")),
-    ("windows.psxview.PsXView",            PluginRoute::Native("check:psxview")),
-    ("windows.cmdline.CmdLine",            PluginRoute::Native("ps:cmdline")),
-    ("windows.cmdscan.CmdScan",            PluginRoute::Proxy),
-    ("windows.envars.Envars",              PluginRoute::Native("ps:envvars")),
-    ("windows.sessions.Sessions",          PluginRoute::Proxy),
-    ("windows.joblinks.JobLinks",          PluginRoute::Proxy),
+    ("windows.pslist.PsList", PluginRoute::Native("ps")),
+    ("windows.psscan.PsScan", PluginRoute::Native("ps")),
+    ("windows.pstree.PsTree", PluginRoute::Native("ps:tree")),
+    (
+        "windows.psxview.PsXView",
+        PluginRoute::Native("check:psxview"),
+    ),
+    ("windows.cmdline.CmdLine", PluginRoute::Native("ps:cmdline")),
+    ("windows.cmdscan.CmdScan", PluginRoute::Proxy),
+    ("windows.envars.Envars", PluginRoute::Native("ps:envvars")),
+    ("windows.sessions.Sessions", PluginRoute::Proxy),
+    ("windows.joblinks.JobLinks", PluginRoute::Proxy),
     ("windows.debugregisters.DebugRegisters", PluginRoute::Proxy),
-    ("windows.privileges.Privs",           PluginRoute::Native("ps:privileges")),
-    ("windows.getsids.GetSIDs",            PluginRoute::Proxy),
+    (
+        "windows.privileges.Privs",
+        PluginRoute::Native("ps:privileges"),
+    ),
+    ("windows.getsids.GetSIDs", PluginRoute::Proxy),
     ("windows.getservicesids.GetServiceSIDs", PluginRoute::Proxy),
-    ("windows.threads.Threads",            PluginRoute::Native("ps:threads")),
-    ("windows.thrdscan.ThrdScan",          PluginRoute::Native("ps:threads")),
-    ("windows.suspended_threads.SuspendedThreads", PluginRoute::Proxy),
-    ("windows.suspicious_threads.SuspiciousThreads", PluginRoute::Proxy),
+    ("windows.threads.Threads", PluginRoute::Native("ps:threads")),
+    (
+        "windows.thrdscan.ThrdScan",
+        PluginRoute::Native("ps:threads"),
+    ),
+    (
+        "windows.suspended_threads.SuspendedThreads",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.suspicious_threads.SuspiciousThreads",
+        PluginRoute::Proxy,
+    ),
     ("windows.orphan_kernel_threads.Threads", PluginRoute::Proxy),
-    ("windows.memmap.Memmap",              PluginRoute::Proxy),
+    ("windows.memmap.Memmap", PluginRoute::Proxy),
     // ── DLLs, modules, drivers ──────────────────────────────────────────
-    ("windows.dlllist.DllList",            PluginRoute::Native("ps:dlls")),
-    ("windows.ldrmodules.LdrModules",      PluginRoute::Native("check:ldrmodules")),
-    ("windows.modules.Modules",            PluginRoute::Native("sys")),
-    ("windows.modscan.ModScan",            PluginRoute::Proxy),
-    ("windows.unloadedmodules.UnloadedModules", PluginRoute::Proxy),
-    ("windows.driverscan.DriverScan",      PluginRoute::Proxy),
-    ("windows.driverirp.DriverIrp",        PluginRoute::Native("check:irp")),
-    ("windows.drivermodule.DriverModule",  PluginRoute::Proxy),
-    ("windows.verinfo.VerInfo",            PluginRoute::Proxy),
+    ("windows.dlllist.DllList", PluginRoute::Native("ps:dlls")),
+    (
+        "windows.ldrmodules.LdrModules",
+        PluginRoute::Native("check:ldrmodules"),
+    ),
+    ("windows.modules.Modules", PluginRoute::Native("sys")),
+    ("windows.modscan.ModScan", PluginRoute::Proxy),
+    (
+        "windows.unloadedmodules.UnloadedModules",
+        PluginRoute::Proxy,
+    ),
+    ("windows.driverscan.DriverScan", PluginRoute::Proxy),
+    (
+        "windows.driverirp.DriverIrp",
+        PluginRoute::Native("check:irp"),
+    ),
+    ("windows.drivermodule.DriverModule", PluginRoute::Proxy),
+    ("windows.verinfo.VerInfo", PluginRoute::Proxy),
     // ── handles, objects ────────────────────────────────────────────────
-    ("windows.handles.Handles",            PluginRoute::Native("handles")),
-    ("windows.mutantscan.MutantScan",      PluginRoute::Proxy),
-    ("windows.symlinkscan.SymlinkScan",    PluginRoute::Proxy),
-    ("windows.poolscanner.PoolScanner",    PluginRoute::Proxy),
-    ("windows.bigpools.BigPools",          PluginRoute::Proxy),
-    ("windows.desktops.Desktops",          PluginRoute::Proxy),
-    ("windows.deskscan.DeskScan",          PluginRoute::Proxy),
-    ("windows.windows.Windows",            PluginRoute::Proxy),
+    ("windows.handles.Handles", PluginRoute::Native("handles")),
+    ("windows.mutantscan.MutantScan", PluginRoute::Proxy),
+    ("windows.symlinkscan.SymlinkScan", PluginRoute::Proxy),
+    ("windows.poolscanner.PoolScanner", PluginRoute::Proxy),
+    ("windows.bigpools.BigPools", PluginRoute::Proxy),
+    ("windows.desktops.Desktops", PluginRoute::Proxy),
+    ("windows.deskscan.DeskScan", PluginRoute::Proxy),
+    ("windows.windows.Windows", PluginRoute::Proxy),
     ("windows.windowstations.WindowStations", PluginRoute::Proxy),
     // ── network ─────────────────────────────────────────────────────────
-    ("windows.netscan.NetScan",            PluginRoute::Native("net")),
-    ("windows.netstat.NetStat",            PluginRoute::Native("net")),
+    ("windows.netscan.NetScan", PluginRoute::Native("net")),
+    ("windows.netstat.NetStat", PluginRoute::Native("net")),
     // ── file system ─────────────────────────────────────────────────────
-    ("windows.filescan.FileScan",          PluginRoute::Proxy),
-    ("windows.mftscan.MFTScan",            PluginRoute::Proxy),
-    ("windows.mftscan.ADS",                PluginRoute::Proxy),
-    ("windows.mftscan.ResidentData",       PluginRoute::Proxy),
-    ("windows.dumpfiles.DumpFiles",        PluginRoute::Proxy),
+    ("windows.filescan.FileScan", PluginRoute::Proxy),
+    ("windows.mftscan.MFTScan", PluginRoute::Proxy),
+    ("windows.mftscan.ADS", PluginRoute::Proxy),
+    ("windows.mftscan.ResidentData", PluginRoute::Proxy),
+    ("windows.dumpfiles.DumpFiles", PluginRoute::Proxy),
     // ── kernel structures ───────────────────────────────────────────────
-    ("windows.ssdt.SSDT",                  PluginRoute::Native("check:ssdt")),
-    ("windows.callbacks.Callbacks",        PluginRoute::Native("check:callbacks")),
-    ("windows.kpcrs.KPCRs",               PluginRoute::Proxy),
-    ("windows.timers.Timers",              PluginRoute::Proxy),
-    ("windows.devicetree.DeviceTree",      PluginRoute::Proxy),
-    ("windows.consoles.Consoles",          PluginRoute::Proxy),
-    ("windows.crashinfo.Crashinfo",        PluginRoute::Proxy),
-    ("windows.statistics.Statistics",      PluginRoute::Proxy),
-    ("windows.virtmap.VirtMap",            PluginRoute::Proxy),
-    ("windows.mbrscan.MBRScan",            PluginRoute::Proxy),
-    ("windows.shimcachemem.ShimcacheMem",  PluginRoute::Proxy),
+    ("windows.ssdt.SSDT", PluginRoute::Native("check:ssdt")),
+    (
+        "windows.callbacks.Callbacks",
+        PluginRoute::Native("check:callbacks"),
+    ),
+    ("windows.kpcrs.KPCRs", PluginRoute::Proxy),
+    ("windows.timers.Timers", PluginRoute::Proxy),
+    ("windows.devicetree.DeviceTree", PluginRoute::Proxy),
+    ("windows.consoles.Consoles", PluginRoute::Proxy),
+    ("windows.crashinfo.Crashinfo", PluginRoute::Proxy),
+    ("windows.statistics.Statistics", PluginRoute::Proxy),
+    ("windows.virtmap.VirtMap", PluginRoute::Proxy),
+    ("windows.mbrscan.MBRScan", PluginRoute::Proxy),
+    ("windows.shimcachemem.ShimcacheMem", PluginRoute::Proxy),
     // ── VAD / virtual memory ─────────────────────────────────────────────
-    ("windows.vadinfo.VadInfo",            PluginRoute::Native("ps:vad")),
-    ("windows.vadwalk.VadWalk",            PluginRoute::Native("ps:vad")),
-    ("windows.vadregexscan.VadRegExScan",  PluginRoute::Proxy),
-    ("windows.vadyarascan.VadYaraScan",    PluginRoute::Proxy),
+    ("windows.vadinfo.VadInfo", PluginRoute::Native("ps:vad")),
+    ("windows.vadwalk.VadWalk", PluginRoute::Native("ps:vad")),
+    ("windows.vadregexscan.VadRegExScan", PluginRoute::Proxy),
+    ("windows.vadyarascan.VadYaraScan", PluginRoute::Proxy),
     // ── malware detection ────────────────────────────────────────────────
-    ("windows.malfind.Malfind",            PluginRoute::Native("check:malfind")),
-    ("windows.hollowprocesses.HollowProcesses", PluginRoute::Native("check:hollowing")),
-    ("windows.processghosting.ProcessGhosting", PluginRoute::Proxy),
-    ("windows.etwpatch.EtwPatch",          PluginRoute::Proxy),
-    ("windows.skeleton_key_check.Skeleton_Key_Check", PluginRoute::Proxy),
-    ("windows.svcdiff.SvcDiff",            PluginRoute::Proxy),
-    ("windows.direct_system_calls.DirectSystemCalls", PluginRoute::Proxy),
-    ("windows.indirect_system_calls.IndirectSystemCalls", PluginRoute::Proxy),
-    ("windows.unhooked_system_calls.unhooked_system_calls", PluginRoute::Proxy),
-    ("windows.strings.Strings",            PluginRoute::Native("strings")),
-    ("windows.pe_symbols.PESymbols",       PluginRoute::Proxy),
-    ("windows.iat.IAT",                    PluginRoute::Proxy),
-    ("windows.pedump.PEDump",              PluginRoute::Native("procdump")),
+    (
+        "windows.malfind.Malfind",
+        PluginRoute::Native("check:malfind"),
+    ),
+    (
+        "windows.hollowprocesses.HollowProcesses",
+        PluginRoute::Native("check:hollowing"),
+    ),
+    (
+        "windows.processghosting.ProcessGhosting",
+        PluginRoute::Proxy,
+    ),
+    ("windows.etwpatch.EtwPatch", PluginRoute::Proxy),
+    (
+        "windows.skeleton_key_check.Skeleton_Key_Check",
+        PluginRoute::Proxy,
+    ),
+    ("windows.svcdiff.SvcDiff", PluginRoute::Proxy),
+    (
+        "windows.direct_system_calls.DirectSystemCalls",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.indirect_system_calls.IndirectSystemCalls",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.unhooked_system_calls.unhooked_system_calls",
+        PluginRoute::Proxy,
+    ),
+    ("windows.strings.Strings", PluginRoute::Native("strings")),
+    ("windows.pe_symbols.PESymbols", PluginRoute::Proxy),
+    ("windows.iat.IAT", PluginRoute::Proxy),
+    ("windows.pedump.PEDump", PluginRoute::Native("procdump")),
     // ── malware.* aliases ────────────────────────────────────────────────
-    ("windows.malware.malfind.Malfind",    PluginRoute::Native("check:malfind")),
-    ("windows.malware.hollowprocesses.HollowProcesses", PluginRoute::Native("check:hollowing")),
-    ("windows.malware.processghosting.ProcessGhosting", PluginRoute::Proxy),
-    ("windows.malware.ldrmodules.LdrModules", PluginRoute::Native("check:ldrmodules")),
-    ("windows.malware.pebmasquerade.PebMasquerade", PluginRoute::Proxy),
-    ("windows.malware.psxview.PsXView",   PluginRoute::Native("check:psxview")),
-    ("windows.malware.svcdiff.SvcDiff",   PluginRoute::Proxy),
-    ("windows.malware.skeleton_key_check.Skeleton_Key_Check", PluginRoute::Proxy),
-    ("windows.malware.drivermodule.DriverModule", PluginRoute::Proxy),
-    ("windows.malware.suspicious_threads.SuspiciousThreads", PluginRoute::Proxy),
-    ("windows.malware.direct_system_calls.DirectSystemCalls", PluginRoute::Proxy),
-    ("windows.malware.indirect_system_calls.IndirectSystemCalls", PluginRoute::Proxy),
-    ("windows.malware.unhooked_system_calls.UnhookedSystemCalls", PluginRoute::Proxy),
+    (
+        "windows.malware.malfind.Malfind",
+        PluginRoute::Native("check:malfind"),
+    ),
+    (
+        "windows.malware.hollowprocesses.HollowProcesses",
+        PluginRoute::Native("check:hollowing"),
+    ),
+    (
+        "windows.malware.processghosting.ProcessGhosting",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.malware.ldrmodules.LdrModules",
+        PluginRoute::Native("check:ldrmodules"),
+    ),
+    (
+        "windows.malware.pebmasquerade.PebMasquerade",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.malware.psxview.PsXView",
+        PluginRoute::Native("check:psxview"),
+    ),
+    ("windows.malware.svcdiff.SvcDiff", PluginRoute::Proxy),
+    (
+        "windows.malware.skeleton_key_check.Skeleton_Key_Check",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.malware.drivermodule.DriverModule",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.malware.suspicious_threads.SuspiciousThreads",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.malware.direct_system_calls.DirectSystemCalls",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.malware.indirect_system_calls.IndirectSystemCalls",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.malware.unhooked_system_calls.UnhookedSystemCalls",
+        PluginRoute::Proxy,
+    ),
     // ── credentials / hashes ────────────────────────────────────────────
-    ("windows.hashdump.Hashdump",          PluginRoute::Proxy),
-    ("windows.cachedump.Cachedump",        PluginRoute::Proxy),
-    ("windows.lsadump.Lsadump",            PluginRoute::Proxy),
+    ("windows.hashdump.Hashdump", PluginRoute::Proxy),
+    ("windows.cachedump.Cachedump", PluginRoute::Proxy),
+    ("windows.lsadump.Lsadump", PluginRoute::Proxy),
     // ── registry ────────────────────────────────────────────────────────
-    ("windows.registry.hivelist.HiveList",     PluginRoute::Proxy),
-    ("windows.registry.hivescan.HiveScan",     PluginRoute::Proxy),
-    ("windows.registry.printkey.PrintKey",     PluginRoute::Proxy),
-    ("windows.registry.hashdump.Hashdump",     PluginRoute::Proxy),
-    ("windows.registry.cachedump.Cachedump",   PluginRoute::Proxy),
-    ("windows.registry.lsadump.Lsadump",       PluginRoute::Proxy),
-    ("windows.registry.amcache.Amcache",       PluginRoute::Proxy),
-    ("windows.registry.certificates.Certificates", PluginRoute::Proxy),
-    ("windows.registry.getcellroutine.GetCellRoutine", PluginRoute::Proxy),
-    ("windows.registry.scheduled_tasks.ScheduledTasks", PluginRoute::Proxy),
+    ("windows.registry.hivelist.HiveList", PluginRoute::Proxy),
+    ("windows.registry.hivescan.HiveScan", PluginRoute::Proxy),
+    ("windows.registry.printkey.PrintKey", PluginRoute::Proxy),
+    ("windows.registry.hashdump.Hashdump", PluginRoute::Proxy),
+    ("windows.registry.cachedump.Cachedump", PluginRoute::Proxy),
+    ("windows.registry.lsadump.Lsadump", PluginRoute::Proxy),
+    ("windows.registry.amcache.Amcache", PluginRoute::Proxy),
+    (
+        "windows.registry.certificates.Certificates",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.registry.getcellroutine.GetCellRoutine",
+        PluginRoute::Proxy,
+    ),
+    (
+        "windows.registry.scheduled_tasks.ScheduledTasks",
+        PluginRoute::Proxy,
+    ),
     ("windows.registry.userassist.UserAssist", PluginRoute::Proxy),
     // ── services / tasks ────────────────────────────────────────────────
-    ("windows.svcscan.SvcScan",            PluginRoute::Proxy),
-    ("windows.svclist.SvcList",            PluginRoute::Proxy),
+    ("windows.svcscan.SvcScan", PluginRoute::Proxy),
+    ("windows.svclist.SvcList", PluginRoute::Proxy),
     ("windows.scheduled_tasks.ScheduledTasks", PluginRoute::Proxy),
     // ── info & misc ─────────────────────────────────────────────────────
-    ("windows.info.Info",                  PluginRoute::Native("info")),
-    ("windows.amcache.Amcache",            PluginRoute::Proxy),
-    ("windows.truecrypt.Passphrase",       PluginRoute::Proxy),
+    ("windows.info.Info", PluginRoute::Native("info")),
+    ("windows.amcache.Amcache", PluginRoute::Proxy),
+    ("windows.truecrypt.Passphrase", PluginRoute::Proxy),
     // ── yarascan (top-level) ─────────────────────────────────────────────
-    ("yarascan.YaraScan",                  PluginRoute::Proxy),
+    ("yarascan.YaraScan", PluginRoute::Proxy),
 ];
 
 /// Look up a plugin name in the dispatch table.
 pub fn find_route(plugin: &str) -> Option<PluginRoute> {
-    DISPATCH.iter().find(|(name, _)| *name == plugin).map(|(_, r)| *r)
+    DISPATCH
+        .iter()
+        .find(|(name, _)| *name == plugin)
+        .map(|(_, r)| *r)
 }
 
 /// Parse a `--pid N` flag out of plugin-specific trailing args.
@@ -174,20 +270,34 @@ pub fn proxy_to_vol(
     plugin_dirs: &[PathBuf],
     plugin_args: &[String],
 ) -> anyhow::Result<()> {
-    let plugin_name = plugin_args.first().map_or("(unknown)", std::string::String::as_str);
+    let plugin_name = plugin_args
+        .first()
+        .map_or("(unknown)", std::string::String::as_str);
 
     let mut cmd = std::process::Command::new("vol");
     cmd.arg("-f").arg(dump);
 
     // Forward renderer if non-default
     match renderer {
-        crate::VolRenderer::Json  => { cmd.args(["-r", "json"]); }
-        crate::VolRenderer::Csv   => { cmd.args(["-r", "csv"]); }
-        crate::VolRenderer::Pretty => { cmd.args(["-r", "pretty"]); }
-        crate::VolRenderer::Html  => { cmd.args(["-r", "html"]); }
-        crate::VolRenderer::Xlsx  => { cmd.args(["-r", "xlsx"]); }
-        crate::VolRenderer::Dot   => { cmd.args(["-r", "dote"]); }
-        crate::VolRenderer::Text  => {}  // default, omit
+        crate::VolRenderer::Json => {
+            cmd.args(["-r", "json"]);
+        }
+        crate::VolRenderer::Csv => {
+            cmd.args(["-r", "csv"]);
+        }
+        crate::VolRenderer::Pretty => {
+            cmd.args(["-r", "pretty"]);
+        }
+        crate::VolRenderer::Html => {
+            cmd.args(["-r", "html"]);
+        }
+        crate::VolRenderer::Xlsx => {
+            cmd.args(["-r", "xlsx"]);
+        }
+        crate::VolRenderer::Dot => {
+            cmd.args(["-r", "dote"]);
+        }
+        crate::VolRenderer::Text => {} // default, omit
     }
     if let Some(od) = output_dir {
         cmd.arg("-o").arg(od);
@@ -247,7 +357,7 @@ fn format_vol3_filetime(ft: u64) -> String {
     let us = total_us % 1_000_000;
 
     let days = unix_secs / 86400;
-    let rem  = unix_secs % 86400;
+    let rem = unix_secs % 86400;
     let h = rem / 3600;
     let m = (rem % 3600) / 60;
     let s = rem % 60;
@@ -283,21 +393,24 @@ fn ft_json(ft: u64) -> serde_json::Value {
 /// Format `&[WinProcessInfo]` as a vol3-exact JSON array string.
 /// Uses serde_json to guarantee correct escaping of all string fields.
 fn vol3_processes_json(procs: &[memf_windows::WinProcessInfo]) -> String {
-    let arr: Vec<serde_json::Value> = procs.iter().map(|p| {
-        serde_json::json!({
-            "PID":           p.pid,
-            "PPID":          p.ppid,
-            "ImageFileName": p.image_name,
-            "Offset(V)":     format!("{:#x}", p.vaddr),
-            "Threads":       p.thread_count,
-            "Handles":       p.handle_count,
-            "SessionId":     p.session_id,
-            "Wow64":         p.is_wow64,
-            "CreateTime":    ft_json(p.create_time),
-            "ExitTime":      ft_json(p.exit_time),
-            "__children":    serde_json::Value::Array(vec![]),
+    let arr: Vec<serde_json::Value> = procs
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "PID":           p.pid,
+                "PPID":          p.ppid,
+                "ImageFileName": p.image_name,
+                "Offset(V)":     format!("{:#x}", p.vaddr),
+                "Threads":       p.thread_count,
+                "Handles":       p.handle_count,
+                "SessionId":     p.session_id,
+                "Wow64":         p.is_wow64,
+                "CreateTime":    ft_json(p.create_time),
+                "ExitTime":      ft_json(p.exit_time),
+                "__children":    serde_json::Value::Array(vec![]),
+            })
         })
-    }).collect();
+        .collect();
     serde_json::to_string_pretty(&arr).unwrap_or_default()
 }
 
@@ -307,13 +420,22 @@ fn vol3_processes_text(procs: &[memf_windows::WinProcessInfo]) -> String {
     let mut out = "PID\tPPID\tImageFileName\tOffset(V)\tThreads\tHandles\tSessionId\tWow64\tCreateTime\tExitTime\n".to_string();
     for p in procs {
         let create = format_vol3_filetime(p.create_time);
-        let exit   = ft_json(p.exit_time).as_str().map_or_else(|| "N/A".to_string(), str::to_string);
+        let exit = ft_json(p.exit_time)
+            .as_str()
+            .map_or_else(|| "N/A".to_string(), str::to_string);
         let _ = writeln!(
             out,
             "{}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}",
-            p.pid, p.ppid, tsv_safe(&p.image_name), p.vaddr,
-            p.thread_count, p.handle_count, p.session_id,
-            p.is_wow64, create, exit,
+            p.pid,
+            p.ppid,
+            tsv_safe(&p.image_name),
+            p.vaddr,
+            p.thread_count,
+            p.handle_count,
+            p.session_id,
+            p.is_wow64,
+            create,
+            exit,
         );
     }
     out
@@ -322,20 +444,23 @@ fn vol3_processes_text(procs: &[memf_windows::WinProcessInfo]) -> String {
 /// Format `&[WinConnectionInfo]` as a vol3-exact JSON array string.
 /// Uses serde_json to guarantee correct escaping of all string fields.
 fn vol3_connections_json(conns: &[memf_windows::WinConnectionInfo]) -> String {
-    let arr: Vec<serde_json::Value> = conns.iter().map(|c| {
-        serde_json::json!({
-            "Offset":      format!("{:#x}", c.offset),
-            "Proto":       c.protocol,
-            "LocalAddr":   c.local_addr,
-            "LocalPort":   c.local_port,
-            "ForeignAddr": c.remote_addr,
-            "ForeignPort": c.remote_port,
-            "State":       c.state.to_string(),
-            "PID":         c.pid,
-            "Owner":       c.process_name,
-            "Created":     ft_json(c.create_time),
+    let arr: Vec<serde_json::Value> = conns
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "Offset":      format!("{:#x}", c.offset),
+                "Proto":       c.protocol,
+                "LocalAddr":   c.local_addr,
+                "LocalPort":   c.local_port,
+                "ForeignAddr": c.remote_addr,
+                "ForeignPort": c.remote_port,
+                "State":       c.state.to_string(),
+                "PID":         c.pid,
+                "Owner":       c.process_name,
+                "Created":     ft_json(c.create_time),
+            })
         })
-    }).collect();
+        .collect();
     serde_json::to_string_pretty(&arr).unwrap_or_default()
 }
 
@@ -344,7 +469,11 @@ fn vol3_connections_json(conns: &[memf_windows::WinConnectionInfo]) -> String {
 fn vol3_connections_text(conns: &[memf_windows::WinConnectionInfo]) -> String {
     let mut out = "Offset\tProto\tLocalAddr\tLocalPort\tForeignAddr\tForeignPort\tState\tPID\tOwner\tCreated\n".to_string();
     for c in conns {
-        let created = if c.create_time == 0 { "N/A".into() } else { format_vol3_filetime(c.create_time) };
+        let created = if c.create_time == 0 {
+            "N/A".into()
+        } else {
+            format_vol3_filetime(c.create_time)
+        };
         let _ = writeln!(
             out,
             "{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -370,7 +499,9 @@ fn vol3_pstree_text(entries: &[memf_windows::WinPsTreeEntry]) -> String {
         let prefix = "*".repeat(e.depth as usize);
         let p = &e.process;
         let create = format_vol3_filetime(p.create_time);
-        let exit   = ft_json(p.exit_time).as_str().map_or_else(|| "N/A".to_string(), str::to_string);
+        let exit = ft_json(p.exit_time)
+            .as_str()
+            .map_or_else(|| "N/A".to_string(), str::to_string);
         let _ = writeln!(
             out,
             "{prefix}{pid}\t{ppid}\t{name}\t{offset:#x}\t{threads}\t{handles}\t{session}\t{wow64}\t{create}\t{exit}",
@@ -389,23 +520,26 @@ fn vol3_pstree_text(entries: &[memf_windows::WinPsTreeEntry]) -> String {
 
 /// Format `&[WinPsTreeEntry]` as a vol3-style JSON array.
 fn vol3_pstree_json(entries: &[memf_windows::WinPsTreeEntry]) -> String {
-    let arr: Vec<serde_json::Value> = entries.iter().map(|e| {
-        let p = &e.process;
-        serde_json::json!({
-            "PID":           p.pid,
-            "PPID":          p.ppid,
-            "ImageFileName": p.image_name,
-            "Offset(V)":     format!("{:#x}", p.vaddr),
-            "Threads":       p.thread_count,
-            "Handles":       p.handle_count,
-            "SessionId":     p.session_id,
-            "Wow64":         p.is_wow64,
-            "CreateTime":    ft_json(p.create_time),
-            "ExitTime":      ft_json(p.exit_time),
-            "__depth":       e.depth,
-            "__children":    serde_json::Value::Array(vec![]),
+    let arr: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let p = &e.process;
+            serde_json::json!({
+                "PID":           p.pid,
+                "PPID":          p.ppid,
+                "ImageFileName": p.image_name,
+                "Offset(V)":     format!("{:#x}", p.vaddr),
+                "Threads":       p.thread_count,
+                "Handles":       p.handle_count,
+                "SessionId":     p.session_id,
+                "Wow64":         p.is_wow64,
+                "CreateTime":    ft_json(p.create_time),
+                "ExitTime":      ft_json(p.exit_time),
+                "__depth":       e.depth,
+                "__children":    serde_json::Value::Array(vec![]),
+            })
         })
-    }).collect();
+        .collect();
     serde_json::to_string_pretty(&arr).unwrap_or_default()
 }
 
@@ -426,7 +560,10 @@ pub fn print_vol3_pstree(entries: &[memf_windows::WinPsTreeEntry], renderer: cra
 }
 
 /// Print network connections in vol3-compatible format (text or JSON).
-pub fn print_vol3_connections(conns: &[memf_windows::WinConnectionInfo], renderer: crate::VolRenderer) {
+pub fn print_vol3_connections(
+    conns: &[memf_windows::WinConnectionInfo],
+    renderer: crate::VolRenderer,
+) {
     match renderer {
         crate::VolRenderer::Json => println!("{}", vol3_connections_json(conns)),
         _ => print!("{}", vol3_connections_text(conns)),
@@ -487,28 +624,46 @@ mod tests {
     #[test]
     fn test_vol3_processes_json_has_vol3_field_names() {
         let json = vol3_processes_json(&[make_proc()]);
-        assert!(json.contains("\"ImageFileName\""), "missing ImageFileName: {json}");
+        assert!(
+            json.contains("\"ImageFileName\""),
+            "missing ImageFileName: {json}"
+        );
         assert!(json.contains("\"Offset(V)\""), "missing Offset(V): {json}");
         assert!(json.contains("\"SessionId\""), "missing SessionId: {json}");
         assert!(json.contains("\"Handles\""), "missing Handles: {json}");
         assert!(json.contains("\"Wow64\""), "missing Wow64: {json}");
-        assert!(json.contains("\"__children\""), "missing __children: {json}");
+        assert!(
+            json.contains("\"__children\""),
+            "missing __children: {json}"
+        );
         assert!(json.contains("\"PPID\""), "missing PPID: {json}");
     }
 
     #[test]
     fn test_vol3_processes_json_no_native_column_names() {
         let json = vol3_processes_json(&[make_proc()]);
-        assert!(!json.contains("\"image_name\""), "must not have snake_case field: {json}");
-        assert!(!json.contains("\"eprocess\""), "must not have eprocess: {json}");
-        assert!(!json.contains("\"session_id\""), "must not have snake_case session_id: {json}");
+        assert!(
+            !json.contains("\"image_name\""),
+            "must not have snake_case field: {json}"
+        );
+        assert!(
+            !json.contains("\"eprocess\""),
+            "must not have eprocess: {json}"
+        );
+        assert!(
+            !json.contains("\"session_id\""),
+            "must not have snake_case session_id: {json}"
+        );
     }
 
     #[test]
     fn test_vol3_processes_text_header_has_vol3_columns() {
         let text = vol3_processes_text(&[]);
         assert!(text.contains("PID"), "missing PID: {text}");
-        assert!(text.contains("ImageFileName"), "missing ImageFileName: {text}");
+        assert!(
+            text.contains("ImageFileName"),
+            "missing ImageFileName: {text}"
+        );
         assert!(text.contains("Offset(V)"), "missing Offset(V): {text}");
         assert!(text.contains("SessionId"), "missing SessionId: {text}");
     }
@@ -518,8 +673,14 @@ mod tests {
         let json = vol3_connections_json(&[make_conn()]);
         assert!(json.contains("\"Offset\""), "missing Offset: {json}");
         assert!(json.contains("\"Proto\""), "missing Proto: {json}");
-        assert!(json.contains("\"ForeignAddr\""), "missing ForeignAddr: {json}");
-        assert!(json.contains("\"ForeignPort\""), "missing ForeignPort: {json}");
+        assert!(
+            json.contains("\"ForeignAddr\""),
+            "missing ForeignAddr: {json}"
+        );
+        assert!(
+            json.contains("\"ForeignPort\""),
+            "missing ForeignPort: {json}"
+        );
         assert!(json.contains("\"LocalAddr\""), "missing LocalAddr: {json}");
         assert!(json.contains("\"State\""), "missing State: {json}");
     }
@@ -527,11 +688,17 @@ mod tests {
     // ── JSON escaping (finding #2) ────────────────────────────────────────
 
     fn make_proc_with_name(name: &str) -> WinProcessInfo {
-        WinProcessInfo { image_name: name.into(), ..make_proc() }
+        WinProcessInfo {
+            image_name: name.into(),
+            ..make_proc()
+        }
     }
 
     fn make_conn_with_process(name: &str) -> WinConnectionInfo {
-        WinConnectionInfo { process_name: name.into(), ..make_conn() }
+        WinConnectionInfo {
+            process_name: name.into(),
+            ..make_conn()
+        }
     }
 
     #[test]
@@ -540,7 +707,10 @@ mod tests {
         let json = vol3_processes_json(&procs);
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("must produce valid JSON; got: {json}");
-        assert_eq!(parsed[0]["ImageFileName"].as_str().unwrap(), r#"evil"inject"#);
+        assert_eq!(
+            parsed[0]["ImageFileName"].as_str().unwrap(),
+            r#"evil"inject"#
+        );
     }
 
     #[test]
@@ -571,7 +741,10 @@ mod tests {
         assert!(!data_rows.is_empty(), "must have at least one data row");
         for row in &data_rows {
             let tab_count = row.chars().filter(|&c| c == '\t').count();
-            assert_eq!(tab_count, 9, "expected 9 tabs (10 columns) per row, got {tab_count}: {row}");
+            assert_eq!(
+                tab_count, 9,
+                "expected 9 tabs (10 columns) per row, got {tab_count}: {row}"
+            );
         }
     }
 
@@ -581,17 +754,35 @@ mod tests {
     fn test_vol3_pstree_text_shows_depth_prefix_for_children() {
         use memf_windows::WinPsTreeEntry;
         let parent = make_proc();
-        let child = WinProcessInfo { pid: 100, ppid: 4, image_name: "child.exe".into(), ..make_proc() };
+        let child = WinProcessInfo {
+            pid: 100,
+            ppid: 4,
+            image_name: "child.exe".into(),
+            ..make_proc()
+        };
         let entries = vec![
-            WinPsTreeEntry { process: parent, depth: 0 },
-            WinPsTreeEntry { process: child, depth: 1 },
+            WinPsTreeEntry {
+                process: parent,
+                depth: 0,
+            },
+            WinPsTreeEntry {
+                process: child,
+                depth: 1,
+            },
         ];
         let text = vol3_pstree_text(&entries);
         // Root has no prefix; child at depth=1 has one '*'
         let lines: Vec<&str> = text.lines().skip(1).collect(); // skip header
-        assert!(lines[0].starts_with('4') || !lines[0].starts_with('*'),
-            "root process must not start with *: {}", lines[0]);
-        assert!(lines[1].starts_with('*'), "child at depth 1 must start with *: {}", lines[1]);
+        assert!(
+            lines[0].starts_with('4') || !lines[0].starts_with('*'),
+            "root process must not start with *: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with('*'),
+            "child at depth 1 must start with *: {}",
+            lines[1]
+        );
     }
 
     // ── formula injection guard (new with jsonguard) ──────────────────────
@@ -639,13 +830,23 @@ mod tests {
     fn test_vol3_pstree_json_includes_children_array() {
         use memf_windows::WinPsTreeEntry;
         let parent = make_proc();
-        let child = WinProcessInfo { pid: 100, ppid: 4, image_name: "child.exe".into(), ..make_proc() };
+        let child = WinProcessInfo {
+            pid: 100,
+            ppid: 4,
+            image_name: "child.exe".into(),
+            ..make_proc()
+        };
         let entries = vec![
-            WinPsTreeEntry { process: parent, depth: 0 },
-            WinPsTreeEntry { process: child, depth: 1 },
+            WinPsTreeEntry {
+                process: parent,
+                depth: 0,
+            },
+            WinPsTreeEntry {
+                process: child,
+                depth: 1,
+            },
         ];
         let json = vol3_pstree_json(&entries);
-        serde_json::from_str::<serde_json::Value>(&json)
-            .expect("pstree JSON must be valid");
+        serde_json::from_str::<serde_json::Value>(&json).expect("pstree JSON must be valid");
     }
 }

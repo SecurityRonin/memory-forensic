@@ -663,7 +663,6 @@ mod tests {
 
     // ── MAX_CACHED_CREDS constant ─────────────────────────────────────
 
-
     // ── walk_cached_credentials body coverage ────────────────────────
     //
     // The walker reads: hive BaseBlock → root_cell_off → flat_base

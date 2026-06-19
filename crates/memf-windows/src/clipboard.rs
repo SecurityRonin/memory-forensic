@@ -562,7 +562,6 @@ mod tests {
         assert_eq!(size, (text.len() + 1) * 2);
     }
 
-
     // ── walk_clipboard tests — walker body coverage ──────────────────
 
     fn make_empty_clip_reader() -> ObjectReader<SyntheticPhysMem> {

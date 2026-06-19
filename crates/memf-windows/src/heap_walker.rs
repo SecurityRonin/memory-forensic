@@ -64,7 +64,9 @@ where
         // One skip is recorded per unreadable process VAD tree (not per
         // individual region within it). A single failed walk_vad_tree may
         // represent hundreds of unread regions.
-        let vads = if let Ok(v) = walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) { v } else {
+        let vads = if let Ok(v) = walk_vad_tree(reader, vad_root_addr, proc.pid, &proc.image_name) {
+            v
+        } else {
             result.skip();
             continue;
         };
@@ -88,7 +90,9 @@ where
                 continue;
             }
 
-            let bytes = if let Ok(b) = proc_reader.read_bytes(vad.start_vaddr, region_size) { b } else {
+            let bytes = if let Ok(b) = proc_reader.read_bytes(vad.start_vaddr, region_size) {
+                b
+            } else {
                 result.skip();
                 continue;
             };

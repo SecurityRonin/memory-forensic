@@ -10,10 +10,7 @@ use predicates::prelude::*;
 /// archive. A page of zeros is a valid (if empty) raw physical memory image.
 #[test]
 fn info_opens_a_direct_raw_dump() {
-    let tmp = tempfile::Builder::new()
-        .suffix(".mem")
-        .tempfile()
-        .unwrap();
+    let tmp = tempfile::Builder::new().suffix(".mem").tempfile().unwrap();
     std::fs::write(tmp.path(), vec![0u8; 0x1000]).unwrap();
 
     Command::cargo_bin("memf")

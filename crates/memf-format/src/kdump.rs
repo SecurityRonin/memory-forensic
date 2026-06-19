@@ -346,7 +346,9 @@ impl PhysicalMemoryProvider for KdumpProvider {
 
         // Check LRU cache first.
         {
-            let mut cache = self.cache.lock()
+            let mut cache = self
+                .cache
+                .lock()
                 .map_err(|_| crate::Error::Corrupt("cache lock poisoned".into()))?;
             if let Some(page) = cache.get(&pfn) {
                 let avail = page.len().saturating_sub(page_offset);
@@ -369,7 +371,9 @@ impl PhysicalMemoryProvider for KdumpProvider {
 
         // Cache the decompressed page.
         {
-            let mut cache = self.cache.lock()
+            let mut cache = self
+                .cache
+                .lock()
                 .map_err(|_| crate::Error::Corrupt("cache lock poisoned".into()))?;
             cache.put(pfn, page);
         }

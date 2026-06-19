@@ -41,9 +41,7 @@ fn read_u32(data: &[u8], offset: usize) -> crate::Result<u32> {
         .and_then(|b| b.try_into().ok())
         .map(u32::from_le_bytes)
         .ok_or_else(|| {
-            crate::Error::Corrupt(format!(
-                "truncated header: need 4 bytes at offset {offset}"
-            ))
+            crate::Error::Corrupt(format!("truncated header: need 4 bytes at offset {offset}"))
         })
 }
 
@@ -53,9 +51,7 @@ fn read_u64(data: &[u8], offset: usize) -> crate::Result<u64> {
         .and_then(|b| b.try_into().ok())
         .map(u64::from_le_bytes)
         .ok_or_else(|| {
-            crate::Error::Corrupt(format!(
-                "truncated header: need 8 bytes at offset {offset}"
-            ))
+            crate::Error::Corrupt(format!("truncated header: need 8 bytes at offset {offset}"))
         })
 }
 
@@ -278,7 +274,9 @@ impl FormatPlugin for HiberfilPlugin {
         if header.len() < 4 {
             return 0;
         }
-        let Ok(magic) = read_u32(header, 0) else { return 0 };
+        let Ok(magic) = read_u32(header, 0) else {
+            return 0;
+        };
         match magic {
             HIBR_MAGIC | WAKE_MAGIC => 90,
             RSTR_MAGIC | HORM_MAGIC => 85,

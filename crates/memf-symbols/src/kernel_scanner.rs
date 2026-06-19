@@ -112,9 +112,9 @@ pub fn find_low_stub<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Option<LowS
 pub fn resolve_kernel_base_va<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Option<u64> {
     let stub = find_low_stub(mem)?;
     let hint = stub.kernel_base_va; // 2 MiB-aligned floor of the LmTarget hint
-    // The base lies within ±2 MiB of the floor: the LmTarget routine is somewhere
-    // inside the (≤ MAX_IMAGE_SCAN) image, so flooring it can land one 2 MiB slot
-    // above or below the true base. Scan the surrounding window at page grain.
+                                    // The base lies within ±2 MiB of the floor: the LmTarget routine is somewhere
+                                    // inside the (≤ MAX_IMAGE_SCAN) image, so flooring it can land one 2 MiB slot
+                                    // above or below the true base. Scan the surrounding window at page grain.
     let start = hint.saturating_sub(TWO_MIB);
     let end = hint.saturating_add(TWO_MIB);
     let mut va = start;
@@ -428,7 +428,10 @@ fn enumerate_self_ref_pml4s<P: PhysicalMemoryProvider + ?Sized>(mem: &P) -> Vec<
 /// the ascending walk reaches it first. Full verifications are bounded by
 /// [`MAX_KERNEL_VERIFY_ATTEMPTS`]; the descent itself is bounded by the
 /// architectural kernel-half size and [`KERNEL_PROBE_SLOTS`].
-fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64) -> Option<PdbId> {
+fn locate_kernel_via_dtb_only<P: PhysicalMemoryProvider + ?Sized>(
+    mem: &P,
+    cr3: u64,
+) -> Option<PdbId> {
     locate_pe_via_dtb(mem, cr3, &|name| is_kernel_pdb_name(name))
 }
 
@@ -633,7 +636,12 @@ fn virt_to_phys<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64, va: u64) 
 /// Read up to `buf.len()` bytes starting at virtual address `va`, translating
 /// each 4 KiB page through `cr3`. Stops at the first untranslatable / unmapped
 /// page and returns the number of bytes filled (the rest of `buf` is untouched).
-fn read_virt<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64, va: u64, buf: &mut [u8]) -> usize {
+fn read_virt<P: PhysicalMemoryProvider + ?Sized>(
+    mem: &P,
+    cr3: u64,
+    va: u64,
+    buf: &mut [u8],
+) -> usize {
     let mut filled = 0usize;
     let mut cur = va;
     while filled < buf.len() {
@@ -1287,7 +1295,10 @@ mod tests {
         // Kernel base sits 0x14000 ABOVE its 2 MiB floor — like the real dump.
         let kernel_va = 0xFFFF_F802_1F41_4000u64;
         let two_mib_floor = kernel_va & !(TWO_MIB - 1); // 0x...1F40_0000
-        assert_ne!(kernel_va, two_mib_floor, "fixture base must be page-granular");
+        assert_ne!(
+            kernel_va, two_mib_floor,
+            "fixture base must be page-granular"
+        );
         let kernel_pa = 0x1_0040_0000u64;
         let guid = [0xCDu8; 16];
         let mut mem = build_dtb_fixture(cr3, kernel_va, kernel_pa, "ntkrnlmp.pdb", guid, 1);
@@ -1296,7 +1307,10 @@ mod tests {
         write_low_stub(&mut mem, 0x3000, cr3 | 0x867, kernel_va);
 
         let base = resolve_kernel_base_va(&mem).expect("page-granular base must be found");
-        assert_eq!(base, kernel_va, "must recover the page-aligned base, not the 2 MiB floor");
+        assert_eq!(
+            base, kernel_va,
+            "must recover the page-aligned base, not the 2 MiB floor"
+        );
     }
 
     /// A minimal SymbolResolver returning a fixed RVA for one symbol — models an
@@ -1338,7 +1352,11 @@ mod tests {
         let rva = 0xC1E060u64; // PsActiveProcessHead RVA (real value from the Win10 ISF)
         let sym = RvaSym("PsActiveProcessHead", rva);
         let head = resolve_kernel_symbol_va(&mem, &sym, "PsActiveProcessHead");
-        assert_eq!(head, Some(kernel_va + rva), "head VA = page-granular base + RVA");
+        assert_eq!(
+            head,
+            Some(kernel_va + rva),
+            "head VA = page-granular base + RVA"
+        );
 
         // A symbol the resolver does not know yields None (no spurious address).
         assert_eq!(resolve_kernel_symbol_va(&mem, &sym, "NoSuchSymbol"), None);

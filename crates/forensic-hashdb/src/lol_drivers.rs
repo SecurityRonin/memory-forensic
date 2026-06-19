@@ -11,7 +11,9 @@ fn parse_hex(s: &str) -> [u8; 32] {
             break; // cov:unreachable: table entries are exactly 64 hex chars
         }
         let hi = (chunk[0] as char).to_digit(16).unwrap_or(0) as u8;
-        let lo = chunk.get(1).map_or(0, |c| (*c as char).to_digit(16).unwrap_or(0) as u8);
+        let lo = chunk
+            .get(1)
+            .map_or(0, |c| (*c as char).to_digit(16).unwrap_or(0) as u8);
         out[i] = (hi << 4) | lo;
     }
     out

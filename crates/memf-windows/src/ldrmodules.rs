@@ -508,7 +508,6 @@ mod tests {
         );
     }
 
-
     /// walk_ldrmodules with one module in all three lists → 1 result, not suspicious.
     ///
     /// This exercises the walk_single_list inner function body, the cross-reference

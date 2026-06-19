@@ -304,13 +304,17 @@ impl Finding {
     }
 }
 
-
 impl ForensicEvent {
     /// Convert this event into a canonical [`forensicnomicon::report::Finding`],
     /// carrying the entity as a subject, the confidence, and the MITRE techniques.
     #[must_use]
-    pub fn to_finding(&self, source: forensicnomicon::report::Source) -> forensicnomicon::report::Finding {
-        use forensicnomicon::report::{Category, Confidence, ExternalRef, Finding as F, SubjectRef, Timestamp};
+    pub fn to_finding(
+        &self,
+        source: forensicnomicon::report::Source,
+    ) -> forensicnomicon::report::Finding {
+        use forensicnomicon::report::{
+            Category, Confidence, ExternalRef, Finding as F, SubjectRef, Timestamp,
+        };
         let code = match &self.finding {
             Finding::ProcessHollowing => "MEM-PROCESS-HOLLOWING".to_string(),
             Finding::NetworkBeaconing => "MEM-BEACONING".to_string(),
@@ -328,16 +332,25 @@ impl ForensicEvent {
             label,
         };
         let subject = match &self.entity {
-            Entity::Process { pid, name, .. } => sub("process", format!("pid:{pid}"), Some(name.clone())),
+            Entity::Process { pid, name, .. } => {
+                sub("process", format!("pid:{pid}"), Some(name.clone()))
+            }
             Entity::Thread { tid, .. } => sub("thread", format!("tid:{tid}"), None),
-            Entity::Module { name, base, .. } => sub("module", format!("{base:#x}"), Some(name.clone())),
-            Entity::Connection { src, dst, .. } => sub("connection", format!("{src} -> {dst}"), None),
+            Entity::Module { name, base, .. } => {
+                sub("module", format!("{base:#x}"), Some(name.clone()))
+            }
+            Entity::Connection { src, dst, .. } => {
+                sub("connection", format!("{src} -> {dst}"), None)
+            }
             Entity::Driver { name, .. } => sub("driver", name.clone(), None),
             Entity::RegistryKey { path } => sub("registry_key", path.clone(), None),
             Entity::File { path } => sub("file", path.clone(), None),
         };
         let mut b = F::observation(self.severity, Category::Threat, code)
-            .note(format!("{:?} observed by {}", self.finding, self.source_walker))
+            .note(format!(
+                "{:?} observed by {}",
+                self.finding, self.source_walker
+            ))
             .source(source)
             .subject(subject)
             .evidence("evidence_bytes", self.raw_evidence.len().to_string());

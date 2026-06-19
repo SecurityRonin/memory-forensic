@@ -41,7 +41,11 @@ pub fn cache_filename(pdb_name: &str, guid: &str, age: u32) -> String {
 /// Check if an ISF is already cached; returns the path if so.
 pub fn find_cached(cache_dir: &Path, pdb_name: &str, guid: &str, age: u32) -> Option<PathBuf> {
     let path = cache_dir.join(cache_filename(pdb_name, guid, age));
-    if path.is_file() { Some(path) } else { None }
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 /// Download an ISF from the community server, decompress it, and store it in `cache_dir`.
@@ -143,11 +147,13 @@ pub fn resolve_symbols(
              and network download is disabled (offline mode)"
         );
     }
-    let client =
-        memf_symbols::symserver::SymbolServerClient::new(memf_symbols::symserver::default_server_url(), cache_dir);
-    client
-        .get_pdb(pdb_name, guid, age)
-        .map_err(|e| anyhow::anyhow!("ISF unavailable and PDB download from the symbol server failed: {e}"))
+    let client = memf_symbols::symserver::SymbolServerClient::new(
+        memf_symbols::symserver::default_server_url(),
+        cache_dir,
+    );
+    client.get_pdb(pdb_name, guid, age).map_err(|e| {
+        anyhow::anyhow!("ISF unavailable and PDB download from the symbol server failed: {e}")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +200,10 @@ mod tests {
     fn test_symbol_dl_build_isf_url_format() {
         let url = build_isf_url("ntoskrnl.exe.pdb", "AABBCC001", 2);
         assert!(url.starts_with("https://"), "must be https: {url}");
-        assert!(url.contains("ntoskrnl.exe.pdb"), "must contain pdb name: {url}");
+        assert!(
+            url.contains("ntoskrnl.exe.pdb"),
+            "must contain pdb name: {url}"
+        );
         assert!(url.ends_with(".json.xz"), "must end with .json.xz: {url}");
     }
 
@@ -293,7 +302,10 @@ mod tests {
         std::fs::create_dir_all(pdb.parent().unwrap()).unwrap();
         std::fs::write(&pdb, b"PDB").unwrap();
         let p = resolve_symbols(tmp.path(), "ntkrnlmp.pdb", "BBB222", 1, false).unwrap();
-        assert_eq!(p, pdb, "falls back to the cached PDB when no ISF is available");
+        assert_eq!(
+            p, pdb,
+            "falls back to the cached PDB when no ISF is available"
+        );
     }
 
     /// Offline with neither source cached errors — and does not phone home.
@@ -301,6 +313,9 @@ mod tests {
     fn test_resolve_symbols_offline_no_cache_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let r = resolve_symbols(tmp.path(), "ntkrnlmp.pdb", "CCC333", 1, false);
-        assert!(r.is_err(), "neither ISF nor PDB cached + offline must error");
+        assert!(
+            r.is_err(),
+            "neither ISF nor PDB cached + offline must error"
+        );
     }
 }

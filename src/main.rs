@@ -2,10 +2,9 @@
 
 mod archive;
 mod os_detect;
-mod vol_compat;
 mod symbol_dl;
+mod vol_compat;
 
-use jsonguard::csv_field;
 use forensicnomicon::{
     processes::{
         PE_MZ_MAGIC, WINDOWS_KERNEL_PDB_PREFIXES, WINDOWS_NON_NETWORKING_PROCESSES,
@@ -13,14 +12,15 @@ use forensicnomicon::{
     },
     temporal::FILETIME_EPOCH_OFFSET,
 };
+use jsonguard::csv_field;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tracing::instrument;
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::instrument;
 
 use memf_core::object_reader::ObjectReader;
 use memf_core::vas::{TranslationMode, VirtualAddressSpace};
@@ -611,7 +611,10 @@ enum OutputFormat {
 }
 
 #[allow(dead_code)] // exercised via unit tests; available for external callers
-fn write_ndjson<T: serde::Serialize>(items: &[T], writer: &mut impl std::io::Write) -> std::io::Result<()> {
+fn write_ndjson<T: serde::Serialize>(
+    items: &[T],
+    writer: &mut impl std::io::Write,
+) -> std::io::Result<()> {
     for item in items {
         let line = serde_json::to_string(item).unwrap_or_default();
         writeln!(writer, "{line}")?;
@@ -645,9 +648,7 @@ fn table_cell(s: &str) -> String {
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_env("RUST_LOG"),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::from_env("RUST_LOG"))
         .with_writer(std::io::stderr)
         .init();
     // argv[0] detection: when invoked as `vol` (e.g. via symlink), prepend
@@ -808,14 +809,7 @@ fn main() -> Result<()> {
             pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_handles(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                pid,
-                true,
-            )
+            cmd_handles(resolved.path(), symbols.as_deref(), output, cr3, pid, true)
         }
         Commands::Yara {
             dump,
@@ -908,14 +902,7 @@ fn main() -> Result<()> {
             pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_browser_sessions(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                pid,
-                true,
-            )
+            cmd_browser_sessions(resolved.path(), symbols.as_deref(), output, cr3, pid, true)
         }
         Commands::BrowserCookies {
             dump,
@@ -925,14 +912,7 @@ fn main() -> Result<()> {
             pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_browser_cookies(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                pid,
-                true,
-            )
+            cmd_browser_cookies(resolved.path(), symbols.as_deref(), output, cr3, pid, true)
         }
         Commands::BrowserCreds {
             dump,
@@ -942,14 +922,7 @@ fn main() -> Result<()> {
             pid,
         } => {
             let resolved = archive::resolve_dump(&dump)?;
-            cmd_browser_creds(
-                resolved.path(),
-                symbols.as_deref(),
-                output,
-                cr3,
-                pid,
-                true,
-            )
+            cmd_browser_creds(resolved.path(), symbols.as_deref(), output, cr3, pid, true)
         }
         Commands::ReadPhys { dump, addr, len } => {
             cmd_read_phys(&dump, addr, len, &mut std::io::stdout())
@@ -957,12 +930,9 @@ fn main() -> Result<()> {
         Commands::TranslateVa { dump, cr3, va } => {
             cmd_translate_va(&dump, cr3, va, &mut std::io::stdout())
         }
-        Commands::ReadVirt {
-            dump,
-            cr3,
-            va,
-            len,
-        } => cmd_read_virt(&dump, cr3, va, len, &mut std::io::stdout()),
+        Commands::ReadVirt { dump, cr3, va, len } => {
+            cmd_read_virt(&dump, cr3, va, len, &mut std::io::stdout())
+        }
         Commands::Vol {
             file,
             renderer,
@@ -988,7 +958,10 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            let symbols: Option<&Path> = symbol_dirs.first().map(std::path::PathBuf::as_path).or(auto_isf.as_deref());
+            let symbols: Option<&Path> = symbol_dirs
+                .first()
+                .map(std::path::PathBuf::as_path)
+                .or(auto_isf.as_deref());
 
             match vol_compat::find_route(plugin) {
                 Some(vol_compat::PluginRoute::Native(key)) => {
@@ -996,15 +969,15 @@ fn main() -> Result<()> {
                     println!();
                     let fmt = match renderer {
                         VolRenderer::Json => OutputFormat::Json,
-                        VolRenderer::Csv  => OutputFormat::Csv,
-                        _                 => OutputFormat::Table,
+                        VolRenderer::Csv => OutputFormat::Csv,
+                        _ => OutputFormat::Table,
                     };
                     match key {
                         "ps" => {
                             let (ctx, reader) = setup_analysis(&file, symbols, None, true)?;
-                            let ps_head = ctx.ps_active_process_head.context(
-                                "missing PsActiveProcessHead; provide via --symbols"
-                            )?;
+                            let ps_head = ctx
+                                .ps_active_process_head
+                                .context("missing PsActiveProcessHead; provide via --symbols")?;
                             let mut procs = memf_windows::process::walk_processes(&reader, ps_head)
                                 .context("failed to walk Windows processes")?;
                             procs.sort_by_key(|p| p.pid);
@@ -1016,9 +989,9 @@ fn main() -> Result<()> {
                         }
                         "ps:tree" => {
                             let (ctx, reader) = setup_analysis(&file, symbols, None, true)?;
-                            let ps_head = ctx.ps_active_process_head.context(
-                                "missing PsActiveProcessHead; provide via --symbols"
-                            )?;
+                            let ps_head = ctx
+                                .ps_active_process_head
+                                .context("missing PsActiveProcessHead; provide via --symbols")?;
                             let procs = memf_windows::process::walk_processes(&reader, ps_head)
                                 .context("failed to walk Windows processes")?;
                             let tree = memf_windows::process::build_pstree(&procs);
@@ -1026,55 +999,173 @@ fn main() -> Result<()> {
                             Ok(())
                         }
                         "ps:cmdline" => cmd_ps(
-                            &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false, false,
-                            false, true, false, false, false, false, false,
-                            PsSortField::Pid, None, false, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            false,
+                            pid_filter,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            true,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            PsSortField::Pid,
+                            None,
+                            false,
+                            true,
                         ),
                         "ps:dlls" => cmd_ps(
-                            &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, true, false,
-                            false, false, false, false, false, false, false,
-                            PsSortField::Pid, None, false, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            false,
+                            pid_filter,
+                            false,
+                            false,
+                            false,
+                            true,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            PsSortField::Pid,
+                            None,
+                            false,
+                            true,
                         ),
                         "ps:envvars" => cmd_ps(
-                            &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false, false,
-                            true, false, false, false, false, false, false,
-                            PsSortField::Pid, None, false, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            false,
+                            pid_filter,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            true,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            PsSortField::Pid,
+                            None,
+                            false,
+                            true,
                         ),
                         "ps:privileges" => cmd_ps(
-                            &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false, false,
-                            false, false, false, true, false, false, false,
-                            PsSortField::Pid, None, false, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            false,
+                            pid_filter,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            true,
+                            false,
+                            false,
+                            false,
+                            PsSortField::Pid,
+                            None,
+                            false,
+                            true,
                         ),
                         "ps:threads" => cmd_ps(
-                            &file, symbols, fmt, None,
-                            true, pid_filter, false, false, false, false, false,
-                            false, false, false, false, false, false, false,
-                            PsSortField::Pid, None, false, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            true,
+                            pid_filter,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            PsSortField::Pid,
+                            None,
+                            false,
+                            true,
                         ),
                         "ps:vad" => cmd_ps(
-                            &file, symbols, fmt, None,
-                            false, pid_filter, false, false, false, false, false,
-                            false, false, true, false, false, false, false,
-                            PsSortField::Pid, None, false, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            false,
+                            pid_filter,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            true,
+                            false,
+                            false,
+                            false,
+                            false,
+                            PsSortField::Pid,
+                            None,
+                            false,
+                            true,
                         ),
                         "net" => {
                             let (_ctx, reader) = setup_analysis(&file, symbols, None, true)?;
                             let tcp_table_sym = reader.symbols().symbol_address("TcpBTable")
                                 .context("missing 'TcpBTable' symbol; Windows TCP listing requires tcpip.sys ISF")?;
-                            let ptr_bytes = reader.read_bytes(tcp_table_sym, 8)
+                            let ptr_bytes = reader
+                                .read_bytes(tcp_table_sym, 8)
                                 .context("failed to dereference TcpBTable")?;
-                            let table_vaddr = ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
-                            let tcp_size_sym = reader.symbols().symbol_address("TcpBTableSize")
+                            let table_vaddr =
+                                ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
+                            let tcp_size_sym = reader
+                                .symbols()
+                                .symbol_address("TcpBTableSize")
                                 .context("missing 'TcpBTableSize' symbol")?;
-                            let size_bytes = reader.read_bytes(tcp_size_sym, 4)
+                            let size_bytes = reader
+                                .read_bytes(tcp_size_sym, 4)
                                 .context("failed to read TcpBTableSize")?;
-                            let bucket_count = size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
-                            let mut conns = memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
-                                .context("failed to walk Windows TCP endpoints")?;
+                            let bucket_count =
+                                size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
+                            let mut conns = memf_windows::network::walk_tcp_endpoints(
+                                &reader,
+                                table_vaddr,
+                                bucket_count,
+                            )
+                            .context("failed to walk Windows TCP endpoints")?;
                             if let Some(pid) = pid_filter {
                                 conns.retain(|c| c.pid == pid);
                             }
@@ -1084,39 +1175,88 @@ fn main() -> Result<()> {
                         "sys" => cmd_system(&file, symbols, fmt, None, false, true),
                         "handles" => cmd_handles(&file, symbols, fmt, None, pid_filter, true),
                         "check:ssdt" => cmd_check(
-                            &file, symbols, fmt, None,
-                            CheckFlags { ssdt: true, ..CheckFlags::default() },
-                            pid_filter, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            CheckFlags {
+                                ssdt: true,
+                                ..CheckFlags::default()
+                            },
+                            pid_filter,
+                            true,
                         ),
                         "check:callbacks" => cmd_check(
-                            &file, symbols, fmt, None,
-                            CheckFlags { callbacks: true, ..CheckFlags::default() },
-                            pid_filter, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            CheckFlags {
+                                callbacks: true,
+                                ..CheckFlags::default()
+                            },
+                            pid_filter,
+                            true,
                         ),
                         "check:irp" => cmd_check(
-                            &file, symbols, fmt, None,
-                            CheckFlags { irp: true, ..CheckFlags::default() },
-                            pid_filter, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            CheckFlags {
+                                irp: true,
+                                ..CheckFlags::default()
+                            },
+                            pid_filter,
+                            true,
                         ),
                         "check:malfind" => cmd_check(
-                            &file, symbols, fmt, None,
-                            CheckFlags { malfind: true, ..CheckFlags::default() },
-                            pid_filter, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            CheckFlags {
+                                malfind: true,
+                                ..CheckFlags::default()
+                            },
+                            pid_filter,
+                            true,
                         ),
                         "check:ldrmodules" => cmd_check(
-                            &file, symbols, fmt, None,
-                            CheckFlags { ldrmodules: true, ..CheckFlags::default() },
-                            pid_filter, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            CheckFlags {
+                                ldrmodules: true,
+                                ..CheckFlags::default()
+                            },
+                            pid_filter,
+                            true,
                         ),
                         "check:hollowing" => cmd_check(
-                            &file, symbols, fmt, None,
-                            CheckFlags { hollowing: true, ..CheckFlags::default() },
-                            pid_filter, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            CheckFlags {
+                                hollowing: true,
+                                ..CheckFlags::default()
+                            },
+                            pid_filter,
+                            true,
                         ),
                         "check:psxview" => cmd_check(
-                            &file, symbols, fmt, None,
-                            CheckFlags { psxview: true, ..CheckFlags::default() },
-                            pid_filter, true,
+                            &file,
+                            symbols,
+                            fmt,
+                            None,
+                            CheckFlags {
+                                psxview: true,
+                                ..CheckFlags::default()
+                            },
+                            pid_filter,
+                            true,
                         ),
                         "info" => cmd_info(&file, true),
                         "strings" => cmd_strings(Some(&file), None, 4, fmt, None, true),
@@ -1130,15 +1270,15 @@ fn main() -> Result<()> {
                         other => anyhow::bail!("unhandled native key: {other}"),
                     }
                 }
-                Some(vol_compat::PluginRoute::Proxy) | None => {
-                    vol_compat::proxy_to_vol(
-                        &file, renderer,
-                        output_dir.as_deref(),
-                        quiet,
-                        &symbol_dirs, &plugin_dirs,
-                        &plugin_args,
-                    )
-                }
+                Some(vol_compat::PluginRoute::Proxy) | None => vol_compat::proxy_to_vol(
+                    &file,
+                    renderer,
+                    output_dir.as_deref(),
+                    quiet,
+                    &symbol_dirs,
+                    &plugin_dirs,
+                    &plugin_args,
+                ),
             }
         }
     }
@@ -1364,7 +1504,9 @@ fn cmd_ps(
                 anyhow::bail!("--ppid-spoof is only supported for Windows dumps");
             }
             if psscan {
-                anyhow::bail!("--psscan (pool-tag EPROCESS scan) is only supported for Windows dumps");
+                anyhow::bail!(
+                    "--psscan (pool-tag EPROCESS scan) is only supported for Windows dumps"
+                );
             }
             if dlls {
                 anyhow::bail!("--dlls is only supported for Windows dumps");
@@ -1509,8 +1651,9 @@ fn cmd_ps(
             if psscan {
                 let mut scanned = memf_windows::psscan::psscan(&reader);
                 match sort_field {
-                    PsSortField::Name => scanned
-                        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                    PsSortField::Name => {
+                        scanned.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                    }
                     // ScannedProcess carries no PPID/create-time; fall back to PID.
                     PsSortField::Pid | PsSortField::Ppid | PsSortField::Time => {
                         scanned.sort_by_key(|p| p.pid);
@@ -2069,7 +2212,14 @@ fn render_linux_threads(threads: &[memf_linux::ThreadInfo], output: OutputFormat
         OutputFormat::Csv => {
             let mut out = String::from("tid,tgid,state,comm\n");
             for t in threads {
-                let _ = writeln!(out, "{},{},{},{}", t.tid, t.tgid, t.state, csv_field(&t.comm).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{}",
+                    t.tid,
+                    t.tgid,
+                    t.state,
+                    csv_field(&t.comm).value
+                );
             }
             out
         }
@@ -2178,7 +2328,11 @@ fn render_linux_pstree(
                     let _ = writeln!(
                         out,
                         "{},{},{},{},{}",
-                        e.process.pid, e.process.ppid, e.process.state, csv_field(&e.process.comm).value, e.depth
+                        e.process.pid,
+                        e.process.ppid,
+                        e.process.state,
+                        csv_field(&e.process.comm).value,
+                        e.depth
                     );
                 }
             }
@@ -2211,7 +2365,10 @@ fn render_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputFor
                     table_cell(&c.cmdline),
                 ]);
             }
-            format!("{table}\n\nTotal: {} processes with command lines", cmdlines.len())
+            format!(
+                "{table}\n\nTotal: {} processes with command lines",
+                cmdlines.len()
+            )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
             let mut out = String::new();
@@ -2228,7 +2385,13 @@ fn render_linux_cmdlines(cmdlines: &[memf_linux::CmdlineInfo], output: OutputFor
         OutputFormat::Csv => {
             let mut out = String::from("pid,comm,cmdline\n");
             for c in cmdlines {
-                let _ = writeln!(out, "{},{},{}", c.pid, csv_field(&c.comm).value, csv_field(&c.cmdline).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{}",
+                    c.pid,
+                    csv_field(&c.comm).value,
+                    csv_field(&c.cmdline).value
+                );
             }
             out
         }
@@ -2248,18 +2411,32 @@ fn print_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outpu
 /// sanitized on every channel: `table_cell`/`display_safe` for the terminal,
 /// `JsonSafe` (bidi/C1/DEL → U+FFFD) for JSON/NDJSON, and `csv_field` (RFC 4180
 /// + formula-injection guard) for CSV.
-fn render_windows_processes(procs: &[memf_windows::WinProcessInfo], output: OutputFormat) -> String {
+fn render_windows_processes(
+    procs: &[memf_windows::WinProcessInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
             table.set_header(vec![
-                "EPROCESS", "PID", "PPID", "Image Name",
-                "Threads", "Handles", "Session", "WoW64",
-                "Create Time (UTC)", "Exit Time (UTC)",
+                "EPROCESS",
+                "PID",
+                "PPID",
+                "Image Name",
+                "Threads",
+                "Handles",
+                "Session",
+                "WoW64",
+                "Create Time (UTC)",
+                "Exit Time (UTC)",
             ]);
             for p in procs {
-                let exit = if p.exit_time == 0 { "-".into() } else { format_filetime(p.exit_time) };
+                let exit = if p.exit_time == 0 {
+                    "-".into()
+                } else {
+                    format_filetime(p.exit_time)
+                };
                 table.add_row(vec![
                     format!("{:#x}", p.vaddr),
                     format!("{}", p.pid),
@@ -2279,22 +2456,37 @@ fn render_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outp
             // Preserved shape: one JSON object per line (both json and ndjson).
             let mut out = String::new();
             for p in procs {
-                let _ = writeln!(out, "{}", serde_json::to_string(&win_proc_json(p)).unwrap_or_default());
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string(&win_proc_json(p)).unwrap_or_default()
+                );
             }
             out
         }
         OutputFormat::Csv => {
             let mut out = String::from("eprocess,pid,ppid,image_name,threads,handles,session,wow64,create_time,create_time_raw,exit_time,exit_time_raw,cr3\n");
             for p in procs {
-                let exit = if p.exit_time == 0 { "-".into() } else { format_filetime(p.exit_time) };
+                let exit = if p.exit_time == 0 {
+                    "-".into()
+                } else {
+                    format_filetime(p.exit_time)
+                };
                 let _ = writeln!(
                     out,
                     "{:#x},{},{},{},{},{},{},{},{},{},{},{},{:#x}",
-                    p.vaddr, p.pid, p.ppid, csv_field(&p.image_name).value,
-                    p.thread_count, p.handle_count, p.session_id,
+                    p.vaddr,
+                    p.pid,
+                    p.ppid,
+                    csv_field(&p.image_name).value,
+                    p.thread_count,
+                    p.handle_count,
+                    p.session_id,
                     p.is_wow64,
-                    format_filetime(p.create_time), p.create_time,
-                    exit, p.exit_time,
+                    format_filetime(p.create_time),
+                    p.create_time,
+                    exit,
+                    p.exit_time,
                     p.cr3
                 );
             }
@@ -2307,7 +2499,11 @@ fn render_windows_processes(procs: &[memf_windows::WinProcessInfo], output: Outp
 /// image name wrapped in `JsonSafe` so bidi/control codepoints cannot reach the
 /// emitted JSON.
 fn win_proc_json(p: &memf_windows::WinProcessInfo) -> serde_json::Value {
-    let exit = if p.exit_time == 0 { None } else { Some(format_filetime(p.exit_time)) };
+    let exit = if p.exit_time == 0 {
+        None
+    } else {
+        Some(format_filetime(p.exit_time))
+    };
     serde_json::json!({
         "eprocess": format!("{:#x}", p.vaddr),
         "pid": p.pid,
@@ -2437,7 +2633,13 @@ fn render_linux_modules(mods: &[memf_linux::ModuleInfo], output: OutputFormat) -
         OutputFormat::Csv => {
             let mut out = String::from("name,base_addr,size\n");
             for m in mods {
-                let _ = writeln!(out, "{},{:#x},{}", csv_field(&m.name).value, m.base_addr, m.size);
+                let _ = writeln!(
+                    out,
+                    "{},{:#x},{}",
+                    csv_field(&m.name).value,
+                    m.base_addr,
+                    m.size
+                );
             }
             out
         }
@@ -2487,7 +2689,14 @@ fn render_windows_drivers(drivers: &[memf_windows::WinDriverInfo], output: Outpu
         OutputFormat::Csv => {
             let mut out = String::from("name,base_addr,size,path\n");
             for d in drivers {
-                let _ = writeln!(out, "{},{:#x},{},{}", csv_field(&d.name).value, d.base_addr, d.size, csv_field(&d.full_path).value);
+                let _ = writeln!(
+                    out,
+                    "{},{:#x},{},{}",
+                    csv_field(&d.name).value,
+                    d.base_addr,
+                    d.size,
+                    csv_field(&d.full_path).value
+                );
             }
             out
         }
@@ -2506,7 +2715,10 @@ fn print_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: Out
 /// attacker-controlled — JSON wraps them in `JsonSafe`, CSV runs them through
 /// `csv_field`. The table arm truncates by *characters* (never byte-slices a
 /// `String`, which would panic on a multi-byte boundary) after sanitizing.
-fn render_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: OutputFormat) -> String {
+fn render_windows_cmdlines(
+    cmdlines: &[memf_windows::WinCmdlineInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2543,7 +2755,13 @@ fn render_windows_cmdlines(cmdlines: &[memf_windows::WinCmdlineInfo], output: Ou
         OutputFormat::Csv => {
             let mut out = String::from("pid,image_name,cmdline\n");
             for c in cmdlines {
-                let _ = writeln!(out, "{},{},{}", c.pid, csv_field(&c.image_name).value, csv_field(&c.cmdline).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{}",
+                    c.pid,
+                    csv_field(&c.image_name).value,
+                    csv_field(&c.cmdline).value
+                );
             }
             out
         }
@@ -2593,7 +2811,14 @@ fn render_windows_envvars(vars: &[memf_windows::WinEnvVarInfo], output: OutputFo
         OutputFormat::Csv => {
             let mut out = String::from("pid,image_name,variable,value\n");
             for v in vars {
-                let _ = writeln!(out, "{},{},{},{}", v.pid, csv_field(&v.image_name).value, csv_field(&v.variable).value, csv_field(&v.value).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{}",
+                    v.pid,
+                    csv_field(&v.image_name).value,
+                    csv_field(&v.variable).value,
+                    csv_field(&v.value).value
+                );
             }
             out
         }
@@ -2653,7 +2878,8 @@ fn render_pstree(entries: &[memf_windows::WinPsTreeEntry], output: OutputFormat)
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("pid,ppid,image_name,depth,create_time,create_time_raw,cr3\n");
+            let mut out =
+                String::from("pid,ppid,image_name,depth,create_time,create_time_raw,cr3\n");
             for e in entries {
                 let _ = writeln!(
                     out,
@@ -2683,7 +2909,10 @@ fn print_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Outp
 /// Humble Object: render PEB-masquerade results. `eprocess_name` and
 /// `peb_image_path` are attacker-controlled, so JSON wraps them in `JsonSafe`
 /// and CSV runs them through `csv_field`.
-fn render_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: OutputFormat) -> String {
+fn render_masquerade(
+    results: &[memf_windows::WinPebMasqueradeInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -2724,7 +2953,14 @@ fn render_masquerade(results: &[memf_windows::WinPebMasqueradeInfo], output: Out
         OutputFormat::Csv => {
             let mut out = String::from("pid,eprocess_name,peb_image_path,suspicious\n");
             for r in results {
-                let _ = writeln!(out, "{},{},{},{}", r.pid, csv_field(&r.eprocess_name).value, csv_field(&r.peb_image_path).value, r.suspicious);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{}",
+                    r.pid,
+                    csv_field(&r.eprocess_name).value,
+                    csv_field(&r.peb_image_path).value,
+                    r.suspicious
+                );
             }
             out
         }
@@ -2750,11 +2986,18 @@ fn render_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputF
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "Name", "PPID", "Parent", "Confidence", "Expected Parents"]);
+            table.set_header(vec![
+                "PID",
+                "Name",
+                "PPID",
+                "Parent",
+                "Confidence",
+                "Expected Parents",
+            ]);
             for r in results {
                 let conf = match r.confidence {
                     SpoofConfidence::High => "HIGH",
-                    SpoofConfidence::Low  => "low",
+                    SpoofConfidence::Low => "low",
                 };
                 table.add_row(vec![
                     format!("{}", r.pid),
@@ -2765,11 +3008,19 @@ fn render_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputF
                     table_cell(&r.expected_parents.join(", ")),
                 ]);
             }
-            let high_count = results.iter().filter(|r| r.confidence == SpoofConfidence::High).count();
-            let low_count  = results.iter().filter(|r| r.confidence == SpoofConfidence::Low).count();
+            let high_count = results
+                .iter()
+                .filter(|r| r.confidence == SpoofConfidence::High)
+                .count();
+            let low_count = results
+                .iter()
+                .filter(|r| r.confidence == SpoofConfidence::Low)
+                .count();
             format!(
                 "{table}\n\nTotal: {} suspicious ({} high-confidence, {} low-confidence)",
-                results.len(), high_count, low_count
+                results.len(),
+                high_count,
+                low_count
             )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
@@ -2777,9 +3028,13 @@ fn render_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputF
             for r in results {
                 let conf = match r.confidence {
                     SpoofConfidence::High => "high",
-                    SpoofConfidence::Low  => "low",
+                    SpoofConfidence::Low => "low",
                 };
-                let expected: Vec<_> = r.expected_parents.iter().map(|p| jsonguard::JsonSafe(p.as_str())).collect();
+                let expected: Vec<_> = r
+                    .expected_parents
+                    .iter()
+                    .map(|p| jsonguard::JsonSafe(p.as_str()))
+                    .collect();
                 let json = serde_json::json!({
                     "pid": r.pid,
                     "name": jsonguard::JsonSafe(&r.name),
@@ -2797,7 +3052,7 @@ fn render_ppid_spoof(results: &[memf_windows::WinPpidSpoofInfo], output: OutputF
             for r in results {
                 let conf = match r.confidence {
                     SpoofConfidence::High => "high",
-                    SpoofConfidence::Low  => "low",
+                    SpoofConfidence::Low => "low",
                 };
                 let _ = writeln!(
                     out,
@@ -2831,7 +3086,14 @@ fn render_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) 
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
-            table.set_header(vec!["PID", "Process", "Rule", "Start VA", "End VA", "Protection"]);
+            table.set_header(vec![
+                "PID",
+                "Process",
+                "Rule",
+                "Start VA",
+                "End VA",
+                "Protection",
+            ]);
             for r in results {
                 table.add_row(vec![
                     format!("{}", r.pid),
@@ -2842,9 +3104,14 @@ fn render_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) 
                     table_cell(&r.protection_str),
                 ]);
             }
-            format!("{table}\n\nTotal: {} YARA hits across {} processes",
+            format!(
+                "{table}\n\nTotal: {} YARA hits across {} processes",
                 results.len(),
-                results.iter().map(|r| r.pid).collect::<std::collections::HashSet<_>>().len(),
+                results
+                    .iter()
+                    .map(|r| r.pid)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
             )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
@@ -2863,7 +3130,8 @@ fn render_yara_hits(results: &[memf_windows::WinYaraHit], output: OutputFormat) 
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("pid,image_name,rule_name,start_vaddr,end_vaddr,protection_str\n");
+            let mut out =
+                String::from("pid,image_name,rule_name,start_vaddr,end_vaddr,protection_str\n");
             for r in results {
                 let _ = writeln!(
                     out,
@@ -2924,7 +3192,14 @@ fn render_arp_entries(entries: &[memf_linux::ArpEntryInfo], output: OutputFormat
         OutputFormat::Csv => {
             let mut out = String::from("ip_addr,mac_addr,dev_name,state\n");
             for e in entries {
-                let _ = writeln!(out, "{},{},{},{}", csv_field(&e.ip_addr).value, csv_field(&e.mac_addr).value, csv_field(&e.dev_name).value, e.state);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{}",
+                    csv_field(&e.ip_addr).value,
+                    csv_field(&e.mac_addr).value,
+                    csv_field(&e.dev_name).value,
+                    e.state
+                );
             }
             out
         }
@@ -3002,16 +3277,25 @@ fn print_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Outp
 /// Humble Object: render Windows connections. `protocol`, `local_addr`,
 /// `remote_addr`, and `process_name` are attacker-controllable, so JSON wraps
 /// them in `JsonSafe` and CSV runs them through `csv_field`.
-fn render_win_connections(conns: &[memf_windows::WinConnectionInfo], output: OutputFormat) -> String {
+fn render_win_connections(
+    conns: &[memf_windows::WinConnectionInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL_CONDENSED);
             table.set_header(vec![
-                "Offset", "Proto",
-                "Local Addr", "Local Port",
-                "Remote Addr", "Remote Port",
-                "State", "PID", "Process", "Created",
+                "Offset",
+                "Proto",
+                "Local Addr",
+                "Local Port",
+                "Remote Addr",
+                "Remote Port",
+                "State",
+                "PID",
+                "Process",
+                "Created",
             ]);
             for c in conns {
                 table.add_row(vec![
@@ -3057,8 +3341,10 @@ fn render_win_connections(conns: &[memf_windows::WinConnectionInfo], output: Out
                     "{:#x},{},{},{},{},{},{},{},{},{},{}",
                     c.offset,
                     csv_field(&c.protocol).value,
-                    csv_field(&c.local_addr).value, c.local_port,
-                    csv_field(&c.remote_addr).value, c.remote_port,
+                    csv_field(&c.local_addr).value,
+                    c.local_port,
+                    csv_field(&c.remote_addr).value,
+                    c.remote_port,
                     c.state,
                     c.pid,
                     csv_field(&c.process_name).value,
@@ -3200,13 +3486,22 @@ fn render_libs(
                     let _ = writeln!(
                         out,
                         "{pid},{},{},{:#x},{},{},{}",
-                        csv_field(name).value, csv_field(&d.name).value, d.base_addr, d.size, d.load_order, csv_field(&d.full_path).value
+                        csv_field(name).value,
+                        csv_field(&d.name).value,
+                        d.base_addr,
+                        d.size,
+                        d.load_order,
+                        csv_field(&d.full_path).value
                     );
                 } else {
                     let _ = writeln!(
                         out,
                         "{},{:#x},{},{},{}",
-                        csv_field(&d.name).value, d.base_addr, d.size, d.load_order, csv_field(&d.full_path).value
+                        csv_field(&d.name).value,
+                        d.base_addr,
+                        d.size,
+                        d.load_order,
+                        csv_field(&d.full_path).value
                     );
                 }
             }
@@ -3396,7 +3691,9 @@ fn try_auto_download_isf(dump: &Path, quiet: bool, allow_network: bool) -> Optio
     let provider = match open_dump_for(dump, true) {
         Ok(p) => p,
         Err(e) => {
-            if !quiet { eprintln!("warning: could not open dump for symbol detection: {e}"); }
+            if !quiet {
+                eprintln!("warning: could not open dump for symbol detection: {e}");
+            }
             return None;
         }
     };
@@ -3406,20 +3703,37 @@ fn try_auto_download_isf(dump: &Path, quiet: bool, allow_network: bool) -> Optio
     if !quiet {
         eprintln!(
             "Detected kernel: {} (GUID {}, age {}). Resolving symbols{}...",
-            pdb_id.pdb_name, pdb_id.guid, pdb_id.age,
-            if allow_network { " (ISF, then PDB fallback)" } else { " (offline — cache only)" }
+            pdb_id.pdb_name,
+            pdb_id.guid,
+            pdb_id.age,
+            if allow_network {
+                " (ISF, then PDB fallback)"
+            } else {
+                " (offline — cache only)"
+            }
         );
     }
 
-    match symbol_dl::resolve_symbols(&cache, &pdb_id.pdb_name, &pdb_id.guid, pdb_id.age, allow_network) {
+    match symbol_dl::resolve_symbols(
+        &cache,
+        &pdb_id.pdb_name,
+        &pdb_id.guid,
+        pdb_id.age,
+        allow_network,
+    ) {
         Ok(path) => {
-            if !quiet { eprintln!("Symbols ready: {}", path.display()); }
+            if !quiet {
+                eprintln!("Symbols ready: {}", path.display());
+            }
             Some(path)
         }
         Err(e) => {
             if !quiet {
                 eprintln!("warning: ISF auto-download failed: {e}");
-                eprintln!("Hint: run `memf symserver {dump}` to download symbols manually, then retry.", dump = dump.display());
+                eprintln!(
+                    "Hint: run `memf symserver {dump}` to download symbols manually, then retry.",
+                    dump = dump.display()
+                );
             }
             None
         }
@@ -3475,7 +3789,12 @@ fn render_vmas(vmas: &[memf_linux::VmaInfo], output: OutputFormat) -> String {
                 let _ = writeln!(
                     out,
                     "{},{},{:#x},{:#x},{},{}",
-                    v.pid, csv_field(&v.comm).value, v.start, v.end, v.flags, v.file_backed
+                    v.pid,
+                    csv_field(&v.comm).value,
+                    v.start,
+                    v.end,
+                    v.flags,
+                    v.file_backed
                 );
             }
             out
@@ -3535,7 +3854,12 @@ fn render_file_descriptors(fds: &[memf_linux::FileDescriptorInfo], output: Outpu
                 let _ = writeln!(
                     out,
                     "{},{},{},{},{},{}",
-                    f.pid, csv_field(&f.comm).value, f.fd, csv_field(&f.path).value, inode_str, f.pos
+                    f.pid,
+                    csv_field(&f.comm).value,
+                    f.fd,
+                    csv_field(&f.path).value,
+                    inode_str,
+                    f.pos
                 );
             }
             out
@@ -3586,7 +3910,14 @@ fn render_envvars(vars: &[memf_linux::EnvVarInfo], output: OutputFormat) -> Stri
         OutputFormat::Csv => {
             let mut out = String::from("pid,comm,key,value\n");
             for v in vars {
-                let _ = writeln!(out, "{},{},{},{}", v.pid, csv_field(&v.comm).value, csv_field(&v.key).value, csv_field(&v.value).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{}",
+                    v.pid,
+                    csv_field(&v.comm).value,
+                    csv_field(&v.key).value,
+                    csv_field(&v.value).value
+                );
             }
             out
         }
@@ -3656,7 +3987,13 @@ fn render_malfind(findings: &[memf_linux::MalfindInfo], output: OutputFormat) ->
                 let _ = writeln!(
                     out,
                     "{},{},{:#x},{:#x},{},{},{}",
-                    f.pid, csv_field(&f.comm).value, f.start, f.end, f.flags, csv_field(&f.reason).value, hex_header
+                    f.pid,
+                    csv_field(&f.comm).value,
+                    f.start,
+                    f.end,
+                    f.flags,
+                    csv_field(&f.reason).value,
+                    hex_header
                 );
             }
             out
@@ -3705,7 +4042,13 @@ fn render_mounts(mounts: &[memf_linux::MountInfo], output: OutputFormat) -> Stri
         OutputFormat::Csv => {
             let mut out = String::from("dev_name,mount_point,fs_type\n");
             for m in mounts {
-                let _ = writeln!(out, "{},{},{}", csv_field(&m.dev_name).value, csv_field(&m.mount_point).value, csv_field(&m.fs_type).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{}",
+                    csv_field(&m.dev_name).value,
+                    csv_field(&m.mount_point).value,
+                    csv_field(&m.fs_type).value
+                );
             }
             out
         }
@@ -3760,7 +4103,14 @@ fn render_syscalls(entries: &[memf_linux::SyscallInfo], output: OutputFormat) ->
             let mut out = String::from("number,handler,hooked,expected_name\n");
             for e in entries {
                 let name = e.expected_name.as_deref().unwrap_or("-");
-                let _ = writeln!(out, "{},{:#x},{},{}", e.number, e.handler, e.hooked, csv_field(name).value);
+                let _ = writeln!(
+                    out,
+                    "{},{:#x},{},{}",
+                    e.number,
+                    e.handler,
+                    e.hooked,
+                    csv_field(name).value
+                );
             }
             out
         }
@@ -3816,7 +4166,15 @@ fn render_bash_history(entries: &[memf_linux::BashHistoryInfo], output: OutputFo
                 let ts = e
                     .timestamp
                     .map_or_else(|| "-".to_string(), |ts| ts.to_string());
-                let _ = writeln!(out, "{},{},{},{},{}", e.pid, csv_field(&e.comm).value, e.index, ts, csv_field(&e.command).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{},{}",
+                    e.pid,
+                    csv_field(&e.comm).value,
+                    e.index,
+                    ts,
+                    csv_field(&e.command).value
+                );
             }
             out
         }
@@ -3852,7 +4210,11 @@ fn render_psxview(entries: &[memf_linux::PsxViewInfo], output: OutputFormat) -> 
                 .iter()
                 .filter(|e| e.in_task_list != e.in_pid_hash)
                 .count();
-            format!("{table}\n\nTotal: {} processes ({} hidden)", entries.len(), hidden)
+            format!(
+                "{table}\n\nTotal: {} processes ({} hidden)",
+                entries.len(),
+                hidden
+            )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
             let mut out = String::new();
@@ -3870,7 +4232,14 @@ fn render_psxview(entries: &[memf_linux::PsxViewInfo], output: OutputFormat) -> 
         OutputFormat::Csv => {
             let mut out = String::from("pid,comm,in_task_list,in_pid_hash\n");
             for e in entries {
-                let _ = writeln!(out, "{},{},{},{}", e.pid, csv_field(&e.comm).value, e.in_task_list, e.in_pid_hash);
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{}",
+                    e.pid,
+                    csv_field(&e.comm).value,
+                    e.in_task_list,
+                    e.in_pid_hash
+                );
             }
             out
         }
@@ -3925,7 +4294,14 @@ fn render_tty_check(entries: &[memf_linux::TtyCheckInfo], output: OutputFormat) 
         OutputFormat::Csv => {
             let mut out = String::from("name,operation,handler,hooked\n");
             for e in entries {
-                let _ = writeln!(out, "{},{},{:#x},{}", csv_field(&e.name).value, csv_field(&e.operation).value, e.handler, e.hooked);
+                let _ = writeln!(
+                    out,
+                    "{},{},{:#x},{}",
+                    csv_field(&e.name).value,
+                    csv_field(&e.operation).value,
+                    e.handler,
+                    e.hooked
+                );
             }
             out
         }
@@ -3995,7 +4371,11 @@ fn render_check_hooks(entries: &[memf_linux::KernelHookInfo], output: OutputForm
                 let _ = writeln!(
                     out,
                     "{},{:#x},{},{},{}",
-                    csv_field(&e.symbol).value, e.address, csv_field(&e.hook_type).value, target, e.suspicious
+                    csv_field(&e.symbol).value,
+                    e.address,
+                    csv_field(&e.hook_type).value,
+                    target,
+                    e.suspicious
                 );
             }
             out
@@ -4052,7 +4432,12 @@ fn render_elfinfo(entries: &[memf_linux::ElfInfo], output: OutputFormat) -> Stri
                 let _ = writeln!(
                     out,
                     "{},{},{:#x},{:?},{},{:#x}",
-                    e.pid, csv_field(&e.comm).value, e.vma_start, e.elf_type, e.machine, e.entry_point
+                    e.pid,
+                    csv_field(&e.comm).value,
+                    e.vma_start,
+                    e.elf_type,
+                    e.machine,
+                    e.entry_point
                 );
             }
             out
@@ -4090,7 +4475,11 @@ fn render_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: Output
                 .iter()
                 .filter(|e| e.in_modules_list != e.in_sysfs)
                 .count();
-            format!("{table}\n\nTotal: {} modules ({} hidden)", entries.len(), hidden)
+            format!(
+                "{table}\n\nTotal: {} modules ({} hidden)",
+                entries.len(),
+                hidden
+            )
         }
         OutputFormat::Json | OutputFormat::Ndjson => {
             let mut out = String::new();
@@ -4112,7 +4501,11 @@ fn render_check_modules(entries: &[memf_linux::HiddenModuleInfo], output: Output
                 let _ = writeln!(
                     out,
                     "{},{:#x},{},{},{}",
-                    csv_field(&e.name).value, e.base_addr, e.size, e.in_modules_list, e.in_sysfs
+                    csv_field(&e.name).value,
+                    e.base_addr,
+                    e.size,
+                    e.in_modules_list,
+                    e.in_sysfs
                 );
             }
             out
@@ -4555,7 +4948,9 @@ fn render_handles(handles: &[memf_windows::WinHandleInfo], output: OutputFormat)
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("pid,image_name,handle_value,object_type,object_addr,granted_access\n");
+            let mut out = String::from(
+                "pid,image_name,handle_value,object_type,object_addr,granted_access\n",
+            );
             for h in handles {
                 let _ = writeln!(
                     out,
@@ -4589,7 +4984,10 @@ fn render_ssdt_hooks(hooks: &[memf_windows::WinSsdtHookInfo], output: OutputForm
         OutputFormat::Table => {
             let suspicious: Vec<_> = hooks.iter().filter(|h| h.suspicious).collect();
             if suspicious.is_empty() {
-                format!("\nSSDT: {} entries checked, no hooks detected.", hooks.len())
+                format!(
+                    "\nSSDT: {} entries checked, no hooks detected.",
+                    hooks.len()
+                )
             } else {
                 let mut table = Table::new();
                 table.load_preset(UTF8_FULL_CONDENSED);
@@ -4841,12 +5239,18 @@ fn render_windows_vads(vads: &[memf_windows::WinVadInfo], output: OutputFormat) 
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("pid,image_name,start_vaddr,end_vaddr,protection,is_private\n");
+            let mut out =
+                String::from("pid,image_name,start_vaddr,end_vaddr,protection,is_private\n");
             for v in vads {
                 let _ = writeln!(
                     out,
                     "{},{},{:#x},{:#x},{},{}",
-                    v.pid, csv_field(&v.image_name).value, v.start_vaddr, v.end_vaddr, csv_field(&v.protection_str).value, v.is_private
+                    v.pid,
+                    csv_field(&v.image_name).value,
+                    v.start_vaddr,
+                    v.end_vaddr,
+                    csv_field(&v.protection_str).value,
+                    v.is_private
                 );
             }
             out
@@ -4865,7 +5269,10 @@ fn print_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Outp
 /// Humble Object: render Windows malfind results. `image_name` and
 /// `protection_str` are attacker-controllable, so JSON wraps them in `JsonSafe`
 /// and CSV runs them through `csv_field`.
-fn render_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: OutputFormat) -> String {
+fn render_windows_malfind(
+    findings: &[memf_windows::WinMalfindInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -4921,7 +5328,8 @@ fn render_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Out
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("pid,image_name,start_vaddr,end_vaddr,protection,header_hex\n");
+            let mut out =
+                String::from("pid,image_name,start_vaddr,end_vaddr,protection,header_hex\n");
             for f in findings {
                 let hex_header: String = f.first_bytes.iter().fold(String::new(), |mut s, b| {
                     let _ = write!(s, "{b:02x}");
@@ -4930,7 +5338,12 @@ fn render_windows_malfind(findings: &[memf_windows::WinMalfindInfo], output: Out
                 let _ = writeln!(
                     out,
                     "{},{},{:#x},{:#x},{},{}",
-                    f.pid, csv_field(&f.image_name).value, f.start_vaddr, f.end_vaddr, csv_field(&f.protection_str).value, hex_header
+                    f.pid,
+                    csv_field(&f.image_name).value,
+                    f.start_vaddr,
+                    f.end_vaddr,
+                    csv_field(&f.protection_str).value,
+                    hex_header
                 );
             }
             out
@@ -4949,7 +5362,10 @@ fn print_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output
 /// Humble Object: render the LdrModules cross-reference. The process
 /// `image_name` and each module's `name`/`full_path` are attacker-controlled,
 /// so JSON wraps them in `JsonSafe` and CSV runs them through `csv_field`.
-fn render_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], output: OutputFormat) -> String {
+fn render_ldr_modules(
+    mods: &[(u64, String, memf_windows::LdrModuleInfo)],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -5010,12 +5426,20 @@ fn render_ldr_modules(mods: &[(u64, String, memf_windows::LdrModuleInfo)], outpu
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("pid,image_name,base_addr,name,full_path,in_load,in_mem,in_init\n");
+            let mut out =
+                String::from("pid,image_name,base_addr,name,full_path,in_load,in_mem,in_init\n");
             for (pid, image_name, m) in mods {
                 let _ = writeln!(
                     out,
                     "{},{},{:#x},{},{},{},{},{}",
-                    pid, csv_field(image_name).value, m.base_addr, csv_field(&m.name).value, csv_field(&m.full_path).value, m.in_load, m.in_mem, m.in_init
+                    pid,
+                    csv_field(image_name).value,
+                    m.base_addr,
+                    csv_field(&m.name).value,
+                    csv_field(&m.full_path).value,
+                    m.in_load,
+                    m.in_mem,
+                    m.in_init
                 );
             }
             out
@@ -5136,7 +5560,10 @@ fn print_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outpu
 /// and the `privilege_names` strings are attacker-controllable, so JSON wraps
 /// them in `JsonSafe` and CSV runs them through `csv_field` (replacing the prior
 /// hand-rolled quote-wrapping that could be broken by an embedded quote).
-fn render_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: OutputFormat) -> String {
+fn render_windows_privileges(
+    tokens: &[memf_windows::WinTokenInfo],
+    output: OutputFormat,
+) -> String {
     match output {
         OutputFormat::Table => {
             let mut table = Table::new();
@@ -5153,7 +5580,12 @@ fn render_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outp
                 } else {
                     table_cell(&t.user_sid)
                 };
-                table.add_row(vec![format!("{}", t.pid), table_cell(&t.image_name), sid, privs]);
+                table.add_row(vec![
+                    format!("{}", t.pid),
+                    table_cell(&t.image_name),
+                    sid,
+                    privs,
+                ]);
             }
             let elevated: Vec<_> = tokens
                 .iter()
@@ -5172,7 +5604,11 @@ fn render_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outp
         OutputFormat::Json | OutputFormat::Ndjson => {
             let mut out = String::new();
             for t in tokens {
-                let privs: Vec<_> = t.privilege_names.iter().map(|p| jsonguard::JsonSafe(p.as_str())).collect();
+                let privs: Vec<_> = t
+                    .privilege_names
+                    .iter()
+                    .map(|p| jsonguard::JsonSafe(p.as_str()))
+                    .collect();
                 let json = serde_json::json!({
                     "pid": t.pid,
                     "image_name": jsonguard::JsonSafe(&t.image_name),
@@ -5186,7 +5622,9 @@ fn render_windows_privileges(tokens: &[memf_windows::WinTokenInfo], output: Outp
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("pid,image_name,user_sid,privileges_enabled,privileges_present,privilege_names\n");
+            let mut out = String::from(
+                "pid,image_name,user_sid,privileges_enabled,privileges_present,privilege_names\n",
+            );
             for t in tokens {
                 let privs = t.privilege_names.join(";");
                 let _ = writeln!(
@@ -5393,7 +5831,6 @@ fn build_windows_dll_events(
     events
 }
 
-
 /// Collect PID sets for suspicious Windows patterns.
 ///
 /// Returns (singleton_dup_pids, parent_violation_pids, networking_pids,
@@ -5582,7 +6019,10 @@ fn render_timeline_bodyfile(events: &[TimelineEvent]) -> String {
         };
         let name = format!(
             "[{}] PID:{} {}{}",
-            e.event_type, e.pid, table_cell(&e.description), tags_suffix
+            e.event_type,
+            e.pid,
+            table_cell(&e.description),
+            tags_suffix
         );
         // atime=0, mtime=0, ctime=timestamp, crtime=timestamp
         let _ = writeln!(
@@ -5621,7 +6061,11 @@ fn render_timeline(events: &[TimelineEvent], output: OutputFormat) -> String {
                 let _ = writeln!(
                     out,
                     "{:<26} {:<20} {:>8}  {}  {}",
-                    e.timestamp, e.event_type, e.pid, table_cell(&e.description), tags_str
+                    e.timestamp,
+                    e.event_type,
+                    e.pid,
+                    table_cell(&e.description),
+                    tags_str
                 );
             }
             out
@@ -5629,7 +6073,11 @@ fn render_timeline(events: &[TimelineEvent], output: OutputFormat) -> String {
         OutputFormat::Json | OutputFormat::Ndjson => {
             let mut out = String::new();
             for e in events {
-                let tags: Vec<_> = e.tags.iter().map(|t| jsonguard::JsonSafe(t.as_str())).collect();
+                let tags: Vec<_> = e
+                    .tags
+                    .iter()
+                    .map(|t| jsonguard::JsonSafe(t.as_str()))
+                    .collect();
                 let json = serde_json::json!({
                     "timestamp": e.timestamp,
                     "timestamp_secs": e.timestamp_secs,
@@ -5643,13 +6091,19 @@ fn render_timeline(events: &[TimelineEvent], output: OutputFormat) -> String {
             out
         }
         OutputFormat::Csv => {
-            let mut out = String::from("timestamp,timestamp_secs,event_type,pid,description,tags\n");
+            let mut out =
+                String::from("timestamp,timestamp_secs,event_type,pid,description,tags\n");
             for e in events {
                 let tags_str = e.tags.join(";");
                 let _ = writeln!(
                     out,
                     "{},{},{},{},{},{}",
-                    e.timestamp, e.timestamp_secs, e.event_type, e.pid, csv_field(&e.description).value, csv_field(&tags_str).value
+                    e.timestamp,
+                    e.timestamp_secs,
+                    e.event_type,
+                    e.pid,
+                    csv_field(&e.description).value,
+                    csv_field(&tags_str).value
                 );
             }
             out
@@ -5905,14 +6359,16 @@ fn cmd_framebuffer(
             .context("Linux framebuffer walk failed")?,
         OsProfile::Windows => {
             let provider = reader.vas().physical();
-            memf_framebuffer_windows(provider)
-                .context("Windows framebuffer walk failed")?
+            memf_framebuffer_windows(provider).context("Windows framebuffer walk failed")?
         }
         OsProfile::MacOs => anyhow::bail!("framebuffer not supported for macOS dumps"),
     };
 
     // Write PNG (default to framebuffer.png if not specified)
-    let out_path = png_path.map_or_else(|| std::path::PathBuf::from("framebuffer.png"), std::path::Path::to_path_buf);
+    let out_path = png_path.map_or_else(
+        || std::path::PathBuf::from("framebuffer.png"),
+        std::path::Path::to_path_buf,
+    );
     std::fs::write(&out_path, &result.png_bytes)
         .with_context(|| format!("failed to write PNG to {}", out_path.display()))?;
     eprintln!("PNG written: {}", out_path.display());
@@ -6027,7 +6483,13 @@ fn render_browser_sessions(
         OutputFormat::Csv => {
             let mut out = String::from("pid,process,url\n");
             for e in entries {
-                let _ = writeln!(out, "{},{},{}", e.pid, csv_field(&e.image_name).value, csv_field(&e.url).value);
+                let _ = writeln!(
+                    out,
+                    "{},{},{}",
+                    e.pid,
+                    csv_field(&e.image_name).value,
+                    csv_field(&e.url).value
+                );
             }
             out
         }
@@ -6051,9 +6513,8 @@ fn cmd_browser_cookies(
             let ps_head = ctx
                 .ps_active_process_head
                 .context("missing PsActiveProcessHead; browser-cookies requires symbols")?;
-            let mut cookies =
-                memf_windows::browser_cookies::walk_browser_cookies(&reader, ps_head)
-                    .context("failed to walk browser cookies")?;
+            let mut cookies = memf_windows::browser_cookies::walk_browser_cookies(&reader, ps_head)
+                .context("failed to walk browser cookies")?;
             if let Some(pid) = pid_filter {
                 cookies.retain(|c| c.pid == pid);
                 if cookies.is_empty() {
@@ -6066,10 +6527,7 @@ fn cmd_browser_cookies(
     Ok(())
 }
 
-fn print_browser_cookies(
-    cookies: &[memf_windows::types::BrowserCookieInfo],
-    output: OutputFormat,
-) {
+fn print_browser_cookies(cookies: &[memf_windows::types::BrowserCookieInfo], output: OutputFormat) {
     println!("{}", render_browser_cookies(cookies, output));
 }
 
@@ -6164,10 +6622,7 @@ fn cmd_browser_creds(
     Ok(())
 }
 
-fn print_browser_creds(
-    creds: &[memf_windows::types::BrowserCredentialInfo],
-    output: OutputFormat,
-) {
+fn print_browser_creds(creds: &[memf_windows::types::BrowserCredentialInfo], output: OutputFormat) {
     println!("{}", render_browser_creds(creds, output));
 }
 
@@ -6214,7 +6669,11 @@ fn render_browser_creds(
                 let _ = writeln!(
                     out,
                     "{},{},{},{},{}",
-                    c.pid, csv_field(&c.image_name).value, csv_field(&c.url).value, csv_field(&c.username).value, csv_field(&c.password).value,
+                    c.pid,
+                    csv_field(&c.image_name).value,
+                    csv_field(&c.url).value,
+                    csv_field(&c.username).value,
+                    csv_field(&c.password).value,
                 );
             }
             out
@@ -6243,12 +6702,7 @@ fn format_size(bytes: u64) -> String {
 // Volatility adapter low-level primitives
 // ---------------------------------------------------------------------------
 
-fn cmd_read_phys(
-    dump: &Path,
-    addr: u64,
-    len: u64,
-    out: &mut impl std::io::Write,
-) -> Result<()> {
+fn cmd_read_phys(dump: &Path, addr: u64, len: u64, out: &mut impl std::io::Write) -> Result<()> {
     let provider = open_dump_for(dump, true)?;
     let mut buf = vec![0u8; len as usize];
     let n = provider
@@ -6258,12 +6712,7 @@ fn cmd_read_phys(
     Ok(())
 }
 
-fn cmd_translate_va(
-    dump: &Path,
-    cr3: u64,
-    va: u64,
-    out: &mut impl std::io::Write,
-) -> Result<()> {
+fn cmd_translate_va(dump: &Path, cr3: u64, va: u64, out: &mut impl std::io::Write) -> Result<()> {
     let provider = open_dump_for(dump, true)?;
     let vas = VirtualAddressSpace::new(provider, cr3, TranslationMode::X86_64FourLevel);
     let pa = vas
@@ -6299,8 +6748,18 @@ mod tests {
 
     // ── psscan output rendering (Humble Object — pure, testable) ──────────────
 
-    fn sp(addr: u64, pid: u64, name: &str, dtb: Option<u64>) -> memf_windows::psscan::ScannedProcess {
-        memf_windows::psscan::ScannedProcess { physical_addr: addr, pid, name: name.into(), dtb }
+    fn sp(
+        addr: u64,
+        pid: u64,
+        name: &str,
+        dtb: Option<u64>,
+    ) -> memf_windows::psscan::ScannedProcess {
+        memf_windows::psscan::ScannedProcess {
+            physical_addr: addr,
+            pid,
+            name: name.into(),
+            dtb,
+        }
     }
 
     #[test]
@@ -6311,11 +6770,17 @@ mod tests {
         ];
         let csv = render_scanned_processes(&procs, OutputFormat::Csv);
         let header = csv.lines().next().unwrap_or_default();
-        assert!(header.contains("pid") && header.contains("physical_addr"), "header: {header}");
+        assert!(
+            header.contains("pid") && header.contains("physical_addr"),
+            "header: {header}"
+        );
         assert!(csv.contains("System"));
         assert!(csv.contains("1234"));
         // the attacker-controlled "=calc.exe" must be neutralised, never emitted raw after a comma
-        assert!(!csv.contains(",=calc.exe"), "formula name must be guarded: {csv}");
+        assert!(
+            !csv.contains(",=calc.exe"),
+            "formula name must be guarded: {csv}"
+        );
     }
 
     fn wpi(pid: u64, name: &str) -> memf_windows::WinProcessInfo {
@@ -6343,17 +6808,29 @@ mod tests {
             cmdline: "=calc,foo bar\u{202e}".into(), // formula + embedded comma + bidi
         }];
         let json = render_linux_cmdlines(&cmds, OutputFormat::Json);
-        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        assert!(
+            !json.contains('\u{202e}'),
+            "bidi must not survive JSON: {json}"
+        );
         let v: serde_json::Value =
             serde_json::from_str(json.lines().next().unwrap()).expect("valid json object");
         assert_eq!(v["pid"], 42);
 
         let csv = render_linux_cmdlines(&cmds, OutputFormat::Csv);
-        assert!(csv.lines().next().unwrap_or_default().contains("cmdline"), "csv header");
-        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
+        assert!(
+            csv.lines().next().unwrap_or_default().contains("cmdline"),
+            "csv header"
+        );
+        assert!(
+            !csv.contains('\u{202e}'),
+            "bidi must not survive CSV: {csv}"
+        );
         assert!(!csv.contains(",=calc"), "formula must be guarded: {csv}");
         // The comma embedded in cmdline must be RFC 4180-quoted, not split the row.
-        assert!(csv.lines().nth(1).unwrap_or_default().contains('"'), "embedded comma forces quoting: {csv}");
+        assert!(
+            csv.lines().nth(1).unwrap_or_default().contains('"'),
+            "embedded comma forces quoting: {csv}"
+        );
     }
 
     #[test]
@@ -6361,7 +6838,11 @@ mod tests {
         // A multi-byte char straddling the old 117-byte truncation boundary must
         // not panic the table arm (byte-slicing a String at a non-char boundary).
         let long = format!("{}\u{4e16}\u{754c}", "A".repeat(116));
-        let big = vec![memf_windows::WinCmdlineInfo { pid: 7, image_name: "x.exe".into(), cmdline: long }];
+        let big = vec![memf_windows::WinCmdlineInfo {
+            pid: 7,
+            image_name: "x.exe".into(),
+            cmdline: long,
+        }];
         let _table = render_windows_cmdlines(&big, OutputFormat::Table); // must not panic
 
         let cmds = vec![memf_windows::WinCmdlineInfo {
@@ -6370,10 +6851,19 @@ mod tests {
             cmdline: "cmd\u{202e}".into(),
         }];
         let json = render_windows_cmdlines(&cmds, OutputFormat::Json);
-        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        assert!(
+            !json.contains('\u{202e}'),
+            "bidi must not survive JSON: {json}"
+        );
         let csv = render_windows_cmdlines(&cmds, OutputFormat::Csv);
-        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
-        assert!(!csv.contains(",=x.exe"), "image_name formula must be guarded: {csv}");
+        assert!(
+            !csv.contains('\u{202e}'),
+            "bidi must not survive CSV: {csv}"
+        );
+        assert!(
+            !csv.contains(",=x.exe"),
+            "image_name formula must be guarded: {csv}"
+        );
     }
 
     #[test]
@@ -6383,17 +6873,35 @@ mod tests {
         let procs = vec![wpi(666, "ev\u{202e}il.exe"), wpi(1234, "=calc.exe")];
 
         let json = render_windows_processes(&procs, OutputFormat::Json);
-        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        assert!(
+            !json.contains('\u{202e}'),
+            "bidi must not survive JSON: {json}"
+        );
         // One JSON object per line (preserved shape); first line is the bidi proc.
         let first = json.lines().next().expect("at least one line");
         let v: serde_json::Value = serde_json::from_str(first).expect("valid json object");
         assert_eq!(v["pid"], 666);
-        assert!(v["image_name"].as_str().unwrap().contains('\u{FFFD}'), "bidi marked: {v}");
+        assert!(
+            v["image_name"].as_str().unwrap().contains('\u{FFFD}'),
+            "bidi marked: {v}"
+        );
 
         let csv = render_windows_processes(&procs, OutputFormat::Csv);
-        assert!(csv.lines().next().unwrap_or_default().contains("image_name"), "csv header");
-        assert!(!csv.contains(",=calc.exe"), "formula name must be guarded: {csv}");
-        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
+        assert!(
+            csv.lines()
+                .next()
+                .unwrap_or_default()
+                .contains("image_name"),
+            "csv header"
+        );
+        assert!(
+            !csv.contains(",=calc.exe"),
+            "formula name must be guarded: {csv}"
+        );
+        assert!(
+            !csv.contains('\u{202e}'),
+            "bidi must not survive CSV: {csv}"
+        );
     }
 
     #[test]
@@ -6402,10 +6910,22 @@ mod tests {
         // (and itself an IOC in a 15-char EPROCESS ImageFileName). The README
         // promises bidi/control stripping on table/CSV/JSON alike.
         let procs = vec![sp(0x1000, 7, "ev\u{202e}il.exe", None)];
-        assert!(!render_scanned_processes(&procs, OutputFormat::Table).contains('\u{202e}'), "table");
-        assert!(!render_scanned_processes(&procs, OutputFormat::Csv).contains('\u{202e}'), "csv");
-        assert!(!render_scanned_processes(&procs, OutputFormat::Json).contains('\u{202e}'), "json");
-        assert!(!render_scanned_processes(&procs, OutputFormat::Ndjson).contains('\u{202e}'), "ndjson");
+        assert!(
+            !render_scanned_processes(&procs, OutputFormat::Table).contains('\u{202e}'),
+            "table"
+        );
+        assert!(
+            !render_scanned_processes(&procs, OutputFormat::Csv).contains('\u{202e}'),
+            "csv"
+        );
+        assert!(
+            !render_scanned_processes(&procs, OutputFormat::Json).contains('\u{202e}'),
+            "json"
+        );
+        assert!(
+            !render_scanned_processes(&procs, OutputFormat::Ndjson).contains('\u{202e}'),
+            "ndjson"
+        );
     }
 
     #[test]
@@ -6446,17 +6966,29 @@ mod tests {
         let procs = vec![lpi(7, "ev\u{202e}il"), lpi(8, "=calc,foo")];
         let boot = boot_none();
         let json = render_linux_processes_json(&procs, &boot);
-        assert!(!json.contains('\u{202e}'), "bidi must not survive JSON: {json}");
+        assert!(
+            !json.contains('\u{202e}'),
+            "bidi must not survive JSON: {json}"
+        );
         let v: serde_json::Value =
             serde_json::from_str(json.lines().next().unwrap()).expect("valid json object");
         assert_eq!(v["pid"], 7);
 
         let csv = render_linux_processes_csv(&procs, &boot);
-        assert!(csv.lines().next().unwrap_or_default().contains("name"), "csv header");
-        assert!(!csv.contains('\u{202e}'), "bidi must not survive CSV: {csv}");
+        assert!(
+            csv.lines().next().unwrap_or_default().contains("name"),
+            "csv header"
+        );
+        assert!(
+            !csv.contains('\u{202e}'),
+            "bidi must not survive CSV: {csv}"
+        );
         assert!(!csv.contains(",=calc"), "formula must be guarded: {csv}");
         // embedded comma forces RFC-4180 quoting
-        assert!(csv.lines().nth(2).unwrap_or_default().contains('"'), "embedded comma quoted: {csv}");
+        assert!(
+            csv.lines().nth(2).unwrap_or_default().contains('"'),
+            "embedded comma quoted: {csv}"
+        );
     }
 
     #[test]
@@ -6469,19 +7001,27 @@ mod tests {
         }];
         let json = render_linux_threads(&threads, OutputFormat::Json);
         assert!(!json.contains('\u{202e}'), "bidi: {json}");
-        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap())
+            .expect("valid json");
         let csv = render_linux_threads(&threads, OutputFormat::Csv);
         assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
-        assert!(csv.lines().nth(1).unwrap_or_default().contains('"'), "comma quoted: {csv}");
+        assert!(
+            csv.lines().nth(1).unwrap_or_default().contains('"'),
+            "comma quoted: {csv}"
+        );
     }
 
     #[test]
     fn render_linux_pstree_sanitizes_comm() {
-        let entries = vec![memf_linux::PsTreeEntry { process: lpi(7, "ev\u{202e}il=calc,x"), depth: 0 }];
+        let entries = vec![memf_linux::PsTreeEntry {
+            process: lpi(7, "ev\u{202e}il=calc,x"),
+            depth: 0,
+        }];
         let boot = boot_none();
         let json = render_linux_pstree(&entries, OutputFormat::Json, &boot);
         assert!(!json.contains('\u{202e}'), "bidi json: {json}");
-        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap())
+            .expect("valid json");
         let csv = render_linux_pstree(&entries, OutputFormat::Csv, &boot);
         assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
         assert!(!csv.contains(",=calc"), "formula guarded: {csv}");
@@ -6547,7 +7087,10 @@ mod tests {
 
     #[test]
     fn render_pstree_sanitizes_image_name() {
-        let entries = vec![memf_windows::WinPsTreeEntry { process: wpi(7, BIDI_FORMULA), depth: 0 }];
+        let entries = vec![memf_windows::WinPsTreeEntry {
+            process: wpi(7, BIDI_FORMULA),
+            depth: 0,
+        }];
         assert_json_csv_safe(
             &render_pstree(&entries, OutputFormat::Json),
             &render_pstree(&entries, OutputFormat::Csv),
@@ -6629,7 +7172,8 @@ mod tests {
         let json = render_connections(&conns, OutputFormat::Json);
         let csv = render_connections(&conns, OutputFormat::Csv);
         assert!(!json.contains('\u{202e}'), "bidi json: {json}");
-        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap())
+            .expect("valid json");
         assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
     }
 
@@ -6650,7 +7194,8 @@ mod tests {
         let json = render_win_connections(&conns, OutputFormat::Json);
         let csv = render_win_connections(&conns, OutputFormat::Csv);
         assert!(!json.contains('\u{202e}'), "bidi json: {json}");
-        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap())
+            .expect("valid json");
         assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
     }
 
@@ -6666,9 +7211,13 @@ mod tests {
         let json = render_libs(Some((7, "=ctx\u{202e}.exe")), &dlls, OutputFormat::Json);
         let csv = render_libs(Some((7, "=ctx\u{202e}.exe")), &dlls, OutputFormat::Csv);
         assert!(!json.contains('\u{202e}'), "bidi json: {json}");
-        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap())
+            .expect("valid json");
         assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
-        assert!(!csv.lines().nth(1).unwrap_or_default().contains(",=ctx"), "ctx formula guarded: {csv}");
+        assert!(
+            !csv.lines().nth(1).unwrap_or_default().contains(",=ctx"),
+            "ctx formula guarded: {csv}"
+        );
     }
 
     #[test]
@@ -6694,7 +7243,8 @@ mod tests {
         let json = render_strings_json(&strings);
         let csv = render_strings_csv(&strings);
         assert!(!json.contains('\u{202e}'), "bidi json: {json}");
-        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap()).expect("valid json");
+        serde_json::from_str::<serde_json::Value>(json.lines().next().unwrap())
+            .expect("valid json");
         assert!(!csv.contains('\u{202e}'), "bidi csv: {csv}");
         assert!(!csv.contains(",=calc"), "formula guarded: {csv}");
     }
@@ -6708,11 +7258,19 @@ mod tests {
             comm: BIDI_FORMULA.into(),
             start: 0x1000,
             end: 0x2000,
-            flags: memf_linux::VmaFlags { read: true, write: true, exec: true, shared: false },
+            flags: memf_linux::VmaFlags {
+                read: true,
+                write: true,
+                exec: true,
+                shared: false,
+            },
             pgoff: 0,
             file_backed: false,
         }];
-        assert_json_csv_safe(&render_vmas(&vmas, OutputFormat::Json), &render_vmas(&vmas, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_vmas(&vmas, OutputFormat::Json),
+            &render_vmas(&vmas, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6725,7 +7283,10 @@ mod tests {
             inode: Some(99),
             pos: 0,
         }];
-        assert_json_csv_safe(&render_file_descriptors(&fds, OutputFormat::Json), &render_file_descriptors(&fds, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_file_descriptors(&fds, OutputFormat::Json),
+            &render_file_descriptors(&fds, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6736,7 +7297,10 @@ mod tests {
             key: "PATH\u{202e}".into(),
             value: BIDI_FORMULA.into(),
         }];
-        assert_json_csv_safe(&render_envvars(&vars, OutputFormat::Json), &render_envvars(&vars, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_envvars(&vars, OutputFormat::Json),
+            &render_envvars(&vars, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6746,11 +7310,19 @@ mod tests {
             comm: BIDI_FORMULA.into(),
             start: 0x1000,
             end: 0x2000,
-            flags: memf_linux::VmaFlags { read: true, write: true, exec: true, shared: false },
+            flags: memf_linux::VmaFlags {
+                read: true,
+                write: true,
+                exec: true,
+                shared: false,
+            },
             reason: "RWX \u{202e}exec".into(),
             header_bytes: vec![0x55, 0x48],
         }];
-        assert_json_csv_safe(&render_malfind(&findings, OutputFormat::Json), &render_malfind(&findings, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_malfind(&findings, OutputFormat::Json),
+            &render_malfind(&findings, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6760,7 +7332,10 @@ mod tests {
             mount_point: "/mnt/\u{202e}x".into(),
             fs_type: "ext4".into(),
         }];
-        assert_json_csv_safe(&render_mounts(&mounts, OutputFormat::Json), &render_mounts(&mounts, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_mounts(&mounts, OutputFormat::Json),
+            &render_mounts(&mounts, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6771,7 +7346,10 @@ mod tests {
             hooked: true,
             expected_name: Some(BIDI_FORMULA.into()),
         }];
-        assert_json_csv_safe(&render_syscalls(&entries, OutputFormat::Json), &render_syscalls(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_syscalls(&entries, OutputFormat::Json),
+            &render_syscalls(&entries, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6783,7 +7361,10 @@ mod tests {
             timestamp: Some(1_700_000_000),
             index: 0,
         }];
-        assert_json_csv_safe(&render_bash_history(&entries, OutputFormat::Json), &render_bash_history(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_bash_history(&entries, OutputFormat::Json),
+            &render_bash_history(&entries, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6794,7 +7375,10 @@ mod tests {
             in_task_list: true,
             in_pid_hash: false,
         }];
-        assert_json_csv_safe(&render_psxview(&entries, OutputFormat::Json), &render_psxview(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_psxview(&entries, OutputFormat::Json),
+            &render_psxview(&entries, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6805,7 +7389,10 @@ mod tests {
             handler: 0x1000,
             hooked: true,
         }];
-        assert_json_csv_safe(&render_tty_check(&entries, OutputFormat::Json), &render_tty_check(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_tty_check(&entries, OutputFormat::Json),
+            &render_tty_check(&entries, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6817,7 +7404,10 @@ mod tests {
             target: Some(0x2000),
             suspicious: true,
         }];
-        assert_json_csv_safe(&render_check_hooks(&entries, OutputFormat::Json), &render_check_hooks(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_check_hooks(&entries, OutputFormat::Json),
+            &render_check_hooks(&entries, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6830,7 +7420,10 @@ mod tests {
             machine: 62,
             entry_point: 0x2000,
         }];
-        assert_json_csv_safe(&render_elfinfo(&entries, OutputFormat::Json), &render_elfinfo(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_elfinfo(&entries, OutputFormat::Json),
+            &render_elfinfo(&entries, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6842,7 +7435,10 @@ mod tests {
             in_modules_list: false,
             in_sysfs: true,
         }];
-        assert_json_csv_safe(&render_check_modules(&entries, OutputFormat::Json), &render_check_modules(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_check_modules(&entries, OutputFormat::Json),
+            &render_check_modules(&entries, OutputFormat::Csv),
+        );
     }
 
     // ----- windows kernel/process inspectors: handles / hooks / vads / malfind / etc -----
@@ -6857,7 +7453,10 @@ mod tests {
             object_type: "File\u{202e}".into(),
             granted_access: 0x1f,
         }];
-        assert_json_csv_safe(&render_handles(&handles, OutputFormat::Json), &render_handles(&handles, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_handles(&handles, OutputFormat::Json),
+            &render_handles(&handles, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6868,7 +7467,10 @@ mod tests {
             target_module: Some(BIDI_FORMULA.into()),
             suspicious: true,
         }];
-        assert_json_csv_safe(&render_ssdt_hooks(&hooks, OutputFormat::Json), &render_ssdt_hooks(&hooks, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_ssdt_hooks(&hooks, OutputFormat::Json),
+            &render_ssdt_hooks(&hooks, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6882,7 +7484,10 @@ mod tests {
             target_module: Some("=evil\u{202e}".into()),
             suspicious: true,
         }];
-        assert_json_csv_safe(&render_irp_hooks(&hooks, OutputFormat::Json), &render_irp_hooks(&hooks, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_irp_hooks(&hooks, OutputFormat::Json),
+            &render_irp_hooks(&hooks, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6893,7 +7498,10 @@ mod tests {
             address: 0x1000,
             owning_module: Some("=evil\u{202e}.sys".into()),
         }];
-        assert_json_csv_safe(&render_callbacks(&cbs, OutputFormat::Json), &render_callbacks(&cbs, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_callbacks(&cbs, OutputFormat::Json),
+            &render_callbacks(&cbs, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6907,7 +7515,10 @@ mod tests {
             protection_str: "RWX\u{202e}".into(),
             is_private: true,
         }];
-        assert_json_csv_safe(&render_windows_vads(&vads, OutputFormat::Json), &render_windows_vads(&vads, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_windows_vads(&vads, OutputFormat::Json),
+            &render_windows_vads(&vads, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6920,7 +7531,10 @@ mod tests {
             protection_str: "RWX\u{202e}".into(),
             first_bytes: vec![0x4d, 0x5a],
         }];
-        assert_json_csv_safe(&render_windows_malfind(&findings, OutputFormat::Json), &render_windows_malfind(&findings, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_windows_malfind(&findings, OutputFormat::Json),
+            &render_windows_malfind(&findings, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6937,7 +7551,10 @@ mod tests {
                 in_init: true,
             },
         )];
-        assert_json_csv_safe(&render_ldr_modules(&mods, OutputFormat::Json), &render_ldr_modules(&mods, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_ldr_modules(&mods, OutputFormat::Json),
+            &render_ldr_modules(&mods, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6953,7 +7570,10 @@ mod tests {
             suspicious: true,
             reason: "MZ \u{202e}mismatch".into(),
         }];
-        assert_json_csv_safe(&render_hollowing(&findings, OutputFormat::Json), &render_hollowing(&findings, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_hollowing(&findings, OutputFormat::Json),
+            &render_hollowing(&findings, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -6967,7 +7587,10 @@ mod tests {
             session_id: 0,
             user_sid: "S-1-5-\u{202e}18".into(),
         }];
-        assert_json_csv_safe(&render_windows_privileges(&tokens, OutputFormat::Json), &render_windows_privileges(&tokens, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_windows_privileges(&tokens, OutputFormat::Json),
+            &render_windows_privileges(&tokens, OutputFormat::Csv),
+        );
     }
 
     // ----- timeline + browser artifacts -----
@@ -7003,7 +7626,11 @@ mod tests {
             tags: vec![],
         }];
         let body = render_timeline_bodyfile(&events);
-        assert_eq!(body.lines().count(), 1, "exactly one bodyfile row: {body:?}");
+        assert_eq!(
+            body.lines().count(),
+            1,
+            "exactly one bodyfile row: {body:?}"
+        );
     }
 
     #[test]
@@ -7014,7 +7641,10 @@ mod tests {
             url: "=calc\u{202e},http://evil".into(),
             source_hint: "tab\u{202e}".into(),
         }];
-        assert_json_csv_safe(&render_browser_sessions(&entries, OutputFormat::Json), &render_browser_sessions(&entries, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_browser_sessions(&entries, OutputFormat::Json),
+            &render_browser_sessions(&entries, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -7028,7 +7658,10 @@ mod tests {
             path: Some("/\u{202e}".into()),
             encrypted: false,
         }];
-        assert_json_csv_safe(&render_browser_cookies(&cookies, OutputFormat::Json), &render_browser_cookies(&cookies, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_browser_cookies(&cookies, OutputFormat::Json),
+            &render_browser_cookies(&cookies, OutputFormat::Csv),
+        );
     }
 
     #[test]
@@ -7040,7 +7673,10 @@ mod tests {
             username: "admin\u{202e}".into(),
             password: "=p455,word".into(),
         }];
-        assert_json_csv_safe(&render_browser_creds(&creds, OutputFormat::Json), &render_browser_creds(&creds, OutputFormat::Csv));
+        assert_json_csv_safe(
+            &render_browser_creds(&creds, OutputFormat::Json),
+            &render_browser_creds(&creds, OutputFormat::Csv),
+        );
     }
 
     fn make_temp_lime_dump(suffix: &str) -> std::path::PathBuf {
@@ -7573,7 +8209,10 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            CheckFlags { syscalls: true, ..Default::default() },
+            CheckFlags {
+                syscalls: true,
+                ..Default::default()
+            },
             None,  // pid
             false, // raw_fallback
         );
@@ -7636,7 +8275,10 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            CheckFlags { malfind: true, ..Default::default() },
+            CheckFlags {
+                malfind: true,
+                ..Default::default()
+            },
             None,  // pid
             false, // raw_fallback
         );
@@ -7657,7 +8299,10 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            CheckFlags { syscalls: true, ..Default::default() },
+            CheckFlags {
+                syscalls: true,
+                ..Default::default()
+            },
             None,  // pid
             false, // raw_fallback
         );
@@ -7682,7 +8327,10 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            CheckFlags { all: true, ..Default::default() },
+            CheckFlags {
+                all: true,
+                ..Default::default()
+            },
             None,  // pid
             false, // raw_fallback
         );
@@ -7872,8 +8520,8 @@ mod tests {
             vaddr: 0xFFFF_8000_0020_0000,
             thread_count: 100,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
 
         // Should not panic and should format times as UTC, not hex.
@@ -7918,8 +8566,8 @@ mod tests {
             vaddr: 0xFFFF_8000_0020_0000,
             thread_count: 100,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
 
         // connection create_time 10_000s later → Unix 1_635_536_400
@@ -7933,7 +8581,7 @@ mod tests {
             pid: 4,
             process_name: "System".into(),
             create_time: 132_800_100_000_000_000,
-        offset: 0,
+            offset: 0,
         }];
 
         let events = build_windows_timeline(&procs, &conns);
@@ -7969,8 +8617,8 @@ mod tests {
             vaddr: 0xFFFF_8000_0030_0000,
             thread_count: 1,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
 
         let events = build_windows_timeline(&procs, &[]);
@@ -8186,8 +8834,8 @@ mod tests {
             vaddr: 0,
             thread_count: 1,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
         let proc_dlls: Vec<(u64, Vec<WinDllInfo>)> = vec![(
             1234,
@@ -8236,8 +8884,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 10,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
             WinProcessInfo {
                 pid: 7777,
@@ -8250,8 +8898,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 1,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &[]);
@@ -8279,8 +8927,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 5,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
             WinProcessInfo {
                 pid: 800,
@@ -8293,8 +8941,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 3,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &[]);
@@ -8324,8 +8972,8 @@ mod tests {
             vaddr: 0,
             thread_count: 1,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
         let conns = vec![WinConnectionInfo {
             pid: 3000,
@@ -8337,7 +8985,7 @@ mod tests {
             protocol: "TCP".into(),
             process_name: "notepad.exe".into(),
             create_time: 133_574_401_000_000_000,
-        offset: 0,
+            offset: 0,
         }];
         let mut events = build_windows_timeline(&procs, &conns);
         tag_suspicious_windows(&mut events, &procs, &conns, &[], &[]);
@@ -8362,8 +9010,8 @@ mod tests {
             vaddr: 0,
             thread_count: 5,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
         let threads = vec![WinThreadInfo {
             tid: 5678,
@@ -8411,8 +9059,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 100,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
             WinProcessInfo {
                 pid: 400,
@@ -8425,8 +9073,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 2,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
             WinProcessInfo {
                 pid: 500,
@@ -8439,8 +9087,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 3,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
             WinProcessInfo {
                 pid: 600,
@@ -8453,8 +9101,8 @@ mod tests {
                 vaddr: 0,
                 thread_count: 10,
                 is_wow64: false,
-            handle_count: 0,
-            session_id: 0,
+                handle_count: 0,
+                session_id: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &[]);
@@ -8549,8 +9197,8 @@ mod tests {
             vaddr: 0,
             thread_count: 3,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
         let conns = vec![
             WinConnectionInfo {
@@ -8563,7 +9211,7 @@ mod tests {
                 protocol: "TCP".into(),
                 process_name: "suspicious.exe".into(),
                 create_time: 133_574_401_000_000_000,
-            offset: 0,
+                offset: 0,
             },
             WinConnectionInfo {
                 pid: 2000,
@@ -8575,7 +9223,7 @@ mod tests {
                 protocol: "TCP".into(),
                 process_name: "suspicious.exe".into(),
                 create_time: 133_574_402_000_000_000,
-            offset: 0,
+                offset: 0,
             },
         ];
         let mut events = build_windows_timeline(&procs, &conns);
@@ -8606,8 +9254,8 @@ mod tests {
             vaddr: 0xFFFF_F000,
             thread_count: 50,
             is_wow64: false,
-        handle_count: 0,
-        session_id: 0,
+            handle_count: 0,
+            session_id: 0,
         }];
         let conns = vec![WinConnectionInfo {
             pid: 4,
@@ -8619,7 +9267,7 @@ mod tests {
             protocol: "TCP".into(),
             process_name: "System".into(),
             create_time: 133_574_401_000_000_000,
-        offset: 0,
+            offset: 0,
         }];
         let threads = vec![WinThreadInfo {
             tid: 100,
@@ -8835,45 +9483,60 @@ mod tests {
     #[test]
     fn browser_sessions_subcommand_parses() {
         let cli = Cli::try_parse_from([
-            "memf", "browser-sessions", "test.dmp",
-            "--symbols", "ntkrnlmp.json",
+            "memf",
+            "browser-sessions",
+            "test.dmp",
+            "--symbols",
+            "ntkrnlmp.json",
         ]);
-        assert!(cli.is_ok(), "browser-sessions subcommand must parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "browser-sessions subcommand must parse: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn browser_sessions_pid_filter_parses() {
-        let cli = Cli::try_parse_from([
-            "memf", "browser-sessions", "test.dmp",
-            "--pid", "1234",
-        ]);
+        let cli = Cli::try_parse_from(["memf", "browser-sessions", "test.dmp", "--pid", "1234"]);
         assert!(cli.is_ok(), "browser-sessions --pid must parse");
     }
 
     #[test]
     fn browser_cookies_subcommand_parses() {
         let cli = Cli::try_parse_from([
-            "memf", "browser-cookies", "test.dmp",
-            "--symbols", "ntkrnlmp.json",
+            "memf",
+            "browser-cookies",
+            "test.dmp",
+            "--symbols",
+            "ntkrnlmp.json",
         ]);
-        assert!(cli.is_ok(), "browser-cookies subcommand must parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "browser-cookies subcommand must parse: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn browser_creds_subcommand_parses() {
         let cli = Cli::try_parse_from([
-            "memf", "browser-creds", "test.dmp",
-            "--symbols", "ntkrnlmp.json",
+            "memf",
+            "browser-creds",
+            "test.dmp",
+            "--symbols",
+            "ntkrnlmp.json",
         ]);
-        assert!(cli.is_ok(), "browser-creds subcommand must parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "browser-creds subcommand must parse: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn browser_sessions_output_json_parses() {
-        let cli = Cli::try_parse_from([
-            "memf", "browser-sessions", "test.dmp",
-            "--output", "json",
-        ]);
+        let cli = Cli::try_parse_from(["memf", "browser-sessions", "test.dmp", "--output", "json"]);
         assert!(cli.is_ok(), "browser-sessions --output json must parse");
     }
 
@@ -8891,7 +9554,11 @@ mod tests {
 
         let mut out: Vec<u8> = Vec::new();
         let result = cmd_read_phys(&path, 0x1000, 8, &mut out);
-        assert!(result.is_ok(), "cmd_read_phys should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "cmd_read_phys should succeed: {:?}",
+            result.err()
+        );
         assert_eq!(out, data, "output must be raw bytes from physical memory");
         std::fs::remove_file(&path).ok();
     }
@@ -8899,7 +9566,12 @@ mod tests {
     #[test]
     fn cmd_read_phys_fails_on_missing_dump() {
         let mut out: Vec<u8> = Vec::new();
-        let result = cmd_read_phys(std::path::Path::new("/no/such/dump.lime"), 0x1000, 8, &mut out);
+        let result = cmd_read_phys(
+            std::path::Path::new("/no/such/dump.lime"),
+            0x1000,
+            8,
+            &mut out,
+        );
         assert!(result.is_err(), "missing dump must return error");
     }
 
@@ -8988,24 +9660,24 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false,            // threads
-            None,             // pid
-            false,            // tree
-            false,            // masquerade
-            true,             // ppid_spoof
-            false,            // dlls
-            false,            // maps
-            false,            // envvars
-            false,            // cmdline
-            false,            // vad
-            false,            // privileges
-            false,            // elfinfo
-            false,            // bash_history
-            false,            // all
+            false, // threads
+            None,  // pid
+            false, // tree
+            false, // masquerade
+            true,  // ppid_spoof
+            false, // dlls
+            false, // maps
+            false, // envvars
+            false, // cmdline
+            false, // vad
+            false, // privileges
+            false, // elfinfo
+            false, // bash_history
+            false, // all
             PsSortField::Pid,
-            None,             // btime
-            false,            // psscan
-            false,            // raw_fallback
+            None,  // btime
+            false, // psscan
+            false, // raw_fallback
         );
         let err = result.expect_err("--ppid-spoof on Linux must bail");
         assert!(
@@ -9025,24 +9697,24 @@ mod tests {
             Some(&isf_path),
             OutputFormat::Table,
             None,
-            false,            // threads
-            None,             // pid
-            false,            // tree
-            false,            // masquerade
-            false,            // ppid_spoof
-            false,            // dlls
-            false,            // maps
-            false,            // envvars
-            false,            // cmdline
-            false,            // vad
-            false,            // privileges
-            false,            // elfinfo
-            false,            // bash_history
-            false,            // all
+            false, // threads
+            None,  // pid
+            false, // tree
+            false, // masquerade
+            false, // ppid_spoof
+            false, // dlls
+            false, // maps
+            false, // envvars
+            false, // cmdline
+            false, // vad
+            false, // privileges
+            false, // elfinfo
+            false, // bash_history
+            false, // all
             PsSortField::Pid,
-            None,             // btime
-            false,            // psscan
-            false,            // raw_fallback
+            None,  // btime
+            false, // psscan
+            false, // raw_fallback
         );
         if let Err(e) = &result {
             let msg = format!("{e}");
@@ -9145,7 +9817,7 @@ mod tests {
             pid: 4,
             image_name: "payload.exe".to_string(),
             start_vaddr: 0x1000_0000,
-            end_vaddr:   0x1001_0000,
+            end_vaddr: 0x1001_0000,
             protection_str: "PAGE_EXECUTE_READWRITE".to_string(),
             rule_name: "malware_shellcode".to_string(),
         }];
