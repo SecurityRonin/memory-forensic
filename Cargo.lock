@@ -1898,6 +1898,7 @@ dependencies = [
  "forensicnomicon",
  "goblin",
  "hmac",
+ "md-5",
  "memf-core",
  "memf-correlate",
  "memf-format",

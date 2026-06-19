@@ -16,12 +16,42 @@
 //! - Detecting pass-the-hash attack targets
 //! - Correlating compromised credentials across systems
 
+use aes::Aes128;
+use cbc::Decryptor as CbcDecryptor;
+use cipher::{block_padding::NoPadding, BlockDecrypt, BlockDecryptMut, KeyInit, KeyIvInit};
+use des::Des;
+use md5::{Digest, Md5};
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
 /// Maximum number of user entries to enumerate (safety limit).
 const MAX_USERS: usize = 4096;
 const _: () = assert!(MAX_USERS > 0 && MAX_USERS <= 65536);
+
+/// SAM decrypt constants — copied verbatim (including trailing NUL) from
+/// volatility3 `windows.registry.hashdump.Hashdump` / impacket `secretsdump`.
+const AQWERTY: &[u8] = b"!@#$%^&*()qwertyUIOPAzxcvbnmQQQQQQQQQQQQ)(*@&%\0";
+const ANUM: &[u8] = b"0123456789012345678901234567890123456789\0";
+const NTPASSWORD: &[u8] = b"NTPASSWORD\0";
+const LMPASSWORD: &[u8] = b"LMPASSWORD\0";
+
+/// `odd_parity` table from vol3 — maps a byte to the nearest value with odd
+/// parity, used by `sidbytes_to_key` when building the two DES keys from a RID.
+const ODD_PARITY: [u8; 256] = [
+    1, 1, 2, 2, 4, 4, 7, 7, 8, 8, 11, 11, 13, 13, 14, 14, 16, 16, 19, 19, 21, 21, 22, 22, 25, 25,
+    26, 26, 28, 28, 31, 31, 32, 32, 35, 35, 37, 37, 38, 38, 41, 41, 42, 42, 44, 44, 47, 47, 49, 49,
+    50, 50, 52, 52, 55, 55, 56, 56, 59, 59, 61, 61, 62, 62, 64, 64, 67, 67, 69, 69, 70, 70, 73, 73,
+    74, 74, 76, 76, 79, 79, 81, 81, 82, 82, 84, 84, 87, 87, 88, 88, 91, 91, 93, 93, 94, 94, 97, 97,
+    98, 98, 100, 100, 103, 103, 104, 104, 107, 107, 109, 109, 110, 110, 112, 112, 115, 115, 117,
+    117, 118, 118, 121, 121, 122, 122, 124, 124, 127, 127, 128, 128, 131, 131, 133, 133, 134, 134,
+    137, 137, 138, 138, 140, 140, 143, 143, 145, 145, 146, 146, 148, 148, 151, 151, 152, 152, 155,
+    155, 157, 157, 158, 158, 161, 161, 162, 162, 164, 164, 167, 167, 168, 168, 171, 171, 173, 173,
+    174, 174, 176, 176, 179, 179, 181, 181, 182, 182, 185, 185, 186, 186, 188, 188, 191, 191, 193,
+    193, 194, 194, 196, 196, 199, 199, 200, 200, 203, 203, 205, 205, 206, 206, 208, 208, 211, 211,
+    213, 213, 214, 214, 217, 217, 218, 218, 220, 220, 223, 223, 224, 224, 227, 227, 229, 229, 230,
+    230, 233, 233, 234, 234, 236, 236, 239, 239, 241, 241, 242, 242, 244, 244, 247, 247, 248, 248,
+    251, 251, 253, 253, 254, 254,
+];
 
 /// Well-known empty/blank NT hash (NTLM of empty string).
 const EMPTY_NT_HASH: &str = "31d6cfe0d16ae931b73c59d7e0c089c0";
@@ -171,13 +201,10 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    // Get Names subkey for username resolution.
-    let names_key = find_subkey_by_name(reader, sam_hive_addr, users_key, "Names");
-
     let mut entries = Vec::new();
 
     // Enumerate RID subkeys.
-    let subkey_count: u32 = match reader.read_bytes(users_key + 0x18, 4) {
+    let subkey_count: u32 = match reader.read_bytes(users_key + 0x14, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => 0,
     };
@@ -186,7 +213,7 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
         return Ok(entries);
     }
 
-    let subkey_list_off: u32 = match reader.read_bytes(users_key + 0x20, 4) {
+    let subkey_list_off: u32 = match reader.read_bytes(users_key + 0x1c, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return Ok(entries),
     };
@@ -229,7 +256,7 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
         }
 
         // Read key name.
-        let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+        let name_len: u16 = match reader.read_bytes(key_addr + 0x48, 2) {
             Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => continue,
         };
@@ -254,15 +281,9 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
             Err(_) => continue,
         };
 
-        // Resolve username from Names subkey.
-        let username = if names_key != 0 {
-            resolve_username_for_rid(reader, sam_hive_addr, names_key, rid)
-        } else {
-            format!("RID-{rid}")
-        };
-
-        // Read V value for hash data.
+        // Read V value: it carries both the username and the hash blobs.
         let v_data = read_value_data(reader, sam_hive_addr, key_addr, "V");
+        let username = username_from_v(&v_data).unwrap_or_else(|| format!("RID-{rid}"));
         let (lm_hash, nt_hash) = extract_hashes_from_v(&v_data, &hashed_boot_key, rid);
 
         let is_suspicious = classify_hashdump(&username, &nt_hash);
@@ -361,44 +382,47 @@ fn extract_boot_key<P: PhysicalMemoryProvider>(
     boot_key
 }
 
-/// Decrypt the hashed boot key from the SAM Account\F value.
+/// Decrypt the hashed boot key (`hbootkey`) from the SAM `Account\F` value.
 ///
-/// The F value contains the domain account metadata. Starting at offset 0x70,
-/// there is an RC4-encrypted (or AES on newer systems) structure that, when
-/// decrypted with the boot key, yields the hashed boot key used to decrypt
-/// individual user hashes.
+/// The F value holds the domain-account metadata. Its structure-revision byte
+/// at `F[0x00]` selects the crypto format (mirrors vol3
+/// `Hashdump.get_hbootkey`):
 ///
-/// For simplicity and reliability across Windows versions, we support the
-/// older MD5+RC4 format (revision 2) and return a best-effort key for the
-/// AES format (revision 3).
+/// - **Revision 2 (RC4)** — `rc4_key = MD5(F[0x70..0x80] ‖ AQWERTY ‖ boot_key ‖
+///   ANUM)`; `hbootkey = RC4(rc4_key, F[0x80..0xA0])[..16]`.
+/// - **Revision 3 (AES)** — `hbootkey = AES128-CBC-decrypt(key = boot_key,
+///   iv = F[0x78..0x88], F[0x88..0xA8])[..16]`.
+///
+/// Returns an empty `Vec` for malformed input or an unsupported revision; on an
+/// unsupported revision it also logs the offending revision byte + offset
+/// (fail-loud — never fabricate a key).
 fn decrypt_hashed_boot_key(f_data: &[u8], boot_key: &[u8]) -> Vec<u8> {
     // F value must be at least 0x80 bytes to contain the key material.
     if f_data.len() < 0x80 || boot_key.len() != 16 {
         return Vec::new();
     }
 
-    // The revision byte at offset 0x68 determines the crypto format.
-    let revision = u32::from(f_data[0x68]) | (u32::from(f_data[0x69]) << 8);
+    // Structure revision is the first byte of the F value.
+    let revision = f_data[0x00];
 
     match revision {
         // Revision 2: MD5 + RC4
         2 => {
-            // Salt at F[0x70..0x80], encrypted key at F[0x80..0xA0]
+            // Salt at F[0x70..0x80], encrypted hbootkey at F[0x80..0xA0].
             if f_data.len() < 0xA0 {
                 return Vec::new();
             }
-
             let salt = &f_data[0x70..0x80];
             let encrypted = &f_data[0x80..0xA0];
 
-            // MD5(boot_key + salt + AQWERTY + boot_key + salt + ANUM)
-            // For a pure-Rust implementation we compute a simple key derivation.
-            // The actual Windows algorithm uses MD5, but since we are in a
-            // no-external-crypto environment, we use a simplified XOR-based
-            // derivation that matches the structure.
-            let rc4_key = simple_md5_derive(boot_key, salt);
+            let mut md5 = Md5::new();
+            md5.update(salt);
+            md5.update(AQWERTY);
+            md5.update(boot_key);
+            md5.update(ANUM);
+            let rc4_key = md5.finalize();
 
-            // RC4 decrypt
+            // vol3 RC4-*encrypts* here; RC4 is symmetric so encrypt == decrypt.
             let decrypted = rc4_crypt(&rc4_key, encrypted);
             if decrypted.len() >= 16 {
                 decrypted[..16].to_vec()
@@ -406,33 +430,46 @@ fn decrypt_hashed_boot_key(f_data: &[u8], boot_key: &[u8]) -> Vec<u8> {
                 Vec::new()
             }
         }
-        // Revision 3: AES-128-CBC
+        // Revision 3: AES-128-CBC (IV at F[0x78..0x88], ciphertext at F[0x88..0xA8]).
         3 => {
-            // IV at F[0x6C..0x7C], encrypted data at F[0x7C..0x9C]
-            if f_data.len() < 0x9C {
+            if f_data.len() < 0xA8 {
                 return Vec::new();
             }
-
-            let salt = &f_data[0x6C..0x7C];
-            let encrypted = &f_data[0x7C..0x9C];
-
-            // AES-CBC decrypt with boot_key as key and salt as IV.
-            // Without an AES library, we use a simplified approach.
-            let decrypted = aes_cbc_decrypt_simple(boot_key, salt, encrypted);
+            let iv = &f_data[0x78..0x88];
+            let encrypted = &f_data[0x88..0xA8];
+            let decrypted = aes128_cbc_decrypt(boot_key, iv, encrypted);
             if decrypted.len() >= 16 {
                 decrypted[..16].to_vec()
             } else {
                 Vec::new()
             }
         }
-        _ => Vec::new(),
+        other => {
+            eprintln!(
+                "memf-windows hashdump: unsupported SAM F revision {other:#04x} at offset 0x00 \
+                 (supported: 2=RC4, 3=AES) — refusing to fabricate hbootkey"
+            );
+            Vec::new()
+        }
     }
 }
 
-/// Extract LM and NT hashes from a user's V value.
+/// Extract LM and NT hashes from a user's `V` value.
 ///
-/// The V value contains offsets and lengths for various user data fields.
-/// The hash data is located at specific offsets within the V structure.
+/// Mirrors vol3 `Hashdump.get_user_hashes`: the V structure carries an offset
+/// table; the LM blob is at `V[0x9C..0xA0] + 0xCC` (length `V[0xA0..0xA4]`) and
+/// the NT blob at `V[0xA8..0xAC] + 0xCC` (length `V[0xAC..0xB0]`). Each blob's
+/// byte `[+2]` is its per-hash revision:
+///
+/// - **rev 1** (blob length 20): `enc = blob[+4..+20]`;
+///   `obfkey = RC4(MD5(hbootkey ‖ pack<L>(rid) ‖ {LM,NT}PASSWORD), enc)`.
+/// - **rev 2** (blob length 56): `salt = blob[+4..+20]`, `enc = blob[+20..+52]`;
+///   `obfkey = AES128-CBC-decrypt(hbootkey, salt, enc)[..16]`.
+///
+/// Then `(k1,k2) = sid_to_key(rid)` and
+/// `hash = DES_ECB_decrypt(k1, obfkey[..8]) ‖ DES_ECB_decrypt(k2, obfkey[8..16])`.
+/// There is **no** trailing XOR. An empty/absent blob (length not the present
+/// length) yields the well-known empty-hash sentinel.
 fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (String, String) {
     let empty_lm = EMPTY_LM_HASH.to_string();
     let empty_nt = EMPTY_NT_HASH.to_string();
@@ -442,285 +479,121 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
         return (empty_lm, empty_nt);
     }
 
-    // NT hash offset and length are at V[0xA8..0xAC] and V[0xAC..0xB0]
-    // relative to an internal offset base (0xCC).
+    let lm_offset =
+        u32::from_le_bytes(v_data[0x9C..0xA0].try_into().unwrap_or([0; 4])) as usize + 0xCC;
+    let lm_length = u32::from_le_bytes(v_data[0xA0..0xA4].try_into().unwrap_or([0; 4])) as usize;
     let nt_offset =
         u32::from_le_bytes(v_data[0xA8..0xAC].try_into().unwrap_or([0; 4])) as usize + 0xCC;
     let nt_length = u32::from_le_bytes(v_data[0xAC..0xB0].try_into().unwrap_or([0; 4])) as usize;
 
-    // LM hash offset and length are at V[0x9C..0xA0] and V[0xA0..0xA4].
-    let lm_offset =
-        u32::from_le_bytes(v_data[0x9C..0xA0].try_into().unwrap_or([0; 4])) as usize + 0xCC;
-    let lm_length = u32::from_le_bytes(v_data[0xA0..0xA4].try_into().unwrap_or([0; 4])) as usize;
-
-    // Decrypt NT hash.
-    let nt_hash = if nt_length >= 20 && nt_offset + nt_length <= v_data.len() {
-        // Skip 4-byte header (revision/flags), encrypted hash at +4, 16 bytes.
-        let enc_start = nt_offset + 4;
-        if enc_start + 16 <= v_data.len() {
-            let encrypted_nt = &v_data[enc_start..enc_start + 16];
-            // CORRECT order: DES-decrypt first, then XOR with hashed boot key.
-            let decrypted_des = decrypt_sam_hash_with_rid(encrypted_nt, rid);
-            let mut decrypted = [0u8; 16];
-            for (i, &b) in decrypted_des.iter().enumerate() {
-                decrypted[i] = b ^ hashed_boot_key[i % hashed_boot_key.len()];
-            }
-            if decrypted.len() == 16 {
-                hex_encode(&decrypted)
-            } else {
-                empty_nt.clone()
-            }
-        } else {
-            empty_nt.clone()
-        }
-    } else if nt_length == 4 {
-        // Empty hash marker.
-        empty_nt.clone()
-    } else {
-        empty_nt.clone()
-    };
-
-    // Decrypt LM hash.
-    let lm_hash = if lm_length >= 20 && lm_offset + lm_length <= v_data.len() {
-        let enc_start = lm_offset + 4;
-        if enc_start + 16 <= v_data.len() {
-            let encrypted_lm = &v_data[enc_start..enc_start + 16];
-            // CORRECT order: DES-decrypt first, then XOR with hashed boot key.
-            let decrypted_des = decrypt_sam_hash_with_rid(encrypted_lm, rid);
-            let mut decrypted = [0u8; 16];
-            for (i, &b) in decrypted_des.iter().enumerate() {
-                decrypted[i] = b ^ hashed_boot_key[i % hashed_boot_key.len()];
-            }
-            if decrypted.len() == 16 {
-                hex_encode(&decrypted)
-            } else {
-                empty_lm.clone()
-            }
-        } else {
-            empty_lm.clone()
-        }
-    } else {
-        empty_lm.clone()
-    };
+    let lm_hash = decrypt_user_hash(
+        v_data,
+        hashed_boot_key,
+        rid,
+        lm_offset,
+        lm_length,
+        LMPASSWORD,
+    )
+    .map_or(empty_lm, |h| hex_encode(&h));
+    let nt_hash = decrypt_user_hash(
+        v_data,
+        hashed_boot_key,
+        rid,
+        nt_offset,
+        nt_length,
+        NTPASSWORD,
+    )
+    .map_or(empty_nt, |h| hex_encode(&h));
 
     (lm_hash, nt_hash)
 }
 
-/// Resolve a username for a RID from the Names subkey.
-fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hhive_addr: u64,
-    names_key: u64,
-    target_rid: u32,
-) -> String {
-    let subkey_count: u32 = match reader.read_bytes(names_key + 0x18, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return format!("RID-{target_rid}"),
+/// Decrypt a single LM/NT hash blob from a user's V value. Returns `None`
+/// (→ empty-hash sentinel) when the blob is absent, length-empty, or its bytes
+/// are out of range. `lmnt` is `LMPASSWORD`/`NTPASSWORD` (rev-1 RC4 salt-string).
+fn decrypt_user_hash(
+    v_data: &[u8],
+    hbootkey: &[u8],
+    rid: u32,
+    offset: usize,
+    length: usize,
+    lmnt: &[u8],
+) -> Option<[u8; 16]> {
+    // Per-hash revision is blob[+2]; need at least 3 bytes to read it.
+    let revision = *v_data.get(offset.checked_add(2)?)?;
+
+    let obfkey = match revision {
+        1 if length == 20 => {
+            // rev 1: enc = blob[+4..+20], obfkey = RC4(MD5(hbootkey ‖ rid ‖ lmnt), enc)
+            let enc = v_data.get(offset + 4..offset + 20)?;
+            let mut md5 = Md5::new();
+            md5.update(&hbootkey[..16]);
+            md5.update(rid.to_le_bytes());
+            md5.update(lmnt);
+            let rc4_key = md5.finalize();
+            let obf = rc4_crypt(&rc4_key, enc);
+            let mut k = [0u8; 16];
+            k.copy_from_slice(obf.get(..16)?);
+            k
+        }
+        2 if length == 56 => {
+            // rev 2: salt = blob[+4..+20], enc = blob[+20..+52];
+            // obfkey = AES128-CBC(hbootkey, salt, enc)[..16]
+            let salt = v_data.get(offset + 4..offset + 20)?;
+            let enc = v_data.get(offset + 20..offset + 52)?;
+            let dec = aes128_cbc_decrypt(&hbootkey[..16], salt, enc);
+            let mut k = [0u8; 16];
+            k.copy_from_slice(dec.get(..16)?);
+            k
+        }
+        // Any other (rev, length) pairing — including the length-4 "no hash
+        // present" marker — means there is no decryptable hash here.
+        _ => return None,
     };
 
-    if subkey_count == 0 || subkey_count > 4096 {
-        return format!("RID-{target_rid}");
-    }
-
-    let list_off: u32 = match reader.read_bytes(names_key + 0x20, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return format!("RID-{target_rid}"),
-    };
-
-    let list_addr = read_cell_addr(reader, hhive_addr, list_off);
-    if list_addr == 0 {
-        return format!("RID-{target_rid}");
-    }
-
-    let list_sig = match reader.read_bytes(list_addr, 2) {
-        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
-        _ => return format!("RID-{target_rid}"),
-    };
-
-    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
-        Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-        _ => return format!("RID-{target_rid}"),
-    };
-
-    for i in 0..count.min(4096) {
-        let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                Ok(bytes) if bytes.len() == 4 => {
-                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                }
-                _ => continue,
-            },
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => {
-                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                }
-                _ => continue,
-            },
-            _ => break,
-        };
-
-        let key_addr = read_cell_addr(reader, hhive_addr, entry_off);
-        if key_addr == 0 {
-            continue;
-        }
-
-        // The default value's type field encodes the RID.
-        let val_count: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        if val_count == 0 {
-            continue;
-        }
-
-        let val_list_off: u32 = match reader.read_bytes(key_addr + 0x2C, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        let val_list_addr = read_cell_addr(reader, hhive_addr, val_list_off);
-        if val_list_addr == 0 {
-            continue;
-        }
-
-        let val_off: u32 = match reader.read_bytes(val_list_addr, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        let val_addr = read_cell_addr(reader, hhive_addr, val_off);
-        if val_addr == 0 {
-            continue;
-        }
-
-        // _CM_KEY_VALUE: Type at offset 0x10 (u32).
-        let val_type: u32 = match reader.read_bytes(val_addr + 0x10, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        if val_type == target_rid {
-            let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-                Ok(bytes) if bytes.len() == 2 => {
-                    bytes[..2].try_into().map_or(0, u16::from_le_bytes)
-                }
-                _ => continue,
-            };
-
-            if name_len > 0 && name_len <= 256 {
-                if let Ok(bytes) = reader.read_bytes(key_addr + 0x4C, name_len as usize) {
-                    return String::from_utf8_lossy(&bytes).to_string();
-                }
-            }
-        }
-    }
-
-    format!("RID-{target_rid}")
+    let (k1, k2) = sid_to_key(rid);
+    let mut hash = [0u8; 16];
+    hash[..8].copy_from_slice(&des_ecb_decrypt_block(k1, obfkey[..8].try_into().ok()?));
+    hash[8..].copy_from_slice(&des_ecb_decrypt_block(k2, obfkey[8..16].try_into().ok()?));
+    Some(hash)
 }
 
-/// Simple MD5-like key derivation for SAM revision 2.
-///
-/// Derives a 16-byte RC4 key from the boot key and salt using a
-/// simplified hash that follows the structure of the Windows algorithm.
-fn simple_md5_derive(boot_key: &[u8], salt: &[u8]) -> Vec<u8> {
-    // Windows uses: MD5(boot_key + AQWERTY + salt + ANUM)
-    // where AQWERTY = "!@#$%^&*()qwertyUIOPAzxcvbnmQQQQQQQQQQQQ)(*@&%\0"
-    // and ANUM = "0123456789012345678901234567890123456789\0"
-    //
-    // We implement a basic MD5 for this specific use case.
-    const AQWERTY: &[u8] = b"!@#$%^&*()qwertyUIOPAzxcvbnmQQQQQQQQQQQQ)(*@&%\0";
-    const ANUM: &[u8] = b"0123456789012345678901234567890123456789\0";
-
-    let mut message = Vec::new();
-    message.extend_from_slice(boot_key);
-    message.extend_from_slice(AQWERTY);
-    message.extend_from_slice(salt);
-    message.extend_from_slice(ANUM);
-
-    md5_hash(&message)
+/// Resolve the username for a user key from its `V` value (vol3
+/// `Hashdump.get_user_name`): `name = V[V[0x0C..0x10]+0xCC ..][..V[0x10..0x14]]`,
+/// decoded UTF-16LE. Returns `None` when the V value is too short or the
+/// computed name range is out of bounds.
+fn username_from_v(v_data: &[u8]) -> Option<String> {
+    if v_data.len() < 0x14 {
+        return None;
+    }
+    let name_off = u32::from_le_bytes(v_data[0x0C..0x10].try_into().ok()?) as usize + 0xCC;
+    let name_len = u32::from_le_bytes(v_data[0x10..0x14].try_into().ok()?) as usize;
+    if name_len == 0 || name_len > 512 {
+        return None;
+    }
+    let raw = v_data.get(name_off..name_off.checked_add(name_len)?)?;
+    let utf16: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    Some(String::from_utf16_lossy(&utf16))
 }
 
-/// Minimal MD5 implementation (RFC 1321) for SAM key derivation.
-#[allow(clippy::many_single_char_names)]
-fn md5_hash(message: &[u8]) -> Vec<u8> {
-    // MD5 constants
-    const S: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
-        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
-        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-    ];
-
-    const K: [u32; 64] = [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
-        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
-        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
-        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
-        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
-        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
-        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
-        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
-        0xeb86d391,
-    ];
-
-    // Pre-processing: pad message
-    let orig_len_bits = (message.len() as u64).wrapping_mul(8);
-    let mut data = message.to_vec();
-    data.push(0x80);
-    while data.len() % 64 != 56 {
-        data.push(0);
+/// AES-128-CBC decrypt with **no padding** (RustCrypto), used for the SAM
+/// revision-3 hbootkey and revision-2 per-user hash blobs. Returns an empty
+/// `Vec` on a key/IV/length mismatch rather than panicking.
+fn aes128_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
+    if key.len() != 16 || iv.len() < 16 || data.is_empty() || data.len() % 16 != 0 {
+        return Vec::new();
     }
-    data.extend_from_slice(&orig_len_bits.to_le_bytes());
-
-    // Initialize hash values
-    let mut a0: u32 = 0x67452301;
-    let mut b0: u32 = 0xefcdab89;
-    let mut c0: u32 = 0x98badcfe;
-    let mut d0: u32 = 0x10325476;
-
-    // Process each 512-bit (64-byte) chunk
-    for chunk in data.chunks_exact(64) {
-        let mut m = [0u32; 16];
-        for (i, word) in chunk.chunks_exact(4).enumerate() {
-            m[i] = word.try_into().map_or(0, u32::from_le_bytes);
-        }
-
-        let mut a = a0;
-        let mut b = b0;
-        let mut c = c0;
-        let mut d = d0;
-
-        for i in 0..64u32 {
-            let (f, g) = match i {
-                0..=15 => ((b & c) | ((!b) & d), i as usize),
-                16..=31 => ((d & b) | ((!d) & c), ((5 * i + 1) % 16) as usize),
-                32..=47 => (b ^ c ^ d, ((3 * i + 5) % 16) as usize),
-                _ => (c ^ (b | (!d)), ((7 * i) % 16) as usize),
-            };
-
-            let f = f
-                .wrapping_add(a)
-                .wrapping_add(K[i as usize])
-                .wrapping_add(m[g]);
-            a = d;
-            d = c;
-            c = b;
-            b = b.wrapping_add(f.rotate_left(S[i as usize]));
-        }
-
-        a0 = a0.wrapping_add(a);
-        b0 = b0.wrapping_add(b);
-        c0 = c0.wrapping_add(c);
-        d0 = d0.wrapping_add(d);
+    let Ok(dec) = CbcDecryptor::<Aes128>::new_from_slices(key, &iv[..16]) else {
+        return Vec::new(); // cov:unreachable: lengths checked above
+    };
+    let mut buf = data.to_vec();
+    match dec.decrypt_padded_mut::<NoPadding>(&mut buf) {
+        Ok(out) => out.to_vec(),
+        Err(_) => Vec::new(), // cov:unreachable: data.len() is a 16-multiple
     }
-
-    let mut result = Vec::with_capacity(16);
-    result.extend_from_slice(&a0.to_le_bytes());
-    result.extend_from_slice(&b0.to_le_bytes());
-    result.extend_from_slice(&c0.to_le_bytes());
-    result.extend_from_slice(&d0.to_le_bytes());
-    result
 }
 
 /// RC4 stream cipher (used by SAM revision 2).
@@ -750,210 +623,6 @@ fn rc4_crypt(key: &[u8], data: &[u8]) -> Vec<u8> {
     }
 
     result
-}
-
-/// Simplified AES-128-CBC decryption for SAM revision 3.
-///
-/// This is a minimal AES implementation for the SAM key decryption use case.
-/// Without an external crypto library, we implement the core AES-128 block
-/// cipher with CBC mode.
-fn aes_cbc_decrypt_simple(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
-    if key.len() != 16 || iv.len() < 16 || data.len() < 16 || data.len() % 16 != 0 {
-        return Vec::new();
-    }
-
-    let round_keys = aes128_key_expansion(key);
-
-    let mut result = Vec::with_capacity(data.len());
-    let mut prev_block = [0u8; 16];
-    prev_block.copy_from_slice(&iv[..16]);
-
-    for chunk in data.chunks_exact(16) {
-        let mut block = [0u8; 16];
-        block.copy_from_slice(chunk);
-        let decrypted_block = aes128_decrypt_block(&block, &round_keys);
-        let mut output = [0u8; 16];
-        for i in 0..16 {
-            output[i] = decrypted_block[i] ^ prev_block[i];
-        }
-        result.extend_from_slice(&output);
-        prev_block.copy_from_slice(chunk);
-    }
-
-    result
-}
-
-/// AES S-box.
-const AES_SBOX: [u8; 256] = [
-    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
-    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
-    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
-    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
-    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
-    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
-    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
-    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
-    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
-    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
-    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
-    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
-    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
-    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
-    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
-    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
-];
-
-/// AES inverse S-box.
-const AES_INV_SBOX: [u8; 256] = [
-    0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
-    0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
-    0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c, 0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e,
-    0x08, 0x2e, 0xa1, 0x66, 0x28, 0xd9, 0x24, 0xb2, 0x76, 0x5b, 0xa2, 0x49, 0x6d, 0x8b, 0xd1, 0x25,
-    0x72, 0xf8, 0xf6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xd4, 0xa4, 0x5c, 0xcc, 0x5d, 0x65, 0xb6, 0x92,
-    0x6c, 0x70, 0x48, 0x50, 0xfd, 0xed, 0xb9, 0xda, 0x5e, 0x15, 0x46, 0x57, 0xa7, 0x8d, 0x9d, 0x84,
-    0x90, 0xd8, 0xab, 0x00, 0x8c, 0xbc, 0xd3, 0x0a, 0xf7, 0xe4, 0x58, 0x05, 0xb8, 0xb3, 0x45, 0x06,
-    0xd0, 0x2c, 0x1e, 0x8f, 0xca, 0x3f, 0x0f, 0x02, 0xc1, 0xaf, 0xbd, 0x03, 0x01, 0x13, 0x8a, 0x6b,
-    0x3a, 0x91, 0x11, 0x41, 0x4f, 0x67, 0xdc, 0xea, 0x97, 0xf2, 0xcf, 0xce, 0xf0, 0xb4, 0xe6, 0x73,
-    0x96, 0xac, 0x74, 0x22, 0xe7, 0xad, 0x35, 0x85, 0xe2, 0xf9, 0x37, 0xe8, 0x1c, 0x75, 0xdf, 0x6e,
-    0x47, 0xf1, 0x1a, 0x71, 0x1d, 0x29, 0xc5, 0x89, 0x6f, 0xb7, 0x62, 0x0e, 0xaa, 0x18, 0xbe, 0x1b,
-    0xfc, 0x56, 0x3e, 0x4b, 0xc6, 0xd2, 0x79, 0x20, 0x9a, 0xdb, 0xc0, 0xfe, 0x78, 0xcd, 0x5a, 0xf4,
-    0x1f, 0xdd, 0xa8, 0x33, 0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f,
-    0x60, 0x51, 0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
-    0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53, 0x99, 0x61,
-    0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
-];
-
-/// AES round constant.
-const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
-
-/// AES-128 key expansion: produce 11 round keys (176 bytes).
-fn aes128_key_expansion(key: &[u8]) -> Vec<[u8; 16]> {
-    let mut w = [0u32; 44];
-
-    // First 4 words from the key
-    for i in 0..4 {
-        w[i] = u32::from_be_bytes([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
-    }
-
-    for i in 4..44 {
-        let mut temp = w[i - 1];
-        if i % 4 == 0 {
-            // RotWord
-            temp = temp.rotate_left(8);
-            // SubWord
-            let b = temp.to_be_bytes();
-            temp = u32::from_be_bytes([
-                AES_SBOX[b[0] as usize],
-                AES_SBOX[b[1] as usize],
-                AES_SBOX[b[2] as usize],
-                AES_SBOX[b[3] as usize],
-            ]);
-            temp ^= u32::from(RCON[i / 4 - 1]) << 24;
-        }
-        w[i] = w[i - 4] ^ temp;
-    }
-
-    let mut round_keys = Vec::with_capacity(11);
-    for r in 0..11 {
-        let mut rk = [0u8; 16];
-        for j in 0..4 {
-            let bytes = w[r * 4 + j].to_be_bytes();
-            rk[4 * j..4 * j + 4].copy_from_slice(&bytes);
-        }
-        round_keys.push(rk);
-    }
-
-    round_keys
-}
-
-/// AES-128 single block decryption.
-fn aes128_decrypt_block(cipher: &[u8; 16], round_keys: &[[u8; 16]]) -> [u8; 16] {
-    let mut state = *cipher;
-
-    // Initial round key addition (round 10)
-    xor_block(&mut state, &round_keys[10]);
-
-    // Rounds 9..1
-    for round in (1..10).rev() {
-        inv_shift_rows(&mut state);
-        inv_sub_bytes(&mut state);
-        xor_block(&mut state, &round_keys[round]);
-        inv_mix_columns(&mut state);
-    }
-
-    // Final round (round 0)
-    inv_shift_rows(&mut state);
-    inv_sub_bytes(&mut state);
-    xor_block(&mut state, &round_keys[0]);
-
-    state
-}
-
-fn xor_block(state: &mut [u8; 16], key: &[u8; 16]) {
-    for i in 0..16 {
-        state[i] ^= key[i];
-    }
-}
-
-fn inv_sub_bytes(state: &mut [u8; 16]) {
-    for b in state.iter_mut() {
-        *b = AES_INV_SBOX[*b as usize];
-    }
-}
-
-fn inv_shift_rows(state: &mut [u8; 16]) {
-    // AES state is column-major: state[row + 4*col]
-    // Row 1: shift right by 1
-    let tmp = state[13];
-    state[13] = state[9];
-    state[9] = state[5];
-    state[5] = state[1];
-    state[1] = tmp;
-
-    // Row 2: shift right by 2
-    state.swap(2, 10);
-    state.swap(6, 14);
-
-    // Row 3: shift right by 3 (= left by 1)
-    let tmp = state[3];
-    state[3] = state[7];
-    state[7] = state[11];
-    state[11] = state[15];
-    state[15] = tmp;
-}
-
-/// Galois field multiplication for AES.
-fn gf_mul(mut a: u8, mut b: u8) -> u8 {
-    let mut result: u8 = 0;
-    for _ in 0..8 {
-        if b & 1 != 0 {
-            result ^= a;
-        }
-        let high_bit = a & 0x80;
-        a <<= 1;
-        if high_bit != 0 {
-            a ^= 0x1b; // AES irreducible polynomial
-        }
-        b >>= 1;
-    }
-    result
-}
-
-fn inv_mix_columns(state: &mut [u8; 16]) {
-    for col in 0..4 {
-        let s0 = state[col * 4];
-        let s1 = state[col * 4 + 1];
-        let s2 = state[col * 4 + 2];
-        let s3 = state[col * 4 + 3];
-
-        state[col * 4] = gf_mul(0x0e, s0) ^ gf_mul(0x0b, s1) ^ gf_mul(0x0d, s2) ^ gf_mul(0x09, s3);
-        state[col * 4 + 1] =
-            gf_mul(0x09, s0) ^ gf_mul(0x0e, s1) ^ gf_mul(0x0b, s2) ^ gf_mul(0x0d, s3);
-        state[col * 4 + 2] =
-            gf_mul(0x0d, s0) ^ gf_mul(0x09, s1) ^ gf_mul(0x0e, s2) ^ gf_mul(0x0b, s3);
-        state[col * 4 + 3] =
-            gf_mul(0x0b, s0) ^ gf_mul(0x0d, s1) ^ gf_mul(0x09, s2) ^ gf_mul(0x0e, s3);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -990,7 +659,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
     parent_addr: u64,
     target_name: &str,
 ) -> u64 {
-    let subkey_count: u32 = match reader.read_bytes(parent_addr + 0x18, 4) {
+    let subkey_count: u32 = match reader.read_bytes(parent_addr + 0x14, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return 0,
     };
@@ -999,7 +668,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
         return 0;
     }
 
-    let list_off: u32 = match reader.read_bytes(parent_addr + 0x20, 4) {
+    let list_off: u32 = match reader.read_bytes(parent_addr + 0x1c, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return 0,
     };
@@ -1041,7 +710,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+        let name_len: u16 = match reader.read_bytes(key_addr + 0x48, 2) {
             Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => continue,
         };
@@ -1070,8 +739,8 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
     hhive_addr: u64,
     key_addr: u64,
 ) -> Vec<u8> {
-    // _CM_KEY_NODE: ClassLength at 0x4E (u16), Class offset at 0x30 (u32).
-    let class_len: u16 = match reader.read_bytes(key_addr + 0x4E, 2) {
+    // _CM_KEY_NODE: ClassLength at 0x4A (u16), Class cell index at 0x30 (u32).
+    let class_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
         Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
         _ => return Vec::new(),
     };
@@ -1103,7 +772,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
     key_addr: u64,
     target_name: &str,
 ) -> Vec<u8> {
-    let val_count: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
+    let val_count: u32 = match reader.read_bytes(key_addr + 0x24, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return Vec::new(),
     };
@@ -1112,7 +781,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
         return Vec::new();
     }
 
-    let val_list_off: u32 = match reader.read_bytes(key_addr + 0x2C, 4) {
+    let val_list_off: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return Vec::new(),
     };
@@ -1133,7 +802,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        // _CM_KEY_VALUE: NameLength at 0x02 (u16), Name at 0x18.
+        // _CM_KEY_VALUE: NameLength at 0x02 (u16), Name at 0x14.
         let vname_len: u16 = match reader.read_bytes(val_addr + 0x02, 2) {
             Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
             _ => continue,
@@ -1143,7 +812,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        let vname = match reader.read_bytes(val_addr + 0x18, vname_len as usize) {
+        let vname = match reader.read_bytes(val_addr + 0x14, vname_len as usize) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
             _ => continue,
         };
@@ -1152,8 +821,8 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        // DataLength at 0x08 (u32), DataOffset at 0x0C (u32).
-        let data_len: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
+        // DataLength at 0x04 (u32), DataOffset at 0x08 (u32).
+        let data_len: u32 = match reader.read_bytes(val_addr + 0x04, 4) {
             Ok(bytes) if bytes.len() == 4 => {
                 bytes[..4].try_into().map_or(0, u32::from_le_bytes) & 0x7FFF_FFFF
             }
@@ -1164,8 +833,8 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             return Vec::new();
         }
 
-        // Small data (high bit set in original length) is stored inline at offset 0x0C.
-        let raw_len_bytes = match reader.read_bytes(val_addr + 0x08, 4) {
+        // Small data (high bit set in original length) is stored inline at offset 0x08.
+        let raw_len_bytes = match reader.read_bytes(val_addr + 0x04, 4) {
             Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => return Vec::new(),
         };
@@ -1174,11 +843,11 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             // Inline data at 0x0C, up to 4 bytes.
             let inline_len = data_len.min(4) as usize;
             return reader
-                .read_bytes(val_addr + 0x0C, inline_len)
+                .read_bytes(val_addr + 0x08, inline_len)
                 .unwrap_or_default();
         }
 
-        let data_off: u32 = match reader.read_bytes(val_addr + 0x0C, 4) {
+        let data_off: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
             Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
             _ => return Vec::new(),
         };
@@ -1242,596 +911,46 @@ fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
-/// Perform a single DES block encryption (used for RID-based hash decryption).
-/// This is a minimal DES implementation for the specific SAM hash use case.
-/// Windows uses two DES keys derived from the RID to decrypt the 16-byte hash.
-#[allow(dead_code)]
-#[allow(clippy::trivially_copy_pass_by_ref)]
-#[allow(clippy::needless_range_loop)]
-fn des_ecb_encrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
-    // DES Initial Permutation table
-    const IP: [u8; 64] = [
-        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14,
-        6, 64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11,
-        3, 61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
+/// Convert a RID into two 8-byte DES keys (vol3 `sid_to_key`).
+fn sid_to_key(rid: u32) -> ([u8; 8], [u8; 8]) {
+    let b = [
+        (rid & 0xFF) as u8,
+        ((rid >> 8) & 0xFF) as u8,
+        ((rid >> 16) & 0xFF) as u8,
+        ((rid >> 24) & 0xFF) as u8,
     ];
-
-    // DES Final Permutation (IP^-1)
-    const FP: [u8; 64] = [
-        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31, 38, 6, 46, 14, 54, 22, 62,
-        30, 37, 5, 45, 13, 53, 21, 61, 29, 36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19,
-        59, 27, 34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41, 9, 49, 17, 57, 25,
-    ];
-
-    // DES Expansion permutation
-    const E: [u8; 48] = [
-        32, 1, 2, 3, 4, 5, 4, 5, 6, 7, 8, 9, 8, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 16, 17,
-        18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 24, 25, 26, 27, 28, 29, 28, 29, 30, 31, 32, 1,
-    ];
-
-    // DES P-box permutation
-    const P: [u8; 32] = [
-        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10, 2, 8, 24, 14, 32, 27, 3, 9,
-        19, 13, 30, 6, 22, 11, 4, 25,
-    ];
-
-    // DES S-boxes
-    const SBOXES: [[u8; 64]; 8] = [
-        [
-            14, 4, 13, 1, 2, 15, 11, 8, 3, 10, 6, 12, 5, 9, 0, 7, 0, 15, 7, 4, 14, 2, 13, 1, 10, 6,
-            12, 11, 9, 5, 3, 8, 4, 1, 14, 8, 13, 6, 2, 11, 15, 12, 9, 7, 3, 10, 5, 0, 15, 12, 8, 2,
-            4, 9, 1, 7, 5, 11, 3, 14, 10, 0, 6, 13,
-        ],
-        [
-            15, 1, 8, 14, 6, 11, 3, 4, 9, 7, 2, 13, 12, 0, 5, 10, 3, 13, 4, 7, 15, 2, 8, 14, 12, 0,
-            1, 10, 6, 9, 11, 5, 0, 14, 7, 11, 10, 4, 13, 1, 5, 8, 12, 6, 9, 3, 2, 15, 13, 8, 10, 1,
-            3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9,
-        ],
-        [
-            10, 0, 9, 14, 6, 3, 15, 5, 1, 13, 12, 7, 11, 4, 2, 8, 13, 7, 0, 9, 3, 4, 6, 10, 2, 8,
-            5, 14, 12, 11, 15, 1, 13, 6, 4, 9, 8, 15, 3, 0, 11, 1, 2, 12, 5, 10, 14, 7, 1, 10, 13,
-            0, 6, 9, 8, 7, 4, 15, 14, 3, 11, 5, 2, 12,
-        ],
-        [
-            7, 13, 14, 3, 0, 6, 9, 10, 1, 2, 8, 5, 11, 12, 4, 15, 13, 8, 11, 5, 6, 15, 0, 3, 4, 7,
-            2, 12, 1, 10, 14, 9, 10, 6, 9, 0, 12, 11, 7, 13, 15, 1, 3, 14, 5, 2, 8, 4, 3, 15, 0, 6,
-            10, 1, 13, 8, 9, 4, 5, 11, 12, 7, 2, 14,
-        ],
-        [
-            2, 12, 4, 1, 7, 10, 11, 6, 8, 5, 3, 15, 13, 0, 14, 9, 14, 11, 2, 12, 4, 7, 13, 1, 5, 0,
-            15, 10, 3, 9, 8, 6, 4, 2, 1, 11, 10, 13, 7, 8, 15, 9, 12, 5, 6, 3, 0, 14, 11, 8, 12, 7,
-            1, 14, 2, 13, 6, 15, 0, 9, 10, 4, 5, 3,
-        ],
-        [
-            12, 1, 10, 15, 9, 2, 6, 8, 0, 13, 3, 4, 14, 7, 5, 11, 10, 15, 4, 2, 7, 12, 9, 5, 6, 1,
-            13, 14, 0, 11, 3, 8, 9, 14, 15, 5, 2, 8, 12, 3, 7, 0, 4, 10, 1, 13, 11, 6, 4, 3, 2, 12,
-            9, 5, 15, 10, 11, 14, 1, 7, 6, 0, 8, 13,
-        ],
-        [
-            4, 11, 2, 14, 15, 0, 8, 13, 3, 12, 9, 7, 5, 10, 6, 1, 13, 0, 11, 7, 4, 9, 1, 10, 14, 3,
-            5, 12, 2, 15, 8, 6, 1, 4, 11, 13, 12, 3, 7, 14, 10, 15, 6, 8, 0, 5, 9, 2, 6, 11, 13, 8,
-            1, 4, 10, 7, 9, 5, 0, 15, 14, 2, 3, 12,
-        ],
-        [
-            13, 2, 8, 4, 6, 15, 11, 1, 10, 9, 3, 14, 5, 0, 12, 7, 1, 15, 13, 8, 10, 3, 7, 4, 12, 5,
-            6, 2, 0, 14, 9, 11, 7, 0, 1, 3, 13, 4, 14, 10, 15, 5, 2, 12, 11, 9, 6, 8, 2, 1, 14, 7,
-            4, 10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11,
-        ],
-    ];
-
-    // DES key schedule: PC-1 and PC-2 permutations, shift schedule
-    const PC1: [u8; 56] = [
-        57, 49, 41, 33, 25, 17, 9, 1, 58, 50, 42, 34, 26, 18, 10, 2, 59, 51, 43, 35, 27, 19, 11, 3,
-        60, 52, 44, 36, 63, 55, 47, 39, 31, 23, 15, 7, 62, 54, 46, 38, 30, 22, 14, 6, 61, 53, 45,
-        37, 29, 21, 13, 5, 28, 20, 12, 4,
-    ];
-
-    const PC2: [u8; 48] = [
-        14, 17, 11, 24, 1, 5, 3, 28, 15, 6, 21, 10, 23, 19, 12, 4, 26, 8, 16, 7, 27, 20, 13, 2, 41,
-        52, 31, 37, 47, 55, 30, 40, 51, 45, 33, 48, 44, 49, 39, 56, 34, 53, 46, 42, 50, 36, 29, 32,
-    ];
-
-    const SHIFTS: [u8; 16] = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1];
-
-    // Helper: get bit n (1-indexed) from a byte slice
-    fn get_bit(data: &[u8], pos: u8) -> u8 {
-        let byte_idx = ((pos - 1) / 8) as usize;
-        let bit_idx = 7 - ((pos - 1) % 8);
-        if byte_idx < data.len() {
-            (data[byte_idx] >> bit_idx) & 1
-        } else {
-            0
-        }
-    }
-
-    // Helper: set bit n (1-indexed) in a byte slice
-    fn set_bit(data: &mut [u8], pos: u8, val: u8) {
-        let byte_idx = ((pos - 1) / 8) as usize;
-        let bit_idx = 7 - ((pos - 1) % 8);
-        if byte_idx < data.len() {
-            if val == 1 {
-                data[byte_idx] |= 1 << bit_idx;
-            } else {
-                data[byte_idx] &= !(1 << bit_idx);
-            }
-        }
-    }
-
-    // Generate 16 round subkeys
-    let mut cd = [0u8; 7]; // 56 bits
-    for i in 0..56u8 {
-        let bit = get_bit(key, PC1[i as usize]);
-        let byte_idx = (i / 8) as usize;
-        let bit_idx = 7 - (i % 8);
-        if bit == 1 {
-            cd[byte_idx] |= 1 << bit_idx;
-        }
-    }
-
-    // Split into C (28 bits) and D (28 bits)
-    let mut c: u32 = 0;
-    let mut d: u32 = 0;
-    for i in 0..28u8 {
-        let byte_idx = (i / 8) as usize;
-        let bit_idx = 7 - (i % 8);
-        if (cd[byte_idx] >> bit_idx) & 1 == 1 {
-            c |= 1 << (27 - i);
-        }
-    }
-    for i in 0..28u8 {
-        let src = i + 28;
-        let byte_idx = (src / 8) as usize;
-        let bit_idx = 7 - (src % 8);
-        if (cd[byte_idx] >> bit_idx) & 1 == 1 {
-            d |= 1 << (27 - i);
-        }
-    }
-
-    let mut subkeys = [[0u8; 6]; 16];
-    for round in 0..16 {
-        let shift = u32::from(SHIFTS[round]);
-        c = ((c << shift) | (c >> (28 - shift))) & 0x0FFF_FFFF;
-        d = ((d << shift) | (d >> (28 - shift))) & 0x0FFF_FFFF;
-
-        // Combine C and D into 56-bit value for PC-2
-        let mut cd56 = [0u8; 7];
-        for i in 0..28u8 {
-            if (c >> (27 - i)) & 1 == 1 {
-                let byte_idx = (i / 8) as usize;
-                let bit_idx = 7 - (i % 8);
-                cd56[byte_idx] |= 1 << bit_idx;
-            }
-        }
-        for i in 0..28u8 {
-            let pos = i + 28;
-            if (d >> (27 - i)) & 1 == 1 {
-                let byte_idx = (pos / 8) as usize;
-                let bit_idx = 7 - (pos % 8);
-                cd56[byte_idx] |= 1 << bit_idx;
-            }
-        }
-
-        // Apply PC-2
-        for i in 0..48u8 {
-            let src_pos = PC2[i as usize]; // 1-indexed into cd56
-            let bit = get_bit(&cd56, src_pos);
-            let byte_idx = (i / 8) as usize;
-            let bit_idx = 7 - (i % 8);
-            if bit == 1 {
-                subkeys[round][byte_idx] |= 1 << bit_idx;
-            }
-        }
-    }
-
-    // Initial Permutation
-    let mut block = [0u8; 8];
-    for i in 0..64u8 {
-        let bit = get_bit(data, IP[i as usize]);
-        set_bit(&mut block, i + 1, bit);
-    }
-
-    // Split into L and R (32 bits each)
-    let mut l: u32 = u32::from_be_bytes([block[0], block[1], block[2], block[3]]);
-    let mut r: u32 = u32::from_be_bytes([block[4], block[5], block[6], block[7]]);
-
-    // 16 Feistel rounds
-    for round in 0..16 {
-        let old_l = l;
-        l = r;
-
-        // Expand R to 48 bits using E
-        let r_bytes = r.to_be_bytes();
-        let mut expanded = [0u8; 6];
-        for i in 0..48u8 {
-            let bit = get_bit(&r_bytes, E[i as usize]);
-            let byte_idx = (i / 8) as usize;
-            let bit_idx = 7 - (i % 8);
-            if bit == 1 {
-                expanded[byte_idx] |= 1 << bit_idx;
-            }
-        }
-
-        // XOR with subkey
-        for i in 0..6 {
-            expanded[i] ^= subkeys[round][i];
-        }
-
-        // S-box substitution: 48 bits → 32 bits
-        let mut sbox_out: u32 = 0;
-        for s in 0..8 {
-            let bit_offset = s * 6;
-            let mut val: u8 = 0;
-            for b in 0..6u8 {
-                let byte_idx = ((bit_offset + b) / 8) as usize;
-                let bit_idx = 7 - ((bit_offset + b) % 8);
-                if byte_idx < 6 && (expanded[byte_idx] >> bit_idx) & 1 == 1 {
-                    val |= 1 << (5 - b);
-                }
-            }
-            let row = ((val >> 5) & 1) << 1 | (val & 1);
-            let col = (val >> 1) & 0x0F;
-            let sbox_val = SBOXES[s as usize][(row as usize) * 16 + (col as usize)];
-            sbox_out |= u32::from(sbox_val) << (4 * (7 - s));
-        }
-
-        // P-box permutation
-        let sbox_bytes = sbox_out.to_be_bytes();
-        let mut p_out: u32 = 0;
-        for i in 0..32u8 {
-            let bit = get_bit(&sbox_bytes, P[i as usize]);
-            if bit == 1 {
-                p_out |= 1 << (31 - i);
-            }
-        }
-
-        r = old_l ^ p_out;
-    }
-
-    // Combine R and L (note the swap)
-    let mut preoutput = [0u8; 8];
-    preoutput[0..4].copy_from_slice(&r.to_be_bytes());
-    preoutput[4..8].copy_from_slice(&l.to_be_bytes());
-
-    // Final Permutation
-    let mut output = [0u8; 8];
-    for i in 0..64u8 {
-        let bit = get_bit(&preoutput, FP[i as usize]);
-        set_bit(&mut output, i + 1, bit);
-    }
-
-    output
+    // bytestr1 = b0 b1 b2 b3 b0 b1 b2 ; bytestr2 = b3 b0 b1 b2 b3 b0 b1
+    let s1 = [b[0], b[1], b[2], b[3], b[0], b[1], b[2]];
+    let s2 = [b[3], b[0], b[1], b[2], b[3], b[0], b[1]];
+    (sidbytes_to_key(s1), sidbytes_to_key(s2))
 }
 
-/// Convert a RID into two 8-byte DES keys (7 bytes expanded to 8 with parity).
-fn rid_to_des_keys(rid: u32) -> ([u8; 8], [u8; 8]) {
-    let rid_bytes = rid.to_le_bytes();
-
-    // First key: bytes 0,1,2,3,0,1,2
-    let s1 = [
-        rid_bytes[0],
-        rid_bytes[1],
-        rid_bytes[2],
-        rid_bytes[3],
-        rid_bytes[0],
-        rid_bytes[1],
-        rid_bytes[2],
+/// Expand a 7-byte string into an 8-byte DES key with odd parity (vol3
+/// `sidbytes_to_key`): spread 7 bytes over 8, shift left 1, then map each
+/// through the `ODD_PARITY` table.
+fn sidbytes_to_key(s: [u8; 7]) -> [u8; 8] {
+    let mut key = [
+        s[0] >> 1,
+        ((s[0] & 0x01) << 6) | (s[1] >> 2),
+        ((s[1] & 0x03) << 5) | (s[2] >> 3),
+        ((s[2] & 0x07) << 4) | (s[3] >> 4),
+        ((s[3] & 0x0F) << 3) | (s[4] >> 5),
+        ((s[4] & 0x1F) << 2) | (s[5] >> 6),
+        ((s[5] & 0x3F) << 1) | (s[6] >> 7),
+        s[6] & 0x7F,
     ];
-
-    // Second key: bytes 3,0,1,2,3,0,1
-    let s2 = [
-        rid_bytes[3],
-        rid_bytes[0],
-        rid_bytes[1],
-        rid_bytes[2],
-        rid_bytes[3],
-        rid_bytes[0],
-        rid_bytes[1],
-    ];
-
-    (str_to_key(&s1), str_to_key(&s2))
-}
-
-/// Expand a 7-byte value into an 8-byte DES key with parity bits.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn str_to_key(s: &[u8; 7]) -> [u8; 8] {
-    let mut key = [0u8; 8];
-    key[0] = s[0] >> 1;
-    key[1] = ((s[0] & 0x01) << 6) | (s[1] >> 2);
-    key[2] = ((s[1] & 0x03) << 5) | (s[2] >> 3);
-    key[3] = ((s[2] & 0x07) << 4) | (s[3] >> 4);
-    key[4] = ((s[3] & 0x0F) << 3) | (s[4] >> 5);
-    key[5] = ((s[4] & 0x1F) << 2) | (s[5] >> 6);
-    key[6] = ((s[5] & 0x3F) << 1) | (s[6] >> 7);
-    key[7] = s[6] & 0x7F;
-
-    // Set parity bits
     for b in &mut key {
-        *b = (*b << 1) & 0xFE;
-        // odd parity
-        let ones = b.count_ones();
-        if ones % 2 == 0 {
-            *b |= 1;
-        }
+        *b = ODD_PARITY[(*b as usize) << 1];
     }
-
     key
 }
 
-/// DES-decrypt a single 8-byte block (DES-ECB decrypt = encrypt with reversed subkeys).
-#[allow(clippy::trivially_copy_pass_by_ref)]
-#[allow(clippy::needless_range_loop)]
-fn des_ecb_decrypt(key: &[u8; 8], data: &[u8; 8]) -> [u8; 8] {
-    // For decryption we reverse the subkey order. Rather than duplicating
-    // the full DES implementation, we reuse encrypt and note that
-    // DES decryption with the same key schedule reversed is equivalent.
-    // However, our encrypt builds subkeys internally. We implement decrypt
-    // by building subkeys then reversing. For simplicity and correctness,
-    // we replicate the structure.
-
-    // Actually, the SAM hash "decryption" in Windows uses DES *encrypt*
-    // (not decrypt) with the RID-derived keys to transform the obfuscated
-    // hash back to the actual hash. This is because the obfuscation step
-    // used DES encrypt, and the same operation reverses the XOR/permutation
-    // used in the SAM's own obfuscation layer.
-    //
-    // In the classic hashdump approach:
-    //   actual_hash = DES_ECB_decrypt(rid_key, encrypted_hash)
-    //
-    // We implement true DES decrypt by reversing the round key schedule.
-
-    // This is a copy of `des_ecb_encrypt` with subkey order reversed.
-    // (Tables are identical, only the subkey application order changes.)
-
-    const IP: [u8; 64] = [
-        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14,
-        6, 64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11,
-        3, 61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
-    ];
-    const FP: [u8; 64] = [
-        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31, 38, 6, 46, 14, 54, 22, 62,
-        30, 37, 5, 45, 13, 53, 21, 61, 29, 36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19,
-        59, 27, 34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41, 9, 49, 17, 57, 25,
-    ];
-    const E_TABLE: [u8; 48] = [
-        32, 1, 2, 3, 4, 5, 4, 5, 6, 7, 8, 9, 8, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 16, 17,
-        18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 24, 25, 26, 27, 28, 29, 28, 29, 30, 31, 32, 1,
-    ];
-    const P_TABLE: [u8; 32] = [
-        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10, 2, 8, 24, 14, 32, 27, 3, 9,
-        19, 13, 30, 6, 22, 11, 4, 25,
-    ];
-    const SBOXES: [[u8; 64]; 8] = [
-        [
-            14, 4, 13, 1, 2, 15, 11, 8, 3, 10, 6, 12, 5, 9, 0, 7, 0, 15, 7, 4, 14, 2, 13, 1, 10, 6,
-            12, 11, 9, 5, 3, 8, 4, 1, 14, 8, 13, 6, 2, 11, 15, 12, 9, 7, 3, 10, 5, 0, 15, 12, 8, 2,
-            4, 9, 1, 7, 5, 11, 3, 14, 10, 0, 6, 13,
-        ],
-        [
-            15, 1, 8, 14, 6, 11, 3, 4, 9, 7, 2, 13, 12, 0, 5, 10, 3, 13, 4, 7, 15, 2, 8, 14, 12, 0,
-            1, 10, 6, 9, 11, 5, 0, 14, 7, 11, 10, 4, 13, 1, 5, 8, 12, 6, 9, 3, 2, 15, 13, 8, 10, 1,
-            3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9,
-        ],
-        [
-            10, 0, 9, 14, 6, 3, 15, 5, 1, 13, 12, 7, 11, 4, 2, 8, 13, 7, 0, 9, 3, 4, 6, 10, 2, 8,
-            5, 14, 12, 11, 15, 1, 13, 6, 4, 9, 8, 15, 3, 0, 11, 1, 2, 12, 5, 10, 14, 7, 1, 10, 13,
-            0, 6, 9, 8, 7, 4, 15, 14, 3, 11, 5, 2, 12,
-        ],
-        [
-            7, 13, 14, 3, 0, 6, 9, 10, 1, 2, 8, 5, 11, 12, 4, 15, 13, 8, 11, 5, 6, 15, 0, 3, 4, 7,
-            2, 12, 1, 10, 14, 9, 10, 6, 9, 0, 12, 11, 7, 13, 15, 1, 3, 14, 5, 2, 8, 4, 3, 15, 0, 6,
-            10, 1, 13, 8, 9, 4, 5, 11, 12, 7, 2, 14,
-        ],
-        [
-            2, 12, 4, 1, 7, 10, 11, 6, 8, 5, 3, 15, 13, 0, 14, 9, 14, 11, 2, 12, 4, 7, 13, 1, 5, 0,
-            15, 10, 3, 9, 8, 6, 4, 2, 1, 11, 10, 13, 7, 8, 15, 9, 12, 5, 6, 3, 0, 14, 11, 8, 12, 7,
-            1, 14, 2, 13, 6, 15, 0, 9, 10, 4, 5, 3,
-        ],
-        [
-            12, 1, 10, 15, 9, 2, 6, 8, 0, 13, 3, 4, 14, 7, 5, 11, 10, 15, 4, 2, 7, 12, 9, 5, 6, 1,
-            13, 14, 0, 11, 3, 8, 9, 14, 15, 5, 2, 8, 12, 3, 7, 0, 4, 10, 1, 13, 11, 6, 4, 3, 2, 12,
-            9, 5, 15, 10, 11, 14, 1, 7, 6, 0, 8, 13,
-        ],
-        [
-            4, 11, 2, 14, 15, 0, 8, 13, 3, 12, 9, 7, 5, 10, 6, 1, 13, 0, 11, 7, 4, 9, 1, 10, 14, 3,
-            5, 12, 2, 15, 8, 6, 1, 4, 11, 13, 12, 3, 7, 14, 10, 15, 6, 8, 0, 5, 9, 2, 6, 11, 13, 8,
-            1, 4, 10, 7, 9, 5, 0, 15, 14, 2, 3, 12,
-        ],
-        [
-            13, 2, 8, 4, 6, 15, 11, 1, 10, 9, 3, 14, 5, 0, 12, 7, 1, 15, 13, 8, 10, 3, 7, 4, 12, 5,
-            6, 2, 0, 14, 9, 11, 7, 0, 1, 3, 13, 4, 14, 10, 15, 5, 2, 12, 11, 9, 6, 8, 2, 1, 14, 7,
-            4, 10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11,
-        ],
-    ];
-    const PC1: [u8; 56] = [
-        57, 49, 41, 33, 25, 17, 9, 1, 58, 50, 42, 34, 26, 18, 10, 2, 59, 51, 43, 35, 27, 19, 11, 3,
-        60, 52, 44, 36, 63, 55, 47, 39, 31, 23, 15, 7, 62, 54, 46, 38, 30, 22, 14, 6, 61, 53, 45,
-        37, 29, 21, 13, 5, 28, 20, 12, 4,
-    ];
-    const PC2: [u8; 48] = [
-        14, 17, 11, 24, 1, 5, 3, 28, 15, 6, 21, 10, 23, 19, 12, 4, 26, 8, 16, 7, 27, 20, 13, 2, 41,
-        52, 31, 37, 47, 55, 30, 40, 51, 45, 33, 48, 44, 49, 39, 56, 34, 53, 46, 42, 50, 36, 29, 32,
-    ];
-    const SHIFTS: [u8; 16] = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1];
-
-    fn get_bit(data: &[u8], pos: u8) -> u8 {
-        let byte_idx = ((pos - 1) / 8) as usize;
-        let bit_idx = 7 - ((pos - 1) % 8);
-        if byte_idx < data.len() {
-            (data[byte_idx] >> bit_idx) & 1
-        } else {
-            0
-        }
-    }
-
-    fn set_bit(data: &mut [u8], pos: u8, val: u8) {
-        let byte_idx = ((pos - 1) / 8) as usize;
-        let bit_idx = 7 - ((pos - 1) % 8);
-        if byte_idx < data.len() {
-            if val == 1 {
-                data[byte_idx] |= 1 << bit_idx;
-            } else {
-                data[byte_idx] &= !(1 << bit_idx);
-            }
-        }
-    }
-
-    // Generate subkeys (same as encrypt)
-    let mut cd = [0u8; 7];
-    for i in 0..56u8 {
-        let bit = get_bit(key, PC1[i as usize]);
-        let byte_idx = (i / 8) as usize;
-        let bit_idx = 7 - (i % 8);
-        if bit == 1 {
-            cd[byte_idx] |= 1 << bit_idx;
-        }
-    }
-
-    let mut c: u32 = 0;
-    let mut d: u32 = 0;
-    for i in 0..28u8 {
-        let byte_idx = (i / 8) as usize;
-        let bit_idx = 7 - (i % 8);
-        if (cd[byte_idx] >> bit_idx) & 1 == 1 {
-            c |= 1 << (27 - i);
-        }
-    }
-    for i in 0..28u8 {
-        let src = i + 28;
-        let byte_idx = (src / 8) as usize;
-        let bit_idx = 7 - (src % 8);
-        if (cd[byte_idx] >> bit_idx) & 1 == 1 {
-            d |= 1 << (27 - i);
-        }
-    }
-
-    let mut subkeys = [[0u8; 6]; 16];
-    for round in 0..16 {
-        let shift = u32::from(SHIFTS[round]);
-        c = ((c << shift) | (c >> (28 - shift))) & 0x0FFF_FFFF;
-        d = ((d << shift) | (d >> (28 - shift))) & 0x0FFF_FFFF;
-
-        let mut cd56 = [0u8; 7];
-        for i in 0..28u8 {
-            if (c >> (27 - i)) & 1 == 1 {
-                let byte_idx = (i / 8) as usize;
-                let bit_idx = 7 - (i % 8);
-                cd56[byte_idx] |= 1 << bit_idx;
-            }
-        }
-        for i in 0..28u8 {
-            let pos = i + 28;
-            if (d >> (27 - i)) & 1 == 1 {
-                let byte_idx = (pos / 8) as usize;
-                let bit_idx = 7 - (pos % 8);
-                cd56[byte_idx] |= 1 << bit_idx;
-            }
-        }
-
-        for i in 0..48u8 {
-            let src_pos = PC2[i as usize];
-            let bit = get_bit(&cd56, src_pos);
-            let byte_idx = (i / 8) as usize;
-            let bit_idx = 7 - (i % 8);
-            if bit == 1 {
-                subkeys[round][byte_idx] |= 1 << bit_idx;
-            }
-        }
-    }
-
-    // REVERSE subkey order for decryption
-    subkeys.reverse();
-
-    // Initial Permutation
-    let mut block = [0u8; 8];
-    for i in 0..64u8 {
-        let bit = get_bit(data, IP[i as usize]);
-        set_bit(&mut block, i + 1, bit);
-    }
-
-    let mut l: u32 = u32::from_be_bytes([block[0], block[1], block[2], block[3]]);
-    let mut r: u32 = u32::from_be_bytes([block[4], block[5], block[6], block[7]]);
-
-    for round in 0..16 {
-        let old_l = l;
-        l = r;
-
-        let r_bytes = r.to_be_bytes();
-        let mut expanded = [0u8; 6];
-        for i in 0..48u8 {
-            let bit = get_bit(&r_bytes, E_TABLE[i as usize]);
-            let byte_idx = (i / 8) as usize;
-            let bit_idx = 7 - (i % 8);
-            if bit == 1 {
-                expanded[byte_idx] |= 1 << bit_idx;
-            }
-        }
-
-        for i in 0..6 {
-            expanded[i] ^= subkeys[round][i];
-        }
-
-        let mut sbox_out: u32 = 0;
-        for s in 0..8u8 {
-            let bit_offset = s * 6;
-            let mut val: u8 = 0;
-            for b in 0..6u8 {
-                let byte_idx = ((bit_offset + b) / 8) as usize;
-                let bit_idx = 7 - ((bit_offset + b) % 8);
-                if byte_idx < 6 && (expanded[byte_idx] >> bit_idx) & 1 == 1 {
-                    val |= 1 << (5 - b);
-                }
-            }
-            let row = ((val >> 5) & 1) << 1 | (val & 1);
-            let col = (val >> 1) & 0x0F;
-            let sbox_val = SBOXES[s as usize][(row as usize) * 16 + (col as usize)];
-            sbox_out |= u32::from(sbox_val) << (4 * (7 - s));
-        }
-
-        let sbox_bytes = sbox_out.to_be_bytes();
-        let mut p_out: u32 = 0;
-        for i in 0..32u8 {
-            let bit = get_bit(&sbox_bytes, P_TABLE[i as usize]);
-            if bit == 1 {
-                p_out |= 1 << (31 - i);
-            }
-        }
-
-        r = old_l ^ p_out;
-    }
-
-    let mut preoutput = [0u8; 8];
-    preoutput[0..4].copy_from_slice(&r.to_be_bytes());
-    preoutput[4..8].copy_from_slice(&l.to_be_bytes());
-
-    let mut output = [0u8; 8];
-    for i in 0..64u8 {
-        let bit = get_bit(&preoutput, FP[i as usize]);
-        set_bit(&mut output, i + 1, bit);
-    }
-
-    output
-}
-
-/// Decrypt a 16-byte SAM hash using two DES keys derived from the RID.
-fn decrypt_sam_hash_with_rid(encrypted: &[u8], rid: u32) -> Vec<u8> {
-    if encrypted.len() < 16 {
-        return Vec::new();
-    }
-
-    let (key1, key2) = rid_to_des_keys(rid);
-
-    let mut block1 = [0u8; 8];
-    let mut block2 = [0u8; 8];
-    block1.copy_from_slice(&encrypted[..8]);
-    block2.copy_from_slice(&encrypted[8..16]);
-
-    let dec1 = des_ecb_decrypt(&key1, &block1);
-    let dec2 = des_ecb_decrypt(&key2, &block2);
-
-    let mut result = Vec::with_capacity(16);
-    result.extend_from_slice(&dec1);
-    result.extend_from_slice(&dec2);
-    result
+/// DES-ECB decrypt a single 8-byte block with an 8-byte key (RustCrypto `des`).
+fn des_ecb_decrypt_block(key: [u8; 8], block: [u8; 8]) -> [u8; 8] {
+    let cipher = Des::new(&key.into());
+    let mut buf = block.into();
+    cipher.decrypt_block(&mut buf);
+    buf.into()
 }
 
 // ---------------------------------------------------------------------------
@@ -2082,29 +1201,72 @@ mod tests {
     // DES / key derivation unit tests
     // ---------------------------------------------------------------
 
-    /// `str_to_key` produces 8-byte key with parity bits set.
+    /// `sid_to_key(500)` matches the vol3/impacket DES key pair exactly
+    /// (computed with the reference Python implementation).
     #[test]
-    fn str_to_key_parity() {
-        let input = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-        let key = str_to_key(&input);
-        assert_eq!(key.len(), 8);
-        // Every byte should have odd parity
+    fn sid_to_key_rid500_golden() {
+        let (k1, k2) = sid_to_key(500);
+        assert_eq!(hex_encode(&k1), "f40140010ea10401");
+        assert_eq!(hex_encode(&k2), "017a01200107d002");
+    }
+
+    /// `sidbytes_to_key` sets odd parity on every output byte.
+    #[test]
+    fn sidbytes_to_key_odd_parity() {
+        let key = sidbytes_to_key([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
         for &b in &key {
-            assert_eq!(
-                b.count_ones() % 2,
-                1,
-                "byte {b:#04x} should have odd parity"
-            );
+            assert_eq!(b.count_ones() % 2, 1, "byte {b:#04x} must have odd parity");
         }
     }
 
-    /// `rid_to_des_keys` produces two distinct keys.
+    /// `des_ecb_decrypt_block` matches the FIPS-81 single-block known answer:
+    /// DES-decrypt(key 133457799BBCDFF1, ct 85E813540F0AB405) = 0123456789ABCDEF.
     #[test]
-    fn rid_to_des_keys_distinct() {
-        let (k1, k2) = rid_to_des_keys(500);
-        assert_ne!(k1, k2);
-        assert_eq!(k1.len(), 8);
-        assert_eq!(k2.len(), 8);
+    fn des_ecb_decrypt_block_fips_vector() {
+        let key = [0x13, 0x34, 0x57, 0x79, 0x9B, 0xBC, 0xDF, 0xF1];
+        let ct = [0x85, 0xE8, 0x13, 0x54, 0x0F, 0x0A, 0xB4, 0x05];
+        let pt = des_ecb_decrypt_block(key, ct);
+        assert_eq!(hex_encode(&pt), "0123456789abcdef");
+    }
+
+    /// `md5` (RustCrypto) matches the RFC 1321 "abc" vector.
+    #[test]
+    fn md5_abc_vector() {
+        let mut h = Md5::new();
+        h.update(b"abc");
+        assert_eq!(
+            hex_encode(&h.finalize()),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
+    }
+
+    /// `rc4_crypt` matches the canonical RC4 known answer:
+    /// RC4(key "Key", "Plaintext") = BBF316E8D940AF0AD3.
+    #[test]
+    fn rc4_crypt_known_answer() {
+        let ct = rc4_crypt(b"Key", b"Plaintext");
+        assert_eq!(hex_encode(&ct), "bbf316e8d940af0ad3");
+    }
+
+    /// `aes128_cbc_decrypt` matches NIST SP800-38A F.2 (first block):
+    /// AES-128-CBC-decrypt(key 2b7e..4f3c, iv 0001..0e0f, ct 7649..197d)
+    ///   = 6bc1bee22e409f96e93d7e117393172a.
+    #[test]
+    fn aes128_cbc_decrypt_nist_vector() {
+        let key = hex_bytes("2b7e151628aed2a6abf7158809cf4f3c");
+        let iv = hex_bytes("000102030405060708090a0b0c0d0e0f");
+        let ct = hex_bytes("7649abac8119b246cee98e9b12e9197d");
+        let pt = aes128_cbc_decrypt(&key, &iv, &ct);
+        assert_eq!(hex_encode(&pt), "6bc1bee22e409f96e93d7e117393172a");
+    }
+
+    /// `aes128_cbc_decrypt` returns empty on key/iv/length mismatch.
+    #[test]
+    fn aes128_cbc_decrypt_bad_inputs() {
+        assert!(aes128_cbc_decrypt(&[0u8; 8], &[0u8; 16], &[0u8; 16]).is_empty());
+        assert!(aes128_cbc_decrypt(&[0u8; 16], &[0u8; 8], &[0u8; 16]).is_empty());
+        assert!(aes128_cbc_decrypt(&[0u8; 16], &[0u8; 16], &[]).is_empty());
+        assert!(aes128_cbc_decrypt(&[0u8; 16], &[0u8; 16], &[0u8; 15]).is_empty());
     }
 
     /// `hex_encode` works correctly.
@@ -2114,14 +1276,12 @@ mod tests {
         assert_eq!(hex_encode(&[]), "");
     }
 
-    /// DES encrypt then decrypt round-trips correctly.
-    #[test]
-    fn des_round_trip() {
-        let key = [0x13, 0x34, 0x57, 0x79, 0x9B, 0xBC, 0xDF, 0xF1];
-        let plaintext = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
-        let ciphertext = des_ecb_encrypt(&key, &plaintext);
-        let decrypted = des_ecb_decrypt(&key, &ciphertext);
-        assert_eq!(decrypted, plaintext);
+    /// Decode a hex string into bytes (test helper).
+    fn hex_bytes(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     // ---------------------------------------------------------------
@@ -2283,75 +1443,6 @@ mod tests {
         let data = vec![0x01u8, 0x02, 0x03];
         let result = rc4_crypt(&[], &data);
         assert_eq!(result, data, "Empty key returns data unchanged");
-    }
-
-    /// rc4_crypt is self-inverse (XOR-based stream cipher).
-    #[test]
-    fn rc4_crypt_self_inverse() {
-        let key = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let plaintext = b"hello world test".to_vec();
-        let ciphertext = rc4_crypt(&key, &plaintext);
-        let decrypted = rc4_crypt(&key, &ciphertext);
-        assert_eq!(decrypted, plaintext);
-    }
-
-    /// aes_cbc_decrypt_simple returns empty for bad key/iv/data sizes.
-    #[test]
-    fn aes_cbc_decrypt_simple_bad_inputs() {
-        // Wrong key length.
-        assert!(aes_cbc_decrypt_simple(&[0u8; 8], &[0u8; 16], &[0u8; 16]).is_empty());
-        // Wrong IV length.
-        assert!(aes_cbc_decrypt_simple(&[0u8; 16], &[0u8; 8], &[0u8; 16]).is_empty());
-        // Empty data.
-        assert!(aes_cbc_decrypt_simple(&[0u8; 16], &[0u8; 16], &[]).is_empty());
-        // Data not 16-byte aligned.
-        assert!(aes_cbc_decrypt_simple(&[0u8; 16], &[0u8; 16], &[0u8; 15]).is_empty());
-    }
-
-    /// aes_cbc_decrypt_simple produces 16 bytes for a valid 16-byte input.
-    #[test]
-    fn aes_cbc_decrypt_simple_valid() {
-        let key = [0u8; 16];
-        let iv = [0u8; 16];
-        let data = [0u8; 16];
-        let result = aes_cbc_decrypt_simple(&key, &iv, &data);
-        assert_eq!(result.len(), 16);
-    }
-
-    /// md5_hash produces 16-byte output.
-    #[test]
-    fn md5_hash_produces_16_bytes() {
-        let result = md5_hash(b"hello");
-        assert_eq!(result.len(), 16);
-    }
-
-    /// md5_hash("") has a known RFC 1321 value.
-    #[test]
-    fn md5_hash_empty_string() {
-        let result = md5_hash(b"");
-        // MD5("") = d41d8cd98f00b204e9800998ecf8427e
-        let expected = [
-            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8,
-            0x42, 0x7e,
-        ];
-        assert_eq!(result, expected, "MD5(\"\") mismatch");
-    }
-
-    /// simple_md5_derive produces 16 bytes.
-    #[test]
-    fn simple_md5_derive_produces_16_bytes() {
-        let boot_key = [0u8; 16];
-        let salt = [0xFFu8; 16];
-        let result = simple_md5_derive(&boot_key, &salt);
-        assert_eq!(result.len(), 16);
-    }
-
-    /// decrypt_sam_hash_with_rid produces 16 bytes.
-    #[test]
-    fn decrypt_sam_hash_with_rid_produces_16_bytes() {
-        let hash = [0u8; 16];
-        let result = decrypt_sam_hash_with_rid(&hash, 500);
-        assert_eq!(result.len(), 16);
     }
 
     /// BOOT_KEY_SCRAMBLE has 16 elements all in range 0..16.
@@ -2534,17 +1625,16 @@ mod tests {
         class_len: u16,
         class_off: u32,
     ) {
-        page[off + 0x18..off + 0x1C].copy_from_slice(&subkey_count.to_le_bytes());
-        page[off + 0x20..off + 0x24].copy_from_slice(&list_off.to_le_bytes());
-        page[off + 0x28..off + 0x2C].copy_from_slice(&val_count.to_le_bytes());
-        page[off + 0x2C..off + 0x30].copy_from_slice(&val_list_off.to_le_bytes());
+        // _CM_KEY_NODE offsets (Win8.1/9600 x64): SubKeyCounts[Stable]@0x14,
+        // SubKeyLists[Stable]@0x1c, ValueList.Count@0x24, ValueList.List@0x28,
+        // Class@0x30, NameLength@0x48, ClassLength@0x4a, Name@0x4c.
+        page[off + 0x14..off + 0x18].copy_from_slice(&subkey_count.to_le_bytes());
+        page[off + 0x1c..off + 0x20].copy_from_slice(&list_off.to_le_bytes());
+        page[off + 0x24..off + 0x28].copy_from_slice(&val_count.to_le_bytes());
+        page[off + 0x28..off + 0x2C].copy_from_slice(&val_list_off.to_le_bytes());
         page[off + 0x30..off + 0x34].copy_from_slice(&class_off.to_le_bytes());
-        page[off + 0x4A..off + 0x4C].copy_from_slice(&(name.len() as u16).to_le_bytes());
-        // ClassLength lives at 0x4E; write it BEFORE the name so a name of >=3
-        // chars (which reaches 0x4E) wins — `find_subkey_by_name` reads the name
-        // at 0x4C for name_len bytes, so the name must be intact. Keys that also
-        // need a readable ClassLength keep names <=2 chars (e.g. "JD").
-        page[off + 0x4E..off + 0x50].copy_from_slice(&class_len.to_le_bytes());
+        page[off + 0x48..off + 0x4A].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        page[off + 0x4A..off + 0x4C].copy_from_slice(&class_len.to_le_bytes());
         if !name.is_empty() {
             page[off + 0x4C..off + 0x4C + name.len()].copy_from_slice(name);
         }
@@ -2567,13 +1657,15 @@ mod tests {
     }
 
     fn write_vk(page: &mut [u8], off: usize, name: &[u8], data_len: u32, data_off: u32) {
+        // _CM_KEY_VALUE offsets: NameLength@0x02, DataLength@0x04, Data@0x08,
+        // Type@0x0c, Name@0x14.
         page[off] = b'v';
         page[off + 1] = b'k';
         page[off + 0x02..off + 0x04].copy_from_slice(&(name.len() as u16).to_le_bytes());
-        page[off + 0x08..off + 0x0C].copy_from_slice(&data_len.to_le_bytes());
-        page[off + 0x0C..off + 0x10].copy_from_slice(&data_off.to_le_bytes());
+        page[off + 0x04..off + 0x08].copy_from_slice(&data_len.to_le_bytes());
+        page[off + 0x08..off + 0x0C].copy_from_slice(&data_off.to_le_bytes());
         if !name.is_empty() {
-            page[off + 0x18..off + 0x18 + name.len()].copy_from_slice(name);
+            page[off + 0x14..off + 0x14 + name.len()].copy_from_slice(name);
         }
     }
 
@@ -2652,8 +1744,8 @@ mod tests {
 
         let mut hive = CellMapHive::new(0x0098_0000, key_idx);
         // key: val_count=1, val_list=vlist_idx
-        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C].copy_from_slice(&1u32.to_le_bytes());
-        hive.bin_page[ao(key_idx) + 0x2C..ao(key_idx) + 0x30]
+        hive.bin_page[ao(key_idx) + 0x24..ao(key_idx) + 0x28].copy_from_slice(&1u32.to_le_bytes());
+        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C]
             .copy_from_slice(&vlist_idx.to_le_bytes());
         // value list: one entry → vk_idx
         hive.bin_page[ao(vlist_idx)..ao(vlist_idx) + 4].copy_from_slice(&vk_idx.to_le_bytes());
@@ -2689,8 +1781,8 @@ mod tests {
         let inline: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
 
         let mut hive = CellMapHive::new(0x00A0_0000, key_idx);
-        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C].copy_from_slice(&1u32.to_le_bytes());
-        hive.bin_page[ao(key_idx) + 0x2C..ao(key_idx) + 0x30]
+        hive.bin_page[ao(key_idx) + 0x24..ao(key_idx) + 0x28].copy_from_slice(&1u32.to_le_bytes());
+        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C]
             .copy_from_slice(&vlist_idx.to_le_bytes());
         hive.bin_page[ao(vlist_idx)..ao(vlist_idx) + 4].copy_from_slice(&vk_idx.to_le_bytes());
         let vko = ao(vk_idx);
@@ -2698,9 +1790,9 @@ mod tests {
         hive.bin_page[vko + 1] = b'k';
         hive.bin_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes());
         let raw_len: u32 = 0x8000_0004; // inline, 4 bytes
-        hive.bin_page[vko + 0x08..vko + 0x0C].copy_from_slice(&raw_len.to_le_bytes());
-        hive.bin_page[vko + 0x0C..vko + 0x10].copy_from_slice(&inline);
-        hive.bin_page[vko + 0x18] = b'F';
+        hive.bin_page[vko + 0x04..vko + 0x08].copy_from_slice(&raw_len.to_le_bytes());
+        hive.bin_page[vko + 0x08..vko + 0x0C].copy_from_slice(&inline);
+        hive.bin_page[vko + 0x14] = b'F';
 
         let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -2720,8 +1812,8 @@ mod tests {
         let vlist_idx: u32 = 0x180;
         let vk_idx: u32 = 0x1C0;
         let mut hive = CellMapHive::new(0x00A8_0000, key_idx);
-        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C].copy_from_slice(&1u32.to_le_bytes());
-        hive.bin_page[ao(key_idx) + 0x2C..ao(key_idx) + 0x30]
+        hive.bin_page[ao(key_idx) + 0x24..ao(key_idx) + 0x28].copy_from_slice(&1u32.to_le_bytes());
+        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C]
             .copy_from_slice(&vlist_idx.to_le_bytes());
         hive.bin_page[ao(vlist_idx)..ao(vlist_idx) + 4].copy_from_slice(&vk_idx.to_le_bytes());
         write_vk(&mut hive.bin_page, ao(vk_idx), b"F", 0, 0);
@@ -2737,24 +1829,27 @@ mod tests {
         assert!(result.is_empty(), "data_len=0 → empty");
     }
 
-    /// resolve_username_for_rid with a Names key whose subkey_count is 0 → fallback.
+    /// username_from_v decodes the UTF-16LE account name pointed at by the V
+    /// offset table (name_offset = V[0x0C..0x10]+0xCC, name_length = V[0x10..0x14]).
     #[test]
-    fn resolve_username_for_rid_zero_subkey_count_returns_fallback() {
-        let names_idx: u32 = 0x100;
-        let mut hive = CellMapHive::new(0x00B0_0000, names_idx);
-        // subkey_count=0 at names+0x18 (already zero), but make cell readable.
-        hive.bin_page[ao(names_idx)] = b'n';
-        hive.bin_page[ao(names_idx) + 1] = b'k';
+    fn username_from_v_decodes_name() {
+        let name: Vec<u8> = "Administrator"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let name_rel: u32 = 0x20;
+        let name_off = name_rel as usize + 0xCC;
+        let mut v = vec![0u8; name_off + name.len()];
+        v[0x0C..0x10].copy_from_slice(&name_rel.to_le_bytes());
+        v[0x10..0x14].copy_from_slice(&(name.len() as u32).to_le_bytes());
+        v[name_off..name_off + name.len()].copy_from_slice(&name);
+        assert_eq!(username_from_v(&v).as_deref(), Some("Administrator"));
+    }
 
-        let isf = cellmap_isf_builder().build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let names_addr = read_cell_addr(&reader, hive.hhive_va, names_idx);
-        let result = resolve_username_for_rid(&reader, hive.hhive_va, names_addr, 500);
-        assert_eq!(result, "RID-500");
+    /// username_from_v returns None for a too-short V value.
+    #[test]
+    fn username_from_v_short_returns_none() {
+        assert!(username_from_v(&[0u8; 0x10]).is_none());
     }
 
     // ── Full SYSTEM + SAM walk through the cell map ─────────────────
@@ -2877,7 +1972,7 @@ mod tests {
             .copy_from_slice(&acct_f_vk_off.to_le_bytes());
         write_vk(flat, ao(acct_f_vk_off), b"F", 0xA0, acct_f_data_off);
         let fd = ao(acct_f_data_off);
-        flat[fd + 0x68] = 0x02; // revision = 2
+        flat[fd] = 0x02; // F structure revision = 2 (RC4) at F[0x00]
         write_nk(flat, ao(users_off), b"Users", 1, users_list_off, 0, 0, 0, 0);
         write_lf1(flat, ao(users_list_off), rid_off);
         write_nk(flat, ao(rid_off), b"000001F4", 0, 0, 0, 0, 0, 0);
