@@ -130,8 +130,9 @@ pub fn resolve_kernel_base<P: PhysicalMemoryProvider>(
     vas: &VirtualAddressSpace<P>,
     low_stub_kvo: Option<u64>,
 ) -> Option<u64> {
-    let _ = (vas, low_stub_kvo);
-    None
+    resolve_kernel_base_via_rsds(vas)
+        .or_else(|| memf_symbols::resolve_kernel_base_va(vas.physical()))
+        .or_else(|| low_stub_kvo.filter(|&b| b != 0))
 }
 
 #[cfg(test)]
