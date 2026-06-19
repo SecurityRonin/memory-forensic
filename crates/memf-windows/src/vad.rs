@@ -399,6 +399,59 @@ mod tests {
         assert_eq!(results[0].start_vaddr, 0x100u64 << 12);
     }
 
+    /// Faithful 9600 `_MMVAD_SHORT`: `StartingVpn`/`EndingVpn` are 32-bit
+    /// (`unsigned long`) at 0x18/0x1c — ADJACENT. Reading them as `u64` fuses the
+    /// two fields, so a region [VPN 0x100, 0x1FF] decodes to a garbage address
+    /// (`0x000001FF_00000100 << 12`). The walk must read each VPN as u32.
+    #[test]
+    fn vpn_fields_are_32bit_on_win8() {
+        let isf = IsfBuilder::new()
+            .add_struct("_RTL_AVL_TREE", 8)
+            .add_field("_RTL_AVL_TREE", "Root", 0, "pointer")
+            .add_struct("_RTL_BALANCED_NODE", 0x18)
+            .add_field("_RTL_BALANCED_NODE", "Left", 0, "pointer")
+            .add_field("_RTL_BALANCED_NODE", "Right", 8, "pointer")
+            .add_struct("_MMVAD_SHORT", 0x40)
+            .add_field("_MMVAD_SHORT", "VadNode", 0x0, "_RTL_BALANCED_NODE")
+            .add_field("_MMVAD_SHORT", "StartingVpn", 0x18, "unsigned long")
+            .add_field("_MMVAD_SHORT", "EndingVpn", 0x1c, "unsigned long")
+            .add_field("_MMVAD_SHORT", "u", 0x30, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+        let root_off = 0x100usize;
+        let root_vaddr = page_vaddr + root_off as u64;
+
+        let mut page = vec![0u8; 4096];
+        page[0..8].copy_from_slice(&root_vaddr.to_le_bytes());
+        // StartingVpn=0x100 (u32@0x18), EndingVpn=0x1FF (u32@0x1c) — adjacent.
+        page[root_off + 0x18..root_off + 0x1c].copy_from_slice(&0x100u32.to_le_bytes());
+        page[root_off + 0x1c..root_off + 0x20].copy_from_slice(&0x1FFu32.to_le_bytes());
+        page[root_off + 0x30..root_off + 0x34].copy_from_slice(&(4u32 << 3).to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_vad_tree(&reader, page_vaddr, 7, "win8.exe").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].start_vaddr,
+            0x100u64 << 12,
+            "StartingVpn must be read as u32"
+        );
+        assert_eq!(
+            results[0].end_vaddr,
+            (0x1FFu64 << 12) | 0xFFF,
+            "EndingVpn must be read as u32"
+        );
+    }
+
     #[test]
     fn walks_simple_vad_tree() {
         // AVL tree with 3 nodes:
