@@ -527,7 +527,7 @@ mod tests {
         let p2 = (vaddr >> 21) & 0x1FF;
         let p1 = (vaddr >> 12) & 0x1FF;
         let (pdpt, pd, pt) = (0x1000u64, 0x2000u64, 0x3000u64);
-        mem.write_u64(0 + p4 * 8, pdpt | PRESENT);
+        mem.write_u64(p4 * 8, pdpt | PRESENT); // PML4 base is physical 0
         mem.write_u64(pdpt + p3 * 8, pd | PRESENT);
         if large_2m {
             mem.write_u64(pd + p2 * 8, leaf_pte);
