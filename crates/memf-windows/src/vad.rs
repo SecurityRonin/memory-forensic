@@ -199,6 +199,41 @@ mod tests {
         (protection << VAD_PROTECTION_SHIFT) | (vad_type & VAD_TYPE_MASK)
     }
 
+    /// On real Win8+/Server 2012 R2 (build 9600) the `_MMVAD_FLAGS.Protection`
+    /// bitfield sits at bits [3:7], not [7:11] — confirmed against Volatility's
+    /// win81/win10 x64 vtypes (`Protection` BitField `start_bit = 3`). A
+    /// PAGE_EXECUTE_READWRITE region (protection index 6) therefore encodes as
+    /// `6 << 3 = 0x30`. The walker must decode it back to index 6 — the malfind
+    /// RWX gate (F26 spoolsv injection) depends on this. With the legacy
+    /// `shift = 7` this decodes to 0 (PAGE_NOACCESS) and the test fails.
+    #[test]
+    fn protection_decoded_at_win8_bit_position() {
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+        let root_off = 0x100usize;
+        let root_vaddr = page_vaddr + root_off as u64;
+
+        let mut page = vec![0u8; 4096];
+        page[AVL_ROOT..AVL_ROOT + 8].copy_from_slice(&root_vaddr.to_le_bytes());
+
+        let flags = 6u32 << 3; // Protection index 6 (EXECUTE_READWRITE) at bits [3:7]
+        build_vad_node(&mut page, root_off, 0, 0, 0x100, 0x1FF, flags);
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page);
+
+        let reader = make_win_reader(ptb);
+        let results = walk_vad_tree(&reader, page_vaddr, 1, "evil.exe").unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].protection, 6,
+            "EXECUTE_READWRITE index must decode at bit 3 (Win8+ layout)"
+        );
+        assert_eq!(results[0].protection_str, "PAGE_EXECUTE_READWRITE");
+    }
+
     #[test]
     fn walks_simple_vad_tree() {
         // AVL tree with 3 nodes:
