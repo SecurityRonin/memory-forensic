@@ -759,6 +759,42 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    /// A smeared/terminated `_EPROCESS` whose `VadRoot` points to paged-out
+    /// memory must NOT abort the whole scan — `walk_malfind` must skip that
+    /// process and continue. On the real 9600 dump, 4 of 39 processes were
+    /// smeared like this; under the old `?` the first one aborted malfind
+    /// entirely (returning Err and surfacing nothing).
+    #[test]
+    fn malfind_skips_process_with_unreadable_vad_root() {
+        let head_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let eproc_vaddr: u64 = 0xFFFF_8000_0010_1000;
+        let head_paddr: u64 = 0x0080_0000;
+        let eproc_paddr: u64 = 0x0080_1000;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_vaddr, head_paddr, flags::WRITABLE)
+            .map_4k(eproc_vaddr, eproc_paddr, flags::WRITABLE)
+            .write_phys_u64(head_paddr, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(head_paddr + 8, eproc_vaddr + EPROCESS_LINKS)
+            .write_phys_u64(eproc_paddr + KPROCESS_DTB, 0x1AB000)
+            .write_phys_u64(eproc_paddr + EPROCESS_CREATE_TIME, 132_800_000_000_000_000)
+            .write_phys_u64(eproc_paddr + EPROCESS_EXIT_TIME, 0)
+            .write_phys_u64(eproc_paddr + EPROCESS_PID, 666)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_LINKS + 8, head_vaddr)
+            .write_phys_u64(eproc_paddr + EPROCESS_PPID, 4)
+            .write_phys_u64(eproc_paddr + EPROCESS_PEB, 0x7FFE_0000)
+            .write_phys(eproc_paddr + EPROCESS_IMAGE_NAME, b"smeared.exe\0")
+            // VadRoot points at a virtual address that is NOT mapped → the AVL
+            // root read fails for this process.
+            .write_phys_u64(eproc_paddr + EPROCESS_VAD_ROOT, 0xFFFF_8000_DEAD_0000);
+
+        let reader = make_win_reader(ptb);
+        let results =
+            walk_malfind(&reader, head_vaddr).expect("a smeared process must not abort the scan");
+        assert!(results.is_empty());
+    }
+
     // RED: missing _EPROCESS.VadRoot field → MissingField
     #[test]
     fn walk_malfind_missing_eprocess_vad_root_returns_missing_field() {
