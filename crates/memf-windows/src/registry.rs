@@ -130,6 +130,41 @@ fn read_hive_info<P: PhysicalMemoryProvider>(
     })
 }
 
+/// Read a little-endian `u64` from virtual memory (None on a read fault).
+fn le_u64<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<u64> {
+    let b = reader.read_bytes(vaddr, 8).ok()?;
+    Some(u64::from_le_bytes(b.get(..8)?.try_into().ok()?))
+}
+
+/// Read a little-endian `u32` from virtual memory (None on a read fault).
+fn le_u32<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<u32> {
+    let b = reader.read_bytes(vaddr, 4).ok()?;
+    Some(u32::from_le_bytes(b.get(..4)?.try_into().ok()?))
+}
+
+/// Translate a registry **cell index** to the virtual address of its `_HCELL`
+/// within an in-memory hive.
+///
+/// In-memory hives are not contiguous: cells are reached through the
+/// `_HHIVE.Storage[].Map` cell-map directory. This mirrors Volatility3's
+/// `RegistryHive._translate` (`volatility3/framework/layers/registry.py`):
+/// - bit 31 selects Stable (0) vs Volatile (1) storage,
+/// - bits 30–21 index `_HMAP_DIRECTORY.Directory[]` (→ `_HMAP_TABLE*`),
+/// - bits 20–12 index `_HMAP_TABLE.Table[]` (→ `_HMAP_ENTRY`),
+/// - bits 11–0 are the byte offset within the 4 KiB block.
+///
+/// `block_va = (PermanentBinAddress & !0xF) + BlockOffset` (Win8+). The returned
+/// address points at the `_HCELL` size header; cell *data* begins 4 bytes later.
+/// All offsets come from the dump's PDB, so it is build-independent.
+pub(crate) fn cell_index_to_va<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    cell_index: u32,
+) -> Option<u64> {
+    let _ = (reader, hhive_addr, cell_index);
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +195,64 @@ mod tests {
         let len = utf16.len();
         buf[phys_offset..phys_offset + len].copy_from_slice(&utf16);
         len as u16
+    }
+
+    // ── Cell-map translation (in-memory hive) ──────────────────────
+
+    /// A cell index must be translated through `_HHIVE.Storage[].Map`
+    /// (directory → table → `_HMAP_ENTRY`) to the cell's virtual address — the
+    /// in-memory hive layout. cell_index dir=2/table=3/suboffset=0x40 with a
+    /// `PermanentBinAddress` of `…5007` (flags in the low nibble) and a
+    /// `BlockOffset` of 0x100 must resolve to `…5000 + 0x100 + 0x40 = …5140`.
+    #[test]
+    fn cell_index_to_va_walks_the_hmap_directory() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x800)
+            .add_field("_HHIVE", "Storage", 0xb8, "char")
+            .add_struct("_DUAL", 0x278)
+            .add_field("_DUAL", "Map", 0x18, "pointer")
+            .add_struct("_HMAP_ENTRY", 0x20)
+            .add_field("_HMAP_ENTRY", "PermanentBinAddress", 0x0, "pointer")
+            .add_field("_HMAP_ENTRY", "BlockOffset", 0x8, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let h_vaddr = 0xFFFF_8000_0010_0000u64;
+        let dir_vaddr = 0xFFFF_8000_0010_2000u64;
+        let table_vaddr = 0xFFFF_8000_0010_3000u64;
+        let (h_paddr, dir_paddr, table_paddr) = (0x20_0000u64, 0x20_2000u64, 0x20_3000u64);
+
+        let cell_index = (2u32 << 21) | (3u32 << 12) | 0x40;
+
+        let mut h_page = vec![0u8; 4096];
+        // Storage[0].Map @ 0xb8 + 0x18 = 0xd0
+        h_page[0xd0..0xd8].copy_from_slice(&dir_vaddr.to_le_bytes());
+
+        let mut dir_page = vec![0u8; 4096];
+        // Directory[2] @ 2*8 = 0x10
+        dir_page[0x10..0x18].copy_from_slice(&table_vaddr.to_le_bytes());
+
+        let mut table_page = vec![0u8; 4096];
+        // Table[3] @ 3*0x20 = 0x60: PermanentBinAddress@0, BlockOffset@8
+        let bin_va = 0xFFFF_8000_0010_5007u64; // low nibble = flags → block …5000
+        table_page[0x60..0x68].copy_from_slice(&bin_va.to_le_bytes());
+        table_page[0x68..0x6c].copy_from_slice(&0x100u32.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(h_vaddr, h_paddr, flags::WRITABLE)
+            .map_4k(dir_vaddr, dir_paddr, flags::WRITABLE)
+            .map_4k(table_vaddr, table_paddr, flags::WRITABLE)
+            .write_phys(h_paddr, &h_page)
+            .write_phys(dir_paddr, &dir_page)
+            .write_phys(table_paddr, &table_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(
+            cell_index_to_va(&reader, h_vaddr, cell_index),
+            Some(0xFFFF_8000_0010_5140)
+        );
     }
 
     // ── Test 1: No hive list symbol → empty Vec ─────────────────────
