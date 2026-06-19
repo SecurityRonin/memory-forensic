@@ -2184,43 +2184,36 @@ mod tests {
         );
     }
 
-    /// decrypt_hashed_boot_key with revision 2 marker and all-zero data
-    /// returns a result (may be zeros but not empty — RC4 of zeros is defined).
+    /// decrypt_hashed_boot_key (revision 2, RC4) reproduces the exact vol3/impacket
+    /// hbootkey for a known F value. Golden vector computed with pycryptodome:
+    ///   bootkey   = 00..0f
+    ///   F[0x00]   = 2 (revision)
+    ///   F[0x70..0x80] = 0x11*16 (salt)
+    ///   F[0x80..0xA0] = 0x22*32 (encrypted hbootkey)
+    ///   rc4_key   = MD5(salt ‖ aqwerty ‖ bootkey ‖ anum)
+    ///   hbootkey  = RC4(rc4_key, F[0x80..0xA0])[..16]
+    ///             = 5cdc46c139bc6c936846ec65edc71be9
     #[test]
-    fn decrypt_hashed_boot_key_rev2() {
+    fn decrypt_hashed_boot_key_rev2_golden_vector() {
+        let boot_key: Vec<u8> = (0u8..16).collect();
         let mut f_data = vec![0u8; 0xA0];
-        // Set revision bytes at 0x68..0x6A to 2 (little-endian u16).
-        f_data[0x68] = 0x02;
-        f_data[0x69] = 0x00;
-        let boot_key = vec![0u8; 16];
+        f_data[0x00] = 0x02; // revision is at F[0x00], NOT F[0x68]
+        f_data[0x70..0x80].fill(0x11);
+        f_data[0x80..0xA0].fill(0x22);
         let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        // Should produce 16 bytes (RC4 of zeros is well-defined).
-        assert_eq!(result.len(), 16);
+        assert_eq!(
+            hex_encode(&result),
+            "5cdc46c139bc6c936846ec65edc71be9",
+            "rev2 hbootkey must match the vol3 RC4 derivation"
+        );
     }
 
-    /// decrypt_hashed_boot_key with revision 3 marker (AES path).
-    #[test]
-    fn decrypt_hashed_boot_key_rev3() {
-        // Buffer must be >= 0x9C: IV at [0x6C..0x7C], ciphertext at [0x7C..0x9C].
-        let mut f_data = vec![0u8; 0x9C];
-        // Revision = 3
-        f_data[0x68] = 0x03;
-        f_data[0x69] = 0x00;
-        // Place non-zero data at the correct IV and ciphertext offsets.
-        f_data[0x6C..0x7C].fill(0xAB); // IV
-        f_data[0x7C..0x9C].fill(0xCD); // ciphertext (32 bytes, only first 16 used)
-        let boot_key = vec![0u8; 16];
-        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        // AES path: [0x7C..0x9C] = 32 bytes → first 16 bytes decrypted → 16-byte result.
-        assert_eq!(result.len(), 16);
-    }
-
-    /// decrypt_hashed_boot_key with unknown revision returns empty.
+    /// decrypt_hashed_boot_key with unknown revision returns empty (fail-loud:
+    /// never fabricate a key for an unsupported format).
     #[test]
     fn decrypt_hashed_boot_key_unknown_revision() {
         let mut f_data = vec![0u8; 0xA0];
-        // Revision = 99 (unknown).
-        f_data[0x68] = 99;
+        f_data[0x00] = 99; // revision byte at F[0x00]
         let boot_key = vec![0u8; 16];
         let result = decrypt_hashed_boot_key(&f_data, &boot_key);
         assert!(result.is_empty(), "Unknown revision should return empty");
@@ -2241,6 +2234,36 @@ mod tests {
         let (lm, nt) = extract_hashes_from_v(&v, &[], 500);
         assert_eq!(lm, EMPTY_LM_HASH);
         assert_eq!(nt, EMPTY_NT_HASH);
+    }
+
+    /// extract_hashes_from_v (revision 1 NT hash, RC4 path) reproduces the exact
+    /// vol3/impacket NT hash for a known V value + hbootkey. Golden vector:
+    ///   rid       = 500
+    ///   hbootkey  = 5cdc46c139bc6c936846ec65edc71be9
+    ///   V[0xA8..0xAC] = 0x10 (nt offset rel), V[0xAC..0xB0] = 20 (nt len)
+    ///   nt blob at 0xCC+0x10: [+2]=1 (rev1), [+4..+20]=0x33*16 (encrypted)
+    ///   rc4_key  = MD5(hbootkey ‖ pack<L>(rid) ‖ NTPASSWORD\0)
+    ///   obf      = RC4(rc4_key, enc)
+    ///   nt       = DES(k1,obf[..8]) ‖ DES(k2,obf[8..16])  (k1,k2 = sid_to_key(rid))
+    ///            = 01e2d77d782a538a372cb89a5d2e5241
+    ///   LM length 0 → empty LM sentinel.
+    #[test]
+    fn extract_hashes_from_v_rev1_golden_vector() {
+        let hbootkey = [
+            0x5c, 0xdc, 0x46, 0xc1, 0x39, 0xbc, 0x6c, 0x93, 0x68, 0x46, 0xec, 0x65, 0xed, 0xc7,
+            0x1b, 0xe9,
+        ];
+        let mut v = vec![0u8; 0xCC + 0x100];
+        let nt_rel: u32 = 0x10;
+        v[0xA8..0xAC].copy_from_slice(&nt_rel.to_le_bytes());
+        v[0xAC..0xB0].copy_from_slice(&20u32.to_le_bytes());
+        let nt_off = (nt_rel as usize) + 0xCC;
+        v[nt_off + 2] = 1; // per-hash revision 1
+        v[nt_off + 4..nt_off + 20].fill(0x33);
+        // LM length 0 → empty.
+        let (lm, nt) = extract_hashes_from_v(&v, &hbootkey, 500);
+        assert_eq!(nt, "01e2d77d782a538a372cb89a5d2e5241", "rev1 NT mismatch");
+        assert_eq!(lm, EMPTY_LM_HASH, "LM length 0 → empty sentinel");
     }
 
     /// extract_hashes_from_v with zero offsets in V data returns empty hashes.
