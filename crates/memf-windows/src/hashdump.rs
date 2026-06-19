@@ -973,9 +973,10 @@ fn read_cell_addr<P: PhysicalMemoryProvider>(
     hhive_addr: u64,
     cell_index: u32,
 ) -> u64 {
-    // RED (pre-fix flat model): treats hhive_addr as a flat base. WRONG for
-    // in-memory hives — the cell-map tests fail against this.
-    let addr = hhive_addr + u64::from(cell_index) + 4;
+    let Some(cell_va) = crate::registry::cell_index_to_va(reader, hhive_addr, cell_index) else {
+        return 0;
+    };
+    let addr = cell_va.wrapping_add(4);
     match reader.read_bytes(addr, 2) {
         Ok(bytes) if bytes.len() == 2 => addr,
         _ => 0,
