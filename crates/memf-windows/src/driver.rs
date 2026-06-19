@@ -16,46 +16,63 @@ pub fn walk_drivers<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     module_list_vaddr: u64,
 ) -> Result<Vec<WinDriverInfo>> {
-    let entries = reader.walk_list_with(
+    // Real ntoskrnl PDBs name the loaded-module entry `_LDR_DATA_TABLE_ENTRY`
+    // (the kernel uses _KLDR internally, but that's the exported symbol); some
+    // synthetic/older ISFs use `_KLDR_DATA_TABLE_ENTRY`. Pick whichever the
+    // resolver actually defines (they share these field offsets).
+    let entry_struct = ["_KLDR_DATA_TABLE_ENTRY"]
+        .into_iter()
+        .find(|s| reader.symbols().field_offset(s, "BaseDllName").is_some())
+        .ok_or_else(|| {
+            crate::Error::Core(memf_core::Error::MissingSymbol(
+                "_LDR_DATA_TABLE_ENTRY.BaseDllName".into(),
+            ))
+        })?;
+
+    // Bidirectional (Flink + Blink): a torn-down node breaks the forward chain on
+    // a live-acquired dump; the Blink leg recovers the drivers past it.
+    let entries = reader.walk_list_bidirectional(
         module_list_vaddr,
         "_LIST_ENTRY",
         "Flink",
-        "_KLDR_DATA_TABLE_ENTRY",
+        "Blink",
+        entry_struct,
         "InLoadOrderLinks",
     )?;
 
-    entries
+    // Skip entries whose pages are not resident rather than aborting the walk.
+    Ok(entries
         .into_iter()
-        .map(|entry_addr| read_driver_info(reader, entry_addr))
-        .collect()
+        .filter_map(|entry_addr| read_driver_info(reader, entry_struct, entry_addr).ok())
+        .collect())
 }
 
-/// Read driver info from a single `_KLDR_DATA_TABLE_ENTRY`.
+/// Read driver info from a single loaded-module entry (`_LDR`/`_KLDR_DATA_TABLE_ENTRY`).
 fn read_driver_info<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
+    entry_struct: &str,
     entry_addr: u64,
 ) -> Result<WinDriverInfo> {
-    let base_addr: u64 = reader.read_field(entry_addr, "_KLDR_DATA_TABLE_ENTRY", "DllBase")?;
-    let size_of_image: u32 =
-        reader.read_field(entry_addr, "_KLDR_DATA_TABLE_ENTRY", "SizeOfImage")?;
+    let base_addr: u64 = reader.read_field(entry_addr, entry_struct, "DllBase")?;
+    let size_of_image: u32 = reader.read_field(entry_addr, entry_struct, "SizeOfImage")?;
 
     let full_dll_name_offset = reader
         .symbols()
-        .field_offset("_KLDR_DATA_TABLE_ENTRY", "FullDllName")
+        .field_offset(entry_struct, "FullDllName")
         .ok_or_else(|| {
-            crate::Error::Core(memf_core::Error::MissingSymbol(
-                "_KLDR_DATA_TABLE_ENTRY.FullDllName".into(),
-            ))
+            crate::Error::Core(memf_core::Error::MissingSymbol(format!(
+                "{entry_struct}.FullDllName"
+            )))
         })?;
     let full_path = read_unicode_string(reader, entry_addr.wrapping_add(full_dll_name_offset))?;
 
     let base_dll_name_offset = reader
         .symbols()
-        .field_offset("_KLDR_DATA_TABLE_ENTRY", "BaseDllName")
+        .field_offset(entry_struct, "BaseDllName")
         .ok_or_else(|| {
-            crate::Error::Core(memf_core::Error::MissingSymbol(
-                "_KLDR_DATA_TABLE_ENTRY.BaseDllName".into(),
-            ))
+            crate::Error::Core(memf_core::Error::MissingSymbol(format!(
+                "{entry_struct}.BaseDllName"
+            )))
         })?;
     let name = read_unicode_string(reader, entry_addr.wrapping_add(base_dll_name_offset))?;
 
@@ -611,5 +628,83 @@ mod tests {
             ),
             "expected MissingField(_DRIVER_OBJECT.MajorFunction), got {result:?}"
         );
+    }
+
+    /// Real ntoskrnl PDBs name the loaded-module entry `_LDR_DATA_TABLE_ENTRY`,
+    /// NOT `_KLDR_DATA_TABLE_ENTRY` (validated on citadeldc01.mem: `modules`
+    /// errored with `_KLDR_DATA_TABLE_ENTRY.InLoadOrderLinks` missing). The walk
+    /// must use whichever the ISF defines; the byte layout is identical.
+    #[test]
+    fn walk_drivers_with_ldr_data_table_entry_schema() {
+        let vaddr_base = 0xFFFF_F800_0000_0000u64;
+        let paddr_base = 0x10_0000u64;
+        let mut page = vec![0u8; 4096];
+        let sentinel = vaddr_base;
+        let entry_a = vaddr_base + 256;
+
+        // Circular: sentinel -> A -> sentinel.
+        page[0..8].copy_from_slice(&entry_a.to_le_bytes()); // sentinel.Flink
+        page[8..16].copy_from_slice(&entry_a.to_le_bytes()); // sentinel.Blink
+        let full = r"\SystemRoot\system32\ntoskrnl.exe";
+        let base = "ntoskrnl.exe";
+        let f_off = 1024usize;
+        let b_off = 1200usize;
+        let f_len = place_utf16_string(&mut page, f_off, full);
+        let b_len = place_utf16_string(&mut page, b_off, base);
+        build_kldr_entry(
+            &mut page,
+            256,
+            sentinel,
+            sentinel,
+            0xFFFF_F800_CB80_4000,
+            0x0078_9000,
+            vaddr_base + f_off as u64,
+            f_len,
+            vaddr_base + b_off as u64,
+            b_len,
+        );
+
+        // ISF defines `_LDR_DATA_TABLE_ENTRY` (real-kernel name) — NO `_KLDR`.
+        let isf = IsfBuilder::new()
+            .add_struct("_LIST_ENTRY", 16)
+            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
+            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
+            .add_struct("_UNICODE_STRING", 16)
+            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
+            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
+            .add_struct("_LDR_DATA_TABLE_ENTRY", 256)
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "InLoadOrderLinks",
+                0,
+                "_LIST_ENTRY",
+            )
+            .add_field("_LDR_DATA_TABLE_ENTRY", "DllBase", 48, "pointer")
+            .add_field("_LDR_DATA_TABLE_ENTRY", "SizeOfImage", 64, "unsigned long")
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "FullDllName",
+                72,
+                "_UNICODE_STRING",
+            )
+            .add_field(
+                "_LDR_DATA_TABLE_ENTRY",
+                "BaseDllName",
+                88,
+                "_UNICODE_STRING",
+            )
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(vaddr_base, paddr_base, flags::WRITABLE)
+            .write_phys(paddr_base, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let drivers = walk_drivers(&reader, sentinel).unwrap();
+        assert_eq!(drivers.len(), 1, "must walk via _LDR_DATA_TABLE_ENTRY");
+        assert_eq!(drivers[0].name, "ntoskrnl.exe");
+        assert_eq!(drivers[0].base_addr, 0xFFFF_F800_CB80_4000);
     }
 }
