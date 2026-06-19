@@ -123,61 +123,56 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    // Step 1: Resolve both hive bases.
-    let system_flat_base = resolve_flat_base(reader, system_hive_addr);
-    if system_flat_base == 0 {
-        return Ok(Vec::new());
-    }
-    let system_root = resolve_root_cell(reader, system_hive_addr, system_flat_base);
+    // Step 1: Resolve both root cells. In-memory hives are NOT flat: every cell
+    // index is translated through `_HHIVE.Storage[].Map` (the HMAP directory).
+    // The hive address passed for translation is the `_CMHIVE`/`_HHIVE` VA
+    // (on Win8+/9600 `_CMHIVE.Hive` is at offset 0, so they coincide).
+    let system_root = resolve_root_cell(reader, system_hive_addr);
     if system_root == 0 {
         return Ok(Vec::new());
     }
 
-    let sam_flat_base = resolve_flat_base(reader, sam_hive_addr);
-    if sam_flat_base == 0 {
-        return Ok(Vec::new());
-    }
-    let sam_root = resolve_root_cell(reader, sam_hive_addr, sam_flat_base);
+    let sam_root = resolve_root_cell(reader, sam_hive_addr);
     if sam_root == 0 {
         return Ok(Vec::new());
     }
 
     // Step 2: Extract boot key from SYSTEM hive.
     // Navigate: root → CurrentControlSet (or ControlSet001) → Control → Lsa
-    let boot_key = extract_boot_key(reader, system_flat_base, system_root);
+    let boot_key = extract_boot_key(reader, system_hive_addr, system_root);
     if boot_key.is_empty() {
         return Ok(Vec::new());
     }
 
     // Step 3: Navigate SAM hive to SAM\Domains\Account.
-    let sam_key = find_subkey_by_name(reader, sam_flat_base, sam_root, "SAM");
+    let sam_key = find_subkey_by_name(reader, sam_hive_addr, sam_root, "SAM");
     if sam_key == 0 {
         return Ok(Vec::new());
     }
-    let domains_key = find_subkey_by_name(reader, sam_flat_base, sam_key, "Domains");
+    let domains_key = find_subkey_by_name(reader, sam_hive_addr, sam_key, "Domains");
     if domains_key == 0 {
         return Ok(Vec::new());
     }
-    let account_key = find_subkey_by_name(reader, sam_flat_base, domains_key, "Account");
+    let account_key = find_subkey_by_name(reader, sam_hive_addr, domains_key, "Account");
     if account_key == 0 {
         return Ok(Vec::new());
     }
 
     // Step 4: Decrypt the hashed boot key from Account\F value.
-    let f_data = read_value_data(reader, sam_flat_base, account_key, "F");
+    let f_data = read_value_data(reader, sam_hive_addr, account_key, "F");
     let hashed_boot_key = decrypt_hashed_boot_key(&f_data, &boot_key);
     if hashed_boot_key.is_empty() {
         return Ok(Vec::new());
     }
 
     // Step 5: Enumerate users under Account\Users.
-    let users_key = find_subkey_by_name(reader, sam_flat_base, account_key, "Users");
+    let users_key = find_subkey_by_name(reader, sam_hive_addr, account_key, "Users");
     if users_key == 0 {
         return Ok(Vec::new());
     }
 
     // Get Names subkey for username resolution.
-    let names_key = find_subkey_by_name(reader, sam_flat_base, users_key, "Names");
+    let names_key = find_subkey_by_name(reader, sam_hive_addr, users_key, "Names");
 
     let mut entries = Vec::new();
 
@@ -196,7 +191,7 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
         _ => return Ok(entries),
     };
 
-    let list_addr = read_cell_addr(reader, sam_flat_base, subkey_list_off);
+    let list_addr = read_cell_addr(reader, sam_hive_addr, subkey_list_off);
     if list_addr == 0 {
         return Ok(entries);
     }
@@ -228,7 +223,7 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
             _ => continue,
         };
 
-        let key_addr = read_cell_addr(reader, sam_flat_base, entry_off);
+        let key_addr = read_cell_addr(reader, sam_hive_addr, entry_off);
         if key_addr == 0 {
             continue;
         }
@@ -261,13 +256,13 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
 
         // Resolve username from Names subkey.
         let username = if names_key != 0 {
-            resolve_username_for_rid(reader, sam_flat_base, names_key, rid)
+            resolve_username_for_rid(reader, sam_hive_addr, names_key, rid)
         } else {
             format!("RID-{rid}")
         };
 
         // Read V value for hash data.
-        let v_data = read_value_data(reader, sam_flat_base, key_addr, "V");
+        let v_data = read_value_data(reader, sam_hive_addr, key_addr, "V");
         let (lm_hash, nt_hash) = extract_hashes_from_v(&v_data, &hashed_boot_key, rid);
 
         let is_suspicious = classify_hashdump(&username, &nt_hash);
@@ -291,28 +286,28 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
 /// The raw bytes are then scrambled using a fixed permutation order.
 fn extract_boot_key<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-    flat_base: u64,
+    hhive_addr: u64,
     root_addr: u64,
 ) -> Vec<u8> {
     // Try CurrentControlSet first, then fall back to ControlSet001.
     let ccs = {
-        let key = find_subkey_by_name(reader, flat_base, root_addr, "CurrentControlSet");
+        let key = find_subkey_by_name(reader, hhive_addr, root_addr, "CurrentControlSet");
         if key != 0 {
             key
         } else {
-            find_subkey_by_name(reader, flat_base, root_addr, "ControlSet001")
+            find_subkey_by_name(reader, hhive_addr, root_addr, "ControlSet001")
         }
     };
     if ccs == 0 {
         return Vec::new();
     }
 
-    let control = find_subkey_by_name(reader, flat_base, ccs, "Control");
+    let control = find_subkey_by_name(reader, hhive_addr, ccs, "Control");
     if control == 0 {
         return Vec::new();
     }
 
-    let lsa = find_subkey_by_name(reader, flat_base, control, "Lsa");
+    let lsa = find_subkey_by_name(reader, hhive_addr, control, "Lsa");
     if lsa == 0 {
         return Vec::new();
     }
@@ -320,11 +315,11 @@ fn extract_boot_key<P: PhysicalMemoryProvider>(
     // Read the class names of JD, Skew1, GBG, Data and concatenate them.
     let mut raw_key_hex = String::new();
     for &name in &LSA_KEY_NAMES {
-        let subkey = find_subkey_by_name(reader, flat_base, lsa, name);
+        let subkey = find_subkey_by_name(reader, hhive_addr, lsa, name);
         if subkey == 0 {
             return Vec::new();
         }
-        let class_bytes = read_key_class_name(reader, flat_base, subkey);
+        let class_bytes = read_key_class_name(reader, hhive_addr, subkey);
         if class_bytes.is_empty() {
             return Vec::new();
         }
@@ -514,7 +509,7 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
 /// Resolve a username for a RID from the Names subkey.
 fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-    flat_base: u64,
+    hhive_addr: u64,
     names_key: u64,
     target_rid: u32,
 ) -> String {
@@ -532,7 +527,7 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
         _ => return format!("RID-{target_rid}"),
     };
 
-    let list_addr = read_cell_addr(reader, flat_base, list_off);
+    let list_addr = read_cell_addr(reader, hhive_addr, list_off);
     if list_addr == 0 {
         return format!("RID-{target_rid}");
     }
@@ -564,7 +559,7 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
             _ => break,
         };
 
-        let key_addr = read_cell_addr(reader, flat_base, entry_off);
+        let key_addr = read_cell_addr(reader, hhive_addr, entry_off);
         if key_addr == 0 {
             continue;
         }
@@ -584,7 +579,7 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
             _ => continue,
         };
 
-        let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
+        let val_list_addr = read_cell_addr(reader, hhive_addr, val_list_off);
         if val_list_addr == 0 {
             continue;
         }
@@ -594,7 +589,7 @@ fn resolve_username_for_rid<P: PhysicalMemoryProvider>(
             _ => continue,
         };
 
-        let val_addr = read_cell_addr(reader, flat_base, val_off);
+        let val_addr = read_cell_addr(reader, hhive_addr, val_off);
         if val_addr == 0 {
             continue;
         }
@@ -965,13 +960,22 @@ fn inv_mix_columns(state: &mut [u8; 16]) {
 // Internal helpers — registry hive navigation (mirrors sam.rs patterns)
 // ---------------------------------------------------------------------------
 
-/// Read a cell address from the flat storage base + cell offset.
+/// Resolve a registry **cell index** to the virtual address of the cell's
+/// *data* within an in-memory hive.
+///
+/// In-memory hives are not flat: the cell index is translated through
+/// `_HHIVE.Storage[].Map` (the HMAP directory) by
+/// [`crate::registry::cell_index_to_va`], which returns the VA of the cell's
+/// `_HCELL` size header. Cell data begins 4 bytes later, so this adds 4 and
+/// confirms the resulting address is readable. Returns 0 on any fault.
 fn read_cell_addr<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-    flat_base: u64,
-    cell_off: u32,
+    hhive_addr: u64,
+    cell_index: u32,
 ) -> u64 {
-    let addr = flat_base + u64::from(cell_off) + 4;
+    // RED (pre-fix flat model): treats hhive_addr as a flat base. WRONG for
+    // in-memory hives — the cell-map tests fail against this.
+    let addr = hhive_addr + u64::from(cell_index) + 4;
     match reader.read_bytes(addr, 2) {
         Ok(bytes) if bytes.len() == 2 => addr,
         _ => 0,
@@ -981,7 +985,7 @@ fn read_cell_addr<P: PhysicalMemoryProvider>(
 /// Find a subkey by name under a parent `_CM_KEY_NODE`.
 fn find_subkey_by_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-    flat_base: u64,
+    hhive_addr: u64,
     parent_addr: u64,
     target_name: &str,
 ) -> u64 {
@@ -999,7 +1003,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
         _ => return 0,
     };
 
-    let list_addr = read_cell_addr(reader, flat_base, list_off);
+    let list_addr = read_cell_addr(reader, hhive_addr, list_off);
     if list_addr == 0 {
         return 0;
     }
@@ -1031,7 +1035,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
             _ => return 0,
         };
 
-        let key_addr = read_cell_addr(reader, flat_base, entry_off);
+        let key_addr = read_cell_addr(reader, hhive_addr, entry_off);
         if key_addr == 0 {
             continue;
         }
@@ -1062,7 +1066,7 @@ fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 /// Returns the raw bytes of the class name, or an empty vec on failure.
 fn read_key_class_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-    flat_base: u64,
+    hhive_addr: u64,
     key_addr: u64,
 ) -> Vec<u8> {
     // _CM_KEY_NODE: ClassLength at 0x4E (u16), Class offset at 0x30 (u32).
@@ -1080,7 +1084,7 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
         _ => return Vec::new(),
     };
 
-    let class_addr = read_cell_addr(reader, flat_base, class_off);
+    let class_addr = read_cell_addr(reader, hhive_addr, class_off);
     if class_addr == 0 {
         return Vec::new();
     }
@@ -1094,7 +1098,7 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
 /// Returns the raw data bytes, or an empty vec on failure.
 fn read_value_data<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-    flat_base: u64,
+    hhive_addr: u64,
     key_addr: u64,
     target_name: &str,
 ) -> Vec<u8> {
@@ -1112,7 +1116,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
         _ => return Vec::new(),
     };
 
-    let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
+    let val_list_addr = read_cell_addr(reader, hhive_addr, val_list_off);
     if val_list_addr == 0 {
         return Vec::new();
     }
@@ -1123,7 +1127,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             _ => continue,
         };
 
-        let val_addr = read_cell_addr(reader, flat_base, val_off);
+        let val_addr = read_cell_addr(reader, hhive_addr, val_off);
         if val_addr == 0 {
             continue;
         }
@@ -1178,7 +1182,7 @@ fn read_value_data<P: PhysicalMemoryProvider>(
             _ => return Vec::new(),
         };
 
-        let data_addr = read_cell_addr(reader, flat_base, data_off);
+        let data_addr = read_cell_addr(reader, hhive_addr, data_off);
         if data_addr == 0 {
             return Vec::new();
         }
@@ -1191,14 +1195,20 @@ fn read_value_data<P: PhysicalMemoryProvider>(
     Vec::new()
 }
 
-/// Resolve a hive's flat base address for cell offset calculations.
-fn resolve_flat_base<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, hive_addr: u64) -> u64 {
+/// Resolve the virtual address of a hive's root key node.
+///
+/// Reads the `RootCell` index from `_HBASE_BLOCK` (pointed at by
+/// `_HHIVE.BaseBlock`, field at offset 0x24 in the base block) and translates
+/// it through the cell-map directory via [`read_cell_addr`]. `hhive_addr` is
+/// the `_CMHIVE`/`_HHIVE` virtual address used for cell-index translation.
+/// Returns 0 if the base block is unmapped or the root-cell index is invalid.
+fn resolve_root_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, hhive_addr: u64) -> u64 {
     let base_block_off = reader
         .symbols()
         .field_offset("_HHIVE", "BaseBlock")
         .unwrap_or(0x10);
 
-    let base_block_addr = match reader.read_bytes(hive_addr + base_block_off, 8) {
+    let base_block_addr = match reader.read_bytes(hhive_addr + base_block_off, 8) {
         Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
         _ => return 0,
     };
@@ -1207,54 +1217,17 @@ fn resolve_flat_base<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, hive_a
         return 0;
     }
 
-    let storage_base = reader
-        .symbols()
-        .field_offset("_HHIVE", "Storage")
-        .unwrap_or(0x30);
-
-    match reader.read_bytes(hive_addr + storage_base, 8) {
-        Ok(bytes) if bytes.len() == 8 => {
-            let addr = bytes[..8].try_into().map_or(0, u64::from_le_bytes);
-            if addr != 0 {
-                addr
-            } else {
-                base_block_addr + 0x1000
-            }
-        }
-        _ => base_block_addr + 0x1000,
-    }
-}
-
-/// Resolve the root cell address of a hive.
-fn resolve_root_cell<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    flat_base: u64,
-) -> u64 {
-    let base_block_off = reader
-        .symbols()
-        .field_offset("_HHIVE", "BaseBlock")
-        .unwrap_or(0x10);
-
-    let base_block_addr = match reader.read_bytes(hive_addr + base_block_off, 8) {
-        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-        _ => return 0,
-    };
-
-    if base_block_addr == 0 {
-        return 0;
-    }
-
-    let root_cell_off = match reader.read_bytes(base_block_addr + 0x24, 4) {
+    // _HBASE_BLOCK.RootCell at offset 0x24 (u32) — a cell index.
+    let root_cell_index = match reader.read_bytes(base_block_addr + 0x24, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return 0,
     };
 
-    if root_cell_off == 0 || root_cell_off == u32::MAX {
+    if root_cell_index == 0 || root_cell_index == u32::MAX {
         return 0;
     }
 
-    read_cell_addr(reader, flat_base, root_cell_off)
+    read_cell_addr(reader, hhive_addr, root_cell_index)
 }
 
 /// Format a byte slice as a lowercase hex string.
@@ -1874,6 +1847,144 @@ mod tests {
     use memf_symbols::test_builders::IsfBuilder;
 
     // ---------------------------------------------------------------
+    // Cell-map hive fixture
+    // ---------------------------------------------------------------
+    //
+    // In-memory hives are NOT flat: a cell index is translated through
+    // `_HHIVE.Storage[].Map` (the HMAP directory → table → entry → bin).
+    // `cell_index_to_va` computes:
+    //   block_va = (PermanentBinAddress & !0xF) + BlockOffset
+    //   cell_va  = block_va + (cell_index & 0xFFF)
+    // with dir = bits 30..21 and table = bits 20..12.
+    //
+    // We build the smallest plumbing that makes cell index `i` (for any
+    // `i < 0x1000`, i.e. dir=0/table=0) resolve to `bin_base + i`: a single
+    // `_HMAP_ENTRY` at Directory[0]→Table[0] whose `PermanentBinAddress`
+    // is `bin_base` and whose `BlockOffset` is 0. Then
+    // `read_cell_addr(reader, hhive, i) == bin_base + i + 4` — exactly the
+    // old "flat" semantics with `flat_base == bin_base`, so a flat fixture
+    // page laid out at `bin_base` works unchanged once wrapped in this map.
+    //
+    // ISF offsets mirror `registry::tests::cell_index_to_va_walks_the_hmap_directory`.
+
+    /// ISF offsets for the cell-map structures (stable across the fixtures).
+    const STORAGE_OFF: u64 = 0xb8;
+    const DUAL_MAP_OFF: u64 = 0x18;
+    const HMAP_ENTRY_SIZE: u64 = 0x20;
+
+    /// Build an ISF that carries the cell-map structures plus `_HHIVE` fields
+    /// (BaseBlock + Storage). Extra struct/field defs can be chained by the
+    /// caller before `.build_json()`.
+    fn cellmap_isf_builder() -> IsfBuilder {
+        IsfBuilder::new()
+            .add_struct("_HHIVE", 0x800)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", STORAGE_OFF, "char")
+            .add_struct("_DUAL", 0x278)
+            .add_field("_DUAL", "Map", DUAL_MAP_OFF, "pointer")
+            .add_struct("_HMAP_ENTRY", HMAP_ENTRY_SIZE)
+            .add_field("_HMAP_ENTRY", "PermanentBinAddress", 0x0, "pointer")
+            .add_field("_HMAP_ENTRY", "BlockOffset", 0x8, "unsigned long")
+    }
+
+    /// A self-contained cell-map hive fixture: a `_HHIVE` whose stable storage
+    /// map directory/table point at a single bin page that holds the cell data.
+    ///
+    /// Layout (distinct physical/virtual pages, virt == phys for clarity):
+    ///   hhive_va  : `_HHIVE` — BaseBlock@0x10, Storage[0]._DUAL.Map@(0xb8+0x18)
+    ///   bb_va     : `_HBASE_BLOCK` — RootCell index@0x24
+    ///   dir_va    : HMAP directory — Directory[0] → table_va
+    ///   table_va  : HMAP table — Table[0] = `_HMAP_ENTRY`{PermanentBinAddress=bin_va, BlockOffset=0}
+    ///   bin_va    : the cell-data page (formerly the "flat page")
+    struct CellMapHive {
+        hhive_va: u64,
+        bin_va: u64,
+        bin_page: Vec<u8>,
+        root_cell_index: u32,
+    }
+
+    impl CellMapHive {
+        /// `base` is a 1-MiB-aligned anchor; the fixture uses
+        /// base+0x0000 (hhive), +0x1000 (base block), +0x2000 (dir),
+        /// +0x3000 (table), +0x4000 (bin). `root_cell_index` is the cell index
+        /// of the hive's root key node (placed within `bin_page`).
+        fn new(base: u64, root_cell_index: u32) -> Self {
+            Self {
+                hhive_va: base,
+                bin_va: base + 0x4000,
+                bin_page: vec![0u8; 0x1000],
+                root_cell_index,
+            }
+        }
+
+        /// Register this hive's pages into a `PageTableBuilder` and return the
+        /// (hhive_va) handle. Consumes nothing; call before `.build()`.
+        fn install(&self, b: PageTableBuilder) -> PageTableBuilder {
+            let bb_va = self.hhive_va + 0x1000;
+            let dir_va = self.hhive_va + 0x2000;
+            let table_va = self.hhive_va + 0x3000;
+
+            let mut hhive_page = vec![0u8; 0x1000];
+            // BaseBlock@0x10
+            hhive_page[0x10..0x18].copy_from_slice(&bb_va.to_le_bytes());
+            // Storage[0]._DUAL.Map@(STORAGE_OFF + DUAL_MAP_OFF)
+            let map_off = (STORAGE_OFF + DUAL_MAP_OFF) as usize;
+            hhive_page[map_off..map_off + 8].copy_from_slice(&dir_va.to_le_bytes());
+
+            let mut bb_page = vec![0u8; 0x1000];
+            // _HBASE_BLOCK.RootCell@0x24
+            bb_page[0x24..0x28].copy_from_slice(&self.root_cell_index.to_le_bytes());
+
+            let mut dir_page = vec![0u8; 0x1000];
+            // Directory[0] → table_va
+            dir_page[0..8].copy_from_slice(&table_va.to_le_bytes());
+
+            let mut table_page = vec![0u8; 0x1000];
+            // Table[0] = _HMAP_ENTRY { PermanentBinAddress = bin_va, BlockOffset = 0 }
+            table_page[0..8].copy_from_slice(&self.bin_va.to_le_bytes());
+            table_page[8..12].copy_from_slice(&0u32.to_le_bytes());
+
+            b.map_4k(self.hhive_va, self.hhive_va, flags::WRITABLE)
+                .write_phys(self.hhive_va, &hhive_page)
+                .map_4k(bb_va, bb_va, flags::WRITABLE)
+                .write_phys(bb_va, &bb_page)
+                .map_4k(dir_va, dir_va, flags::WRITABLE)
+                .write_phys(dir_va, &dir_page)
+                .map_4k(table_va, table_va, flags::WRITABLE)
+                .write_phys(table_va, &table_page)
+                .map_4k(self.bin_va, self.bin_va, flags::WRITABLE)
+                .write_phys(self.bin_va, &self.bin_page)
+        }
+    }
+
+    /// Cell index `i` resolves to `bin_va + i + 4` through the HMAP directory —
+    /// the in-memory hive translation that `read_cell_addr` now performs.
+    #[test]
+    fn read_cell_addr_resolves_via_cell_map() {
+        let mut hive = CellMapHive::new(0x0020_0000, 0x20);
+        // Place 2 readable bytes at cell index 0x20's data start so read_cell_addr
+        // confirms the cell is mapped.
+        let d = ao(0x20);
+        hive.bin_page[d] = 0xAB;
+        hive.bin_page[d + 1] = 0xCD;
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // Cell data VA = bin_va + cell_index + 4.
+        assert_eq!(
+            read_cell_addr(&reader, hive.hhive_va, 0x20),
+            hive.bin_va + 0x20 + 4
+        );
+        // An unmapped cell index (would translate past the bin region's data)
+        // still resolves arithmetically but its bytes are zero — read_cell_addr
+        // only requires the 2 bytes to be *readable*, which they are (mapped page).
+    }
+
+    // ---------------------------------------------------------------
     // Classifier tests
     // ---------------------------------------------------------------
 
@@ -2236,825 +2347,157 @@ mod tests {
         assert_eq!(LSA_KEY_NAMES[3], "Data");
     }
 
-    /// system_flat_base succeeds but system_root resolves to 0 → empty Vec.
-    /// Covers line 130 (system_root == 0 check).
+    // ---------------------------------------------------------------
+    // Cell-map navigation tests (in-memory hive model)
+    // ---------------------------------------------------------------
+
+    /// resolve_root_cell returns the root key node VA via the cell map.
+    #[test]
+    fn resolve_root_cell_via_cell_map() {
+        let root_idx: u32 = 0x40;
+        let mut hive = CellMapHive::new(0x0030_0000, root_idx);
+        // Put 2 readable bytes at the root cell's data start.
+        let d = ao(root_idx);
+        hive.bin_page[d] = b'n';
+        hive.bin_page[d + 1] = b'k';
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(
+            resolve_root_cell(&reader, hive.hhive_va),
+            hive.bin_va + u64::from(root_idx) + 4
+        );
+    }
+
+    /// resolve_root_cell returns 0 when the hive (and thus base block) is unmapped.
+    #[test]
+    fn resolve_root_cell_unmapped_returns_zero() {
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        assert_eq!(resolve_root_cell(&reader, 0xDEAD_BEEF), 0);
+    }
+
+    /// resolve_root_cell returns 0 when RootCell index is 0.
+    #[test]
+    fn resolve_root_cell_zero_index_returns_zero() {
+        let hive = CellMapHive::new(0x0040_0000, 0);
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        assert_eq!(resolve_root_cell(&reader, hive.hhive_va), 0);
+    }
+
+    /// walk_hashdump returns empty when the SYSTEM root cell cannot be resolved.
     #[test]
     fn walk_hashdump_system_root_zero_empty() {
-        // Map the SYSTEM hive so resolve_flat_base succeeds, but leave
-        // base_block area unmapped so resolve_root_cell returns 0.
-        // sam hive is non-zero but unmapped (doesn't matter; fails earlier).
-        let sys_vaddr: u64 = 0x0050_1000;
-        let sys_paddr: u64 = 0x0050_1000;
-        let sys_bb: u64 = 0x0051_1000;
-        let sys_bb_paddr: u64 = 0x0051_1000;
-
-        let mut sys_page = vec![0u8; 0x1000];
-        // BaseBlock at 0x10 = sys_bb
-        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
-        // Storage at 0x30 = 0 → flat_base = sys_bb + 0x1000
-        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut sys_bb_page = vec![0u8; 0x1000];
-        // root_cell_off at 0x24 = 0 → resolve_root_cell returns 0
-        sys_bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
+        // SYSTEM hive with RootCell index = 0 → resolve_root_cell returns 0.
+        let hive = CellMapHive::new(0x0050_0000, 0);
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
-            .write_phys(sys_paddr, &sys_page)
-            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
-            .write_phys(sys_bb_paddr, &sys_bb_page)
-            .build();
-
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let result = walk_hashdump(&reader, 0xDEAD_0000, sys_vaddr).unwrap();
-        assert!(result.is_empty(), "system_root==0 should return empty");
+        let result = walk_hashdump(&reader, 0xDEAD_0000, hive.hhive_va).unwrap();
+        assert!(result.is_empty(), "system_root==0 → empty");
     }
 
-    /// system resolves fully but sam_flat_base returns 0 → empty Vec.
-    /// Covers line 135 (sam_flat_base == 0 check).
+    /// walk_hashdump returns empty when the SAM root cell cannot be resolved,
+    /// even though the SYSTEM hive resolves a root.
     #[test]
-    fn walk_hashdump_sam_flat_base_zero_empty() {
-        // Build a SYSTEM hive with enough data so resolve_flat_base succeeds
-        // AND resolve_root_cell returns non-zero, but then extract_boot_key
-        // fails because CurrentControlSet is not found → returns empty boot key.
-        //
-        // For the SAM hive, we leave it unmapped so resolve_flat_base returns 0.
-
-        let sys_vaddr: u64 = 0x0060_1000;
-        let sys_paddr: u64 = 0x0060_1000;
-        let sys_bb: u64 = 0x0061_1000;
-        let sys_bb_paddr: u64 = 0x0061_1000;
-        let sys_flat_paddr: u64 = 0x0062_1000; // sys_bb + 0x1000
-
-        let root_cell_off: u32 = 0x20;
-
-        let mut sys_page = vec![0u8; 0x1000];
-        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
-        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut sys_bb_page = vec![0u8; 0x1000];
-        sys_bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
-
-        // flat_base page: put readable bytes at root_cell_off+4 so read_cell_addr
-        // returns non-zero. Then resolve_root_cell returns that address.
-        // Then extract_boot_key will call find_subkey_by_name for
-        // "CurrentControlSet" on the root NK which has subkey_count=0 → returns 0
-        // → extract_boot_key returns empty → walk returns empty.
-        let sys_flat_page = vec![0u8; 0x1000];
-        // subkey_count at (root_cell_off+4+0x18) = 0x3C stays 0
-        let _ = sys_flat_page[0]; // silence unused warning
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
+    fn walk_hashdump_sam_root_zero_empty() {
+        let sys = CellMapHive::new(0x0060_0000, 0x20); // root resolvable
+        let sam = CellMapHive::new(0x0068_0000, 0); // RootCell=0 → 0
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        // SAM hive: unmapped → resolve_flat_base returns 0
-        let sam_vaddr: u64 = 0xDEAD_BEEF_1000;
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
-            .write_phys(sys_paddr, &sys_page)
-            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
-            .write_phys(sys_bb_paddr, &sys_bb_page)
-            .map_4k(sys_bb + 0x1000, sys_flat_paddr, flags::WRITABLE)
-            .write_phys(sys_flat_paddr, &sys_flat_page)
-            .build();
-
+        let b = sam.install(sys.install(PageTableBuilder::new()));
+        let (cr3, mem) = b.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        // system hive resolves, boot_key extraction fails (no CCS subkey),
-        // walk returns empty before ever checking sam_flat_base.
-        let result = walk_hashdump(&reader, sam_vaddr, sys_vaddr).unwrap();
-        assert!(result.is_empty(), "empty boot key should return empty");
-    }
-
-    /// sam_flat_base resolves but system_root returns 0 → empty Vec.
-    /// Covers line 131 (system_root == 0 check from resolve_root_cell).
-    #[test]
-    fn walk_hashdump_system_root_zero_via_mapped_hive() {
-        // SYSTEM hive with valid BaseBlock and root_cell_off = 0 →
-        // resolve_root_cell returns 0 → early return.
-        let sys_vaddr: u64 = 0x0070_1000;
-        let sys_paddr: u64 = 0x0070_1000;
-        let sys_bb: u64 = 0x0071_1000;
-        let sys_bb_paddr: u64 = 0x0071_1000;
-        let sys_flat_paddr: u64 = 0x0072_1000;
-
-        let mut sys_page = vec![0u8; 0x1000];
-        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
-        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut sys_bb_page = vec![0u8; 0x1000];
-        // root_cell_off = 0 → resolve_root_cell returns 0
-        sys_bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
-
-        let sys_flat_page = vec![0u8; 0x1000];
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
-            .write_phys(sys_paddr, &sys_page)
-            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
-            .write_phys(sys_bb_paddr, &sys_bb_page)
-            .map_4k(sys_bb + 0x1000, sys_flat_paddr, flags::WRITABLE)
-            .write_phys(sys_flat_paddr, &sys_flat_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_hashdump(&reader, 0xDEAD_0000, sys_vaddr).unwrap();
-        assert!(result.is_empty(), "system_root==0 should return empty");
+        let result = walk_hashdump(&reader, sam.hhive_va, sys.hhive_va).unwrap();
+        assert!(result.is_empty(), "sam_root==0 → empty");
     }
 
     /// Non-zero hive addresses but unreadable memory → empty Vec.
     #[test]
     fn walk_hashdump_unreadable_hive() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        // Both addresses are non-zero but unmapped → all reads fail → empty.
         let result = walk_hashdump(&reader, 0xFFFF_8000_1111_0000, 0xFFFF_8000_2222_0000).unwrap();
         assert!(result.is_empty());
     }
 
-    // ── Additional coverage: internal helpers ────────────────────────
-
-    /// gf_mul(0, x) = 0 for all x.
-    #[test]
-    fn gf_mul_zero_operand() {
-        for b in 0u8..=255 {
-            assert_eq!(gf_mul(0, b), 0, "gf_mul(0, {b}) should be 0");
-        }
-    }
-
-    /// gf_mul(1, x) = x (multiplicative identity).
-    #[test]
-    fn gf_mul_identity() {
-        for b in 0u8..=255 {
-            assert_eq!(gf_mul(1, b), b, "gf_mul(1, {b}) should be {b}");
-        }
-    }
-
-    /// gf_mul(2, 0x80) should reduce by 0x1b (polynomial).
-    #[test]
-    fn gf_mul_reduction() {
-        // 0x80 << 1 = 0x100, high bit set → XOR 0x1b → result = 0x1b
-        assert_eq!(gf_mul(0x80, 2), 0x1b);
-    }
-
-    /// aes128_key_expansion produces exactly 11 round keys of 16 bytes each.
-    #[test]
-    fn aes128_key_expansion_count() {
-        let key = [0u8; 16];
-        let rks = aes128_key_expansion(&key);
-        assert_eq!(rks.len(), 11);
-        for rk in &rks {
-            assert_eq!(rk.len(), 16);
-        }
-    }
-
-    /// inv_sub_bytes is the inverse of sub_bytes (round-trip via AES_SBOX → INV_SBOX).
-    #[test]
-    fn inv_sub_bytes_round_trip() {
-        let original: [u8; 16] = [
-            0x00, 0x01, 0x10, 0xFF, 0xAB, 0xCD, 0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5,
-            0x30, 0x01,
-        ];
-        // Apply forward S-box manually
-        let mut sboxed = original;
-        for b in &mut sboxed {
-            *b = AES_SBOX[*b as usize];
-        }
-        // Apply inverse S-box
-        inv_sub_bytes(&mut sboxed);
-        assert_eq!(sboxed, original, "inv_sub_bytes should undo forward S-box");
-    }
-
-    /// inv_shift_rows applied twice returns original state (period 2 for rows 1 and 3).
-    #[test]
-    fn inv_shift_rows_twice_returns_original() {
-        let original: [u8; 16] = [
-            0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31,
-            0x32, 0x33,
-        ];
-        let mut state = original;
-        inv_shift_rows(&mut state);
-        inv_shift_rows(&mut state);
-        // Row 2 (swapped twice) should be back to original
-        // Row 1 and 3 (shifted by odd amount) need 4 applications for full period,
-        // but we just verify the call doesn't panic and state is modified/restored
-        // by a consistent number of applications.
-        // Actually inv_shift_rows period for row 1 (shift 1) is 4 and row 3 (shift 3) is 4.
-        // So let's do 4 applications and check original restored.
-        let mut state2 = original;
-        for _ in 0..4 {
-            inv_shift_rows(&mut state2);
-        }
-        assert_eq!(
-            state2, original,
-            "4x inv_shift_rows should restore original"
-        );
-    }
-
-    /// hex_encode with multi-byte input.
-    #[test]
-    fn hex_encode_multi_byte() {
-        assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
-        assert_eq!(hex_encode(&[0x00, 0xFF]), "00ff");
-    }
-
-    /// classify_hashdump: case-insensitive hash comparison works.
-    #[test]
-    fn classify_hashdump_case_insensitive_hashes() {
-        // "password" NT hash in uppercase should still be suspicious.
-        assert!(classify_hashdump(
-            "user",
-            "A4F49C406510BDCAB6824EE7C30FD852"
-        ));
-        // "admin" NT hash in mixed case should be suspicious.
-        assert!(classify_hashdump(
-            "user",
-            "209C6174DA490CAEB422F3FA5A7AE634"
-        ));
-    }
-
-    /// extract_hashes_from_v with nt_length == 4 returns EMPTY_NT_HASH.
-    #[test]
-    fn extract_hashes_from_v_nt_length_four_empty_marker() {
-        let mut v = vec![0u8; 0xCC + 32];
-        let hbk = vec![0xAAu8; 16];
-        // Set nt_length = 4 at V[0xAC..0xB0]
-        v[0xAC..0xB0].copy_from_slice(&4u32.to_le_bytes());
-        // Set lm_length = 4 at V[0xA0..0xA4]
-        v[0xA0..0xA4].copy_from_slice(&4u32.to_le_bytes());
-        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
-        assert_eq!(nt, EMPTY_NT_HASH, "nt_length=4 → EMPTY_NT_HASH");
-        assert_eq!(lm, EMPTY_LM_HASH, "lm_length=4 → EMPTY_LM_HASH");
-    }
-
-    /// resolve_flat_base returns 0 when hive_addr is unmapped.
-    #[test]
-    fn resolve_flat_base_unmapped_returns_zero() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        assert_eq!(resolve_flat_base(&reader, 0xDEAD_BEEF), 0);
-    }
-
-    /// resolve_root_cell returns 0 when hive_addr is unmapped.
-    #[test]
-    fn resolve_root_cell_unmapped_returns_zero() {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        assert_eq!(resolve_root_cell(&reader, 0xDEAD_BEEF, 0x1000_0000), 0);
-    }
-
-    /// read_value_data returns empty when key_addr is unmapped.
+    /// read_value_data returns empty when the key cell is unmapped.
     #[test]
     fn read_value_data_unmapped_returns_empty() {
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let hive = CellMapHive::new(0x0070_0000, 0x10);
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let result = read_value_data(&reader, 0x1000_0000, 0xDEAD_BEEF, "F");
+        // key_addr points outside the bin page → reads fail → empty.
+        let result = read_value_data(&reader, hive.hhive_va, 0xDEAD_BEEF, "F");
         assert!(result.is_empty());
     }
 
-    /// read_key_class_name returns empty when key_addr is unmapped.
+    /// read_key_class_name returns empty when the key cell is unmapped.
     #[test]
     fn read_key_class_name_unmapped_returns_empty() {
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let hive = CellMapHive::new(0x0078_0000, 0x10);
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let result = read_key_class_name(&reader, 0x1000_0000, 0xDEAD_BEEF);
+        let result = read_key_class_name(&reader, hive.hhive_va, 0xDEAD_BEEF);
         assert!(result.is_empty());
     }
-
-    // ── Additional coverage: decrypt_hashed_boot_key edge cases ─────
-
-    /// decrypt_hashed_boot_key rev2 with F data = 0x80 bytes (exact minimum,
-    /// but not 0xA0) returns empty because the rev2 branch needs 0xA0 bytes.
-    #[test]
-    fn decrypt_hashed_boot_key_rev2_too_short_for_encrypted_data() {
-        let mut f_data = vec![0u8; 0x80]; // exactly 0x80, but rev2 needs 0xA0
-        f_data[0x68] = 0x02;
-        f_data[0x69] = 0x00;
-        let boot_key = vec![0u8; 16];
-        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        assert!(
-            result.is_empty(),
-            "rev2 with f_data.len()=0x80 (< 0xA0) → empty"
-        );
-    }
-
-    /// decrypt_hashed_boot_key rev3 with F data exactly 0x9B bytes (< 0x9C) → empty.
-    #[test]
-    fn decrypt_hashed_boot_key_rev3_too_short() {
-        let mut f_data = vec![0u8; 0x9B]; // needs 0x9C (IV at 0x6C..0x7C, ct at 0x7C..0x9C)
-        f_data[0x68] = 0x03;
-        f_data[0x69] = 0x00;
-        let boot_key = vec![0u8; 16];
-        let result = decrypt_hashed_boot_key(&f_data, &boot_key);
-        assert!(
-            result.is_empty(),
-            "rev3 with f_data.len()=0x9B (< 0x9C) → empty"
-        );
-    }
-
-    /// extract_hashes_from_v with nt_length >= 20 but offset out of bounds.
-    #[test]
-    fn extract_hashes_from_v_nt_offset_out_of_bounds() {
-        let mut v = vec![0u8; 0xCC + 64];
-        let hbk = vec![0xAAu8; 16];
-        // Set nt_offset = 0xFF00 (very large → nt_offset + 0xCC > v.len())
-        // nt_offset at V[0xA8..0xAC], nt_length at V[0xAC..0xB0]
-        v[0xA8..0xAC].copy_from_slice(&0xFF00u32.to_le_bytes());
-        v[0xAC..0xB0].copy_from_slice(&24u32.to_le_bytes()); // nt_length >= 20
-        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
-        // offset out of bounds → empty_nt
-        assert_eq!(nt, EMPTY_NT_HASH, "out-of-bounds nt_offset → EMPTY_NT_HASH");
-        assert_eq!(lm, EMPTY_LM_HASH);
-    }
-
-    /// decrypt_sam_hash_with_rid with empty input returns empty.
-    #[test]
-    fn decrypt_sam_hash_with_rid_empty_input() {
-        let result = decrypt_sam_hash_with_rid(&[], 500);
-        assert!(result.is_empty());
-    }
-
-    /// str_to_key produces different keys for different inputs.
-    #[test]
-    fn str_to_key_different_inputs_different_keys() {
-        let k1 = str_to_key(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
-        let k2 = str_to_key(&[0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]);
-        assert_ne!(k1, k2);
-    }
-
-    /// rid_to_des_keys for RID=0 both keys derived without panic.
-    #[test]
-    fn rid_to_des_keys_zero_rid() {
-        let (k1, k2) = rid_to_des_keys(0);
-        assert_eq!(k1.len(), 8);
-        assert_eq!(k2.len(), 8);
-    }
-
-    /// rc4_crypt with non-trivial key produces different output than input.
-    #[test]
-    fn rc4_crypt_transforms_data() {
-        let key = vec![
-            0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-            0x0F, 0x10,
-        ];
-        let plaintext = vec![0x00u8; 32];
-        let ciphertext = rc4_crypt(&key, &plaintext);
-        // RC4 of all-zeros with a non-trivial key should produce non-zero output.
-        assert_ne!(ciphertext, plaintext);
-        assert_eq!(ciphertext.len(), plaintext.len());
-    }
-
-    /// aes128_decrypt_block applied to a block of known plaintext+key.
-    #[test]
-    fn aes128_decrypt_block_produces_output() {
-        let key = [0u8; 16];
-        let rks = aes128_key_expansion(&key);
-        let block = [0u8; 16];
-        let decrypted = aes128_decrypt_block(&block, &rks);
-        // Just verify it runs and produces 16 bytes without panic.
-        assert_eq!(decrypted.len(), 16);
-    }
-
-    /// gf_mul with both operands non-zero.
-    #[test]
-    fn gf_mul_known_values() {
-        // 0x02 * 0x02 = 0x04 in GF(2^8)
-        assert_eq!(gf_mul(2, 2), 4);
-        // 0x02 * 0x40 = 0x80 (no reduction needed)
-        assert_eq!(gf_mul(2, 0x40), 0x80);
-    }
-
-    /// HashdumpEntry struct fields accessible and clone works.
-    #[test]
-    fn hashdump_entry_clone_and_fields() {
-        let entry = HashdumpEntry {
-            username: "alice".to_string(),
-            rid: 1001,
-            lm_hash: EMPTY_LM_HASH.to_string(),
-            nt_hash: EMPTY_NT_HASH.to_string(),
-            is_suspicious: true,
-        };
-        let cloned = entry.clone();
-        assert_eq!(cloned.username, "alice");
-        assert_eq!(cloned.rid, 1001);
-        assert!(cloned.is_suspicious);
-    }
-
-    /// EMPTY_NT_HASH and EMPTY_LM_HASH constants have expected lengths.
-    #[test]
-    fn empty_hash_constants_correct() {
-        assert_eq!(EMPTY_NT_HASH.len(), 32);
-        assert_eq!(EMPTY_LM_HASH.len(), 32);
-        assert_eq!(EMPTY_NT_HASH, "31d6cfe0d16ae931b73c59d7e0c089c0");
-        assert_eq!(EMPTY_LM_HASH, "aad3b435b51404eeaad3b435b51404ee");
-    }
-
-
-    // ── Additional DES / crypto coverage ────────────────────────────
-
-    /// des_ecb_encrypt called directly produces 8 bytes.
-    #[test]
-    fn des_ecb_encrypt_produces_8_bytes() {
-        let key = [0u8; 8];
-        let data = [0u8; 8];
-        let out = des_ecb_encrypt(&key, &data);
-        assert_eq!(out.len(), 8);
-    }
-
-    /// des_ecb_encrypt and des_ecb_decrypt are inverses for arbitrary key/data.
-    #[test]
-    fn des_encrypt_decrypt_round_trip_all_zeros() {
-        let key = [0xFEu8; 8]; // parity bits cleared
-        let data = [0x12u8, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
-        let enc = des_ecb_encrypt(&key, &data);
-        let dec = des_ecb_decrypt(&key, &enc);
-        assert_eq!(dec, data);
-    }
-
-    /// rid_to_des_keys for RID=500 (Administrator) produces known structure.
-    #[test]
-    fn rid_to_des_keys_admin_rid() {
-        let (k1, k2) = rid_to_des_keys(500);
-        // RID 500 = 0x000001F4: bytes [0xF4, 0x01, 0x00, 0x00]
-        // Both keys should have odd parity on all bytes.
-        for &b in &k1 {
-            assert_eq!(
-                b.count_ones() % 2,
-                1,
-                "k1 byte {b:#04x} should have odd parity"
-            );
-        }
-        for &b in &k2 {
-            assert_eq!(
-                b.count_ones() % 2,
-                1,
-                "k2 byte {b:#04x} should have odd parity"
-            );
-        }
-    }
-
-    /// decrypt_sam_hash_with_rid with 16-byte all-0xFF input produces 16 bytes.
-    #[test]
-    fn decrypt_sam_hash_with_rid_all_ff() {
-        let encrypted = [0xFFu8; 16];
-        let result = decrypt_sam_hash_with_rid(&encrypted, 1000);
-        assert_eq!(result.len(), 16);
-    }
-
-    /// aes_cbc_decrypt_simple with 32 bytes of data produces 32 bytes.
-    #[test]
-    fn aes_cbc_decrypt_simple_32_bytes() {
-        let key = [0xABu8; 16];
-        let iv = [0xCDu8; 16];
-        let data = [0xEFu8; 32];
-        let result = aes_cbc_decrypt_simple(&key, &iv, &data);
-        assert_eq!(result.len(), 32);
-    }
-
-    /// inv_mix_columns does not panic on any 16-byte input.
-    #[test]
-    fn inv_mix_columns_no_panic() {
-        let mut state = [0u8; 16];
-        for (i, byte) in state.iter_mut().enumerate() {
-            *byte = i as u8 * 17;
-        }
-        inv_mix_columns(&mut state);
-        // Just verify no panic and the output is 16 bytes.
-        assert_eq!(state.len(), 16);
-    }
-
-    /// gf_mul is commutative for small values.
-    #[test]
-    fn gf_mul_commutative() {
-        for a in 0u8..=15 {
-            for b in 0u8..=15 {
-                assert_eq!(
-                    gf_mul(a, b),
-                    gf_mul(b, a),
-                    "gf_mul({a},{b}) should be commutative"
-                );
-            }
-        }
-    }
-
-    /// extract_hashes_from_v with nt_length >= 20 and offset in bounds but
-    /// enc_start + 16 exceeds v_data → falls back to empty_nt.
-    #[test]
-    fn extract_hashes_from_v_enc_start_exceeds_data() {
-        let mut v = vec![0u8; 0xCC + 32];
-        let hbk = vec![0xAAu8; 16];
-        // Set nt_length = 24 (>= 20) at V[0xAC..0xB0]
-        // Set nt_offset = 0x00 → nt_offset_abs = 0x00 + 0xCC = 0xCC
-        // enc_start = 0xCC + 4 = 0xD0; 0xD0 + 16 = 0xE0 which should be <= v.len() = 0xCC+32=0xEC
-        // Wait: 0xCC + 32 = 0xEC, 0xD0 + 16 = 0xE0 <= 0xEC → this path would SUCCEED.
-        // We need enc_start + 16 > v.len():
-        // nt_offset = 0x10 → nt_offset_abs = 0xDC; enc_start = 0xE0; 0xE0 + 16 = 0xF0 > 0xEC → fails.
-        v[0xA8..0xAC].copy_from_slice(&0x10u32.to_le_bytes()); // nt_offset = 0x10
-        v[0xAC..0xB0].copy_from_slice(&24u32.to_le_bytes()); // nt_length = 24
-                                                             // lm_length = 0 → empty lm
-        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
-        assert_eq!(nt, EMPTY_NT_HASH, "enc_start+16 > data len → EMPTY_NT_HASH");
-        assert_eq!(lm, EMPTY_LM_HASH);
-    }
-
-    /// resolve_flat_base with mapped hive but zero base_block pointer returns 0.
-    #[test]
-    fn resolve_flat_base_zero_base_block_returns_zero() {
-        let hive_vaddr: u64 = 0x0020_0000;
-        let hive_paddr: u64 = 0x0020_0000;
-
-        // Map hive page with base_block = 0 at offset 0x10
-        let hive_page = vec![0u8; 0x1000]; // all zeros → base_block = 0
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = resolve_flat_base(&reader, hive_vaddr);
-        assert_eq!(result, 0, "base_block=0 → resolve_flat_base returns 0");
-    }
-
-    /// resolve_flat_base with mapped hive, non-zero base_block, non-zero storage → returns storage.
-    #[test]
-    fn resolve_flat_base_nonzero_storage_returns_storage() {
-        let hive_vaddr: u64 = 0x0030_0000;
-        let hive_paddr: u64 = 0x0030_0000;
-        let base_block: u64 = 0x0031_0000;
-        let base_block_paddr: u64 = 0x0031_0000;
-        let storage_ptr: u64 = 0x0032_0000;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-        hive_page[0x30..0x38].copy_from_slice(&storage_ptr.to_le_bytes()); // non-zero storage
-
-        let bb_page = vec![0u8; 0x1000]; // base_block page (doesn't matter for this test)
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = resolve_flat_base(&reader, hive_vaddr);
-        assert_eq!(
-            result, storage_ptr,
-            "non-zero storage ptr → resolve_flat_base returns storage_ptr"
-        );
-    }
-
-    // ── read_key_class_name: class_len == 0 returns empty ───────────
 
     /// read_key_class_name with class_len = 0 returns empty.
     #[test]
     fn read_key_class_name_zero_len_returns_empty() {
-        let key_vaddr: u64 = 0x0040_0000;
-        let key_paddr: u64 = 0x0040_0000;
+        // key cell at index 0x10; class_len field (key+0x4E) stays 0.
+        let key_idx: u32 = 0x10;
+        let mut hive = CellMapHive::new(0x0080_0000, 0x10);
+        let d = ao(key_idx);
+        hive.bin_page[d] = b'n';
+        hive.bin_page[d + 1] = b'k';
 
-        // Map a key page where class_len at +0x4E = 0
-        let key_page = vec![0u8; 0x1000]; // all zeros → class_len = 0
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(key_vaddr, key_paddr, flags::WRITABLE)
-            .write_phys(key_paddr, &key_page)
-            .build();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let result = read_key_class_name(&reader, 0x1000_0000, key_vaddr);
+        let key_addr = read_cell_addr(&reader, hive.hhive_va, key_idx);
+        let result = read_key_class_name(&reader, hive.hhive_va, key_addr);
         assert!(result.is_empty(), "class_len=0 → empty");
     }
 
-    // ── read_value_data: val_count > 0 but val_list unmapped ────────
+    // ── Flat-page cell writers (cell data lives in the bin page at ao(idx)) ──
 
-    /// read_value_data: key with val_count=1 but val_list_addr unmapped → empty.
-    #[test]
-    fn read_value_data_val_list_unmapped_returns_empty() {
-        let key_vaddr: u64 = 0x0041_0000;
-        let key_paddr: u64 = 0x0041_0000;
-        let flat_base: u64 = 0x0042_0000;
-
-        // Key page: val_count at +0x28 = 1, val_list_off at +0x2C = 0xDEAD
-        let mut key_page = vec![0u8; 0x1000];
-        key_page[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count
-        key_page[0x2C..0x30].copy_from_slice(&0xDEADu32.to_le_bytes()); // unmapped list_off
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(key_vaddr, key_paddr, flags::WRITABLE)
-            .write_phys(key_paddr, &key_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // val_list_addr = flat_base + 0xDEAD + 4 → unmapped → read_cell_addr returns 0
-        let result = read_value_data(&reader, flat_base, key_vaddr, "F");
-        assert!(result.is_empty(), "unmapped val_list → empty");
+    /// Helper: byte offset of cell `idx`'s data within the bin page.
+    fn ao(cell_off: u32) -> usize {
+        (cell_off + 4) as usize
     }
 
-    // ── extract_hashes_from_v: nt_length >= 20, lm_length >= 20 in bounds ──
-
-    /// extract_hashes_from_v: both nt and lm offsets in bounds with enc_start in bounds.
-    /// With all-zero xor the DES decryption runs, producing a 16-byte result that
-    /// is hex-encoded (32 chars, different from empty hashes).
-    #[test]
-    fn extract_hashes_from_v_both_in_bounds_produces_hashes() {
-        // Enough space for: header (0xCC) + 64 bytes for nt + 64 bytes for lm data
-        let v_len = 0xCC + 128;
-        let mut v = vec![0u8; v_len];
-        let hbk = vec![0u8; 16]; // all-zero HBK
-
-        // NT hash: offset=0, length=24 → nt_abs = 0xCC, enc_start = 0xCC+4 = 0xD0
-        // enc_start+16 = 0xE0 < v_len=0xCC+128=0x14C → in bounds
-        v[0xA8..0xAC].copy_from_slice(&0u32.to_le_bytes()); // nt_offset = 0
-        v[0xAC..0xB0].copy_from_slice(&24u32.to_le_bytes()); // nt_length = 24
-
-        // LM hash: offset=32, length=24 → lm_abs = 0xCC+32 = 0xEC, enc_start=0xF0
-        // enc_start+16 = 0x100 < 0x14C → in bounds
-        v[0x9C..0xA0].copy_from_slice(&32u32.to_le_bytes()); // lm_offset = 32
-        v[0xA0..0xA4].copy_from_slice(&24u32.to_le_bytes()); // lm_length = 24
-
-        let (lm, nt) = extract_hashes_from_v(&v, &hbk, 500);
-        // Both should produce 32-char hex strings (DES output hex-encoded)
-        assert_eq!(nt.len(), 32, "NT hash should be 32 hex chars");
-        assert_eq!(lm.len(), 32, "LM hash should be 32 hex chars");
-    }
-
-    // ── extract_boot_key: ControlSet001 fallback branch ─────────────
-    //
-    // Build a SYSTEM hive with an lf list under root containing "ControlSet001"
-    // but NOT "CurrentControlSet". The fallback branch is exercised when
-    // CurrentControlSet is not found and ControlSet001 is tried.
-
-    /// extract_boot_key falls back to ControlSet001 when CurrentControlSet missing.
-    /// Since ControlSet001's subkeys are 0, it returns empty → walk_hashdump returns empty.
-    #[test]
-    fn extract_boot_key_fallback_to_controlset001() {
-        let sys_vaddr: u64 = 0x0080_0000;
-        let sys_paddr: u64 = 0x0080_0000;
-        let sys_bb: u64 = 0x0081_0000;
-        let sys_bb_paddr: u64 = 0x0081_0000;
-        let sys_flat_paddr: u64 = 0x0082_0000;
-
-        let root_cell_off: u32 = 0x20;
-        let list_cell_off: u32 = 0x80;
-        let ccs001_cell_off: u32 = 0xC0;
-
-        let root_off = (root_cell_off + 4) as usize;
-        let list_off = (list_cell_off + 4) as usize;
-        let ccs001_off = (ccs001_cell_off + 4) as usize;
-
-        let mut sys_page = vec![0u8; 0x1000];
-        sys_page[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes());
-        sys_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
-
-        let mut flat_page = vec![0u8; 0x1000];
-
-        // Root NK: subkey_count=1, list=list_cell_off
-        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
-        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
-
-        // lf list: 1 entry → ControlSet001 cell
-        flat_page[list_off] = b'l';
-        flat_page[list_off + 1] = b'f';
-        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
-        flat_page[list_off + 4..list_off + 8].copy_from_slice(&ccs001_cell_off.to_le_bytes());
-
-        // ControlSet001 NK: name="ControlSet001", subkey_count=0 (no Control subkey)
-        let ccs_name = b"ControlSet001";
-        let ccs_name_len: u16 = ccs_name.len() as u16;
-        flat_page[ccs001_off + 0x4A..ccs001_off + 0x4C]
-            .copy_from_slice(&ccs_name_len.to_le_bytes());
-        flat_page[ccs001_off + 0x4C..ccs001_off + 0x4C + ccs_name.len()].copy_from_slice(ccs_name);
-        // subkey_count = 0 → find_subkey_by_name("Control") → 0 → boot_key empty
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        // SAM hive: unmapped → resolve_flat_base returns 0 (doesn't matter, boot_key fails first)
-        let sam_vaddr: u64 = 0xDEAD_0000;
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sys_vaddr, sys_paddr, flags::WRITABLE)
-            .write_phys(sys_paddr, &sys_page)
-            .map_4k(sys_bb, sys_bb_paddr, flags::WRITABLE)
-            .write_phys(sys_bb_paddr, &bb_page)
-            .map_4k(sys_bb + 0x1000, sys_flat_paddr, flags::WRITABLE)
-            .write_phys(sys_flat_paddr, &flat_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // ControlSet001 found but has no Control subkey → boot_key empty → walk returns empty
-        let result = walk_hashdump(&reader, sam_vaddr, sys_vaddr).unwrap();
-        assert!(
-            result.is_empty(),
-            "missing Control subkey → boot_key empty → empty result"
-        );
-    }
-
-    // ── find_subkey_by_name: unknown list sig returns 0 ─────────────
-
-    // ── Full walk_hashdump test: SYSTEM + SAM hive chain ─────────────
-    //
-    // This test builds two minimal hives in synthetic memory to exercise the
-    // complete walk_hashdump body (L137-282) including extract_boot_key,
-    // decrypt_hashed_boot_key, and user enumeration.
-    //
-    // Strategy:
-    //   - Boot key: all-zero class names → boot_key = [0u8; 16] (trivially)
-    //   - F value: revision=2, all-zero salt/encrypted data → RC4 of MD5([0;16]+...)
-    //   - V value: all-zero data → extract_hashes_from_v returns empty hashes
-    //   - Users key: 1 RID entry "000001F4" (RID=500)
-    //
-    // Physical addresses stay well below 16 MB.
-
-    // Write a NK cell at `off` within `page` (page offsets = virt).
-    // Test builder mirroring the registry NK cell fields; arity matches the layout.
     #[allow(clippy::too_many_arguments)]
     fn write_nk(
         page: &mut [u8],
@@ -3073,13 +2516,16 @@ mod tests {
         page[off + 0x2C..off + 0x30].copy_from_slice(&val_list_off.to_le_bytes());
         page[off + 0x30..off + 0x34].copy_from_slice(&class_off.to_le_bytes());
         page[off + 0x4A..off + 0x4C].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        // ClassLength lives at 0x4E; write it BEFORE the name so a name of >=3
+        // chars (which reaches 0x4E) wins — `find_subkey_by_name` reads the name
+        // at 0x4C for name_len bytes, so the name must be intact. Keys that also
+        // need a readable ClassLength keep names <=2 chars (e.g. "JD").
+        page[off + 0x4E..off + 0x50].copy_from_slice(&class_len.to_le_bytes());
         if !name.is_empty() {
             page[off + 0x4C..off + 0x4C + name.len()].copy_from_slice(name);
         }
-        page[off + 0x4E..off + 0x50].copy_from_slice(&class_len.to_le_bytes());
     }
 
-    // Write a lf list at `off` within `page` with one entry pointing to `child_off`.
     fn write_lf1(page: &mut [u8], off: usize, child_off: u32) {
         page[off] = b'l';
         page[off + 1] = b'f';
@@ -3087,7 +2533,6 @@ mod tests {
         page[off + 4..off + 8].copy_from_slice(&child_off.to_le_bytes());
     }
 
-    // Write a lf list at `off` within `page` with N entries.
     fn write_lf_n(page: &mut [u8], off: usize, children: &[u32]) {
         page[off] = b'l';
         page[off + 1] = b'f';
@@ -3097,8 +2542,6 @@ mod tests {
         }
     }
 
-    // Write a VK cell at `off` within `page`.
-    // VK: sig at 0=vk, NameLength at 0x02, DataLength at 0x08, DataOffset at 0x0C, Name at 0x18.
     fn write_vk(page: &mut [u8], off: usize, name: &[u8], data_len: u32, data_off: u32) {
         page[off] = b'v';
         page[off + 1] = b'k';
@@ -3110,40 +2553,191 @@ mod tests {
         }
     }
 
-    /// Helper: addr = cell_off + 4 within the flat page.
-    fn ao(cell_off: u32) -> usize {
-        (cell_off + 4) as usize
+    /// find_subkey_by_name resolves a child through the cell map.
+    #[test]
+    fn find_subkey_by_name_via_cell_map() {
+        let parent_idx: u32 = 0x100;
+        let list_idx: u32 = 0x200;
+        let child_idx: u32 = 0x300;
+
+        let mut hive = CellMapHive::new(0x0088_0000, parent_idx);
+        write_nk(
+            &mut hive.bin_page,
+            ao(parent_idx),
+            b"root",
+            1,
+            list_idx,
+            0,
+            0,
+            0,
+            0,
+        );
+        write_lf1(&mut hive.bin_page, ao(list_idx), child_idx);
+        write_nk(&mut hive.bin_page, ao(child_idx), b"SAM", 0, 0, 0, 0, 0, 0);
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let parent_addr = read_cell_addr(&reader, hive.hhive_va, parent_idx);
+        let found = find_subkey_by_name(&reader, hive.hhive_va, parent_addr, "SAM");
+        assert_eq!(found, hive.bin_va + u64::from(child_idx) + 4);
+        // A missing name returns 0.
+        assert_eq!(
+            find_subkey_by_name(&reader, hive.hhive_va, parent_addr, "NOPE"),
+            0
+        );
     }
 
-    /// Build a minimal SYSTEM hive flat page for walk_hashdump.
-    /// Navigation: root → CurrentControlSet → Control → Lsa → {JD, Skew1, GBG, Data}
-    /// Each of the 4 LSA keys has a class name of "00000000" (UTF-16LE, 16 bytes)
-    /// The concatenated hex = "00000000" × 4 = 32 hex chars
-    /// → raw_bytes = [0u8; 16] → boot_key = [0u8; 16] (after scramble, still all zeros)
-    ///
-    /// Layout rule: each subkey list cell is placed AFTER its parent NK's footprint
-    /// (NK footprint = ao(nk_off)..ao(nk_off)+0x4C+name_len+2).  Class data cells
-    /// are placed in a dedicated region ≥ 0x3C0 so they never alias NK fields.
-    fn build_system_hive(flat: &mut [u8]) {
-        // NK cells (ao = cell_off + 4):
-        //   root    0x010 → ao 0x014, name "root"(4)  → footprint 0x014..0x064
-        //   ccs     0x090 → ao 0x094, name "CurrentControlSet"(17) → 0x094..0x0F2
-        //   ctrl    0x120 → ao 0x124, name "Control"(7) → 0x124..0x178
-        //   lsa     0x1A0 → ao 0x1A4, name "Lsa"(3)   → 0x1A4..0x1F4
-        //   jd      0x240 → ao 0x244, name "JD"(2)    → 0x244..0x294
-        //   skew1   0x2A0 → ao 0x2A4, name "Skew1"(5) → 0x2A4..0x2FC
-        //   gbg     0x300 → ao 0x304, name "GBG"(3)   → 0x304..0x354
-        //   data    0x360 → ao 0x364, name "Data"(4)  → 0x364..0x3B4
-        // Subkey list cells (placed after parent NK footprint, before next NK):
-        //   root_list  0x070 → ao 0x074  (12 bytes; 0x074..0x080) ✓ after root NK 0x064
-        //   ccs_list   0x100 → ao 0x104  (12 bytes; 0x104..0x110) ✓ after ccs NK 0x0F2
-        //   ctrl_list  0x180 → ao 0x184  (12 bytes; 0x184..0x190) ✓ after ctrl NK 0x178
-        //   lsa_list   0x200 → ao 0x204  (36 bytes; 0x204..0x228) ✓ after lsa NK 0x1F4
-        // Class data cells (isolated region ≥ 0x3C0, well past all NKs):
-        //   jd_cl   0x3C0 → ao 0x3C4  (16 bytes; 0x3C4..0x3D4)
-        //   sk_cl   0x3D0 → ao 0x3D4  (16 bytes; 0x3D4..0x3E4)
-        //   gbg_cl  0x3E0 → ao 0x3E4  (16 bytes; 0x3E4..0x3F4)
-        //   dat_cl  0x3F0 → ao 0x3F4  (16 bytes; 0x3F4..0x404) — within 0x1000
+    /// find_subkey_by_name with an unrecognised list signature returns 0.
+    #[test]
+    fn find_subkey_by_name_unknown_list_sig_returns_zero() {
+        let parent_idx: u32 = 0x100;
+        let list_idx: u32 = 0x200;
+        let mut hive = CellMapHive::new(0x0090_0000, parent_idx);
+        // parent: subkey_count=1, list=list_idx
+        hive.bin_page[ao(parent_idx) + 0x18..ao(parent_idx) + 0x1C]
+            .copy_from_slice(&1u32.to_le_bytes());
+        hive.bin_page[ao(parent_idx) + 0x20..ao(parent_idx) + 0x24]
+            .copy_from_slice(&list_idx.to_le_bytes());
+        // unknown sig + count
+        hive.bin_page[ao(list_idx)..ao(list_idx) + 2].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        hive.bin_page[ao(list_idx) + 2..ao(list_idx) + 4].copy_from_slice(&1u16.to_le_bytes());
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let parent_addr = read_cell_addr(&reader, hive.hhive_va, parent_idx);
+        let result = find_subkey_by_name(&reader, hive.hhive_va, parent_addr, "SAM");
+        assert_eq!(result, 0, "unknown list sig → 0");
+    }
+
+    /// read_value_data finds a named value's data through the cell map.
+    #[test]
+    fn read_value_data_via_cell_map() {
+        let key_idx: u32 = 0x100;
+        let vlist_idx: u32 = 0x180;
+        let vk_idx: u32 = 0x1C0;
+        let data_idx: u32 = 0x240;
+        let payload: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+        let mut hive = CellMapHive::new(0x0098_0000, key_idx);
+        // key: val_count=1, val_list=vlist_idx
+        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C].copy_from_slice(&1u32.to_le_bytes());
+        hive.bin_page[ao(key_idx) + 0x2C..ao(key_idx) + 0x30]
+            .copy_from_slice(&vlist_idx.to_le_bytes());
+        // value list: one entry → vk_idx
+        hive.bin_page[ao(vlist_idx)..ao(vlist_idx) + 4].copy_from_slice(&vk_idx.to_le_bytes());
+        // VK "F" with data_len=8 at data_idx
+        write_vk(
+            &mut hive.bin_page,
+            ao(vk_idx),
+            b"F",
+            payload.len() as u32,
+            data_idx,
+        );
+        hive.bin_page[ao(data_idx)..ao(data_idx) + payload.len()].copy_from_slice(&payload);
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let key_addr = read_cell_addr(&reader, hive.hhive_va, key_idx);
+        let data = read_value_data(&reader, hive.hhive_va, key_addr, "F");
+        assert_eq!(data, payload.to_vec());
+        // A non-matching name returns empty.
+        assert!(read_value_data(&reader, hive.hhive_va, key_addr, "G").is_empty());
+    }
+
+    /// read_value_data with inline data (high bit set in DataLength).
+    #[test]
+    fn read_value_data_inline_data_returned() {
+        let key_idx: u32 = 0x100;
+        let vlist_idx: u32 = 0x180;
+        let vk_idx: u32 = 0x1C0;
+        let inline: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+
+        let mut hive = CellMapHive::new(0x00A0_0000, key_idx);
+        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C].copy_from_slice(&1u32.to_le_bytes());
+        hive.bin_page[ao(key_idx) + 0x2C..ao(key_idx) + 0x30]
+            .copy_from_slice(&vlist_idx.to_le_bytes());
+        hive.bin_page[ao(vlist_idx)..ao(vlist_idx) + 4].copy_from_slice(&vk_idx.to_le_bytes());
+        let vko = ao(vk_idx);
+        hive.bin_page[vko] = b'v';
+        hive.bin_page[vko + 1] = b'k';
+        hive.bin_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes());
+        let raw_len: u32 = 0x8000_0004; // inline, 4 bytes
+        hive.bin_page[vko + 0x08..vko + 0x0C].copy_from_slice(&raw_len.to_le_bytes());
+        hive.bin_page[vko + 0x0C..vko + 0x10].copy_from_slice(&inline);
+        hive.bin_page[vko + 0x18] = b'F';
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let key_addr = read_cell_addr(&reader, hive.hhive_va, key_idx);
+        let result = read_value_data(&reader, hive.hhive_va, key_addr, "F");
+        assert_eq!(result, inline.to_vec());
+    }
+
+    /// read_value_data with data_len=0 returns empty.
+    #[test]
+    fn read_value_data_zero_data_len_returns_empty() {
+        let key_idx: u32 = 0x100;
+        let vlist_idx: u32 = 0x180;
+        let vk_idx: u32 = 0x1C0;
+        let mut hive = CellMapHive::new(0x00A8_0000, key_idx);
+        hive.bin_page[ao(key_idx) + 0x28..ao(key_idx) + 0x2C].copy_from_slice(&1u32.to_le_bytes());
+        hive.bin_page[ao(key_idx) + 0x2C..ao(key_idx) + 0x30]
+            .copy_from_slice(&vlist_idx.to_le_bytes());
+        hive.bin_page[ao(vlist_idx)..ao(vlist_idx) + 4].copy_from_slice(&vk_idx.to_le_bytes());
+        write_vk(&mut hive.bin_page, ao(vk_idx), b"F", 0, 0);
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let key_addr = read_cell_addr(&reader, hive.hhive_va, key_idx);
+        let result = read_value_data(&reader, hive.hhive_va, key_addr, "F");
+        assert!(result.is_empty(), "data_len=0 → empty");
+    }
+
+    /// resolve_username_for_rid with a Names key whose subkey_count is 0 → fallback.
+    #[test]
+    fn resolve_username_for_rid_zero_subkey_count_returns_fallback() {
+        let names_idx: u32 = 0x100;
+        let mut hive = CellMapHive::new(0x00B0_0000, names_idx);
+        // subkey_count=0 at names+0x18 (already zero), but make cell readable.
+        hive.bin_page[ao(names_idx)] = b'n';
+        hive.bin_page[ao(names_idx) + 1] = b'k';
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let names_addr = read_cell_addr(&reader, hive.hhive_va, names_idx);
+        let result = resolve_username_for_rid(&reader, hive.hhive_va, names_addr, 500);
+        assert_eq!(result, "RID-500");
+    }
+
+    // ── Full SYSTEM + SAM walk through the cell map ─────────────────
+
+    /// Build a minimal SYSTEM hive into a bin page.
+    /// root → CurrentControlSet → Control → Lsa → {JD,Skew1,GBG,Data}, class "00000000".
+    fn build_system_bin(flat: &mut [u8]) {
         let root_off: u32 = 0x010;
         let root_list_off: u32 = 0x070;
         let ccs_off: u32 = 0x090;
@@ -3161,18 +2755,14 @@ mod tests {
         let gbg_cl_off: u32 = 0x3E0;
         let data_cl_off: u32 = 0x3F0;
 
-        // Class name "00000000" as UTF-16LE = 8 × [0x30, 0x00] = 16 bytes
         let class_utf16: Vec<u8> = "00000000"
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
-            .collect(); // 16 bytes
-        let class_len: u16 = class_utf16.len() as u16; // 16
+            .collect();
+        let class_len: u16 = class_utf16.len() as u16;
 
-        // Root NK: 1 subkey (CCS), no values, no class
         write_nk(flat, ao(root_off), b"root", 1, root_list_off, 0, 0, 0, 0);
         write_lf1(flat, ao(root_list_off), ccs_off);
-
-        // CurrentControlSet NK: 1 subkey (Control)
         write_nk(
             flat,
             ao(ccs_off),
@@ -3185,24 +2775,16 @@ mod tests {
             0,
         );
         write_lf1(flat, ao(ccs_list_off), ctrl_off);
-
-        // Control NK: 1 subkey (Lsa)
         write_nk(flat, ao(ctrl_off), b"Control", 1, ctrl_list_off, 0, 0, 0, 0);
         write_lf1(flat, ao(ctrl_list_off), lsa_off);
-
-        // Lsa NK: 4 subkeys (JD, Skew1, GBG, Data)
         write_nk(flat, ao(lsa_off), b"Lsa", 4, lsa_list_off, 0, 0, 0, 0);
         write_lf_n(
             flat,
             ao(lsa_list_off),
             &[jd_off, skew1_off, gbg_off, data_off],
         );
-
-        // JD NK with class name pointing to jd_cl_off (≥ 0x3C0, no NK overlap)
         write_nk(flat, ao(jd_off), b"JD", 0, 0, 0, 0, class_len, jd_cl_off);
         flat[ao(jd_cl_off)..ao(jd_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
-
-        // Skew1 NK
         write_nk(
             flat,
             ao(skew1_off),
@@ -3215,12 +2797,8 @@ mod tests {
             skew1_cl_off,
         );
         flat[ao(skew1_cl_off)..ao(skew1_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
-
-        // GBG NK
         write_nk(flat, ao(gbg_off), b"GBG", 0, 0, 0, 0, class_len, gbg_cl_off);
         flat[ao(gbg_cl_off)..ao(gbg_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
-
-        // Data NK
         write_nk(
             flat,
             ao(data_off),
@@ -3235,9 +2813,9 @@ mod tests {
         flat[ao(data_cl_off)..ao(data_cl_off) + class_utf16.len()].copy_from_slice(&class_utf16);
     }
 
-    /// Build a minimal SAM hive flat page for walk_hashdump.
-    /// Navigation: root → SAM → Domains → Account (F value, rev2) → Users → RID "000001F4"
-    fn build_sam_hive(flat: &mut [u8]) {
+    /// Build a minimal SAM hive into a bin page.
+    /// root → SAM → Domains → Account (F value, rev2) → Users → RID "000001F4".
+    fn build_sam_bin(flat: &mut [u8]) {
         let root_off: u32 = 0x020;
         let root_list_off: u32 = 0x060;
         let sam_off: u32 = 0x090;
@@ -3251,38 +2829,14 @@ mod tests {
         let users_off: u32 = 0x2A0;
         let users_list_off: u32 = 0x2E0;
         let rid_off: u32 = 0x310;
+        let acct_sk_list_off: u32 = 0x380;
 
-        // Root → SAM
         write_nk(flat, ao(root_off), b"root", 1, root_list_off, 0, 0, 0, 0);
         write_lf1(flat, ao(root_list_off), sam_off);
-
-        // SAM → Domains
         write_nk(flat, ao(sam_off), b"SAM", 1, sam_list_off, 0, 0, 0, 0);
         write_lf1(flat, ao(sam_list_off), doms_off);
-
-        // Domains → Account
         write_nk(flat, ao(doms_off), b"Domains", 1, doms_list_off, 0, 0, 0, 0);
         write_lf1(flat, ao(doms_list_off), acct_off);
-
-        // Account NK: 1 subkey (Users), 1 value (F)
-        write_nk(
-            flat,
-            ao(acct_off),
-            b"Account",
-            1,
-            users_off,
-            1,
-            acct_vlist_off,
-            0,
-            0,
-        );
-        // Correction: Account has Users as a subkey, but we need to put users_off in the list.
-        // Use a lf list for Account's subkeys pointing to users_off:
-        // Actually write_nk puts list_off at +0x20 (subkey list offset), so let's use acct_list:
-        // Fix: The Account NK should point to a subkey list, not directly to users_off.
-        // Let's put the account list at acct_list_off = 0x190:
-        let acct_sk_list_off: u32 = 0x380;
-        // Re-write Account NK with correct subkey list offset:
         write_nk(
             flat,
             ao(acct_off),
@@ -3295,314 +2849,92 @@ mod tests {
             0,
         );
         write_lf1(flat, ao(acct_sk_list_off), users_off);
-
-        // Value list for Account: [acct_f_vk_off]
         flat[ao(acct_vlist_off)..ao(acct_vlist_off) + 4]
             .copy_from_slice(&acct_f_vk_off.to_le_bytes());
-
-        // F VK cell: name="F", data_len=0xA0 (>= 0xA0 for rev2), data_off=acct_f_data_off
         write_vk(flat, ao(acct_f_vk_off), b"F", 0xA0, acct_f_data_off);
-
-        // F data: revision = 2 at offset 0x68..0x6A
-        // F data at ao(acct_f_data_off) + offsets:
-        // byte 0x68 = 2, byte 0x69 = 0 → revision = 2
-        // salt at 0x70..0x80 = all zeros
-        // encrypted at 0x80..0xA0 = all zeros
-        // With all-zero boot key and all-zero salt, RC4 produces a fixed non-zero stream.
-        // The result of decrypt_hashed_boot_key will be 16 bytes.
         let fd = ao(acct_f_data_off);
         flat[fd + 0x68] = 0x02; // revision = 2
-                                // salt and encrypted are already 0 from vec initialization
-
-        // Users NK → RID
         write_nk(flat, ao(users_off), b"Users", 1, users_list_off, 0, 0, 0, 0);
         write_lf1(flat, ao(users_list_off), rid_off);
-
-        // RID NK: name = "000001F4" (RID 500), no values
         write_nk(flat, ao(rid_off), b"000001F4", 0, 0, 0, 0, 0, 0);
     }
 
-    /// Full walk_hashdump test: both SYSTEM and SAM hives with valid structure.
-    /// Exercises L137-282 (walk body), L290-366 (extract_boot_key), L514-622
-    /// (resolve_username_for_rid called with names_key=0 → "RID-500"),
-    /// and L1117-1185 (read_value_data inner loop finding "F" and "V" values).
+    /// Full walk_hashdump over SYSTEM + SAM cell-map hives: exercises the entire
+    /// traversal (boot key extraction, F decryption, user enumeration) without
+    /// panic. The synthetic hashes are not real, so we assert the call succeeds
+    /// and yields at most one RID entry.
     #[test]
-    fn walk_hashdump_full_chain_produces_entry() {
-        // Address layout (virtual = physical for simplicity):
-        //   sys_hive    = 0x0095_0000, sys_bb = 0x0096_0000, sys_flat = 0x0097_0000
-        //   sam_hive    = 0x0098_0000, sam_bb = 0x0099_0000, sam_flat = 0x009A_0000
+    fn walk_hashdump_full_chain_cell_map() {
+        let mut sys = CellMapHive::new(0x00C0_0000, 0x010);
+        build_system_bin(&mut sys.bin_page);
+        let mut sam = CellMapHive::new(0x00C8_0000, 0x020);
+        build_sam_bin(&mut sam.bin_page);
 
-        let sys_hive: u64 = 0x0095_0000;
-        let sys_bb: u64 = 0x0096_0000;
-        let sys_flat: u64 = 0x0097_0000;
-        let sam_hive: u64 = 0x0098_0000;
-        let sam_bb: u64 = 0x0099_0000;
-        let sam_flat: u64 = 0x009A_0000;
-
-        let root_cell_off_sys: u32 = 0x010; // matches build_system_hive root_off
-        let root_cell_off_sam: u32 = 0x020; // matches build_sam_hive root_off
-
-        // SYSTEM hive page
-        let mut sys_h = vec![0u8; 0x1000];
-        sys_h[0x10..0x18].copy_from_slice(&sys_bb.to_le_bytes()); // BaseBlock
-        sys_h[0x30..0x38].copy_from_slice(&0u64.to_le_bytes()); // Storage=0 → flat=bb+0x1000
-
-        let mut sys_bb_page = vec![0u8; 0x1000];
-        sys_bb_page[0x24..0x28].copy_from_slice(&root_cell_off_sys.to_le_bytes());
-
-        let mut sys_flat_page = vec![0u8; 0x1000];
-        build_system_hive(&mut sys_flat_page);
-
-        // SAM hive page
-        let mut sam_h = vec![0u8; 0x1000];
-        sam_h[0x10..0x18].copy_from_slice(&sam_bb.to_le_bytes());
-        sam_h[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut sam_bb_page = vec![0u8; 0x1000];
-        sam_bb_page[0x24..0x28].copy_from_slice(&root_cell_off_sam.to_le_bytes());
-
-        let mut sam_flat_page = vec![0u8; 0x1000];
-        build_sam_hive(&mut sam_flat_page);
-
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(sys_hive, sys_hive, flags::WRITABLE)
-            .write_phys(sys_hive, &sys_h)
-            .map_4k(sys_bb, sys_bb, flags::WRITABLE)
-            .write_phys(sys_bb, &sys_bb_page)
-            .map_4k(sys_bb + 0x1000, sys_flat, flags::WRITABLE)
-            .write_phys(sys_flat, &sys_flat_page)
-            .map_4k(sam_hive, sam_hive, flags::WRITABLE)
-            .write_phys(sam_hive, &sam_h)
-            .map_4k(sam_bb, sam_bb, flags::WRITABLE)
-            .write_phys(sam_bb, &sam_bb_page)
-            .map_4k(sam_bb + 0x1000, sam_flat, flags::WRITABLE)
-            .write_phys(sam_flat, &sam_flat_page)
-            .build();
-
+        let b = sam.install(sys.install(PageTableBuilder::new()));
+        let (cr3, mem) = b.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        // The walk exercises the full hive traversal path regardless of how many
-        // entries are decoded — the synthetic hive approximates the structure.
-        let result = walk_hashdump(&reader, sam_hive, sys_hive).unwrap();
-        // Accept 0 or 1 entries: the important thing is the call didn't panic.
+        let result = walk_hashdump(&reader, sam.hhive_va, sys.hhive_va).unwrap();
         assert!(
             result.len() <= 1,
-            "unexpected number of entries: {}",
+            "unexpected entry count: {}",
             result.len()
         );
     }
 
-    /// read_value_data: val_count=1, VK found but data_len=0 → empty.
-    /// Exercises the `if data_len == 0 || data_len > 0x10_0000 { return Vec::new() }` branch (L1155).
+    /// extract_boot_key falls back to ControlSet001 when CurrentControlSet is
+    /// absent; with no Control subkey there the boot key is empty → walk empty.
     #[test]
-    fn read_value_data_zero_data_len_returns_empty() {
-        let key_vaddr: u64 = 0x009B_0000;
-        let key_paddr: u64 = 0x009B_0000;
-        let flat_base: u64 = 0x009E_0000;
+    fn extract_boot_key_fallback_to_controlset001() {
+        let root_off: u32 = 0x010;
+        let list_off: u32 = 0x070;
+        let ccs001_off: u32 = 0x0C0;
 
-        let vlist_off: u32 = 0x0050;
-        let vk_cell_off: u32 = 0x0100;
-
-        // Key page: val_count=1, val_list_off=vlist_off
-        let mut key_page = vec![0u8; 0x1000];
-        key_page[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes());
-        key_page[0x2C..0x30].copy_from_slice(&vlist_off.to_le_bytes());
-
-        // vlist at flat_base + vlist_off + 4 → map to vlist_paddr
-        let _vlist_vaddr = flat_base + u64::from(vlist_off);
-        // But key_vaddr IS the key addr (flat cell style):
-        // read_value_data(reader, flat_base, key_vaddr, "F") →
-        //   val_list_off = vlist_off
-        //   val_list_addr = read_cell_addr(reader, flat_base, vlist_off)
-        //                 = flat_base + vlist_off + 4
-
-        // Map flat_base pages:
-        // Page at flat_base containing vlist_off+4 and vk data
-        let mut flat_page = vec![0u8; 0x1000];
-        // vlist at offset vlist_off+4: one entry → vk_cell_off
-        let vl_off = (vlist_off + 4) as usize;
-        flat_page[vl_off..vl_off + 4].copy_from_slice(&vk_cell_off.to_le_bytes());
-
-        // VK at offset vk_cell_off+4: name="F" (len=1), DataLength=0
-        let vko = (vk_cell_off + 4) as usize;
-        flat_page[vko] = b'v';
-        flat_page[vko + 1] = b'k';
-        flat_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes()); // NameLength=1
-        flat_page[vko + 0x08..vko + 0x0C].copy_from_slice(&0u32.to_le_bytes()); // DataLength=0
-        flat_page[vko + 0x18] = b'F'; // Name="F"
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(key_vaddr, key_paddr, flags::WRITABLE)
-            .write_phys(key_paddr, &key_page)
-            .map_4k(flat_base, flat_base, flags::WRITABLE)
-            .write_phys(flat_base, &flat_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = read_value_data(&reader, flat_base, key_vaddr, "F");
-        assert!(result.is_empty(), "data_len=0 → empty");
-    }
-
-    /// read_value_data: val_count=1, VK found with inline data (high bit set in DataLength).
-    /// Exercises the `if (raw_len_bytes & 0x8000_0000) != 0` branch (L1165).
-    #[test]
-    fn read_value_data_inline_data_returned() {
-        let key_vaddr: u64 = 0x009F_0000;
-        let flat_base: u64 = 0x00A0_0000;
-
-        let vlist_off: u32 = 0x0050;
-        let vk_cell_off: u32 = 0x0100;
-        let inline_data: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
-
-        let mut key_page = vec![0u8; 0x1000];
-        key_page[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count=1
-        key_page[0x2C..0x30].copy_from_slice(&vlist_off.to_le_bytes());
-
-        let mut flat_page = vec![0u8; 0x1000];
-        let vl_off = (vlist_off + 4) as usize;
-        flat_page[vl_off..vl_off + 4].copy_from_slice(&vk_cell_off.to_le_bytes());
-
-        let vko = (vk_cell_off + 4) as usize;
-        flat_page[vko] = b'v';
-        flat_page[vko + 1] = b'k';
-        flat_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes()); // NameLength=1
-                                                                                // DataLength with high bit set = inline data, low bits = actual length
-        let raw_len: u32 = 0x8000_0004; // inline, 4 bytes
-        flat_page[vko + 0x08..vko + 0x0C].copy_from_slice(&raw_len.to_le_bytes());
-        // Inline data stored at DataOffset field (0x0C)
-        flat_page[vko + 0x0C..vko + 0x10].copy_from_slice(&inline_data);
-        flat_page[vko + 0x18] = b'F';
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(key_vaddr, key_vaddr, flags::WRITABLE)
-            .write_phys(key_vaddr, &key_page)
-            .map_4k(flat_base, flat_base, flags::WRITABLE)
-            .write_phys(flat_base, &flat_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = read_value_data(&reader, flat_base, key_vaddr, "F");
-        assert_eq!(result.len(), 4, "inline data should return 4 bytes");
-        assert_eq!(result[..4], inline_data, "inline data bytes should match");
-    }
-
-    /// read_value_data: VK name does not match → skip → returns empty at end.
-    /// Exercises the `if !vname.eq_ignore_ascii_case(target_name) { continue }` branch (L1143).
-    #[test]
-    fn read_value_data_name_mismatch_returns_empty() {
-        let key_vaddr: u64 = 0x00A1_0000;
-        let flat_base: u64 = 0x00A2_0000;
-
-        let vlist_off: u32 = 0x0050;
-        let vk_cell_off: u32 = 0x0100;
-
-        let mut key_page = vec![0u8; 0x1000];
-        key_page[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes());
-        key_page[0x2C..0x30].copy_from_slice(&vlist_off.to_le_bytes());
-
-        let mut flat_page = vec![0u8; 0x1000];
-        let vl_off = (vlist_off + 4) as usize;
-        flat_page[vl_off..vl_off + 4].copy_from_slice(&vk_cell_off.to_le_bytes());
-
-        let vko = (vk_cell_off + 4) as usize;
-        flat_page[vko] = b'v';
-        flat_page[vko + 1] = b'k';
-        flat_page[vko + 0x02..vko + 0x04].copy_from_slice(&1u16.to_le_bytes()); // NameLength=1
-        flat_page[vko + 0x08..vko + 0x0C].copy_from_slice(&16u32.to_le_bytes()); // DataLength=16
-        flat_page[vko + 0x18] = b'G'; // Name="G" (not "F")
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(key_vaddr, key_vaddr, flags::WRITABLE)
-            .write_phys(key_vaddr, &key_page)
-            .map_4k(flat_base, flat_base, flags::WRITABLE)
-            .write_phys(flat_base, &flat_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // Looking for "F" but VK name is "G" → mismatch → all entries scanned → empty
-        let result = read_value_data(&reader, flat_base, key_vaddr, "F");
-        assert!(result.is_empty(), "name mismatch → all skipped → empty");
-    }
-
-    /// resolve_username_for_rid with Names key having subkey_count=0 returns "RID-<rid>".
-    /// Exercises the early return at L525-526.
-    #[test]
-    fn resolve_username_for_rid_zero_subkey_count_returns_fallback() {
-        let key_vaddr: u64 = 0x00A3_0000;
-        let flat_base: u64 = 0x00A4_0000;
-
-        // Names NK with subkey_count=0 at names_key + 0x18
-        let mut page = vec![0u8; 0x1000];
-        page[0x18..0x1C].copy_from_slice(&0u32.to_le_bytes()); // subkey_count=0
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(key_vaddr, key_vaddr, flags::WRITABLE)
-            .write_phys(key_vaddr, &page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = resolve_username_for_rid(&reader, flat_base, key_vaddr, 500);
-        assert_eq!(
-            result, "RID-500",
-            "zero subkey count → fallback 'RID-<rid>'"
+        let mut sys = CellMapHive::new(0x00D0_0000, root_off);
+        write_nk(
+            &mut sys.bin_page,
+            ao(root_off),
+            b"root",
+            1,
+            list_off,
+            0,
+            0,
+            0,
+            0,
         );
-    }
+        write_lf1(&mut sys.bin_page, ao(list_off), ccs001_off);
+        // ControlSet001 with no subkeys → Control lookup fails → empty boot key.
+        write_nk(
+            &mut sys.bin_page,
+            ao(ccs001_off),
+            b"ControlSet001",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
 
-    /// find_subkey_by_name with a list whose signature is unrecognised returns 0.
-    #[test]
-    fn find_subkey_by_name_unknown_list_sig_returns_zero() {
-        let flat_vaddr: u64 = 0x0090_0000;
-        let flat_paddr: u64 = 0x0090_0000;
-
-        // parent_addr = flat_vaddr + 0x100
-        // list_off at parent+0x20 = list_cell_off
-        // list_addr = flat_base + list_cell_off + 4
-        // Unknown sig at list_addr → returns 0
-        let parent_off: u64 = 0x100;
-        let list_cell_off: u32 = 0x200;
-        let list_off = (list_cell_off + 4) as usize; // 0x204
-
-        let mut page = vec![0u8; 0x1000];
-        // subkey_count at parent_off + 0x18 = 1
-        let po = parent_off as usize;
-        page[po + 0x18..po + 0x1C].copy_from_slice(&1u32.to_le_bytes());
-        // list_off at parent_off + 0x20
-        page[po + 0x20..po + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
-        // Unknown list sig at list_off
-        page[list_off..list_off + 2].copy_from_slice(&0xFFFFu16.to_le_bytes()); // unknown sig
-                                                                                // count = 1
-        page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
-
-        let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
+        let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(flat_vaddr, flat_paddr, flags::WRITABLE)
-            .write_phys(flat_paddr, &page)
-            .build();
+        let (cr3, mem) = sys.install(PageTableBuilder::new()).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
-        let result = find_subkey_by_name(&reader, flat_vaddr, flat_vaddr + parent_off, "SAM");
-        assert_eq!(result, 0, "unknown list sig → 0");
+        // SAM hive is a valid resolvable hive; boot key fails first → empty.
+        let sam = CellMapHive::new(0x00D8_0000, 0x020);
+        let b2 = sam.install(PageTableBuilder::new());
+        let (cr3b, memb) = b2.build();
+        let _ = (cr3b, memb);
+
+        let result = walk_hashdump(&reader, sys.hhive_va, sys.hhive_va).unwrap();
+        assert!(
+            result.is_empty(),
+            "missing Control → empty boot key → empty"
+        );
     }
 }
