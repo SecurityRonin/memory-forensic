@@ -117,6 +117,23 @@ fn scan_phys_kernel_rsds_pages<P: PhysicalMemoryProvider + ?Sized>(prov: &P) -> 
     out
 }
 
+/// Resolve the ntoskrnl image base VA, preferring the most reliable source.
+///
+/// The Low Stub `LmTarget`/KVO hint is **wrong on some dumps** (it can land MiB
+/// off the true base — see [`resolve_kernel_base_via_rsds`]'s doc), so it is the
+/// LAST resort. Order: RSDS reverse-map → low-stub-window page scan
+/// ([`memf_symbols::resolve_kernel_base_va`]) → the Low Stub KVO hint. Callers
+/// must rebase the symbol resolver by this value; trusting the raw KVO hint
+/// silently produces a resolver whose every symbol VA is off, which page-faults
+/// every walker (the regression this guards against).
+pub fn resolve_kernel_base<P: PhysicalMemoryProvider>(
+    vas: &VirtualAddressSpace<P>,
+    low_stub_kvo: Option<u64>,
+) -> Option<u64> {
+    let _ = (vas, low_stub_kvo);
+    None
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -187,6 +204,44 @@ mod tests {
         let vas =
             VirtualAddressSpace::new(RangedMem::new(mem), cr3, TranslationMode::X86_64FourLevel);
         assert_eq!(resolve_kernel_base_via_rsds(&vas), Some(base_va));
+    }
+
+    /// The Low Stub KVO hint is wrong on some dumps, so `resolve_kernel_base`
+    /// must PREFER the RSDS reverse-map base over the KVO. (This is the exact
+    /// regression that broke every memf walker: build_reader trusted the KVO.)
+    #[test]
+    fn resolve_kernel_base_prefers_rsds_over_wrong_low_stub_kvo() {
+        let base_va = 0xFFFF_F800_0100_0000u64;
+        let rsds_va = base_va + 0x1_0000;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(base_va, 0x20_0000, flags::WRITABLE)
+            .map_4k(rsds_va, 0x30_0000, flags::WRITABLE)
+            .write_phys(0x20_0000, &pe_page())
+            .write_phys(0x30_0000, &rsds_page())
+            .build();
+        let vas =
+            VirtualAddressSpace::new(RangedMem::new(mem), cr3, TranslationMode::X86_64FourLevel);
+        // Low Stub reports a base 6 MiB too high (the citadeldc01.mem failure mode).
+        assert_eq!(
+            resolve_kernel_base(&vas, Some(base_va + 0x60_0000)),
+            Some(base_va)
+        );
+    }
+
+    /// When no RSDS/low-stub-scan base is found, fall back to the KVO hint.
+    #[test]
+    fn resolve_kernel_base_falls_back_to_kvo_when_no_rsds() {
+        let base_va = 0xFFFF_F800_0100_0000u64;
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(base_va, 0x20_0000, flags::WRITABLE)
+            .write_phys(0x20_0000, &pe_page()) // PE but no RSDS record
+            .build();
+        let vas =
+            VirtualAddressSpace::new(RangedMem::new(mem), cr3, TranslationMode::X86_64FourLevel);
+        assert_eq!(
+            resolve_kernel_base(&vas, Some(0xFFFF_F800_0BAD_0000)),
+            Some(0xFFFF_F800_0BAD_0000)
+        );
     }
 
     #[test]
