@@ -289,6 +289,58 @@ mod tests {
         );
     }
 
+    /// Win8.1 / Server 2012 R2 (build 9600) and older: `_HMAP_ENTRY` has NO
+    /// `PermanentBinAddress`/`BlockOffset` — only `BlockAddress`, which is the
+    /// bin VA directly (Volatility3 `get_block_offset`'s AttributeError
+    /// fallback). The real citadeldc01.mem PDB resolves PermanentBinAddress=None,
+    /// so the Win10-only path returned None and every hive cell read failed.
+    #[test]
+    fn cell_index_to_va_uses_block_address_on_win81() {
+        let isf = IsfBuilder::new()
+            .add_struct("_HHIVE", 0x800)
+            .add_field("_HHIVE", "Storage", 0xb8, "char")
+            .add_struct("_DUAL", 0x278)
+            .add_field("_DUAL", "Map", 0x8, "pointer")
+            .add_struct("_HMAP_ENTRY", 0x18)
+            // No PermanentBinAddress/BlockOffset — only BlockAddress (the bin VA).
+            .add_field("_HMAP_ENTRY", "BlockAddress", 0x0, "pointer")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let h_vaddr = 0xFFFF_8000_0010_0000u64;
+        let dir_vaddr = 0xFFFF_8000_0010_2000u64;
+        let table_vaddr = 0xFFFF_8000_0010_3000u64;
+        let (h_paddr, dir_paddr, table_paddr) = (0x20_0000u64, 0x20_2000u64, 0x20_3000u64);
+
+        let cell_index = (2u32 << 21) | (3u32 << 12) | 0x40;
+
+        let mut h_page = vec![0u8; 4096];
+        h_page[0xc0..0xc8].copy_from_slice(&dir_vaddr.to_le_bytes()); // Storage[0].Map @ 0xb8+0x8
+        let mut dir_page = vec![0u8; 4096];
+        dir_page[0x10..0x18].copy_from_slice(&table_vaddr.to_le_bytes()); // Directory[2]
+        let mut table_page = vec![0u8; 4096];
+        // Table[3] @ 3*0x18 = 0x48: BlockAddress = the bin VA directly (clean, no flags).
+        let bin_va = 0xFFFF_8000_0010_5000u64;
+        table_page[0x48..0x50].copy_from_slice(&bin_va.to_le_bytes());
+
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(h_vaddr, h_paddr, flags::WRITABLE)
+            .map_4k(dir_vaddr, dir_paddr, flags::WRITABLE)
+            .map_4k(table_vaddr, table_paddr, flags::WRITABLE)
+            .write_phys(h_paddr, &h_page)
+            .write_phys(dir_paddr, &dir_page)
+            .write_phys(table_paddr, &table_page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        // block_va = BlockAddress; cell_va = + suboffset 0x40.
+        assert_eq!(
+            cell_index_to_va(&reader, h_vaddr, cell_index),
+            Some(0xFFFF_8000_0010_5040)
+        );
+    }
+
     // ── Test 1: No hive list symbol → empty Vec ─────────────────────
 
     #[test]
