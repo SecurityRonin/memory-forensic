@@ -20,7 +20,7 @@ pub fn walk_drivers<P: PhysicalMemoryProvider>(
     // (the kernel uses _KLDR internally, but that's the exported symbol); some
     // synthetic/older ISFs use `_KLDR_DATA_TABLE_ENTRY`. Pick whichever the
     // resolver actually defines (they share these field offsets).
-    let entry_struct = ["_KLDR_DATA_TABLE_ENTRY"]
+    let entry_struct = ["_LDR_DATA_TABLE_ENTRY", "_KLDR_DATA_TABLE_ENTRY"]
         .into_iter()
         .find(|s| reader.symbols().field_offset(s, "BaseDllName").is_some())
         .ok_or_else(|| {
