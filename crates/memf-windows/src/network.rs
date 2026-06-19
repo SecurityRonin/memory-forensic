@@ -289,7 +289,7 @@ const AF_INET: u16 = 2;
 ///
 /// (The fixed-VA `_KUSER_SHARED_DATA.NtBuildNumber` field was found unreliable —
 /// it read 0 on that dump — so the kernel symbol is the source of truth.)
-fn nt_build_number<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Option<u32> {
+pub(crate) fn nt_build_number<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Option<u32> {
     let va = reader.symbols().symbol_address("NtBuildNumber")?;
     let build = (read_phys_u_via(reader, va, 4)? as u32) & 0xFFFF;
     (build >= 2600).then_some(build)

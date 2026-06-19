@@ -9,10 +9,23 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::{Result, WinMalfindInfo, WinVadInfo};
 
-/// VAD protection values (Windows page protection constants encoded in VadFlags).
-/// Bits [7:11] of VadFlags contain the protection index.
-const VAD_PROTECTION_SHIFT: u32 = 7;
+/// `_MMVAD_FLAGS.Protection` is a 5-bit index into the kernel's `MmProtectToValue`
+/// table. Its bit position within the VadFlags dword is build-dependent — there is
+/// no universal x64 shift. Authoritative source: Volatility x64 vtypes
+/// (`_MMVAD_FLAGS.Protection` BitField `start_bit`):
+/// - Vista / Win7 (NT 6.0–6.1): bit 11
+/// - Win8.0+ (NT 6.2), incl. Server 2012 R2 / build 9600, through Win10/11: bit 3
 const VAD_PROTECTION_MASK: u32 = 0x1F; // 5 bits
+
+/// Bit position of `_MMVAD_FLAGS.Protection` for a given OS build (see table above).
+/// `None` (build unresolved) defaults to the modern Win8+ layout, which covers
+/// every Windows release since 2012.
+fn protection_shift(build: Option<u32>) -> u32 {
+    match build {
+        Some(b) if b < 9200 => 11, // Vista..Win7 RTM/SP1 (pre-Win8 build 9200)
+        _ => 3,                    // Win8.0+ and all Win10/11
+    }
+}
 
 /// Map VAD protection index to a human-readable string.
 fn protection_to_string(prot: u32) -> String {
@@ -42,6 +55,50 @@ fn is_private_vad(flags: u32) -> bool {
     (flags & VAD_TYPE_MASK) == 0
 }
 
+/// Read the AVL left/right child pointers of a VAD tree node.
+///
+/// Win8+ (incl. Server 2012 R2) embeds the tree node as
+/// `_MMVAD_SHORT.VadNode : _RTL_BALANCED_NODE { Left, Right }` (at offset 0, so
+/// the node address is the `_MMVAD_SHORT` base). Win7 exposes `Left`/`Right`
+/// directly on `_MMVAD_SHORT`. Use whichever the ISF defines.
+fn vad_child_links<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    node_addr: u64,
+) -> Result<(u64, u64)> {
+    let syms = reader.symbols();
+    // Mirrors Volatility3's `get_left_child`/`get_right_child`
+    // (volatility3/framework/symbols/windows/extensions/__init__.py). Win7
+    // exposes `Left`/`Right` directly on `_MMVAD_SHORT`; Win8+ (incl. Server
+    // 2012 R2 / build 9600) nests them in the `VadNode : _RTL_BALANCED_NODE`
+    // member at offset 0.
+    if syms.field_offset("_MMVAD_SHORT", "Left").is_some() {
+        let l = reader.read_field(node_addr, "_MMVAD_SHORT", "Left")?;
+        let r = reader.read_field(node_addr, "_MMVAD_SHORT", "Right")?;
+        return Ok((l, r));
+    }
+    let node = node_addr + syms.field_offset("_MMVAD_SHORT", "VadNode").unwrap_or(0);
+    let l = reader.read_field(node, "_RTL_BALANCED_NODE", "Left")?;
+    let r = reader.read_field(node, "_RTL_BALANCED_NODE", "Right")?;
+    Ok((l, r))
+}
+
+/// Read the `_MMVAD_FLAGS` bitfield word of a VAD node.
+///
+/// Win7 exposes a `Flags` member directly on `_MMVAD_SHORT`; Win8+ moves it into
+/// the `u` union (`_MMVAD_SHORT.u.VadFlags`). The whole bitfield is a `u32`, so
+/// reading 4 bytes at the union offset yields the same word either way.
+fn vad_flags<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, node_addr: u64) -> Result<u32> {
+    if reader
+        .symbols()
+        .field_offset("_MMVAD_SHORT", "Flags")
+        .is_some()
+    {
+        return Ok(reader.read_field::<u32>(node_addr, "_MMVAD_SHORT", "Flags")?);
+    }
+    // Win8+: the flags bitfield moved into the `u` union (`_MMVAD_FLAGS`).
+    Ok(reader.read_field::<u32>(node_addr, "_MMVAD_SHORT", "u")?)
+}
+
 /// Walk the VAD AVL tree for a process and return all VAD entries.
 ///
 /// `vad_root_vaddr` is the address of `_EPROCESS.VadRoot` (an `_RTL_AVL_TREE`).
@@ -58,6 +115,9 @@ pub fn walk_vad_tree<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
+    // Protection bit position is build-specific; resolve it once for this walk.
+    let prot_shift = protection_shift(crate::network::nt_build_number(reader));
+
     let mut results = Vec::new();
     let mut stack = vec![root];
 
@@ -67,14 +127,15 @@ pub fn walk_vad_tree<P: PhysicalMemoryProvider>(
             continue;
         }
 
-        // Read _MMVAD_SHORT fields
-        let left: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "Left")?;
-        let right: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "Right")?;
+        // Read the AVL child pointers. On Win8+/Server 2012 R2 the tree node is
+        // `_MMVAD_SHORT.VadNode` (a `_RTL_BALANCED_NODE` at offset 0); only older
+        // builds (Win7) expose `Left`/`Right` directly on `_MMVAD_SHORT`.
+        let (left, right) = vad_child_links(reader, node_addr)?;
         let starting_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "StartingVpn")?;
         let ending_vpn: u64 = reader.read_field(node_addr, "_MMVAD_SHORT", "EndingVpn")?;
-        let flags_raw: u32 = reader.read_field(node_addr, "_MMVAD_SHORT", "Flags")?;
+        let flags_raw: u32 = vad_flags(reader, node_addr)?;
 
-        let protection = (flags_raw >> VAD_PROTECTION_SHIFT) & VAD_PROTECTION_MASK;
+        let protection = (flags_raw >> prot_shift) & VAD_PROTECTION_MASK;
         let is_private = is_private_vad(flags_raw);
 
         results.push(WinVadInfo {
@@ -194,9 +255,11 @@ mod tests {
         buf[offset + VAD_FLAGS..offset + VAD_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
     }
 
-    /// Encode VadFlags: protection in bits [7:11], type in bits [0:2].
+    /// Encode VadFlags for the Win8+ layout: protection in bits [3:7], type in
+    /// bits [0:2] (the preset ISF has no `NtBuildNumber`, so the walker resolves
+    /// the default Win8+ protection shift of 3).
     fn make_vad_flags(protection: u32, vad_type: u32) -> u32 {
-        (protection << VAD_PROTECTION_SHIFT) | (vad_type & VAD_TYPE_MASK)
+        (protection << 3) | (vad_type & VAD_TYPE_MASK)
     }
 
     /// On real Win8+/Server 2012 R2 (build 9600) the `_MMVAD_FLAGS.Protection`
@@ -232,6 +295,64 @@ mod tests {
             "EXECUTE_READWRITE index must decode at bit 3 (Win8+ layout)"
         );
         assert_eq!(results[0].protection_str, "PAGE_EXECUTE_READWRITE");
+    }
+
+    /// The protection bit position is build-keyed (Volatility x64 vtypes):
+    /// Vista/Win7 = bit 11, Win8.0+ (build >= 9200) = bit 3. Unknown build
+    /// defaults to the modern Win8+ layout.
+    #[test]
+    fn protection_shift_is_build_keyed() {
+        assert_eq!(protection_shift(Some(7601)), 11); // Win7 SP1
+        assert_eq!(protection_shift(Some(9200)), 3); // Win8.0 RTM
+        assert_eq!(protection_shift(Some(9600)), 3); // Server 2012 R2
+        assert_eq!(protection_shift(Some(19041)), 3); // Win10 20H1
+        assert_eq!(protection_shift(None), 3); // build unresolved -> modern
+    }
+
+    /// Real Win8+/Server 2012 R2 `_MMVAD_SHORT`: no direct `Left`/`Right`/`Flags`;
+    /// the AVL links live in `VadNode` (`_RTL_BALANCED_NODE`) and the flags in the
+    /// `u` union. Exercises the VadNode and `u`-union branches of the readers.
+    #[test]
+    fn walks_win8_vadnode_layout() {
+        let isf = IsfBuilder::new()
+            .add_struct("_RTL_AVL_TREE", 8)
+            .add_field("_RTL_AVL_TREE", "Root", 0, "pointer")
+            .add_struct("_RTL_BALANCED_NODE", 0x18)
+            .add_field("_RTL_BALANCED_NODE", "Left", 0, "pointer")
+            .add_field("_RTL_BALANCED_NODE", "Right", 8, "pointer")
+            .add_struct("_MMVAD_SHORT", 0x40)
+            .add_field("_MMVAD_SHORT", "VadNode", 0x0, "_RTL_BALANCED_NODE")
+            .add_field("_MMVAD_SHORT", "StartingVpn", 0x18, "pointer")
+            .add_field("_MMVAD_SHORT", "EndingVpn", 0x20, "pointer")
+            .add_field("_MMVAD_SHORT", "u", 0x28, "unsigned long")
+            .build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        let page_vaddr: u64 = 0xFFFF_8000_0010_0000;
+        let page_paddr: u64 = 0x0080_0000;
+        let root_off = 0x100usize;
+        let root_vaddr = page_vaddr + root_off as u64;
+
+        let mut page = vec![0u8; 4096];
+        page[0..8].copy_from_slice(&root_vaddr.to_le_bytes()); // _RTL_AVL_TREE.Root
+                                                               // VadNode.Left@0 / Right@8 stay 0 (leaf); StartingVpn@0x18, EndingVpn@0x20.
+        page[root_off + 0x18..root_off + 0x20].copy_from_slice(&0x100u64.to_le_bytes());
+        page[root_off + 0x20..root_off + 0x28].copy_from_slice(&0x1FFu64.to_le_bytes());
+        // u (VadFlags): protection index 6 (EXECUTE_READWRITE) at bits [3:7].
+        page[root_off + 0x28..root_off + 0x2C].copy_from_slice(&(6u32 << 3).to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(page_vaddr, page_paddr, flags::WRITABLE)
+            .write_phys(page_paddr, &page);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let results = walk_vad_tree(&reader, page_vaddr, 7, "win8.exe").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].protection, 6);
+        assert_eq!(results[0].protection_str, "PAGE_EXECUTE_READWRITE");
+        assert_eq!(results[0].start_vaddr, 0x100u64 << 12);
     }
 
     #[test]
