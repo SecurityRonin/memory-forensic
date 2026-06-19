@@ -226,7 +226,7 @@ mod tests {
         ForensicEvent::builder()
             .source_walker("test_walker")
             .entity(Entity::Connection {
-                src: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), src_port),
+                src: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), src_port),
                 dst: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), dst_port),
                 proto: Protocol::Tcp,
             })

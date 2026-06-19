@@ -211,16 +211,27 @@ const SCAN_CHUNK: usize = 1 << 20;
 /// explicitly. `create_time == 0` means the build has no `CreateTime` field.
 #[derive(Clone, Copy)]
 pub struct TcpEndpointLayout {
+    /// Offset of `InetAF` (pointer to the address-family `_INETAF`) in `_TCP_ENDPOINT`.
     pub inet_af: u64,
+    /// Offset of `AddrInfo` (pointer to `_ADDRINFO`) in `_TCP_ENDPOINT`.
     pub addr_info: u64,
+    /// Offset of the connection `State` field in `_TCP_ENDPOINT`.
     pub state: u64,
+    /// Offset of the local port in `_TCP_ENDPOINT`.
     pub local_port: u64,
+    /// Offset of the remote port in `_TCP_ENDPOINT`.
     pub remote_port: u64,
+    /// Offset of the owning-process pointer in `_TCP_ENDPOINT`.
     pub owner: u64,
+    /// Offset of `CreateTime` in `_TCP_ENDPOINT`; `0` if the build has no such field.
     pub create_time: u64,
+    /// Offset of `Local` (pointer to `_LOCAL_ADDRESS`) in `_ADDRINFO`.
     pub ai_local: u64,
+    /// Offset of `Remote` (pointer to the remote address) in `_ADDRINFO`.
     pub ai_remote: u64,
+    /// Offset of `pData` (pointer to the address bytes) in `_LOCAL_ADDRESS`.
     pub la_pdata: u64,
+    /// Offset of the address family in `_INETAF`.
     pub inetaf_af: u64,
 }
 
@@ -442,7 +453,7 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                     let local_addr = read_virt_u64(ai + t.ai_local)
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|la| read_virt_u64(la + t.la_pdata))
-                        .and_then(|pd| read_virt_u64(pd))
+                        .and_then(&read_virt_u64)
                         .and_then(read_ipv4)
                         .unwrap_or_else(|| "0.0.0.0".to_string());
 

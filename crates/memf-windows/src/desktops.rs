@@ -99,16 +99,14 @@ pub fn classify_desktop(name: &str, winstation: &str) -> bool {
 fn read_ptr<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u64 {
     reader
         .read_bytes(addr, 8)
-        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-        .unwrap_or(0)
+        .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes))
 }
 
 /// Read a u32 value from memory, returning 0 on failure.
 fn read_u32<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u32 {
     reader
         .read_bytes(addr, 4)
-        .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
-        .unwrap_or(0)
+        .map_or(0, |b| b[..4].try_into().map_or(0, u32::from_le_bytes))
 }
 
 /// Walk the desktop list for a single window station.

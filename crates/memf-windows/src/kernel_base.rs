@@ -61,7 +61,7 @@ fn is_amd64_pe_at<P: PhysicalMemoryProvider>(vas: &VirtualAddressSpace<P>, va: u
     if vas.read_virt(va + 0x3C, &mut e).is_err() {
         return false;
     }
-    let e_lfanew = u32::from_le_bytes(e) as u64;
+    let e_lfanew = u64::from(u32::from_le_bytes(e));
     if e_lfanew > 0x400 {
         return false;
     }

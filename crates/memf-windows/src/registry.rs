@@ -193,19 +193,16 @@ pub(crate) fn cell_index_to_va<P: PhysicalMemoryProvider>(
     // Win8.1/Server 2012 R2 (build 9600) and older have only `BlockAddress`, the
     // bin VA directly. The real 9600 PDB lacks PermanentBinAddress, so the
     // BlockAddress fallback is mandatory — without it every hive cell read fails.
-    let block_va = match (
+    let block_va = if let (Some(perm_off), Some(block_off_off)) = (
         syms.field_offset("_HMAP_ENTRY", "PermanentBinAddress"),
         syms.field_offset("_HMAP_ENTRY", "BlockOffset"),
     ) {
-        (Some(perm_off), Some(block_off_off)) => {
-            let perm_bin = le_u64(reader, entry.wrapping_add(perm_off))?;
-            let block_offset = le_u32(reader, entry.wrapping_add(block_off_off))?;
-            (perm_bin & !0xF).wrapping_add(u64::from(block_offset))
-        }
-        _ => {
-            let ba_off = syms.field_offset("_HMAP_ENTRY", "BlockAddress")?;
-            le_u64(reader, entry.wrapping_add(ba_off))?
-        }
+        let perm_bin = le_u64(reader, entry.wrapping_add(perm_off))?;
+        let block_offset = le_u32(reader, entry.wrapping_add(block_off_off))?;
+        (perm_bin & !0xF).wrapping_add(u64::from(block_offset))
+    } else {
+        let ba_off = syms.field_offset("_HMAP_ENTRY", "BlockAddress")?;
+        le_u64(reader, entry.wrapping_add(ba_off))?
     };
 
     Some(block_va.wrapping_add(suboffset))

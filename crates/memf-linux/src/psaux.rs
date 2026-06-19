@@ -121,21 +121,18 @@ fn read_psaux_info<P: PhysicalMemoryProvider>(
     #[allow(clippy::cast_sign_loss)]
     let state: u64 = reader
         .read_field::<i64>(task_addr, "task_struct", "state")
-        .map(|v| v as u64)
-        .unwrap_or(0);
+        .map_or(0, |v| v as u64);
 
     let ppid = read_parent_pid(reader, task_addr).unwrap_or(0);
     let (uid, gid) = read_cred_ids(reader, task_addr).unwrap_or((0, 0));
 
     let nice: i32 = reader
         .read_field::<i32>(task_addr, "task_struct", "static_prio")
-        .map(|prio| prio - 120)
-        .unwrap_or(0);
+        .map_or(0, |prio| prio - 120);
 
     let flags: u64 = reader
         .read_field::<u32>(task_addr, "task_struct", "flags")
-        .map(u64::from)
-        .unwrap_or(0);
+        .map_or(0, u64::from);
 
     let (vsize, rss) = read_mm_stats(reader, task_addr).unwrap_or((0, 0));
     let tty = read_tty_name(reader, task_addr).unwrap_or_default();

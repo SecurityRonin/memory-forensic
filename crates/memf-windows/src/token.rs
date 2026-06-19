@@ -37,7 +37,7 @@ pub fn sid_to_string(
         format!("S-{revision}-{auth_value}")
     };
     for &sub in sub_authorities {
-        write!(s, "-{sub}").expect("write to String");
+        let _ = write!(s, "-{sub}");
     }
     s
 }

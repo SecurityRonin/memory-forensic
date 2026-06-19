@@ -178,52 +178,44 @@ pub fn walk_clipboard<P: PhysicalMemoryProvider>(
     while ws_addr != 0 {
         let num_formats: u32 = reader
             .read_bytes(ws_addr + ws_num_formats_off, 4)
-            .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
-            .unwrap_or(0);
+            .map_or(0, |b| b[..4].try_into().map_or(0, u32::from_le_bytes));
 
         if num_formats == 0 || num_formats as usize > MAX_CLIP_ENTRIES {
             ws_addr = reader
                 .read_bytes(ws_addr + ws_next_off, 8)
-                .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-                .unwrap_or(0);
+                .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
             continue;
         }
 
         let clip_base: u64 = reader
             .read_bytes(ws_addr + ws_clip_base_off, 8)
-            .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-            .unwrap_or(0);
+            .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
 
         if clip_base == 0 {
             ws_addr = reader
                 .read_bytes(ws_addr + ws_next_off, 8)
-                .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-                .unwrap_or(0);
+                .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
             continue;
         }
 
         let owner_pid: u32 = reader
             .read_bytes(ws_addr + ws_owner_pid_off, 4)
-            .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
-            .unwrap_or(0);
+            .map_or(0, |b| b[..4].try_into().map_or(0, u32::from_le_bytes));
 
         for i in 0..u64::from(num_formats) {
             let entry_addr = clip_base + i * clip_entry_size;
 
             let fmt: u32 = reader
                 .read_bytes(entry_addr + clip_fmt_off, 4)
-                .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
-                .unwrap_or(0);
+                .map_or(0, |b| b[..4].try_into().map_or(0, u32::from_le_bytes));
 
             let hdata: u64 = reader
                 .read_bytes(entry_addr + clip_hdata_off, 8)
-                .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-                .unwrap_or(0);
+                .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
 
             let stored_size: u64 = reader
                 .read_bytes(entry_addr + clip_size_off, 8)
-                .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-                .unwrap_or(0);
+                .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
 
             let (data_size, preview) = match fmt {
                 1 | 7 => read_ansi_preview(reader, hdata), // CF_TEXT, CF_OEMTEXT
@@ -244,8 +236,7 @@ pub fn walk_clipboard<P: PhysicalMemoryProvider>(
 
         ws_addr = reader
             .read_bytes(ws_addr + ws_next_off, 8)
-            .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-            .unwrap_or(0);
+            .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
     }
 
     Ok(results)
@@ -293,7 +284,7 @@ fn read_unicode_preview<P: PhysicalMemoryProvider>(
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     let null_pos = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-    let text = String::from_utf16_lossy(&units[..null_pos]).to_string();
+    let text = String::from_utf16_lossy(&units[..null_pos]);
     let size = (null_pos + 1) * 2; // bytes including null
     let preview = if text.len() > 256 {
         text[..256].to_string()

@@ -44,7 +44,7 @@ pub fn scan_ptrace_relationships<P: PhysicalMemoryProvider>(
 
     for proc in processes {
         if let Ok(Some(rel)) = read_ptrace_info(reader, proc) {
-            results.push(rel)
+            results.push(rel);
         }
     }
 

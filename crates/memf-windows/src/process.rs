@@ -63,8 +63,7 @@ fn read_process_info<P: PhysicalMemoryProvider>(
 
     let is_wow64: bool = reader
         .read_field::<u64>(eproc_addr, "_EPROCESS", "Wow64Process")
-        .map(|v| v != 0)
-        .unwrap_or(false);
+        .is_ok_and(|v| v != 0);
 
     let session_id: u32 = reader
         .read_field::<u32>(eproc_addr, "_EPROCESS", "SessionId")

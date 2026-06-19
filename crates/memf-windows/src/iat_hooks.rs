@@ -1354,7 +1354,7 @@ mod tests {
             ObjectReader::new(vas, Box::new(resolver));
 
         // PE32+: ordinal flag is bit 63. Ordinal 42.
-        let ilt_entry: u64 = (1u64 << 63) | 42;
+        let ilt_entry: u64 = (1u64 << 63) | 0x2A; // ordinal 42
         let mut ilt_bytes = vec![0u8; 8];
         ilt_bytes[..8].copy_from_slice(&ilt_entry.to_le_bytes());
 

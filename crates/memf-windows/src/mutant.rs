@@ -148,13 +148,11 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
 
     let owner_thread_ptr: u64 = reader
         .read_bytes(object_body_addr + owner_thread_off, 8)
-        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-        .unwrap_or(0);
+        .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
 
     let abandoned: bool = reader
         .read_bytes(object_body_addr + abandoned_off, 1)
-        .map(|b| b[0] != 0)
-        .unwrap_or(false);
+        .is_ok_and(|b| b[0] != 0);
 
     let (owner_pid, owner_tid) = if owner_thread_ptr != 0 {
         let cid_off = reader
@@ -163,12 +161,10 @@ fn read_mutant_info<P: PhysicalMemoryProvider>(
             .unwrap_or(0x620);
         let pid: u64 = reader
             .read_bytes(owner_thread_ptr + cid_off, 8)
-            .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-            .unwrap_or(0);
+            .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
         let tid: u64 = reader
             .read_bytes(owner_thread_ptr + cid_off + 8, 8)
-            .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-            .unwrap_or(0);
+            .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
         (pid, tid)
     } else {
         (0, 0)

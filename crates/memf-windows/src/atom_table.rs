@@ -158,20 +158,17 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
             // Read atom value
             let atom: u16 = reader
                 .read_bytes(entry_ptr + entry_atom_off, 2)
-                .map(|b| b[..2].try_into().map_or(0, u16::from_le_bytes))
-                .unwrap_or(0);
+                .map_or(0, |b| b[..2].try_into().map_or(0, u16::from_le_bytes));
 
             // Read reference count
             let reference_count: u32 = reader
                 .read_bytes(entry_ptr + entry_ref_count_off, 4)
-                .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
-                .unwrap_or(0);
+                .map_or(0, |b| b[..4].try_into().map_or(0, u32::from_le_bytes));
 
             // Read name length (count of UTF-16 code units)
             let name_len: u8 = reader
                 .read_bytes(entry_ptr + entry_name_len_off, 1)
-                .map(|b| b[0])
-                .unwrap_or(0);
+                .map_or(0, |b| b[0]);
 
             // Read inline UTF-16LE name
             let name = if name_len > 0 {
@@ -183,7 +180,7 @@ pub fn walk_atom_table<P: PhysicalMemoryProvider>(
                             .chunks_exact(2)
                             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                             .collect();
-                        String::from_utf16_lossy(&u16s).to_string()
+                        String::from_utf16_lossy(&u16s)
                     })
                     .unwrap_or_default()
             } else {

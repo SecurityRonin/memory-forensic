@@ -76,12 +76,12 @@ pub fn walk_sysinfo<P: PhysicalMemoryProvider>(
         Some(addr) => {
             let sys_time = reader
                 .read_bytes(addr.wrapping_add(0x14), 8)
-                .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
-                .unwrap_or(0);
+                .map_or(0, |b| {
+                    u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+                });
             let prod_type = reader
                 .read_bytes(addr.wrapping_add(0x264), 4)
-                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .unwrap_or(0);
+                .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
             (sys_time, product_type_name(prod_type))
         }
         None => (0, "Unknown".into()),
@@ -331,7 +331,7 @@ mod tests {
         let json = isf.build_json();
         let resolver = IsfResolver::from_value(&json).unwrap();
 
-        let raw_build: u32 = 0xF000_0000 | 19041;
+        let raw_build: u32 = 0xF000_0000 | 0x4A61; // build 19041 in the low bits
         let build_lab_str = b"19041.1.amd64fre.vb_release\0";
         let csd_version: u32 = 2 << 8;
 

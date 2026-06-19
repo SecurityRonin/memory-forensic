@@ -215,21 +215,20 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
                     // Read hook type
                     let i_hook_raw: u32 = reader
                         .read_bytes(hook_addr + hook_type_off, 4)
-                        .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
-                        .unwrap_or(0xFFFF_FFFF);
+                        .map_or(0xFFFF_FFFF, |b| {
+                            b[..4].try_into().map_or(0, u32::from_le_bytes)
+                        });
                     let hook_type = hook_type_name(i_hook_raw);
 
                     // Read proc address
                     let hook_proc_addr: u64 = reader
                         .read_bytes(hook_addr + hook_proc_off, 8)
-                        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-                        .unwrap_or(0);
+                        .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
 
                     // Read ihmod to determine module origin (<=0xFFFF → injected/unknown)
                     let ihmod: i32 = reader
                         .read_bytes(hook_addr + hook_ihmod_off, 4)
-                        .map(|b| b[..4].try_into().map_or(0, i32::from_le_bytes))
-                        .unwrap_or(-1);
+                        .map_or(-1, |b| b[..4].try_into().map_or(0, i32::from_le_bytes));
                     let module_name = if ihmod > 0 {
                         // Try to read module name via _UNICODE_STRING at ihmod offset
                         let uni_addr = hook_addr + hook_ihmod_off + 8;
@@ -241,8 +240,7 @@ pub fn walk_message_hooks<P: PhysicalMemoryProvider>(
                     // Extract owner PID via tagTHREADINFO chain
                     let pti: u64 = reader
                         .read_bytes(hook_addr + hook_pti_off, 8)
-                        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-                        .unwrap_or(0);
+                        .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
                     let owner_pid = extract_pid_from_threadinfo(
                         reader,
                         pti,
@@ -300,22 +298,19 @@ fn extract_pid_from_threadinfo<P: PhysicalMemoryProvider>(
     }
     let ethread: u64 = reader
         .read_bytes(threadinfo_addr + threadinfo_eprocess_off, 8)
-        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-        .unwrap_or(0);
+        .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
     if ethread == 0 {
         return 0;
     }
     let eprocess: u64 = reader
         .read_bytes(ethread + ethread_process_off, 8)
-        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-        .unwrap_or(0);
+        .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes));
     if eprocess == 0 {
         return 0;
     }
-    reader
-        .read_bytes(eprocess + pid_off, 8)
-        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes) as u32)
-        .unwrap_or(0)
+    reader.read_bytes(eprocess + pid_off, 8).map_or(0, |b| {
+        b[..8].try_into().map_or(0, u64::from_le_bytes) as u32
+    })
 }
 
 #[cfg(test)]

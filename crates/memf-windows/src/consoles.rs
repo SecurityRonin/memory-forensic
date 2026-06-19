@@ -366,24 +366,21 @@ fn is_plausible_pointer(addr: u64) -> bool {
 fn read_ptr<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u64 {
     reader
         .read_bytes(addr, 8)
-        .map(|b| b[..8].try_into().map_or(0, u64::from_le_bytes))
-        .unwrap_or(0)
+        .map_or(0, |b| b[..8].try_into().map_or(0, u64::from_le_bytes))
 }
 
 /// Read a u32 from virtual memory, returning 0 on failure.
 fn read_u32<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u32 {
     reader
         .read_bytes(addr, 4)
-        .map(|b| b[..4].try_into().map_or(0, u32::from_le_bytes))
-        .unwrap_or(0)
+        .map_or(0, |b| b[..4].try_into().map_or(0, u32::from_le_bytes))
 }
 
 /// Read a u16 from virtual memory, returning 0 on failure.
 fn read_u16<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, addr: u64) -> u16 {
     reader
         .read_bytes(addr, 2)
-        .map(|b| b[..2].try_into().map_or(0, u16::from_le_bytes))
-        .unwrap_or(0)
+        .map_or(0, |b| b[..2].try_into().map_or(0, u16::from_le_bytes))
 }
 
 /// Read a UTF-16LE string of `byte_len` bytes from virtual memory.
@@ -401,7 +398,7 @@ fn read_utf16_string<P: PhysicalMemoryProvider>(
                 .chunks_exact(2)
                 .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                 .collect();
-            String::from_utf16_lossy(&units).to_string()
+            String::from_utf16_lossy(&units)
         }
         Err(_) => String::new(),
     }

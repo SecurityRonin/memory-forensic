@@ -1552,7 +1552,7 @@ fn cmd_ps(
                 PsSortField::Pid => procs.sort_by_key(|p| p.pid),
                 PsSortField::Ppid => procs.sort_by_key(|p| p.ppid),
                 PsSortField::Name => {
-                    procs.sort_by(|a, b| a.comm.to_lowercase().cmp(&b.comm.to_lowercase()));
+                    procs.sort_by_key(|p| p.comm.to_lowercase());
                 }
                 PsSortField::Time => procs.sort_by_key(|p| p.start_time),
             }
@@ -1652,7 +1652,7 @@ fn cmd_ps(
                 let mut scanned = memf_windows::psscan::psscan(&reader);
                 match sort_field {
                     PsSortField::Name => {
-                        scanned.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                        scanned.sort_by_key(|p| p.name.to_lowercase());
                     }
                     // ScannedProcess carries no PPID/create-time; fall back to PID.
                     PsSortField::Pid | PsSortField::Ppid | PsSortField::Time => {
