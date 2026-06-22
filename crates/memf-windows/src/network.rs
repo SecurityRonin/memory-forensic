@@ -525,7 +525,7 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                     ) else {
                         continue;
                     };
-                    if !is_kernel_va(ai) || !is_kernel_va(owner) || !is_kernel_va(inetaf) {
+                    if !is_kernel_va(ai) || !is_kernel_va(inetaf) {
                         continue;
                     }
                     // Address family must be AF_INET (this walker emits IPv4).
@@ -535,13 +535,32 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                     if af as u16 != AF_INET {
                         continue;
                     }
-                    // Owner must reference a plausible process.
-                    let Some(pid) = read_virt_u64(owner + pid_off) else {
+                    // Owner is OPTIONAL: ownerless endpoints (system / transient,
+                    // e.g. an established socket with no live owning process) carry
+                    // Owner == 0 and are valid connections. A non-zero Owner that
+                    // isn't a kernel pointer is a false-positive candidate; a
+                    // kernel-pointer Owner must yield a plausible PID.
+                    let (pid, process_name) = if owner == 0 {
+                        (0, String::new())
+                    } else if is_kernel_va(owner) {
+                        let Some(p) = read_virt_u64(owner + pid_off) else {
+                            continue;
+                        };
+                        if p > 0xFFFF {
+                            continue;
+                        }
+                        let name = reader
+                            .read_bytes(owner + name_off, 15)
+                            .map(|b| {
+                                String::from_utf8_lossy(&b)
+                                    .trim_end_matches('\0')
+                                    .to_string()
+                            })
+                            .unwrap_or_default();
+                        (p, name)
+                    } else {
                         continue;
                     };
-                    if pid == 0 || pid > 0xFFFF {
-                        continue;
-                    }
 
                     // Remote: _ADDRINFO.Remote (ptr) -> _IN_ADDR(addr4).
                     let remote_addr = read_virt_u64(ai + t.ai_remote)
@@ -560,14 +579,6 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                         read_phys_u(ep + t.local_port, 2).map_or(0, |v| u16::from_be(v as u16));
                     let remote_port =
                         read_phys_u(ep + t.remote_port, 2).map_or(0, |v| u16::from_be(v as u16));
-                    let process_name = reader
-                        .read_bytes(owner + name_off, 15)
-                        .map(|b| {
-                            String::from_utf8_lossy(&b)
-                                .trim_end_matches('\0')
-                                .to_string()
-                        })
-                        .unwrap_or_default();
                     // create_time == 0 means the build has no CreateTime field.
                     let create_time = if t.create_time != 0 {
                         read_phys_u(ep + t.create_time, 8).unwrap_or(0)
