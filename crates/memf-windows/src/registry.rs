@@ -208,6 +208,55 @@ pub(crate) fn cell_index_to_va<P: PhysicalMemoryProvider>(
     Some(block_va.wrapping_add(suboffset))
 }
 
+// ── Shared `_CM_KEY_NODE` / `_CM_KEY_VALUE` field offsets (x64) ────────────────
+// Validated against Volatility 3's ISF (`_CM_KEY_NODE`: SubKeyLists@0x1c,
+// ValueList@0x24, NameLength@0x48, Name@0x4c; `_CM_KEY_VALUE`: NameLength@0x02,
+// DataLength@0x04, Data@0x08, Name@0x14) and memf's validated `hashdump.rs`.
+// SubKeyCounts/SubKeyLists are `[Stable, Volatile]` arrays; the Stable slot is
+// used. Reading the Volatile slot (+0x18 count / +0x20 list) — a bug copy-pasted
+// across several walkers — finds the usually-empty volatile list and silently
+// returns nothing on a real hive.
+pub(crate) const NK_SUBKEY_COUNT: u64 = 0x14;
+pub(crate) const NK_SUBKEY_LIST: u64 = 0x1c;
+pub(crate) const NK_NAME_LENGTH: u64 = 0x48;
+pub(crate) const NK_NAME: u64 = 0x4c;
+
+/// Per-list subkey cap (runaway / allocation-bomb defense on untrusted hives).
+const MAX_SUBKEY_LIST: u16 = 4096;
+/// `ri` (index-root) nesting bound (untrusted-input recursion guard).
+const RI_MAX_DEPTH: u32 = 32;
+
+/// Virtual address of cell `cell_index`'s data (past its 4-byte size header),
+/// or 0 if the index does not resolve or the cell data is unreadable.
+pub(crate) fn read_cell_addr<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    cell_index: u32,
+) -> u64 {
+    let Some(cell_va) = cell_index_to_va(reader, hhive_addr, cell_index) else {
+        return 0;
+    };
+    let addr = cell_va.wrapping_add(4);
+    match reader.read_bytes(addr, 2) {
+        Ok(bytes) if bytes.len() == 2 => addr,
+        _ => 0,
+    }
+}
+
+/// Find a subkey by name under a parent `_CM_KEY_NODE` (given its cell VA),
+/// returning the child key's cell VA or 0. Reads the STABLE subkey list and
+/// handles `lf`/`lh`/`li`/`ri` (index-root) lists with bounded `ri` recursion.
+/// The single correct walker every registry consumer should call.
+pub(crate) fn find_subkey_by_name<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    parent_addr: u64,
+    target_name: &str,
+) -> u64 {
+    let _ = (reader, hhive_addr, parent_addr, target_name);
+    0 // GREEN: implemented in the next commit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,5 +740,212 @@ mod tests {
         assert_eq!(hives[1].hive_addr, base_block_b);
         assert_eq!(hives[1].stable_length, 0x0100_0000);
         assert_eq!(hives[1].volatile_length, 0x0002_0000);
+    }
+
+    // ── Shared find_subkey_by_name: lf / lh / li / ri + stable-list correctness ──
+
+    use memf_core::test_builders::SyntheticPhysMem;
+
+    fn cellmap_isf() -> serde_json::Value {
+        IsfBuilder::new()
+            .add_struct("_HHIVE", 0x800)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0xb8, "char")
+            .add_struct("_DUAL", 0x278)
+            .add_field("_DUAL", "Map", 0x18, "pointer")
+            .add_struct("_HMAP_ENTRY", 0x20)
+            .add_field("_HMAP_ENTRY", "PermanentBinAddress", 0x0, "pointer")
+            .add_field("_HMAP_ENTRY", "BlockOffset", 0x8, "unsigned long")
+            .build_json()
+    }
+
+    /// Single-bin cell-map hive: cell index == byte offset within the bin (so
+    /// indices must be < 0x1000); cell data starts at `idx + 4` (past the size
+    /// header). Mirrors the in-memory `_HHIVE.Storage[].Map` directory→table→bin
+    /// layout that `cell_index_to_va` walks.
+    struct CellHive {
+        hhive_va: u64,
+        bin_va: u64,
+        bin: Vec<u8>,
+    }
+    impl CellHive {
+        fn new(base: u64) -> Self {
+            Self {
+                hhive_va: base,
+                bin_va: base + 0x4000,
+                bin: vec![0u8; 0x1000],
+            }
+        }
+        fn ao(idx: u32) -> usize {
+            (idx + 4) as usize
+        }
+        /// `_CM_KEY_NODE` with CORRECT offsets: SubKeyCounts[Stable]@0x14,
+        /// SubKeyLists[Stable]@0x1c, [Volatile]@0x20, NameLength@0x48, Name@0x4c.
+        fn nk(
+            &mut self,
+            idx: u32,
+            name: &[u8],
+            stable_count: u32,
+            stable_list: u32,
+            volatile_list: u32,
+        ) {
+            let o = Self::ao(idx);
+            self.bin[o + 0x14..o + 0x18].copy_from_slice(&stable_count.to_le_bytes());
+            self.bin[o + 0x18..o + 0x1c].copy_from_slice(&1u32.to_le_bytes()); // volatile count
+            self.bin[o + 0x1c..o + 0x20].copy_from_slice(&stable_list.to_le_bytes());
+            self.bin[o + 0x20..o + 0x24].copy_from_slice(&volatile_list.to_le_bytes());
+            self.bin[o + 0x48..o + 0x4a].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            self.bin[o + 0x4c..o + 0x4c + name.len()].copy_from_slice(name);
+        }
+        fn list(&mut self, idx: u32, sig: &[u8; 2], entries: &[u32], stride: usize) {
+            let o = Self::ao(idx);
+            self.bin[o..o + 2].copy_from_slice(sig);
+            self.bin[o + 2..o + 4].copy_from_slice(&(entries.len() as u16).to_le_bytes());
+            for (i, &e) in entries.iter().enumerate() {
+                self.bin[o + 4 + i * stride..o + 4 + i * stride + 4]
+                    .copy_from_slice(&e.to_le_bytes());
+            }
+        }
+        fn lf(&mut self, idx: u32, children: &[u32]) {
+            self.list(idx, b"lf", children, 8);
+        }
+        fn li(&mut self, idx: u32, children: &[u32]) {
+            self.list(idx, b"li", children, 4);
+        }
+        fn ri(&mut self, idx: u32, sublists: &[u32]) {
+            self.list(idx, b"ri", sublists, 4);
+        }
+        fn reader(&self) -> ObjectReader<SyntheticPhysMem> {
+            let resolver = IsfResolver::from_value(&cellmap_isf()).unwrap();
+            let bb_va = self.hhive_va + 0x1000;
+            let dir_va = self.hhive_va + 0x2000;
+            let table_va = self.hhive_va + 0x3000;
+            let mut hh = vec![0u8; 0x1000];
+            hh[0x10..0x18].copy_from_slice(&bb_va.to_le_bytes());
+            hh[0xb8 + 0x18..0xb8 + 0x18 + 8].copy_from_slice(&dir_va.to_le_bytes());
+            let mut dir = vec![0u8; 0x1000];
+            dir[0..8].copy_from_slice(&table_va.to_le_bytes());
+            let mut table = vec![0u8; 0x1000];
+            table[0..8].copy_from_slice(&self.bin_va.to_le_bytes());
+            let (cr3, mem) = PageTableBuilder::new()
+                .map_4k(self.hhive_va, self.hhive_va, flags::WRITABLE)
+                .write_phys(self.hhive_va, &hh)
+                .map_4k(bb_va, bb_va, flags::WRITABLE)
+                .write_phys(bb_va, &vec![0u8; 0x1000])
+                .map_4k(dir_va, dir_va, flags::WRITABLE)
+                .write_phys(dir_va, &dir)
+                .map_4k(table_va, table_va, flags::WRITABLE)
+                .write_phys(table_va, &table)
+                .map_4k(self.bin_va, self.bin_va, flags::WRITABLE)
+                .write_phys(self.bin_va, &self.bin)
+                .build();
+            let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+            ObjectReader::new(vas, Box::new(resolver))
+        }
+    }
+
+    #[test]
+    fn find_subkey_lf_finds_child() {
+        let mut h = CellHive::new(0x0010_0000);
+        h.nk(0x40, b"root", 1, 0x100, 0);
+        h.lf(0x100, &[0x200]);
+        h.nk(0x200, b"SAM", 0, 0, 0);
+        let r = h.reader();
+        let parent = read_cell_addr(&r, h.hhive_va, 0x40);
+        assert_eq!(
+            find_subkey_by_name(&r, h.hhive_va, parent, "SAM"),
+            h.bin_va + 0x200 + 4
+        );
+    }
+
+    #[test]
+    fn find_subkey_li_finds_child() {
+        let mut h = CellHive::new(0x0011_0000);
+        h.nk(0x40, b"root", 1, 0x100, 0);
+        h.li(0x100, &[0x200]);
+        h.nk(0x200, b"Secrets", 0, 0, 0);
+        let r = h.reader();
+        let parent = read_cell_addr(&r, h.hhive_va, 0x40);
+        assert_eq!(
+            find_subkey_by_name(&r, h.hhive_va, parent, "secrets"), // case-insensitive
+            h.bin_va + 0x200 + 4
+        );
+    }
+
+    #[test]
+    fn find_subkey_ri_indexroot_finds_child() {
+        // The missing-`ri` bug: an index-root list points to sub-lists, each of
+        // which is an lf/lh/li. Large keys (CLSID, InventoryApplication) use this.
+        let mut h = CellHive::new(0x0020_0000);
+        h.nk(0x40, b"root", 2, 0x100, 0);
+        h.ri(0x100, &[0x200, 0x300]); // ri → two sub-lists
+        h.lf(0x200, &[0x400]);
+        h.nk(0x400, b"Other", 0, 0, 0);
+        h.lf(0x300, &[0x500]);
+        h.nk(0x500, b"InventoryApplicationFile", 0, 0, 0);
+        let r = h.reader();
+        let parent = read_cell_addr(&r, h.hhive_va, 0x40);
+        assert_eq!(
+            find_subkey_by_name(&r, h.hhive_va, parent, "InventoryApplicationFile"),
+            h.bin_va + 0x500 + 4
+        );
+    }
+
+    #[test]
+    fn find_subkey_ri_with_li_sublist() {
+        let mut h = CellHive::new(0x0021_0000);
+        h.nk(0x40, b"root", 1, 0x100, 0);
+        h.ri(0x100, &[0x200]);
+        h.li(0x200, &[0x300]); // li sub-list under the ri
+        h.nk(0x300, b"Cache", 0, 0, 0);
+        let r = h.reader();
+        let parent = read_cell_addr(&r, h.hhive_va, 0x40);
+        assert_eq!(
+            find_subkey_by_name(&r, h.hhive_va, parent, "Cache"),
+            h.bin_va + 0x300 + 4
+        );
+    }
+
+    #[test]
+    fn find_subkey_reads_stable_list_not_volatile() {
+        // The critical bug: a reader using +0x18/+0x20 (the Volatile slot) instead
+        // of +0x14/+0x1c (Stable) finds the usually-empty/decoy volatile list. The
+        // stable list holds "Secrets"; the volatile slot points to a decoy that
+        // does NOT — a buggy +0x20 reader returns 0 here.
+        let mut h = CellHive::new(0x0030_0000);
+        h.nk(0x40, b"root", 1, 0x100, 0x300); // stable list 0x100, volatile decoy 0x300
+        h.lf(0x100, &[0x200]);
+        h.nk(0x200, b"Secrets", 0, 0, 0);
+        h.lf(0x300, &[0x400]);
+        h.nk(0x400, b"WRONG", 0, 0, 0);
+        let r = h.reader();
+        let parent = read_cell_addr(&r, h.hhive_va, 0x40);
+        assert_eq!(
+            find_subkey_by_name(&r, h.hhive_va, parent, "Secrets"),
+            h.bin_va + 0x200 + 4
+        );
+    }
+
+    #[test]
+    fn find_subkey_missing_returns_zero() {
+        let mut h = CellHive::new(0x0031_0000);
+        h.nk(0x40, b"root", 1, 0x100, 0);
+        h.lf(0x100, &[0x200]);
+        h.nk(0x200, b"SAM", 0, 0, 0);
+        let r = h.reader();
+        let parent = read_cell_addr(&r, h.hhive_va, 0x40);
+        assert_eq!(find_subkey_by_name(&r, h.hhive_va, parent, "NOPE"), 0);
+    }
+
+    #[test]
+    fn find_subkey_ri_self_cycle_is_bounded() {
+        // A malformed `ri` entry pointing back to itself must terminate (the
+        // recursion bound), not hang — Paranoid Gatekeeper on untrusted hives.
+        let mut h = CellHive::new(0x0040_0000);
+        h.nk(0x40, b"root", 1, 0x100, 0);
+        h.ri(0x100, &[0x100]); // self-referential
+        let r = h.reader();
+        let parent = read_cell_addr(&r, h.hhive_va, 0x40);
+        assert_eq!(find_subkey_by_name(&r, h.hhive_va, parent, "X"), 0);
     }
 }
