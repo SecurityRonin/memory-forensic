@@ -391,13 +391,22 @@ fn scan_build_from_buildlab<P: PhysicalMemoryProvider>(prov: &P) -> Option<u32> 
 /// table only for symbol-free dumps. Extend the table per build validated
 /// against a real image; the legacy default is kept solely so pre-existing
 /// symbol-free flows do not regress.
-// GREEN: implemented in the next commit.
-#[allow(dead_code)]
-fn eprocess_offsets<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _build: u32,
-) -> (u64, u64) {
-    (0, 0)
+fn eprocess_offsets<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, build: u32) -> (u64, u64) {
+    let syms = reader.symbols();
+    // Per-build fallback used only when the ISF lacks the field (symbol-free
+    // dumps); the typed ISF, when present, covers every build.
+    let (fb_pid, fb_name) = match build {
+        // Win10 2004/20H1 — validated against the Szechuan workstation dump.
+        19041 => (0x440, 0x5A8),
+        // Legacy default, kept so pre-existing symbol-free flows don't regress.
+        _ => (0x2E0, 0x450),
+    };
+    (
+        syms.field_offset("_EPROCESS", "UniqueProcessId")
+            .unwrap_or(fb_pid),
+        syms.field_offset("_EPROCESS", "ImageFileName")
+            .unwrap_or(fb_name),
+    )
 }
 
 /// True for a canonical x64 kernel-half virtual address (bits 47..63 all set,
@@ -440,18 +449,14 @@ fn tcp_state_from_enum(v: u32) -> WinTcpState {
 pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
-    let Some(t) = nt_build_number(reader).and_then(tcp_endpoint_layout_x64) else {
+    let Some(build) = nt_build_number(reader) else {
         return Ok(Vec::new());
     };
-    // `_EPROCESS` offsets come from the (typed) kernel ISF.
-    let pid_off = reader
-        .symbols()
-        .field_offset("_EPROCESS", "UniqueProcessId")
-        .unwrap_or(0x2E0);
-    let name_off = reader
-        .symbols()
-        .field_offset("_EPROCESS", "ImageFileName")
-        .unwrap_or(0x450);
+    let Some(t) = tcp_endpoint_layout_x64(build) else {
+        return Ok(Vec::new());
+    };
+    // `_EPROCESS` offsets: typed ISF when present, else a per-build fallback.
+    let (pid_off, name_off) = eprocess_offsets(reader, build);
     let prov = reader.vas().physical();
 
     let ranges: Vec<(u64, u64)> = {
