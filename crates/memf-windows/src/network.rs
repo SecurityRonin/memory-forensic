@@ -1211,6 +1211,107 @@ mod tests {
         assert_eq!(c.state, WinTcpState::Established);
     }
 
+    // RED: an established _TCP_ENDPOINT with Owner == 0 (an ownerless system /
+    // transient socket — exactly the Szechuan workstation's 13.78.149.173:443
+    // connection) must still be recovered, just with pid 0 / empty process name.
+    // The old gate rejected it because `is_kernel_va(owner)` is false for 0.
+    #[test]
+    fn scan_tcp_endpoints_recovers_an_ownerless_endpoint() {
+        let t = tcp_endpoint_layout_x64(9600).unwrap();
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let ai_va = 0xFFFF_C000_0001_1000u64;
+        let remote_in_va = 0xFFFF_C000_0001_2000u64;
+        let la_va = 0xFFFF_C000_0001_3000u64;
+        let pdata_va = 0xFFFF_C000_0001_4000u64;
+        let local_in_va = 0xFFFF_C000_0001_5000u64;
+        let (pa_inetaf, pa_ai, pa_rin, pa_la, pa_pdata, pa_lin) = (
+            0x70_000u64,
+            0x71_000,
+            0x72_000,
+            0x73_000,
+            0x74_000,
+            0x75_000,
+        );
+
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[t.inetaf_af as usize..t.inetaf_af as usize + 2].copy_from_slice(&2u16.to_le_bytes());
+        let mut ai = vec![0u8; 0x1000];
+        ai[t.ai_local as usize..t.ai_local as usize + 8].copy_from_slice(&la_va.to_le_bytes());
+        ai[t.ai_remote as usize..t.ai_remote as usize + 8]
+            .copy_from_slice(&remote_in_va.to_le_bytes());
+        let mut rin = vec![0u8; 0x1000];
+        rin[0..4].copy_from_slice(&[13, 78, 149, 173]); // remote (Azure C2)
+        let mut la = vec![0u8; 0x1000];
+        la[t.la_pdata as usize..t.la_pdata as usize + 8].copy_from_slice(&pdata_va.to_le_bytes());
+        let mut pdata = vec![0u8; 0x1000];
+        pdata[0..8].copy_from_slice(&local_in_va.to_le_bytes());
+        let mut lin = vec![0u8; 0x1000];
+        lin[0..4].copy_from_slice(&[10, 42, 85, 115]); // local
+
+        let mut obj = vec![0u8; 0x300];
+        obj[t.state as usize..t.state as usize + 4].copy_from_slice(&4u32.to_le_bytes()); // ESTABLISHED
+        obj[t.local_port as usize..t.local_port as usize + 2]
+            .copy_from_slice(&50979u16.to_be_bytes());
+        obj[t.remote_port as usize..t.remote_port as usize + 2]
+            .copy_from_slice(&443u16.to_be_bytes());
+        obj[t.inet_af as usize..t.inet_af as usize + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[t.addr_info as usize..t.addr_info as usize + 8].copy_from_slice(&ai_va.to_le_bytes());
+        // Owner left as 0 — no owning process.
+
+        let tag_phys = 0x50_004u64;
+        let ep_obj = 0x50_010u64; // pool_base(0x50000) + delta 0x10
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_2580u32.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
+            .map_4k(ai_va, pa_ai, flags::WRITABLE)
+            .map_4k(remote_in_va, pa_rin, flags::WRITABLE)
+            .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(pdata_va, pa_pdata, flags::WRITABLE)
+            .map_4k(local_in_va, pa_lin, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
+            .write_phys(pa_inetaf, &inetaf)
+            .write_phys(pa_ai, &ai)
+            .write_phys(pa_rin, &rin)
+            .write_phys(pa_la, &la)
+            .write_phys(pa_pdata, &pdata)
+            .write_phys(pa_lin, &lin)
+            .write_phys(tag_phys, b"TcpE")
+            .write_phys(ep_obj, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_tcp_endpoints(&reader).expect("scan ok");
+        assert_eq!(
+            conns.len(),
+            1,
+            "ownerless endpoint must be recovered, got {conns:?}"
+        );
+        let c = &conns[0];
+        assert_eq!(c.remote_addr, "13.78.149.173");
+        assert_eq!(c.remote_port, 443);
+        assert_eq!(c.local_addr, "10.42.85.115");
+        assert_eq!(c.local_port, 50979);
+        assert_eq!(c.pid, 0, "ownerless -> pid 0");
+        assert_eq!(c.process_name, "");
+        assert_eq!(c.state, WinTcpState::Established);
+    }
+
     // --- Symbol-free OS build detection (NtBuildLab scan) -------------------
 
     #[test]
