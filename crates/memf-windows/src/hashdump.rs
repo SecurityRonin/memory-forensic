@@ -24,6 +24,10 @@ use md5::{Digest, Md5};
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+// Registry hive navigation is the shared, validated walker (correct stable-list
+// offsets + lf/lh/li/ri handling) so this module no longer carries its own copy.
+use crate::registry::{find_subkey_by_name, read_cell_addr};
+
 /// Maximum number of user entries to enumerate (safety limit).
 const MAX_USERS: usize = 4096;
 const _: () = assert!(MAX_USERS > 0 && MAX_USERS <= 65536);
@@ -628,109 +632,6 @@ fn rc4_crypt(key: &[u8], data: &[u8]) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 // Internal helpers — registry hive navigation (mirrors sam.rs patterns)
 // ---------------------------------------------------------------------------
-
-/// Resolve a registry **cell index** to the virtual address of the cell's
-/// *data* within an in-memory hive.
-///
-/// In-memory hives are not flat: the cell index is translated through
-/// `_HHIVE.Storage[].Map` (the HMAP directory) by
-/// [`crate::registry::cell_index_to_va`], which returns the VA of the cell's
-/// `_HCELL` size header. Cell data begins 4 bytes later, so this adds 4 and
-/// confirms the resulting address is readable. Returns 0 on any fault.
-fn read_cell_addr<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hhive_addr: u64,
-    cell_index: u32,
-) -> u64 {
-    let Some(cell_va) = crate::registry::cell_index_to_va(reader, hhive_addr, cell_index) else {
-        return 0;
-    };
-    let addr = cell_va.wrapping_add(4);
-    match reader.read_bytes(addr, 2) {
-        Ok(bytes) if bytes.len() == 2 => addr,
-        _ => 0,
-    }
-}
-
-/// Find a subkey by name under a parent `_CM_KEY_NODE`.
-fn find_subkey_by_name<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hhive_addr: u64,
-    parent_addr: u64,
-    target_name: &str,
-) -> u64 {
-    let subkey_count: u32 = match reader.read_bytes(parent_addr + 0x14, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return 0,
-    };
-
-    if subkey_count == 0 || subkey_count > 4096 {
-        return 0;
-    }
-
-    let list_off: u32 = match reader.read_bytes(parent_addr + 0x1c, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return 0,
-    };
-
-    let list_addr = read_cell_addr(reader, hhive_addr, list_off);
-    if list_addr == 0 {
-        return 0;
-    }
-
-    let list_sig = match reader.read_bytes(list_addr, 2) {
-        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
-        _ => return 0,
-    };
-
-    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
-        Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-        _ => return 0,
-    };
-
-    for i in 0..count.min(4096) {
-        let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                Ok(bytes) if bytes.len() == 4 => {
-                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                }
-                _ => continue,
-            },
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => {
-                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                }
-                _ => continue,
-            },
-            _ => return 0,
-        };
-
-        let key_addr = read_cell_addr(reader, hhive_addr, entry_off);
-        if key_addr == 0 {
-            continue;
-        }
-
-        let name_len: u16 = match reader.read_bytes(key_addr + 0x48, 2) {
-            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-            _ => continue,
-        };
-
-        if name_len == 0 || name_len > 256 {
-            continue;
-        }
-
-        let name = match reader.read_bytes(key_addr + 0x4C, name_len as usize) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-            _ => continue,
-        };
-
-        if name.eq_ignore_ascii_case(target_name) {
-            return key_addr;
-        }
-    }
-
-    0
-}
 
 /// Read the class name of a `_CM_KEY_NODE` (used for boot key extraction).
 /// Returns the raw bytes of the class name, or an empty vec on failure.

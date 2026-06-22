@@ -253,8 +253,94 @@ pub(crate) fn find_subkey_by_name<P: PhysicalMemoryProvider>(
     parent_addr: u64,
     target_name: &str,
 ) -> u64 {
-    let _ = (reader, hhive_addr, parent_addr, target_name);
-    0 // GREEN: implemented in the next commit
+    let subkey_count = match reader.read_bytes(parent_addr + NK_SUBKEY_COUNT, 4) {
+        Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+        _ => return 0,
+    };
+    if subkey_count == 0 || subkey_count > u32::from(MAX_SUBKEY_LIST) {
+        return 0;
+    }
+    let list_off = match reader.read_bytes(parent_addr + NK_SUBKEY_LIST, 4) {
+        Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+        _ => return 0,
+    };
+    search_subkey_list(reader, hhive_addr, list_off, target_name, RI_MAX_DEPTH)
+}
+
+/// Recursively search a subkey-list cell (`lf`/`lh`/`li`/`ri`) for `target_name`,
+/// returning the matching child key's cell VA or 0. `ri` (index-root) entries
+/// point at nested sub-lists; recursion is bounded by `depth`.
+fn search_subkey_list<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    list_index: u32,
+    target_name: &str,
+    depth: u32,
+) -> u64 {
+    if depth == 0 {
+        return 0; // cov:unreachable: RI_MAX_DEPTH exceeds any well-formed ri nesting
+    }
+    let list_addr = read_cell_addr(reader, hhive_addr, list_index);
+    if list_addr == 0 {
+        return 0;
+    }
+    let sig = match reader.read_bytes(list_addr, 2) {
+        Ok(b) if b.len() == 2 => [b[0], b[1]],
+        _ => return 0,
+    };
+    let count = match reader.read_bytes(list_addr + 2, 2) {
+        Ok(b) if b.len() == 2 => b[..2].try_into().map_or(0, u16::from_le_bytes),
+        _ => return 0,
+    }
+    .min(MAX_SUBKEY_LIST);
+
+    // "ri": index of indices — each 4-byte entry points at a nested sub-list
+    // (lf/lh/li/ri). Used by large keys (CLSID, InventoryApplication, Run).
+    if sig == [b'r', b'i'] {
+        for i in 0..count {
+            let sub = match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
+                Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+                _ => continue,
+            };
+            let found = search_subkey_list(reader, hhive_addr, sub, target_name, depth - 1);
+            if found != 0 {
+                return found;
+            }
+        }
+        return 0;
+    }
+
+    // "lf"/"lh": 8-byte entries (cell index + name hash); "li": 4-byte (cell index).
+    let stride: u64 = match sig {
+        [b'l', b'f' | b'h'] => 8,
+        [b'l', b'i'] => 4,
+        _ => return 0,
+    };
+    for i in 0..count {
+        let entry = match reader.read_bytes(list_addr + 4 + u64::from(i) * stride, 4) {
+            Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+            _ => continue,
+        };
+        let key_addr = read_cell_addr(reader, hhive_addr, entry);
+        if key_addr == 0 {
+            continue;
+        }
+        let name_len = match reader.read_bytes(key_addr + NK_NAME_LENGTH, 2) {
+            Ok(b) if b.len() == 2 => b[..2].try_into().map_or(0, u16::from_le_bytes),
+            _ => continue,
+        };
+        if name_len == 0 || name_len > 256 {
+            continue;
+        }
+        let name = match reader.read_bytes(key_addr + NK_NAME, name_len as usize) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            _ => continue,
+        };
+        if name.eq_ignore_ascii_case(target_name) {
+            return key_addr;
+        }
+    }
+    0
 }
 
 #[cfg(test)]
@@ -797,9 +883,9 @@ mod tests {
             self.bin[o + 0x48..o + 0x4a].copy_from_slice(&(name.len() as u16).to_le_bytes());
             self.bin[o + 0x4c..o + 0x4c + name.len()].copy_from_slice(name);
         }
-        fn list(&mut self, idx: u32, sig: &[u8; 2], entries: &[u32], stride: usize) {
+        fn list(&mut self, idx: u32, sig: [u8; 2], entries: &[u32], stride: usize) {
             let o = Self::ao(idx);
-            self.bin[o..o + 2].copy_from_slice(sig);
+            self.bin[o..o + 2].copy_from_slice(&sig);
             self.bin[o + 2..o + 4].copy_from_slice(&(entries.len() as u16).to_le_bytes());
             for (i, &e) in entries.iter().enumerate() {
                 self.bin[o + 4 + i * stride..o + 4 + i * stride + 4]
@@ -807,13 +893,13 @@ mod tests {
             }
         }
         fn lf(&mut self, idx: u32, children: &[u32]) {
-            self.list(idx, b"lf", children, 8);
+            self.list(idx, *b"lf", children, 8);
         }
         fn li(&mut self, idx: u32, children: &[u32]) {
-            self.list(idx, b"li", children, 4);
+            self.list(idx, *b"li", children, 4);
         }
         fn ri(&mut self, idx: u32, sublists: &[u32]) {
-            self.list(idx, b"ri", sublists, 4);
+            self.list(idx, *b"ri", sublists, 4);
         }
         fn reader(&self) -> ObjectReader<SyntheticPhysMem> {
             let resolver = IsfResolver::from_value(&cellmap_isf()).unwrap();
