@@ -306,6 +306,28 @@ pub(crate) fn nt_build_number<P: PhysicalMemoryProvider>(reader: &ObjectReader<P
     (build >= 2600).then_some(build)
 }
 
+/// Architecture tokens that anchor an `NtBuildLab` string in raw memory.
+const BUILDLAB_ANCHORS: [&[u8]; 3] = [b"amd64fre", b"x86fre", b"arm64fre"];
+
+/// Parse the NT build number from an `NtBuildLab` fragment whose leading dotted
+/// field is the build (e.g. "19041.1.amd64fre.vb_release.191206-1406", or just
+/// the "19041.1." prefix). Tolerates a non-digit prefix picked up by a raw scan;
+/// rejects values below the NT build floor (2600) as noise.
+// GREEN: implemented in the next commit.
+#[allow(dead_code)]
+fn build_from_buildlab(_lab: &str) -> Option<u32> {
+    None
+}
+
+/// Symbol-free OS build detection: physically scan for an `NtBuildLab`-style
+/// string (anchored on its architecture token) and parse the build number. The
+/// fallback used when `NtBuildNumber` symbol resolution is unavailable on a dump.
+// GREEN: implemented in the next commit.
+#[allow(dead_code)]
+fn scan_build_from_buildlab<P: PhysicalMemoryProvider>(_prov: &P) -> Option<u32> {
+    None
+}
+
 /// True for a canonical x64 kernel-half virtual address (bits 47..63 all set,
 /// i.e. `>= 0xFFFF_8000_0000_0000`). Pool pointers live across the whole kernel
 /// half, not only the `0xFFFF_F8…` ntoskrnl band.
@@ -1110,5 +1132,62 @@ mod tests {
         assert_eq!(c.pid, 3644);
         assert_eq!(c.process_name, "coreupdater.exe");
         assert_eq!(c.state, WinTcpState::Established);
+    }
+
+    // --- Symbol-free OS build detection (NtBuildLab scan) -------------------
+
+    #[test]
+    fn build_from_buildlab_parses_leading_field() {
+        assert_eq!(
+            build_from_buildlab("19041.1.amd64fre.vb_release.191206-1406"),
+            Some(19041)
+        );
+        assert_eq!(
+            build_from_buildlab("9600.17415.amd64fre.winblue_r4.141028-1500"),
+            Some(9600)
+        );
+        // Just the build.rev prefix (what the scanner backtracks to) also parses.
+        assert_eq!(build_from_buildlab("19041.1."), Some(19041));
+        assert_eq!(build_from_buildlab("not-a-buildlab"), None);
+        assert_eq!(build_from_buildlab(""), None);
+        // Below the NT build floor (>= 2600): reject as scan noise.
+        assert_eq!(build_from_buildlab("12.1.amd64fre"), None);
+    }
+
+    /// Build a `RangedMem` whose physical memory contains `bytes` at `pa`.
+    fn ranged_mem_with(pa: u64, bytes: &[u8]) -> (u64, RangedMem) {
+        let mut page = vec![0u8; 0x1000];
+        page[..bytes.len()].copy_from_slice(bytes);
+        let (cr3, mem) = PageTableBuilder::new().write_phys(pa, &page).build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 1024 * 1024,
+            }],
+        };
+        (cr3, ranged)
+    }
+
+    #[test]
+    fn scan_build_from_buildlab_recovers_build_symbol_free() {
+        let (_cr3, ranged) =
+            ranged_mem_with(0x40_000, b"19041.1.amd64fre.vb_release.191206-1406\0");
+        assert_eq!(scan_build_from_buildlab(&ranged), Some(19041));
+    }
+
+    #[test]
+    fn nt_build_number_falls_back_to_buildlab_scan_without_symbol() {
+        // Mirrors the Szechuan workstation dump: the NtBuildNumber symbol does
+        // not resolve, but the NtBuildLab string is physically present.
+        // Detection must still recover build 19041 so the overlay is reachable.
+        let (cr3, ranged) = ranged_mem_with(0x40_000, b"19041.1.amd64fre.vb_release.191206-1406\0");
+        // ISF with NO NtBuildNumber symbol.
+        let resolver = IsfResolver::from_value(&IsfBuilder::new().build_json()).unwrap();
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+        assert_eq!(nt_build_number(&reader), Some(19041));
     }
 }
