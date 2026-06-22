@@ -386,6 +386,20 @@ fn scan_build_from_buildlab<P: PhysicalMemoryProvider>(prov: &P) -> Option<u32> 
     None
 }
 
+/// `_EPROCESS` (`UniqueProcessId`, `ImageFileName`) byte offsets, preferring the
+/// typed kernel ISF (which covers every build) and falling back to a per-build
+/// table only for symbol-free dumps. Extend the table per build validated
+/// against a real image; the legacy default is kept solely so pre-existing
+/// symbol-free flows do not regress.
+// GREEN: implemented in the next commit.
+#[allow(dead_code)]
+fn eprocess_offsets<P: PhysicalMemoryProvider>(
+    _reader: &ObjectReader<P>,
+    _build: u32,
+) -> (u64, u64) {
+    (0, 0)
+}
+
 /// True for a canonical x64 kernel-half virtual address (bits 47..63 all set,
 /// i.e. `>= 0xFFFF_8000_0000_0000`). Pool pointers live across the whole kernel
 /// half, not only the `0xFFFF_F8…` ntoskrnl band.
@@ -1247,5 +1261,30 @@ mod tests {
             Box::new(resolver),
         );
         assert_eq!(nt_build_number(&reader), Some(19041));
+    }
+
+    /// A reader whose ISF defines no `_EPROCESS` field offsets (symbol-free).
+    fn empty_symbol_reader() -> ObjectReader<SyntheticPhysMem> {
+        let resolver = IsfResolver::from_value(&IsfBuilder::new().build_json()).unwrap();
+        let (cr3, mem) = PageTableBuilder::new().build();
+        ObjectReader::new(
+            VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        )
+    }
+
+    #[test]
+    fn eprocess_offsets_prefer_symbols_then_build_aware_fallback() {
+        // Symbols present (net_isf defines 0x440/0x5A8) → used regardless of build.
+        let with = make_net_reader(PageTableBuilder::new());
+        assert_eq!(eprocess_offsets(&with, 9600), (0x440, 0x5A8));
+
+        // Symbols absent + build 19041 → validated Win10-2004 fallback, NOT the
+        // 9600-era 0x2E0/0x450 default (the workstation-netstat bug).
+        let empty = empty_symbol_reader();
+        assert_eq!(eprocess_offsets(&empty, 19041), (0x440, 0x5A8));
+
+        // Symbols absent + unrecognized build → legacy default (no regression).
+        assert_eq!(eprocess_offsets(&empty, 7601), (0x2E0, 0x450));
     }
 }
