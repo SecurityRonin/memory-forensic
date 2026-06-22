@@ -1,6 +1,6 @@
 [package]
 name = "memf-core"
-version = "0.2.1"
+version = "0.2.2"
 description = "Virtual address translation and kernel object reading for memory forensics"
 edition.workspace = true
 rust-version.workspace = true
@@ -14,11 +14,14 @@ thiserror.workspace = true
 bytemuck.workspace = true
 memmap2.workspace = true
 rust-lzxpress.workspace = true
-lzo1x.workspace = true
+lzo.workspace = true
 lru.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+# GPL-2.0 reference encoder — round-trip oracle for the decode tests only,
+# never part of the shipped graph.
+lzo1x.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 

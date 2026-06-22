@@ -1,8 +1,8 @@
 //! LZO1X-1 decompression for Linux kernel zram pages.
 //!
-//! Thin wrapper around the [`lzo1x`] crate, exposing a forensics-oriented API.
-//! The Linux kernel stores the expected decompressed size in the zram slot header,
-//! so callers always know the output size in advance.
+//! Thin wrapper around our [`lzo`] crate (decode-only, Apache-2.0), exposing a
+//! forensics-oriented API. The Linux kernel stores the expected decompressed size
+//! in the zram slot header, so callers always know the output size in advance.
 
 /// Errors that can occur during LZO1X decompression.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,10 +30,21 @@ impl std::error::Error for LzoError {}
 /// size (e.g. 4096 bytes for a Linux zram page). Returns [`LzoError::OutputLength`]
 /// if the actual decompressed size differs from `dst.len()`.
 pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<(), LzoError> {
-    lzo1x::decompress(src, dst).map_err(|e| match e {
-        lzo1x::DecompressError::InvalidInput => LzoError::InvalidInput,
-        lzo1x::DecompressError::OutputLength => LzoError::OutputLength,
-    })
+    let written = lzo::decompress_into(src, dst).map_err(|e| match e {
+        // The block decoded but would not fit the caller-sized buffer.
+        lzo::Error::OutputOverrun => LzoError::OutputLength,
+        // Every other variant means the compressed block itself is bad.
+        lzo::Error::InputOverrun
+        | lzo::Error::LookbehindOverrun
+        | lzo::Error::InputNotConsumed
+        | lzo::Error::Malformed => LzoError::InvalidInput,
+    })?;
+    // The caller passes a buffer of exactly the expected decompressed size, so a
+    // short decode is a length mismatch (the lzo1x wrapper enforced this implicitly).
+    if written != dst.len() {
+        return Err(LzoError::OutputLength);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -82,7 +93,12 @@ mod tests {
 
     #[test]
     fn decompress_invalid_input_errors() {
-        let mut dst = [0u8; 4];
+        // 0xFF as the first byte requests a 238-byte (255-17) initial literal run,
+        // but the block supplies no literal bytes — a malformed stream. dst is sized
+        // past that run so input-exhaustion (not a buffer cap) is the failure mode,
+        // isolating the InvalidInput classification. (A small dst would instead trip
+        // OutputLength, since our decoder checks output capacity before input.)
+        let mut dst = [0u8; 256];
         let result = decompress(&[0xFF, 0xFF, 0xFF], &mut dst);
         assert_eq!(result, Err(LzoError::InvalidInput));
     }

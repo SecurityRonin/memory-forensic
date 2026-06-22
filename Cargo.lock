@@ -1715,6 +1715,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzo"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "987ae180dd550693b0e370c73131f32910c12469562ec2d5c4a1a92e59ac4128"
+
+[[package]]
 name = "lzo1x"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1801,10 +1807,11 @@ dependencies = [
 
 [[package]]
 name = "memf-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bytemuck",
  "lru",
+ "lzo",
  "lzo1x",
  "memf-format",
  "memf-symbols",

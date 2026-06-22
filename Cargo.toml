@@ -52,6 +52,9 @@ hmac           = "0.12"
 indicatif = "0.17"
 inventory = "0.3"
 lru = "0.16"
+# Production decode path: our own decode-only LZO1X crate (Apache-2.0).
+lzo = "0.1"
+# lzo1x is GPL-2.0 — kept ONLY as a memf-core dev-dependency (round-trip oracle).
 lzo1x = "0.2"
 md-5           = "0.10"
 memmap2 = "0.9"
