@@ -55,7 +55,12 @@ fn walk_hive_list_from<P: PhysicalMemoryProvider>(
         if i >= MAX_HIVE_COUNT {
             break;
         }
-        hives.push(read_hive_info(reader, cmhive_addr)?);
+        // A hive whose metadata is paged out (in the pagefile, not captured in
+        // the dump) must not abort enumeration of the rest — skip it and continue,
+        // so a partial capture still yields every readable hive.
+        if let Ok(hive) = read_hive_info(reader, cmhive_addr) {
+            hives.push(hive);
+        }
     }
     Ok(hives)
 }
@@ -74,8 +79,11 @@ fn read_hive_info<P: PhysicalMemoryProvider>(
                 "_CMHIVE.FileFullPath".into(),
             ))
         })?;
+    // The name string Buffer can be paged out even when the hive's cells are
+    // present; degrade to an empty name rather than dropping the whole hive.
     let file_full_path =
-        read_unicode_string(reader, cmhive_addr.wrapping_add(file_full_path_offset))?;
+        read_unicode_string(reader, cmhive_addr.wrapping_add(file_full_path_offset))
+            .unwrap_or_default();
 
     // FileUserName (_UNICODE_STRING)
     let file_user_name_offset = reader
@@ -87,7 +95,8 @@ fn read_hive_info<P: PhysicalMemoryProvider>(
             ))
         })?;
     let file_user_name =
-        read_unicode_string(reader, cmhive_addr.wrapping_add(file_user_name_offset))?;
+        read_unicode_string(reader, cmhive_addr.wrapping_add(file_user_name_offset))
+            .unwrap_or_default();
 
     // Hive._HHIVE.BaseBlock (pointer)
     let hive_offset = reader
