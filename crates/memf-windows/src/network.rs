@@ -301,9 +301,19 @@ const AF_INET: u16 = 2;
 /// (The fixed-VA `_KUSER_SHARED_DATA.NtBuildNumber` field was found unreliable —
 /// it read 0 on that dump — so the kernel symbol is the source of truth.)
 pub(crate) fn nt_build_number<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Option<u32> {
-    let va = reader.symbols().symbol_address("NtBuildNumber")?;
-    let build = (read_phys_u_via(reader, va, 4)? as u32) & 0xFFFF;
-    (build >= 2600).then_some(build)
+    // Exact when the kernel symbol resolves.
+    if let Some(va) = reader.symbols().symbol_address("NtBuildNumber") {
+        if let Some(raw) = read_phys_u_via(reader, va, 4) {
+            let build = (raw as u32) & 0xFFFF;
+            if build >= 2600 {
+                return Some(build);
+            }
+        }
+    }
+    // Symbol-free fallback: scan for the NtBuildLab string. Un-gates overlay
+    // selection on dumps where kernel-symbol resolution failed (e.g. the
+    // Szechuan workstation, build 19041).
+    scan_build_from_buildlab(reader.vas().physical())
 }
 
 /// Architecture tokens that anchor an `NtBuildLab` string in raw memory.
@@ -313,18 +323,66 @@ const BUILDLAB_ANCHORS: [&[u8]; 3] = [b"amd64fre", b"x86fre", b"arm64fre"];
 /// field is the build (e.g. "19041.1.amd64fre.vb_release.191206-1406", or just
 /// the "19041.1." prefix). Tolerates a non-digit prefix picked up by a raw scan;
 /// rejects values below the NT build floor (2600) as noise.
-// GREEN: implemented in the next commit.
-#[allow(dead_code)]
-fn build_from_buildlab(_lab: &str) -> Option<u32> {
-    None
+fn build_from_buildlab(lab: &str) -> Option<u32> {
+    let first = lab.split('.').next()?;
+    let start = first.find(|c: char| c.is_ascii_digit())?;
+    let digits: String = first[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let build: u32 = digits.parse().ok()?;
+    (build >= 2600).then_some(build)
 }
+
+/// Overlap the scan read window so an anchor straddling a chunk boundary — plus
+/// the short "<build>.<rev>." prefix in front of it — stays within one buffer.
+const BUILDLAB_OVERLAP: usize = 32;
 
 /// Symbol-free OS build detection: physically scan for an `NtBuildLab`-style
 /// string (anchored on its architecture token) and parse the build number. The
 /// fallback used when `NtBuildNumber` symbol resolution is unavailable on a dump.
-// GREEN: implemented in the next commit.
-#[allow(dead_code)]
-fn scan_build_from_buildlab<P: PhysicalMemoryProvider>(_prov: &P) -> Option<u32> {
+fn scan_build_from_buildlab<P: PhysicalMemoryProvider>(prov: &P) -> Option<u32> {
+    let ranges: Vec<(u64, u64)> = {
+        let r = prov.ranges();
+        if r.is_empty() {
+            vec![(0, prov.total_size())]
+        } else {
+            r.iter().map(|x| (x.start, x.end)).collect()
+        }
+    };
+    let mut buf = vec![0u8; SCAN_CHUNK + BUILDLAB_OVERLAP];
+    for (start, end) in ranges {
+        let mut addr = start;
+        while addr < end {
+            let n = prov.read_phys(addr, &mut buf).unwrap_or(0);
+            if n == 0 {
+                addr = addr.saturating_add(SCAN_CHUNK as u64);
+                continue;
+            }
+            for anchor in BUILDLAB_ANCHORS {
+                let mut from = 0usize;
+                while from + anchor.len() <= n {
+                    let Some(rel) = buf[from..n].windows(anchor.len()).position(|w| w == anchor)
+                    else {
+                        break;
+                    };
+                    let i = from + rel;
+                    // Backtrack over the graphic-ASCII "<build>.<rev>." prefix.
+                    let lo = i.saturating_sub(24);
+                    let mut s = i;
+                    while s > lo && buf[s - 1].is_ascii_graphic() {
+                        s -= 1;
+                    }
+                    let frag = String::from_utf8_lossy(&buf[s..i]);
+                    if let Some(build) = build_from_buildlab(&frag) {
+                        return Some(build);
+                    }
+                    from = i + 1;
+                }
+            }
+            addr = addr.saturating_add(SCAN_CHUNK as u64);
+        }
+    }
     None
 }
 
