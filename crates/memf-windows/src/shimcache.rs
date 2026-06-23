@@ -459,4 +459,75 @@ mod tests {
         assert!(!entries[1].exec_flag, "blob == 0 -> not executed");
         assert_eq!(entries[1].position, 1);
     }
+
+    /// Path-aware per-entry filter: a node is dropped only when it is BOTH
+    /// link-inconsistent AND has no usable path. A link-inconsistent node that
+    /// still carries a path is kept (we surface recovered evidence rather than
+    /// discard it). Current code emits all 3 nodes → RED until the filter lands.
+    #[test]
+    fn parse_shimcache_list_drops_only_linkbad_and_pathless() {
+        let head = 0xFFFF_8000_0020_0000u64;
+        let a = 0xFFFF_8000_0021_0000u64;
+        let b = 0xFFFF_8000_0022_0000u64;
+        let cc = 0xFFFF_8000_0023_0000u64;
+        let pa = 0xFFFF_8000_0024_0000u64;
+        let pc = 0xFFFF_8000_0025_0000u64;
+        let unmapped = 0xFFFF_8000_DEAD_0000u64; // never mapped → reads fail
+        let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+
+        // head: Flink->a, Blink->cc
+        let mut head_pg = vec![0u8; 4096];
+        head_pg[0..8].copy_from_slice(&a.to_le_bytes());
+        head_pg[8..16].copy_from_slice(&cc.to_le_bytes());
+
+        let link = |flink: u64, blink: u64, plen: u16, pbuf: u64| {
+            let mut pg = vec![0u8; 4096];
+            pg[0..8].copy_from_slice(&flink.to_le_bytes());
+            pg[8..16].copy_from_slice(&blink.to_le_bytes());
+            if plen > 0 {
+                pg[0x18..0x1A].copy_from_slice(&plen.to_le_bytes());
+                pg[0x20..0x28].copy_from_slice(&pbuf.to_le_bytes());
+            }
+            pg
+        };
+        let pa_b = utf16("keep1.exe");
+        let pc_b = utf16("keep2.exe");
+        // a: consistent (a.Flink=b, b.Blink=a readable), has path → kept
+        let a_pg = link(b, head, pa_b.len() as u16, pa);
+        // b: Flink=cc, Blink=a; cc.Blink is unmapped → b cond3 fails → inconsistent;
+        //    empty path → DROPPED
+        let b_pg = link(cc, a, 0, 0);
+        // cc: Flink=head, Blink=unmapped → cc inconsistent, but has path → kept
+        let cc_pg = link(head, unmapped, pc_b.len() as u16, pc);
+        let mut pa_pg = vec![0u8; 4096];
+        pa_pg[..pa_b.len()].copy_from_slice(&pa_b);
+        let mut pc_pg = vec![0u8; 4096];
+        pc_pg[..pc_b.len()].copy_from_slice(&pc_b);
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let mut ptb = PageTableBuilder::new();
+        for (i, (va, pg)) in [
+            (head, &head_pg), (a, &a_pg), (b, &b_pg), (cc, &cc_pg), (pa, &pa_pg), (pc, &pc_pg),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let p = 0x0020_0000u64 + (i as u64) * 0x1000;
+            ptb = ptb.map_4k(va, p, flags::WRITABLE).write_phys(p, pg);
+        }
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = parse_shimcache_list(&reader, head);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "link-bad+pathless node must drop; path-bearing kept; got {paths:?}"
+        );
+        assert_eq!(entries[0].path, "keep1.exe");
+        assert_eq!(entries[1].path, "keep2.exe");
+    }
 }
