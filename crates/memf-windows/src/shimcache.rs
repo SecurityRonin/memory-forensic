@@ -1,10 +1,11 @@
 //! Windows AppCompatCache (Shimcache) extraction from kernel memory.
 //!
 //! The Application Compatibility Cache tracks recently executed programs
-//! and is a key forensic artifact for proving execution history. Windows
-//! maintains this cache in kernel memory via the `g_ShimCache` symbol,
-//! which points to an `_RTL_AVL_TABLE` (Win8+) or linked list (Win7)
-//! of `_SHIM_CACHE_ENTRY` structures.
+//! and is a key forensic artifact for proving execution history. On
+//! Win8.1+/Win10 the cache lives in the `ahcache.sys` driver, reached by
+//! scanning its `.data` section for a `SHIM_CACHE_HANDLE` whose `_RTL_AVL_TABLE`
+//! validates against the `PAGE` section, then walking the `SHIM_CACHE_ENTRY`
+//! LRU list (Volatility `shimcachemem` parity).
 //!
 //! Each entry records the full executable path, last-modification
 //! timestamp (FILETIME), an execution flag (InsertFlag), and the size
@@ -13,8 +14,6 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
-
-use crate::unicode::read_unicode_string;
 
 /// Resolve a PE section's virtual range `(section_va, virtual_size)` within an
 /// in-memory module image mapped at `module_base`, looked up by name (e.g.
@@ -26,7 +25,6 @@ use crate::unicode::read_unicode_string;
 /// Safety cap on the PE section count scanned (real images have < 32).
 const MAX_PE_SECTIONS: u64 = 96;
 
-#[allow(dead_code)] // wired into walk_shimcache in increment 5
 fn module_section_range<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     module_base: u64,
@@ -84,7 +82,6 @@ const SHIM_DETAIL_LASTMOD: u64 = 0x8;
 const SHIM_DETAIL_BLOBSIZE: u64 = 0x10;
 const SHIM_DETAIL_BLOBBUF: u64 = 0x18;
 
-#[allow(dead_code)] // wired into walk_shimcache in increment 3
 fn parse_shimcache_list<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     head_va: u64,
@@ -196,292 +193,130 @@ pub struct ShimcacheEntry {
 
 /// Walk the AppCompatCache (Shimcache) from kernel memory.
 ///
-/// Locates the `g_ShimCache` symbol, which points to an RTL_AVL_TABLE
-/// containing `_SHIM_CACHE_ENTRY` nodes. Each node holds a
-/// `_UNICODE_STRING` path, a FILETIME timestamp, an insert/exec flag,
-/// and shim data size.
+/// Win8.1+/Win10 **x64**: the cache lives in the `ahcache.sys` driver. Resolves
+/// `ahcache.sys`, locates the `SHIM_CACHE_HANDLE` by scanning its `.data`
+/// section (validating each candidate's `_RTL_AVL_TABLE` against the `PAGE`
+/// section), then walks the `SHIM_CACHE_ENTRY` LRU list via
+/// [`parse_shimcache_list`].
 ///
-/// Returns an empty `Vec` if the required symbols are not present
-/// (graceful degradation).
+/// Returns an empty `Vec` when `ahcache.sys` or its sections are absent (e.g.
+/// an unsupported OS/arch — this targets Win8.1+/Win10 x64 only) or no valid
+/// handle pair is found.
 ///
 /// # Errors
-///
-/// Returns an error if memory reads fail after the symbol has been
-/// located and validated.
+/// Propagates a fatal `PsLoadedModuleList` read failure from module resolution.
 pub fn walk_shimcache<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> crate::Result<Vec<ShimcacheEntry>> {
-    // Locate the g_ShimCache pointer symbol.
-    let Some(cache_ptr_addr) = reader.symbols().symbol_address("g_ShimCache") else {
-        return Ok(Vec::new()); // graceful degradation
-    };
-
-    // g_ShimCache is a pointer — read 8 bytes at the symbol address to
-    // get the address of the cache header.
-    let header_addr: u64 = match reader.read_bytes(cache_ptr_addr, 8) {
-        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
+    // Win8.1+/Win10: the shim cache moved from ntoskrnl to ahcache.sys.
+    let ahcache_base = match crate::kernel_modules::find_loaded_module(reader, "ahcache.sys")? {
+        Some(b) if b != 0 => b,
         _ => return Ok(Vec::new()),
     };
-
-    if header_addr == 0 {
+    let (Some((data_start, data_size)), Some((page_start, page_size))) = (
+        module_section_range(reader, ahcache_base, ".data"),
+        module_section_range(reader, ahcache_base, "PAGE"),
+    ) else {
         return Ok(Vec::new());
-    }
+    };
+    let page_end = page_start.wrapping_add(page_size);
+    let data_end = data_start.wrapping_add(data_size);
 
-    // Read the entry count from the cache header.
-    // The header contains: NumEntries (u32 at offset 0), then a linked
-    // list of entries starting at offset 0x8 (ListHead Flink pointer).
-    let num_entries: u32 = reader
-        .read_field(header_addr, "_SHIM_CACHE_HEADER", "NumEntries")
-        .unwrap_or(0);
-
-    let safe_count = (num_entries as usize).min(MAX_SHIMCACHE_ENTRIES);
-    if safe_count == 0 {
-        return Ok(Vec::new());
-    }
-
-    // Read the ListHead.Flink pointer (first entry in the doubly-linked list).
-    let list_head_offset = reader
-        .symbols()
-        .field_offset("_SHIM_CACHE_HEADER", "ListHead")
-        .unwrap_or(0x8);
-
-    let list_head_addr = header_addr + list_head_offset;
-
-    // Read Flink of ListHead to get first entry.
-    let mut current: u64 = match reader.read_bytes(list_head_addr, 8) {
-        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-        _ => return Ok(Vec::new()),
+    let read_u64 = |va: u64| -> Option<u64> {
+        let b = reader.read_bytes(va, 8).ok()?;
+        Some(u64::from_le_bytes(b.get(..8)?.try_into().ok()?))
     };
 
-    let path_offset = reader
-        .symbols()
-        .field_offset("_SHIM_CACHE_ENTRY", "Path")
-        .unwrap_or(0x10);
-
-    let mut entries = Vec::new();
-
-    for position in 0..safe_count {
-        // Stop if we loop back to the list head.
-        if current == list_head_addr || current == 0 {
-            break;
+    // Scan .data (8-byte stride) for pointers to a valid SHIM_CACHE_HANDLE; the
+    // section holds two cache globals.
+    let mut heads = Vec::new();
+    let mut off = data_start;
+    while off < data_end && heads.len() < 2 {
+        if let Some(handle) = read_u64(off) {
+            if let Some(head) = valid_shim_head(reader, handle, page_start, page_end) {
+                heads.push(head);
+            }
         }
-
-        // The _LIST_ENTRY is at offset 0 of _SHIM_CACHE_ENTRY, so
-        // current points directly to the entry base address.
-        let entry_addr = current;
-
-        // Read the path _UNICODE_STRING.
-        let path = read_unicode_string(reader, entry_addr + path_offset).unwrap_or_default();
-
-        // Read LastModified (FILETIME, u64).
-        let last_modified: u64 = reader
-            .read_field(entry_addr, "_SHIM_CACHE_ENTRY", "LastModified")
-            .unwrap_or(0);
-
-        // Read InsertFlag (u32) — non-zero means executed.
-        let insert_flag: u32 = reader
-            .read_field(entry_addr, "_SHIM_CACHE_ENTRY", "InsertFlag")
-            .unwrap_or(0);
-
-        // Read DataSize (u32).
-        let data_size: u32 = reader
-            .read_field(entry_addr, "_SHIM_CACHE_ENTRY", "DataSize")
-            .unwrap_or(0);
-
-        entries.push(ShimcacheEntry {
-            path,
-            last_modified,
-            exec_flag: insert_flag != 0,
-            data_size,
-            position: position as u32,
-        });
-
-        // Advance to next entry (Flink at offset 0 of _LIST_ENTRY).
-        current = match reader.read_bytes(entry_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-            _ => break,
-        };
-
-        // Safety: stop if we exceed the entry limit.
-        if entries.len() >= MAX_SHIMCACHE_ENTRIES {
-            break;
-        }
+        off = off.wrapping_add(8);
     }
+    if heads.len() != 2 {
+        return Ok(Vec::new());
+    }
+    // Win8.1+/Win10 x64: the second cache holds the shim cache.
+    Ok(parse_shimcache_list(reader, heads[1]))
+}
 
-    Ok(entries)
+// _RTL_AVL_TABLE (x64) offsets — cited to Volatility shimcache-win10-x64.json.
+// Note: that table defines _RTL_BALANCED_LINKS as Parent@0x0 (shimcache-specific,
+// differs from the standard ntoskrnl layout where Parent@0x10).
+const RTL_AVL_TABLE_SIZE: u64 = 0x68;
+const RTL_AVL_BALROOT_PARENT: u64 = 0x0;
+const RTL_AVL_COMPARE_ROUTINE: u64 = 0x48;
+const RTL_AVL_ALLOCATE_ROUTINE: u64 = 0x50;
+const RTL_AVL_FREE_ROUTINE: u64 = 0x58;
+
+/// Validate a candidate `SHIM_CACHE_HANDLE` at `handle_va` and return the cache
+/// list-head VA (the `SHIM_CACHE_ENTRY` immediately after the `_RTL_AVL_TABLE`),
+/// or `None`. Mirrors Volatility's structural checks: a valid `_RTL_AVL_TABLE`
+/// (self-referential `BalancedRoot`, Compare/Allocate routines inside `PAGE`,
+/// three distinct routines) plus a self-consistent non-empty list head.
+fn valid_shim_head<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    handle_va: u64,
+    page_start: u64,
+    page_end: u64,
+) -> Option<u64> {
+    if handle_va == 0 {
+        return None;
+    }
+    let read_u64 = |va: u64| -> Option<u64> {
+        let b = reader.read_bytes(va, 8).ok()?;
+        Some(u64::from_le_bytes(b.get(..8)?.try_into().ok()?))
+    };
+    // SHIM_CACHE_HANDLE: eresource@0x0, rtl_avl_table@0x8.
+    let avl = read_u64(handle_va + 8)?;
+    if avl == 0 {
+        return None;
+    }
+    // _RTL_AVL_TABLE: BalancedRoot.Parent must point back to the table itself.
+    if read_u64(avl + RTL_AVL_BALROOT_PARENT)? != avl {
+        return None;
+    }
+    let compare = read_u64(avl + RTL_AVL_COMPARE_ROUTINE)?;
+    let allocate = read_u64(avl + RTL_AVL_ALLOCATE_ROUTINE)?;
+    let free = read_u64(avl + RTL_AVL_FREE_ROUTINE)?;
+    let in_page = |p: u64| p >= page_start && p <= page_end;
+    if !in_page(compare) || !in_page(allocate) {
+        return None;
+    }
+    if compare == allocate || compare == free || allocate == free {
+        return None;
+    }
+    // List head = SHIM_CACHE_ENTRY immediately after the RTL_AVL_TABLE.
+    let head = avl.wrapping_add(RTL_AVL_TABLE_SIZE);
+    let flink = read_u64(head)?;
+    if flink == 0 || flink == head {
+        return None;
+    }
+    // The first node's Blink must point back to the head (circular list).
+    if read_u64(flink + 8)? != head {
+        return None;
+    }
+    Some(head)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
-    /// Build an ISF with the shimcache structures but no g_ShimCache symbol.
-    fn shimcache_isf_no_symbol() -> IsfBuilder {
-        IsfBuilder::new()
-            .add_struct("_SHIM_CACHE_HEADER", 0x80)
-            .add_field("_SHIM_CACHE_HEADER", "NumEntries", 0x0, "unsigned int")
-            .add_field("_SHIM_CACHE_HEADER", "ListHead", 0x8, "_LIST_ENTRY")
-            .add_struct("_SHIM_CACHE_ENTRY", 0x60)
-            .add_field("_SHIM_CACHE_ENTRY", "ListEntry", 0x0, "_LIST_ENTRY")
-            .add_field("_SHIM_CACHE_ENTRY", "Path", 0x10, "_UNICODE_STRING")
-            .add_field("_SHIM_CACHE_ENTRY", "LastModified", 0x20, "unsigned long")
-            .add_field("_SHIM_CACHE_ENTRY", "InsertFlag", 0x28, "unsigned int")
-            .add_field("_SHIM_CACHE_ENTRY", "DataSize", 0x2C, "unsigned int")
-            .add_struct("_LIST_ENTRY", 16)
-            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
-            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
-            .add_struct("_UNICODE_STRING", 16)
-            .add_field("_UNICODE_STRING", "Length", 0, "unsigned short")
-            .add_field("_UNICODE_STRING", "MaximumLength", 2, "unsigned short")
-            .add_field("_UNICODE_STRING", "Buffer", 8, "pointer")
-    }
-
-    /// Build an ISF with the shimcache structures AND the g_ShimCache symbol.
-    fn shimcache_isf_with_symbol(symbol_addr: u64) -> IsfBuilder {
-        shimcache_isf_no_symbol().add_symbol("g_ShimCache", symbol_addr)
-    }
-
-    /// Encode a Rust &str as UTF-16LE bytes.
-    fn encode_utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
-    }
-
     // ── No symbol → empty Vec ───────────────────────────────────────
 
-    /// No g_ShimCache symbol → empty Vec (not an error).
-    #[test]
-    fn walk_shimcache_no_symbol() {
-        let isf = shimcache_isf_no_symbol().build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_shimcache(&reader).unwrap();
-        assert!(result.is_empty());
-    }
-
-    // ── Single entry with path + timestamp ──────────────────────────
-
-    // Memory layout:
-    //   g_ShimCache pointer @ PTR_VADDR → HEADER_VADDR
-    //
-    //   _SHIM_CACHE_HEADER @ HEADER_VADDR:
-    //     NumEntries = 1
-    //     ListHead.Flink @ +0x8 → ENTRY0_VADDR
-    //
-    //   _SHIM_CACHE_ENTRY @ ENTRY0_VADDR:
-    //     ListEntry.Flink @ +0x0 → HEADER_VADDR + 0x8 (back to list head)
-    //     Path @ +0x10 (_UNICODE_STRING → "\\??\\C:\\Windows\\System32\\cmd.exe")
-    //     LastModified @ +0x20 = 0x01D9_ABCD_1234_5678
-    //     InsertFlag @ +0x28 = 0 (not executed)
-    //     DataSize @ +0x2C = 0
-
-    const PTR_VADDR: u64 = 0xFFFF_8000_0010_0000;
-    const PTR_PADDR: u64 = 0x0080_0000;
-    const HEADER_VADDR: u64 = 0xFFFF_8000_0020_0000;
-    const HEADER_PADDR: u64 = 0x0090_0000;
-    const ENTRY0_VADDR: u64 = 0xFFFF_8000_0030_0000;
-    const ENTRY0_PADDR: u64 = 0x00A0_0000;
-    const PATH0_BUF_VADDR: u64 = 0xFFFF_8000_0030_1000;
-    const PATH0_BUF_PADDR: u64 = 0x00A1_0000;
-
-    fn build_single_entry_reader(insert_flag: u32) -> ObjectReader<SyntheticPhysMem> {
-        let isf = shimcache_isf_with_symbol(PTR_VADDR).build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        // g_ShimCache pointer page: contains the VA of the header.
-        let mut ptr_data = vec![0u8; 4096];
-        ptr_data[0..8].copy_from_slice(&HEADER_VADDR.to_le_bytes());
-
-        // Header page:
-        //   NumEntries (u32) @ 0x0 = 1
-        //   ListHead.Flink (u64) @ 0x8 = ENTRY0_VADDR
-        //   ListHead.Blink (u64) @ 0x10 = ENTRY0_VADDR
-        let mut header_data = vec![0u8; 4096];
-        header_data[0x0..0x4].copy_from_slice(&1u32.to_le_bytes());
-        header_data[0x8..0x10].copy_from_slice(&ENTRY0_VADDR.to_le_bytes());
-        header_data[0x10..0x18].copy_from_slice(&ENTRY0_VADDR.to_le_bytes());
-
-        // Entry page:
-        //   ListEntry.Flink @ 0x0 = HEADER_VADDR + 0x8 (back to list head)
-        //   ListEntry.Blink @ 0x8 = HEADER_VADDR + 0x8
-        //   Path (_UNICODE_STRING) @ 0x10
-        //   LastModified (u64) @ 0x20
-        //   InsertFlag (u32) @ 0x28
-        //   DataSize (u32) @ 0x2C
-        let path_str = r"\??\C:\Windows\System32\cmd.exe";
-        let path_utf16 = encode_utf16le(path_str);
-        let path_len = path_utf16.len() as u16;
-        let timestamp: u64 = 0x01D9_ABCD_1234_5678;
-
-        let list_head_flink = HEADER_VADDR + 0x8;
-
-        let mut entry_data = vec![0u8; 4096];
-        // ListEntry.Flink → back to list head
-        entry_data[0x0..0x8].copy_from_slice(&list_head_flink.to_le_bytes());
-        // ListEntry.Blink → back to list head
-        entry_data[0x8..0x10].copy_from_slice(&list_head_flink.to_le_bytes());
-        // Path _UNICODE_STRING: Length, MaximumLength, Buffer
-        entry_data[0x10..0x12].copy_from_slice(&path_len.to_le_bytes());
-        entry_data[0x12..0x14].copy_from_slice(&(path_len + 2).to_le_bytes());
-        entry_data[0x18..0x20].copy_from_slice(&PATH0_BUF_VADDR.to_le_bytes());
-        // LastModified
-        entry_data[0x20..0x28].copy_from_slice(&timestamp.to_le_bytes());
-        // InsertFlag
-        entry_data[0x28..0x2C].copy_from_slice(&insert_flag.to_le_bytes());
-        // DataSize = 0
-        entry_data[0x2C..0x30].copy_from_slice(&0u32.to_le_bytes());
-
-        // Path buffer page
-        let mut path_data = vec![0u8; 4096];
-        path_data[..path_utf16.len()].copy_from_slice(&path_utf16);
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(PTR_VADDR, PTR_PADDR, flags::WRITABLE)
-            .write_phys(PTR_PADDR, &ptr_data)
-            .map_4k(HEADER_VADDR, HEADER_PADDR, flags::WRITABLE)
-            .write_phys(HEADER_PADDR, &header_data)
-            .map_4k(ENTRY0_VADDR, ENTRY0_PADDR, flags::WRITABLE)
-            .write_phys(ENTRY0_PADDR, &entry_data)
-            .map_4k(PATH0_BUF_VADDR, PATH0_BUF_PADDR, flags::WRITABLE)
-            .write_phys(PATH0_BUF_PADDR, &path_data)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
-    }
-
-    /// One entry with path + timestamp → correct ShimcacheEntry.
-    #[test]
-    fn walk_shimcache_single_entry() {
-        let reader = build_single_entry_reader(0);
-        let entries = walk_shimcache(&reader).unwrap();
-
-        assert_eq!(entries.len(), 1);
-        let e = &entries[0];
-        assert_eq!(e.path, r"\??\C:\Windows\System32\cmd.exe");
-        assert_eq!(e.last_modified, 0x01D9_ABCD_1234_5678);
-        assert!(!e.exec_flag);
-        assert_eq!(e.data_size, 0);
-        assert_eq!(e.position, 0);
-    }
-
     // ── Exec flag set → exec_flag = true ────────────────────────────
-
-    /// Entry with InsertFlag set → exec_flag = true.
-    #[test]
-    fn shimcache_exec_flag() {
-        let reader = build_single_entry_reader(1);
-        let entries = walk_shimcache(&reader).unwrap();
-
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].exec_flag);
-    }
 
     /// `module_section_range` parses the PE section table of an in-memory module
     /// and returns each named section's (va, size). The stub returns None, so
