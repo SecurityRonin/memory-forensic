@@ -2367,4 +2367,60 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].account_flags, 0, "short F data → default flags");
     }
+
+    /// RED (flat→HMAP migration): a real cell-map SAM hive laid out as
+    /// SAM\Domains\Account\Users\000001F4 with V (username) + F (flags/times)
+    /// values, built with the shared CellHive harness. The flat walker reads the
+    /// root cell from _HBASE_BLOCK+0x24 (zeroed on a cell-map hive) → empty;
+    /// fails until walk_sam_users uses the shared HMAP walker. (Metadata only —
+    /// no hashes, no decryption.)
+    #[test]
+    fn walk_sam_users_hmap_recovers_user() {
+        use crate::test_hive::CellHive;
+        let username = "Administrator";
+        let uname16: Vec<u8> = username.encode_utf16().flat_map(u16::to_le_bytes).collect();
+
+        // V value: header (>=0xCC) with name_off@0x0C (rel 0xCC) + name_len@0x10.
+        let mut v = vec![0u8; 0xCC + uname16.len()];
+        v[0x0C..0x10].copy_from_slice(&0u32.to_le_bytes()); // name_off = 0
+        v[0x10..0x14].copy_from_slice(&(uname16.len() as u32).to_le_bytes());
+        v[0xCC..0xCC + uname16.len()].copy_from_slice(&uname16);
+
+        // F value: last_login@0x08, last_pw@0x18, created@0x20, flags@0x30(u16),
+        // login_count@0x38(u16).
+        let mut f = vec![0u8; 0x40];
+        f[0x08..0x10].copy_from_slice(&0x01D9_1111_2222_3333u64.to_le_bytes());
+        f[0x30..0x32].copy_from_slice(&(UAC_NORMAL_ACCOUNT as u16).to_le_bytes());
+        f[0x38..0x3A].copy_from_slice(&3u16.to_le_bytes());
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"SAM", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Domains", 1, 0x200, 0);
+        h.lf(0x200, &[0x240]);
+        h.nk(0x240, b"Account", 1, 0x2C0, 0);
+        h.lf(0x2C0, &[0x300]);
+        h.nk(0x300, b"Users", 1, 0x380, 0);
+        h.lf(0x380, &[0x3C0]);
+        h.nk(0x3C0, b"000001F4", 0, 0, 0);
+        h.values(0x3C0, 2, 0x440);
+        h.value_list(0x440, &[0x480, 0x500]);
+        h.vk(0x480, b"V", 3, v.len() as u32, 0x580);
+        h.data(0x580, &v);
+        h.vk(0x500, b"F", 3, f.len() as u32, 0x700);
+        h.data(0x700, &f);
+
+        let reader = h.reader();
+        let users = walk_sam_users(&reader, h.hhive_va).unwrap();
+
+        assert_eq!(users.len(), 1, "expected 1 SAM user, got {}", users.len());
+        let u = &users[0];
+        assert_eq!(u.username, username, "username from the V value");
+        assert_eq!(u.rid, 500, "000001F4 → RID 500");
+        assert_eq!(u.account_flags, UAC_NORMAL_ACCOUNT);
+        assert_eq!(u.login_count, 3);
+        assert_eq!(u.last_login_time, 0x01D9_1111_2222_3333);
+    }
 }
