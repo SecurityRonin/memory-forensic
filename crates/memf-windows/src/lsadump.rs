@@ -1351,4 +1351,41 @@ mod tests {
             "DPAPI_SYSTEM secret must carry its 40 raw data bytes"
         );
     }
+
+    /// RED (flat→HMAP migration, pair 1/2): a real cell-map SECURITY hive laid
+    /// out as Policy\Secrets\DPAPI_SYSTEM\CurrVal with a value, built with the
+    /// shared CellHive harness. The flat walker reads the root cell from
+    /// _HBASE_BLOCK+0x24 (zeroed on a cell-map hive) → empty; fails until
+    /// walk_lsa_secrets uses the shared HMAP walker. (Raw bytes — decryption is
+    /// added in pair 2.)
+    #[test]
+    fn walk_lsa_secrets_hmap_recovers_secret() {
+        use crate::test_hive::CellHive;
+        let raw = [0xABu8; 40]; // opaque CurrVal payload
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"Policy", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Secrets", 1, 0x200, 0);
+        h.lf(0x200, &[0x240]);
+        h.nk(0x240, b"DPAPI_SYSTEM", 1, 0x300, 0);
+        h.lf(0x300, &[0x340]);
+        h.nk(0x340, b"CurrVal", 0, 0, 0);
+        h.values(0x340, 1, 0x3C0);
+        h.value_list(0x3C0, &[0x400]);
+        h.vk(0x400, b"", 3, raw.len() as u32, 0x480);
+        h.data(0x480, &raw);
+
+        let reader = h.reader();
+        let secrets = walk_lsa_secrets(&reader, h.hhive_va).unwrap();
+
+        assert_eq!(secrets.len(), 1, "expected 1 LSA secret, got {}", secrets.len());
+        let s = &secrets[0];
+        assert_eq!(s.name, "DPAPI_SYSTEM");
+        assert_eq!(s.secret_type, "dpapi_key");
+        assert_eq!(s.length, 40);
+        assert_eq!(s.data.as_deref(), Some(&raw[..]));
+    }
 }

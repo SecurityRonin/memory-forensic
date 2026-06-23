@@ -309,7 +309,7 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
 /// The boot key is assembled from the class names of four registry keys
 /// under `SYSTEM\CurrentControlSet\Control\Lsa`: JD, Skew1, GBG, Data.
 /// The raw bytes are then scrambled using a fixed permutation order.
-fn extract_boot_key<P: PhysicalMemoryProvider>(
+pub(crate) fn extract_boot_key<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
     root_addr: u64,
