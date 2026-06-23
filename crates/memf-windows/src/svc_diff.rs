@@ -520,6 +520,55 @@ mod tests {
         assert_eq!(cell, Some(0x180), "ri→li navigation finds child cell");
     }
 
+    /// An `ri` sublist entry can itself point to ANOTHER `ri` (nested
+    /// index-root), which Volatility's `_get_subkeys_recursive` descends
+    /// recursively. A one-level `ri` walk drops the grandchild nk. Layout:
+    /// root(0x20) → ri(0x80) → ri(0x100) → lf(0x180) → child nk(0x200).
+    #[test]
+    fn enum_direct_subkeys_via_nested_ri() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0120_0000;
+        let mut bin = vec![0u8; 0x1000];
+        let place = |bin: &mut [u8], off: usize, cell: &[u8]| {
+            bin[off..off + cell.len()].copy_from_slice(cell);
+        };
+        // root(0x20): 1 subkey, list cell = ri(0x80).
+        place(&mut bin, 0x20, &build_cell(&nk_data(b"", 1, 0x80)));
+        // ri(0x80): one sublist entry → ANOTHER ri(0x100).
+        let mut ri_outer = vec![0u8; 4 + 4];
+        ri_outer[0..2].copy_from_slice(&0x6972u16.to_le_bytes()); // "ri"
+        ri_outer[2..4].copy_from_slice(&1u16.to_le_bytes());
+        ri_outer[4..8].copy_from_slice(&0x100u32.to_le_bytes());
+        place(&mut bin, 0x80, &build_cell(&ri_outer));
+        // ri(0x100): nested index-root → lf(0x180).
+        let mut ri_inner = vec![0u8; 4 + 4];
+        ri_inner[0..2].copy_from_slice(&0x6972u16.to_le_bytes()); // "ri"
+        ri_inner[2..4].copy_from_slice(&1u16.to_le_bytes());
+        ri_inner[4..8].copy_from_slice(&0x180u32.to_le_bytes());
+        place(&mut bin, 0x100, &build_cell(&ri_inner));
+        // lf(0x180): one child (8-byte entry: cell idx + name hash) → nk(0x200).
+        let mut lf = vec![0u8; 4 + 8];
+        lf[0..2].copy_from_slice(&0x666Cu16.to_le_bytes()); // "lf"
+        lf[2..4].copy_from_slice(&1u16.to_le_bytes());
+        lf[4..8].copy_from_slice(&0x200u32.to_le_bytes());
+        place(&mut bin, 0x180, &build_cell(&lf));
+        // grandchild nk(0x200): "NestedSvc".
+        place(&mut bin, 0x200, &build_cell(&nk_data(b"NestedSvc", 0, 0)));
+
+        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
+        let names = enum_direct_subkeys(&reader, hive_vaddr, "");
+        assert_eq!(
+            names,
+            vec!["NestedSvc".to_string()],
+            "nested ri→ri→lf grandchild found"
+        );
+        let cell = find_key_cell(&reader, hive_vaddr, "NestedSvc");
+        assert_eq!(
+            cell,
+            Some(0x200),
+            "nested ri navigation finds grandchild cell"
+        );
+    }
+
     fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
