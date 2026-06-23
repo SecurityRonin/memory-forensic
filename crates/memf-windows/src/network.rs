@@ -629,6 +629,20 @@ fn read_phys_u_via<P: PhysicalMemoryProvider>(
     Some(u64::from_le_bytes(buf))
 }
 
+/// Enumerate UDP endpoints by **physically pool-tag scanning** for `_UDP_ENDPOINT`
+/// objects (`UdpA`), mirroring Volatility3 netscan. Each object's `InetAF`/`Owner`/
+/// `LocalAddr` pointers are followed through the address space; the `_UDP_ENDPOINT`
+/// overlay is selected from the dump's `NtBuildNumber`. IPv4 only for now (the
+/// IPv6 increment lifts the `AF_INET` gate). Unrecognized build ⇒ empty.
+///
+/// # Errors
+/// Propagates address-space read failures encountered while following pointers.
+pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
+    _reader: &ObjectReader<P>,
+) -> Result<Vec<WinConnectionInfo>> {
+    Ok(Vec::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1403,5 +1417,86 @@ mod tests {
 
         // Symbols absent + unrecognized build → legacy default (no regression).
         assert_eq!(eprocess_offsets(&empty, 7601), (0x2E0, 0x450));
+    }
+
+    #[test]
+    fn scan_udp_endpoints_recovers_a_udp_endpoint_from_a_udpa_pool_object() {
+        // Build 9600 (Server 2012 R2 — CITADEL-DC01) _UDP_ENDPOINT offsets
+        // (vol3 netscan-win81-x64): InetAF 0x20, Owner 0x28, LocalAddr 0x60,
+        // Port 0x78; _INETAF.AddressFamily 0x18; _LOCAL_ADDRESS.pData 0x10.
+        const U_INETAF: usize = 0x20;
+        const U_OWNER: usize = 0x28;
+        const U_LOCALADDR: usize = 0x60;
+        const U_PORT: usize = 0x78;
+        const INETAF_AF: usize = 0x18;
+        const LA_PDATA: usize = 0x10;
+
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let la_va = 0xFFFF_C000_0001_3000u64;
+        let in_addr_va = 0xFFFF_C000_0001_5000u64;
+        let ep_va = 0xFFFF_C000_0001_6000u64;
+        let (pa_inetaf, pa_la, pa_in, pa_ep) = (0x70_000u64, 0x73_000, 0x75_000, 0x76_000);
+
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
+        // Local: LocalAddr -> _LOCAL_ADDRESS.pData -> _IN_ADDR (vol3 single deref).
+        let mut la = vec![0u8; 0x1000];
+        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&in_addr_va.to_le_bytes());
+        let mut inb = vec![0u8; 0x1000];
+        inb[0..4].copy_from_slice(&[10, 42, 85, 10]); // local 10.42.85.10
+        let mut ep = vec![0u8; 0x1000];
+        ep[EPROC_PID..EPROC_PID + 8].copy_from_slice(&1368u64.to_le_bytes());
+        ep[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 7].copy_from_slice(b"dns.exe");
+
+        // _UDP_ENDPOINT pool object (read PHYSICALLY by the scan).
+        let pool_base = 0x50_000u64;
+        let tag_phys = pool_base + 4; // "UdpA"
+        let obj_off = pool_base + 0x10; // delta 0x10
+        let mut obj = vec![0u8; 0x200];
+        obj[U_INETAF..U_INETAF + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[U_OWNER..U_OWNER + 8].copy_from_slice(&ep_va.to_le_bytes());
+        obj[U_LOCALADDR..U_LOCALADDR + 8].copy_from_slice(&la_va.to_le_bytes());
+        obj[U_PORT..U_PORT + 2].copy_from_slice(&53u16.to_be_bytes());
+
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_2580u32.to_le_bytes()); // build 9600
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
+            .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(in_addr_va, pa_in, flags::WRITABLE)
+            .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
+            .write_phys(pa_inetaf, &inetaf)
+            .write_phys(pa_la, &la)
+            .write_phys(pa_in, &inb)
+            .write_phys(pa_ep, &ep)
+            .write_phys(tag_phys, b"UdpA")
+            .write_phys(obj_off, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_udp_endpoints(&reader).expect("scan ok");
+        assert_eq!(conns.len(), 1, "exactly one udp endpoint, got {conns:?}");
+        let c = &conns[0];
+        assert_eq!(c.protocol, "UDPv4");
+        assert_eq!(c.local_addr, "10.42.85.10");
+        assert_eq!(c.local_port, 53);
+        assert_eq!(c.pid, 1368);
+        assert_eq!(c.process_name, "dns.exe");
     }
 }
