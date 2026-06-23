@@ -566,7 +566,7 @@ fn decrypt_user_hash(
 /// `Hashdump.get_user_name`): `name = V[V[0x0C..0x10]+0xCC ..][..V[0x10..0x14]]`,
 /// decoded UTF-16LE. Returns `None` when the V value is too short or the
 /// computed name range is out of bounds.
-fn username_from_v(v_data: &[u8]) -> Option<String> {
+pub(crate) fn username_from_v(v_data: &[u8]) -> Option<String> {
     if v_data.len() < 0x14 {
         return None;
     }
