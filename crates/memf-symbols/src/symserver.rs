@@ -77,6 +77,38 @@ pub fn default_cache_dir() -> Option<PathBuf> {
     )
 }
 
+/// Extract the first usable local *downstream store* directory from a
+/// `_NT_SYMBOL_PATH` value (the WinDbg/symstore convention), or `None` if it
+/// only references remote servers.
+///
+/// Handles `;`-separated elements in the forms `srv*DIR*URL`, `cache*DIR`,
+/// `symsrv*symsrv.dll*DIR*URL`, and a plain `DIR`.
+fn nt_symbol_store_dir(nt_symbol_path: &str) -> Option<&str> {
+    let _ = nt_symbol_path;
+    todo!("GREEN: parse _NT_SYMBOL_PATH downstream store")
+}
+
+/// Resolve the symbol cache dir honoring overrides, else the platform default.
+///
+/// Order: `$MEMF_SYMBOL_CACHE` → `_NT_SYMBOL_PATH` store dir → `default`.
+/// Pure (env passed in) so it is unit-testable.
+fn resolve_cache_dir_from(
+    memf_symbol_cache: Option<&str>,
+    nt_symbol_path: Option<&str>,
+    default: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let _ = (memf_symbol_cache, nt_symbol_path, default);
+    todo!("GREEN: layer env overrides over the default")
+}
+
+/// Resolve the symbol cache dir from the environment, falling back to
+/// [`default_cache_dir`]. See [`resolve_cache_dir_from`] for the order.
+pub fn resolve_cache_dir() -> Option<PathBuf> {
+    let memf = std::env::var("MEMF_SYMBOL_CACHE").ok();
+    let ntsp = std::env::var("_NT_SYMBOL_PATH").ok();
+    resolve_cache_dir_from(memf.as_deref(), ntsp.as_deref(), default_cache_dir())
+}
+
 // ── SymbolServerClient (only with `symserver` feature) ──
 
 /// A client for downloading PDB files from a symbol server with local caching.
@@ -321,6 +353,94 @@ mod tests {
         assert_eq!(
             volatility_cache_path_from(true, None, None, None, None),
             None
+        );
+    }
+
+    // ── Override resolution: $MEMF_SYMBOL_CACHE > _NT_SYMBOL_PATH > default ──
+
+    #[test]
+    fn resolve_prefers_memf_symbol_cache() {
+        assert_eq!(
+            resolve_cache_dir_from(
+                Some("/explicit/store"),
+                Some("srv*C:/Symbols*https://msdl"),
+                Some(PathBuf::from("/default"))
+            ),
+            Some(PathBuf::from("/explicit/store"))
+        );
+    }
+
+    #[test]
+    fn resolve_empty_memf_uses_nt_symbol_path() {
+        assert_eq!(
+            resolve_cache_dir_from(
+                Some(""),
+                Some("srv*C:/Symbols*https://msdl"),
+                Some(PathBuf::from("/default"))
+            ),
+            Some(PathBuf::from("C:/Symbols"))
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_default() {
+        assert_eq!(
+            resolve_cache_dir_from(None, None, Some(PathBuf::from("/default"))),
+            Some(PathBuf::from("/default"))
+        );
+    }
+
+    #[test]
+    fn resolve_nt_with_only_url_uses_default() {
+        assert_eq!(
+            resolve_cache_dir_from(
+                None,
+                Some("srv*https://msdl.microsoft.com/download/symbols"),
+                Some(PathBuf::from("/default"))
+            ),
+            Some(PathBuf::from("/default"))
+        );
+    }
+
+    #[test]
+    fn nt_store_srv_with_downstream() {
+        assert_eq!(
+            nt_symbol_store_dir("srv*C:/Symbols*https://msdl.microsoft.com/download/symbols"),
+            Some("C:/Symbols")
+        );
+    }
+
+    #[test]
+    fn nt_store_cache_form() {
+        assert_eq!(nt_symbol_store_dir("cache*C:/Symbols"), Some("C:/Symbols"));
+    }
+
+    #[test]
+    fn nt_store_plain_dir() {
+        assert_eq!(nt_symbol_store_dir("C:/Symbols"), Some("C:/Symbols"));
+    }
+
+    #[test]
+    fn nt_store_symsrv_skips_dll_and_keyword() {
+        assert_eq!(
+            nt_symbol_store_dir("symsrv*symsrv.dll*C:/Symbols*https://msdl"),
+            Some("C:/Symbols")
+        );
+    }
+
+    #[test]
+    fn nt_store_only_url_is_none() {
+        assert_eq!(
+            nt_symbol_store_dir("srv*https://msdl.microsoft.com/download/symbols"),
+            None
+        );
+    }
+
+    #[test]
+    fn nt_store_first_usable_of_list() {
+        assert_eq!(
+            nt_symbol_store_dir("srv*https://msdl;C:/Local/Symbols"),
+            Some("C:/Local/Symbols")
         );
     }
 
