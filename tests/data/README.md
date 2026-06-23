@@ -1,14 +1,18 @@
 # Test Data — memory-forensic
 
 All corpora here are **memory forensics** challenges or samples (Windows/Linux memory dumps,
-crash dumps, or hibernation files). Non-memory artefacts (disk images, UAC collections, iOS
-images) live in `~/src/issen/tests/data/` and are not mirrored here.
+crash dumps, or hibernation files). Artefacts with no memory component (pure disk images,
+memory-less UAC collections, iOS images) live in `~/src/issen/tests/data/` and are not
+mirrored here.
 
-Two corpora (`cyberspace-ctf-2024`, `dfirmadness-szechuan-sauce`) are **owned by issen** and
-live in `~/src/issen/tests/data/`. This repo does NOT symlink or copy them — symlinked
-fixtures break the Windows CI runner (git materializes a symlink as a text file), so the
-fleet standard forbids them. Tests reach this cross-repo data via its issen path / the
-`MEMF_TEST_DATA` env var.
+Three memory-bearing corpora (`cyberspace-ctf-2024`, `dfirmadness-szechuan-sauce`,
+`hal-linux-dfir-challenge`) are **owned by issen** and live in `~/src/issen/tests/data/`.
+They are **symlinked** into this directory for local convenience. The symlinks are
+**gitignored** (`tests/data/*` is excluded from git except this README), so git never tracks
+or materializes them — the Windows CI runner sees only tracked files and is unaffected. (The
+fleet caution against symlinked fixtures applies to *committed* symlinks, which git would
+materialize as a plain text file on Windows; gitignored ones never reach CI.) Tests resolve
+this data via its `tests/data/…` path or the `MEMF_TEST_DATA` env var.
 
 Files are large and **not tracked in git** — download them manually per the instructions below.
 For the fleet-wide corpus inventory see [`docs/corpus-catalog.md`](../../docs/corpus-catalog.md).
@@ -24,7 +28,7 @@ For the fleet-wide corpus inventory see [`docs/corpus-catalog.md`](../../docs/co
 | **Source** | CyberSpace CTF 2024 — memory forensics challenge |
 | **Type** | Windows memory forensics |
 | **Windows build** | Unknown — no writeup available; run `imageinfo` on extracted image |
-| **Location** | `~/src/issen/tests/data/cyberspace-ctf-2024/` |
+| **Location** | `~/src/issen/tests/data/cyberspace-ctf-2024/` (symlinked into `tests/data/`) |
 | **MD5** | `c4821afa54754127a3a2161bafccea90` (703 MB) |
 | **Redistribution** | Public CTF artifact |
 
@@ -44,7 +48,7 @@ Files:
 | **Type** | Mixed: Windows memory dumps + disk images + PCAP |
 | **Windows build** | Windows Server 2019 (DC01, build 17763) / Windows 10 x64 (DESKTOP-SDN1RPT, build 17763) |
 | **Source** | <https://dfirmadness.com/the-stolen-szechuan-sauce/> |
-| **Location** | `~/src/issen/tests/data/dfirmadness-szechuan-sauce/` |
+| **Location** | `~/src/issen/tests/data/dfirmadness-szechuan-sauce/` (symlinked into `tests/data/`) |
 | **Redistribution** | Public DFIR challenge |
 
 Memory-relevant files:
@@ -57,6 +61,27 @@ Memory-relevant files:
 | `Desktop-SDN1RPT-pagefile.zip` | `45c096f2688a0b5de0346fb72391b245` | Desktop pagefile (222 MB) |
 
 Non-memory files (disk images, PCAP, autoruns) also present — use issen directly for those.
+
+---
+
+### hal-linux-dfir-challenge *(owned by issen)*
+
+| Field | Value |
+|---|---|
+| **Source** | Self-collected — Linux VirtualBox VM triaged with UAC + AVML, March 24, 2026 |
+| **Type** | Linux memory forensics (AVML `.lime` format) |
+| **Kernel** | VirtualBox Linux guest — derive the exact banner/version from the dump (no published writeup) |
+| **Location** | `~/src/issen/tests/data/hal-linux-dfir-challenge/` (symlinked into `tests/data/`) |
+| **Redistribution** | Self-collected — internal use |
+
+Memory-relevant files:
+
+| File | Notes |
+|---|---|
+| `uac-vbox-linux-20260324234043.tar.gz` | UAC collection including `memory_dump/avml.lime` (~5.5 GB AVML-format memory dump); 5.9 GB archive — the Linux RAM oracle for `memf-linux` walkers |
+
+The smaller `uac-vbox-linux-20260324193807.tar.gz` (143 MB) is filesystem artifacts only — **no
+memory dump** (present in the dir, not a memory image).
 
 ---
 
