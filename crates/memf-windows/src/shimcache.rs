@@ -23,12 +23,48 @@ use crate::unicode::read_unicode_string;
 /// @0xC). Returns `None` if the headers are unreadable or the section is absent.
 // Wired into walk_shimcache in increment 5 of the shimcache rewrite; until then
 // it is exercised only by unit tests.
-#[allow(dead_code)]
+/// Safety cap on the PE section count scanned (real images have < 32).
+const MAX_PE_SECTIONS: u64 = 96;
+
+#[allow(dead_code)] // wired into walk_shimcache in increment 5
 fn module_section_range<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _module_base: u64,
-    _section_name: &str,
+    reader: &ObjectReader<P>,
+    module_base: u64,
+    section_name: &str,
 ) -> Option<(u64, u64)> {
+    let read_u16 = |va: u64| -> Option<u16> {
+        let b = reader.read_bytes(va, 2).ok()?;
+        Some(u16::from_le_bytes(b.get(..2)?.try_into().ok()?))
+    };
+    let read_u32 = |va: u64| -> Option<u32> {
+        let b = reader.read_bytes(va, 4).ok()?;
+        Some(u32::from_le_bytes(b.get(..4)?.try_into().ok()?))
+    };
+
+    // DOS header: e_lfanew (u32) @ 0x3C points to the PE header.
+    let pe = module_base.wrapping_add(u64::from(read_u32(module_base + 0x3C)?));
+    // PE signature "PE\0\0".
+    if reader.read_bytes(pe, 4).ok()?.get(..4)? != b"PE\0\0" {
+        return None;
+    }
+    // COFF header: NumberOfSections @ pe+6, SizeOfOptionalHeader @ pe+0x14.
+    let num_sections = read_u16(pe + 6)?;
+    let opt_size = read_u16(pe + 0x14)?;
+    // Section table follows the 4-byte sig + 20-byte COFF + optional header.
+    let sec_table = pe + 0x18 + u64::from(opt_size);
+    let target = section_name.as_bytes();
+
+    for i in 0..u64::from(num_sections).min(MAX_PE_SECTIONS) {
+        let sh = sec_table + i * 40;
+        let name = reader.read_bytes(sh, 8).ok()?;
+        // PE section names are 8 bytes, NUL-padded.
+        let end = name.iter().position(|&b| b == 0).unwrap_or(8);
+        if &name[..end] == target {
+            let vsize = read_u32(sh + 8)?;
+            let vaddr = read_u32(sh + 0xC)?;
+            return Some((module_base.wrapping_add(u64::from(vaddr)), u64::from(vsize)));
+        }
+    }
     None
 }
 
