@@ -44,8 +44,19 @@ fn volatility_cache_path_from(
     appdata: Option<&str>,
     userprofile: Option<&str>,
 ) -> Option<PathBuf> {
-    let _ = (is_windows, xdg_cache_home, home, appdata, userprofile);
-    todo!("GREEN: implement Volatility CACHE_PATH resolution")
+    fn nonempty(s: Option<&str>) -> Option<&str> {
+        s.filter(|v| !v.is_empty())
+    }
+    if is_windows {
+        nonempty(appdata)
+            .or_else(|| nonempty(userprofile))
+            .map(|b| PathBuf::from(b).join("volatility3"))
+    } else {
+        let base = nonempty(xdg_cache_home)
+            .map(PathBuf::from)
+            .or_else(|| nonempty(home).map(|h| PathBuf::from(h).join(".cache")))?;
+        Some(base.join("volatility3"))
+    }
 }
 
 /// Return the shared symbol cache directory — Volatility3's `CACHE_PATH`.
@@ -53,7 +64,17 @@ fn volatility_cache_path_from(
 /// memf deliberately shares Volatility's store (not a memf-private dir) so a
 /// single download serves both tools. See [`volatility_cache_path_from`].
 pub fn default_cache_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".memf").join("symbols"))
+    let xdg = std::env::var("XDG_CACHE_HOME").ok();
+    let home = std::env::var("HOME").ok();
+    let appdata = std::env::var("APPDATA").ok();
+    let userprofile = std::env::var("USERPROFILE").ok();
+    volatility_cache_path_from(
+        cfg!(target_os = "windows"),
+        xdg.as_deref(),
+        home.as_deref(),
+        appdata.as_deref(),
+        userprofile.as_deref(),
+    )
 }
 
 // ── SymbolServerClient (only with `symserver` feature) ──
@@ -219,16 +240,16 @@ mod tests {
     }
 
     #[test]
-    fn default_cache_dir_uses_home() {
-        // This test relies on HOME being set (true in CI and dev).
+    fn default_cache_dir_is_volatility_store() {
+        // Relies on a base env var (HOME / APPDATA) being set — true in CI/dev.
         if let Some(dir) = default_cache_dir() {
             let s = dir.to_string_lossy();
             assert!(
-                s.ends_with(".memf/symbols"),
-                "expected .memf/symbols suffix, got: {s}"
+                s.ends_with("volatility3"),
+                "expected volatility3 suffix, got: {s}"
             );
         }
-        // If HOME is not set we just skip — no panic.
+        // If no base env var is set we just skip — no panic.
     }
 
     // ── Volatility CACHE_PATH resolution (shared symbol store, all platforms) ──
