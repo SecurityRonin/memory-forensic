@@ -90,7 +90,7 @@ pub fn classify_lsa_secret(name: &str) -> (String, bool) {
 /// block, i.e. ECB). Reuses the audited RustCrypto `aes`/`sha2` crates — no
 /// hand-rolled rounds. Returns empty if `secret` is shorter than the 60-byte
 /// header. (Reference: Volatility3 registry/lsadump `decrypt_aes`.)
-fn lsa_decrypt_aes(secret: &[u8], key: &[u8]) -> Vec<u8> {
+pub(crate) fn lsa_decrypt_aes(secret: &[u8], key: &[u8]) -> Vec<u8> {
     use aes::Aes256;
     use cbc::Decryptor as CbcDecryptor;
     use cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};

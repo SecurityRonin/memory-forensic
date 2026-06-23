@@ -297,6 +297,27 @@ fn is_nl_entry(name: &str) -> bool {
         .is_some_and(|n| n > 0 && n <= 50)
 }
 
+/// Parse the plaintext header of an `NL$N` cache record (DCC2): returns
+/// `(uname_len, domain_len, domain_name_len, enc_data, ch)`. Lengths are byte
+/// counts; `ch` is the 16-byte AES IV; `enc_data` is the encrypted region.
+/// Reference: Volatility3 registry/cachedump `parse_cache_entry`.
+fn parse_cache_entry(data: &[u8]) -> (u16, u16, u16, Vec<u8>, Vec<u8>) {
+    (0, 0, 0, Vec::new(), Vec::new())
+}
+
+/// Split a decrypted DCC2 cache record into `(username, domain, domain_name,
+/// dcc2_hash)`. `dcc2_hash` is the 16-byte MS-Cache-v2 hash at offset 0; the
+/// strings start at offset 72 with 4-byte alignment padding between them.
+/// Reference: Volatility3 registry/cachedump `parse_decrypted_cache`.
+fn parse_decrypted_cache(
+    dec: &[u8],
+    uname_len: u16,
+    domain_len: u16,
+    domain_name_len: u16,
+) -> (String, String, String, Vec<u8>) {
+    (String::new(), String::new(), String::new(), Vec::new())
+}
+
 /// Decode a UTF-16LE byte slice into a String.
 fn decode_utf16le(bytes: &[u8]) -> String {
     let u16_iter = bytes
@@ -1194,5 +1215,47 @@ mod tests {
             result.is_empty(),
             "root_cell = u32::MAX sentinel → early return"
         );
+    }
+
+    /// RED — DCC2 record parsers (pure, synthetically testable). Stubs return
+    /// empties so these fail until implemented.
+    #[test]
+    fn parse_cache_entry_extracts_header() {
+        let mut data = vec![0u8; 96 + 8];
+        data[0..2].copy_from_slice(&10u16.to_le_bytes()); // uname_len
+        data[2..4].copy_from_slice(&6u16.to_le_bytes()); // domain_len
+        data[60..62].copy_from_slice(&14u16.to_le_bytes()); // domain_name_len
+        data[64..80].copy_from_slice(&[0xCCu8; 16]); // ch (IV)
+        data[96..104].copy_from_slice(&[0xEE; 8]); // enc_data
+        let (ul, dl, dnl, enc, ch) = parse_cache_entry(&data);
+        assert_eq!(ul, 10);
+        assert_eq!(dl, 6);
+        assert_eq!(dnl, 14);
+        assert_eq!(ch, vec![0xCCu8; 16]);
+        assert_eq!(enc, vec![0xEEu8; 8]);
+    }
+
+    #[test]
+    fn parse_decrypted_cache_splits_fields() {
+        // hash @0 (16), username @72, then domain, then domain_name (4-byte pads).
+        let user = "rick"; // 4 chars → 8 bytes (even → no pad)
+        let dom = "CORP"; // 4 chars → 8 bytes
+        let dnsdom = "corp.local"; // 10 chars → 20 bytes
+        let u16b = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        let (ub, db, nb) = (u16b(user), u16b(dom), u16b(dnsdom));
+        let mut dec = vec![0u8; 72 + ub.len() + db.len() + nb.len()];
+        dec[0..16].copy_from_slice(&[0x11u8; 16]); // dcc2 hash
+        let mut off = 72;
+        dec[off..off + ub.len()].copy_from_slice(&ub);
+        off += ub.len(); // 8, even → pad 0
+        dec[off..off + db.len()].copy_from_slice(&db);
+        off += db.len(); // even → pad 0
+        dec[off..off + nb.len()].copy_from_slice(&nb);
+        let (username, domain, domain_name, hash) =
+            parse_decrypted_cache(&dec, ub.len() as u16, db.len() as u16, nb.len() as u16);
+        assert_eq!(username, "rick");
+        assert_eq!(domain, "CORP");
+        assert_eq!(domain_name, "corp.local");
+        assert_eq!(hash, vec![0x11u8; 16]);
     }
 }

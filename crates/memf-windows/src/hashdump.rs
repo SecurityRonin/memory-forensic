@@ -586,7 +586,7 @@ pub(crate) fn username_from_v(v_data: &[u8]) -> Option<String> {
 /// AES-128-CBC decrypt with **no padding** (RustCrypto), used for the SAM
 /// revision-3 hbootkey and revision-2 per-user hash blobs. Returns an empty
 /// `Vec` on a key/IV/length mismatch rather than panicking.
-fn aes128_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
+pub(crate) fn aes128_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
     if key.len() != 16 || iv.len() < 16 || data.is_empty() || data.len() % 16 != 0 {
         return Vec::new();
     }
