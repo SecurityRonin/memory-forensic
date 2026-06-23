@@ -71,6 +71,18 @@ fn module_section_range<P: PhysicalMemoryProvider>(
 /// Maximum number of shimcache entries to iterate (safety limit).
 const MAX_SHIMCACHE_ENTRIES: usize = 4096;
 
+/// Walk the `SHIM_CACHE_ENTRY` LRU `_LIST_ENTRY` chain from the list head and
+/// parse each node (Win8.1+/Win10 x64 layout). `head_va` is the sentinel head
+/// (the `_RTL_AVL_TABLE`-adjacent cache head); the sentinel itself is not
+/// emitted. Bounded by `MAX_SHIMCACHE_ENTRIES`.
+#[allow(dead_code)] // wired into walk_shimcache in increment 3
+fn parse_shimcache_list<P: PhysicalMemoryProvider>(
+    _reader: &ObjectReader<P>,
+    _head_va: u64,
+) -> Vec<ShimcacheEntry> {
+    Vec::new()
+}
+
 /// A single Application Compatibility Cache (Shimcache) entry.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ShimcacheEntry {
@@ -418,5 +430,90 @@ mod tests {
             Some((base + 0x1000, 0x3000))
         );
         assert_eq!(module_section_range(&reader, base, ".missing"), None);
+    }
+
+    /// `parse_shimcache_list` walks the SHIM_CACHE_ENTRY LRU list (Win10 x64
+    /// layout) and parses path / last-modified / exec-flag per node. Stub
+    /// returns empty → RED until the walker is implemented (increment 2 GREEN).
+    #[test]
+    fn parse_shimcache_list_walks_and_parses_entries() {
+        let head = 0xFFFF_8000_0010_0000u64;
+        let e1 = 0xFFFF_8000_0011_0000u64;
+        let e2 = 0xFFFF_8000_0012_0000u64;
+        let d1 = 0xFFFF_8000_0013_0000u64;
+        let d2 = 0xFFFF_8000_0014_0000u64;
+        let p1 = 0xFFFF_8000_0015_0000u64;
+        let p2 = 0xFFFF_8000_0016_0000u64;
+        let b1 = 0xFFFF_8000_0017_0000u64;
+        let b2 = 0xFFFF_8000_0018_0000u64;
+        let ts1 = 0x01D9_ABCD_1234_5678u64;
+        let ts2 = 0x01D5_1111_2222_3333u64;
+        let path1 = r"\??\C:\Windows\System32\cmd.exe";
+        let path2 = r"C:\Users\rick\AppData\evil.exe";
+
+        let mut head_pg = vec![0u8; 4096];
+        head_pg[0..8].copy_from_slice(&e1.to_le_bytes());
+        head_pg[8..16].copy_from_slice(&e2.to_le_bytes());
+
+        let mk_entry = |flink: u64, plen: u16, pbuf: u64, detail: u64| {
+            let mut pg = vec![0u8; 4096];
+            pg[0..8].copy_from_slice(&flink.to_le_bytes());
+            pg[0x18..0x1A].copy_from_slice(&plen.to_le_bytes());
+            pg[0x1A..0x1C].copy_from_slice(&plen.to_le_bytes());
+            pg[0x20..0x28].copy_from_slice(&pbuf.to_le_bytes());
+            pg[0x28..0x30].copy_from_slice(&detail.to_le_bytes());
+            pg
+        };
+        let mk_detail = |lastmod: u64, blob: u64| {
+            let mut pg = vec![0u8; 4096];
+            pg[0x8..0x10].copy_from_slice(&lastmod.to_le_bytes());
+            pg[0x10..0x14].copy_from_slice(&4u32.to_le_bytes());
+            pg[0x18..0x20].copy_from_slice(&blob.to_le_bytes());
+            pg
+        };
+        let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        let p1b = utf16(path1);
+        let p2b = utf16(path2);
+
+        let e1_pg = mk_entry(e2, p1b.len() as u16, p1, d1);
+        let e2_pg = mk_entry(head, p2b.len() as u16, p2, d2);
+        let d1_pg = mk_detail(ts1, b1);
+        let d2_pg = mk_detail(ts2, b2);
+        let mut p1_pg = vec![0u8; 4096];
+        p1_pg[..p1b.len()].copy_from_slice(&p1b);
+        let mut p2_pg = vec![0u8; 4096];
+        p2_pg[..p2b.len()].copy_from_slice(&p2b);
+        let mut b1_pg = vec![0u8; 4096];
+        b1_pg[0..4].copy_from_slice(&2u32.to_le_bytes());
+        let mut b2_pg = vec![0u8; 4096];
+        b2_pg[0..4].copy_from_slice(&0u32.to_le_bytes());
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let mut ptb = PageTableBuilder::new();
+        for (i, (va, pg)) in [
+            (head, &head_pg), (e1, &e1_pg), (e2, &e2_pg), (d1, &d1_pg), (d2, &d2_pg),
+            (p1, &p1_pg), (p2, &p2_pg), (b1, &b1_pg), (b2, &b2_pg),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let pa = 0x0010_0000u64 + (i as u64) * 0x1000;
+            ptb = ptb.map_4k(va, pa, flags::WRITABLE).write_phys(pa, pg);
+        }
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let entries = parse_shimcache_list(&reader, head);
+        assert_eq!(entries.len(), 2, "expected 2 entries, got {}", entries.len());
+        assert_eq!(entries[0].path, path1);
+        assert_eq!(entries[0].last_modified, ts1);
+        assert!(entries[0].exec_flag, "blob != 0 -> executed");
+        assert_eq!(entries[0].position, 0);
+        assert_eq!(entries[1].path, path2);
+        assert_eq!(entries[1].last_modified, ts2);
+        assert!(!entries[1].exec_flag, "blob == 0 -> not executed");
+        assert_eq!(entries[1].position, 1);
     }
 }
