@@ -31,9 +31,116 @@ pub fn default_server_url() -> &'static str {
     "https://msdl.microsoft.com/download/symbols"
 }
 
-/// Return the default local cache directory (`~/.memf/symbols/`).
+/// `Some(s)` only when `s` is present and non-empty (treat `""` as unset).
+fn nonempty(s: Option<&str>) -> Option<&str> {
+    s.filter(|v| !v.is_empty())
+}
+
+/// Compute Volatility3's `CACHE_PATH` for a platform from raw env values.
+///
+/// Pure (no env reads, no I/O) so every platform branch is unit-testable from
+/// any host. Mirrors volatility3 `framework/constants/__init__.py` (v2.x):
+/// - Unix (Linux/macOS): `${XDG_CACHE_HOME:-$HOME/.cache}/volatility3`
+/// - Windows: `%APPDATA%\volatility3` (falling back to `%USERPROFILE%\volatility3`)
+fn volatility_cache_path_from(
+    is_windows: bool,
+    xdg_cache_home: Option<&str>,
+    home: Option<&str>,
+    appdata: Option<&str>,
+    userprofile: Option<&str>,
+) -> Option<PathBuf> {
+    if is_windows {
+        nonempty(appdata)
+            .or_else(|| nonempty(userprofile))
+            .map(|b| PathBuf::from(b).join("volatility3"))
+    } else {
+        let base = nonempty(xdg_cache_home)
+            .map(PathBuf::from)
+            .or_else(|| nonempty(home).map(|h| PathBuf::from(h).join(".cache")))?;
+        Some(base.join("volatility3"))
+    }
+}
+
+/// Return the shared symbol cache directory — Volatility3's `CACHE_PATH`.
+///
+/// memf deliberately shares Volatility's store (not a memf-private dir) so a
+/// single download serves both tools. See [`volatility_cache_path_from`].
 pub fn default_cache_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".memf").join("symbols"))
+    let xdg = std::env::var("XDG_CACHE_HOME").ok();
+    let home = std::env::var("HOME").ok();
+    let appdata = std::env::var("APPDATA").ok();
+    let userprofile = std::env::var("USERPROFILE").ok();
+    volatility_cache_path_from(
+        cfg!(target_os = "windows"),
+        xdg.as_deref(),
+        home.as_deref(),
+        appdata.as_deref(),
+        userprofile.as_deref(),
+    )
+}
+
+/// Extract the first usable local *downstream store* directory from a
+/// `_NT_SYMBOL_PATH` value (the WinDbg/symstore convention), or `None` if it
+/// only references remote servers.
+///
+/// Handles `;`-separated elements in the forms `srv*DIR*URL`, `cache*DIR`,
+/// `symsrv*symsrv.dll*DIR*URL`, and a plain `DIR`.
+fn nt_symbol_store_dir(nt_symbol_path: &str) -> Option<&str> {
+    for element in nt_symbol_path.split(';') {
+        let element = element.trim();
+        if element.is_empty() {
+            continue;
+        }
+        if element.contains('*') {
+            // srv*[downstream]*server / cache*dir / symsrv*symsrv.dll*dir*server
+            for tok in element.split('*') {
+                let tok = tok.trim();
+                if tok.is_empty() {
+                    continue;
+                }
+                let low = tok.to_ascii_lowercase();
+                let is_dll = Path::new(tok)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("dll"));
+                if low == "srv" || low == "cache" || low == "symsrv" || is_dll {
+                    continue;
+                }
+                if tok.contains("://") {
+                    continue; // a server URL, not a local store
+                }
+                return Some(tok);
+            }
+        } else if !element.contains("://") {
+            return Some(element); // a plain local directory
+        }
+    }
+    None
+}
+
+/// Resolve the symbol cache dir honoring overrides, else the platform default.
+///
+/// Order: `$MEMF_SYMBOL_CACHE` → `_NT_SYMBOL_PATH` store dir → `default`.
+/// Pure (env passed in) so it is unit-testable.
+fn resolve_cache_dir_from(
+    memf_symbol_cache: Option<&str>,
+    nt_symbol_path: Option<&str>,
+    default: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(dir) = nonempty(memf_symbol_cache) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(store) = nonempty(nt_symbol_path).and_then(nt_symbol_store_dir) {
+        return Some(PathBuf::from(store));
+    }
+    default
+}
+
+/// Resolve the symbol cache dir from the environment, falling back to
+/// [`default_cache_dir`]. See [`resolve_cache_dir_from`] for the order.
+pub fn resolve_cache_dir() -> Option<PathBuf> {
+    let memf = std::env::var("MEMF_SYMBOL_CACHE").ok();
+    let ntsp = std::env::var("_NT_SYMBOL_PATH").ok();
+    resolve_cache_dir_from(memf.as_deref(), ntsp.as_deref(), default_cache_dir())
 }
 
 // ── SymbolServerClient (only with `symserver` feature) ──
@@ -53,10 +160,14 @@ impl SymbolServerClient {
         }
     }
 
-    /// Create a client using Microsoft's public symbol server and default cache dir.
+    /// Create a client using Microsoft's public symbol server and the resolved
+    /// cache dir (`$MEMF_SYMBOL_CACHE` / `_NT_SYMBOL_PATH` / Volatility `CACHE_PATH`).
     pub fn microsoft() -> crate::Result<Self> {
-        let cache_dir =
-            default_cache_dir().ok_or_else(|| crate::Error::Cache("HOME not set".into()))?;
+        let cache_dir = resolve_cache_dir().ok_or_else(|| {
+            crate::Error::Cache(
+                "no symbol cache dir (set $MEMF_SYMBOL_CACHE or $HOME/$APPDATA)".into(),
+            )
+        })?;
         Ok(Self::new(default_server_url(), cache_dir))
     }
 
@@ -199,16 +310,176 @@ mod tests {
     }
 
     #[test]
-    fn default_cache_dir_uses_home() {
-        // This test relies on HOME being set (true in CI and dev).
+    fn default_cache_dir_is_volatility_store() {
+        // Relies on a base env var (HOME / APPDATA) being set — true in CI/dev.
         if let Some(dir) = default_cache_dir() {
             let s = dir.to_string_lossy();
             assert!(
-                s.ends_with(".memf/symbols"),
-                "expected .memf/symbols suffix, got: {s}"
+                s.ends_with("volatility3"),
+                "expected volatility3 suffix, got: {s}"
             );
         }
-        // If HOME is not set we just skip — no panic.
+        // If no base env var is set we just skip — no panic.
+    }
+
+    // ── Volatility CACHE_PATH resolution (shared symbol store, all platforms) ──
+
+    #[test]
+    fn vol_cache_unix_prefers_xdg_cache_home() {
+        assert_eq!(
+            volatility_cache_path_from(false, Some("/x/cache"), Some("/home/u"), None, None),
+            Some(PathBuf::from("/x/cache").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_unix_falls_back_to_home_dot_cache() {
+        assert_eq!(
+            volatility_cache_path_from(false, None, Some("/home/u"), None, None),
+            Some(PathBuf::from("/home/u").join(".cache").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_unix_empty_xdg_uses_home() {
+        assert_eq!(
+            volatility_cache_path_from(false, Some(""), Some("/home/u"), None, None),
+            Some(PathBuf::from("/home/u").join(".cache").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_unix_none_without_home() {
+        assert_eq!(
+            volatility_cache_path_from(false, None, None, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_prefers_appdata() {
+        assert_eq!(
+            volatility_cache_path_from(
+                true,
+                None,
+                None,
+                Some("C:/Users/u/AppData/Roaming"),
+                Some("C:/Users/u")
+            ),
+            Some(PathBuf::from("C:/Users/u/AppData/Roaming").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_falls_back_to_userprofile() {
+        assert_eq!(
+            volatility_cache_path_from(true, None, None, None, Some("C:/Users/u")),
+            Some(PathBuf::from("C:/Users/u").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_empty_appdata_uses_userprofile() {
+        assert_eq!(
+            volatility_cache_path_from(true, None, None, Some(""), Some("C:/Users/u")),
+            Some(PathBuf::from("C:/Users/u").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_none_without_either() {
+        assert_eq!(
+            volatility_cache_path_from(true, None, None, None, None),
+            None
+        );
+    }
+
+    // ── Override resolution: $MEMF_SYMBOL_CACHE > _NT_SYMBOL_PATH > default ──
+
+    #[test]
+    fn resolve_prefers_memf_symbol_cache() {
+        assert_eq!(
+            resolve_cache_dir_from(
+                Some("/explicit/store"),
+                Some("srv*C:/Symbols*https://msdl"),
+                Some(PathBuf::from("/default"))
+            ),
+            Some(PathBuf::from("/explicit/store"))
+        );
+    }
+
+    #[test]
+    fn resolve_empty_memf_uses_nt_symbol_path() {
+        assert_eq!(
+            resolve_cache_dir_from(
+                Some(""),
+                Some("srv*C:/Symbols*https://msdl"),
+                Some(PathBuf::from("/default"))
+            ),
+            Some(PathBuf::from("C:/Symbols"))
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_default() {
+        assert_eq!(
+            resolve_cache_dir_from(None, None, Some(PathBuf::from("/default"))),
+            Some(PathBuf::from("/default"))
+        );
+    }
+
+    #[test]
+    fn resolve_nt_with_only_url_uses_default() {
+        assert_eq!(
+            resolve_cache_dir_from(
+                None,
+                Some("srv*https://msdl.microsoft.com/download/symbols"),
+                Some(PathBuf::from("/default"))
+            ),
+            Some(PathBuf::from("/default"))
+        );
+    }
+
+    #[test]
+    fn nt_store_srv_with_downstream() {
+        assert_eq!(
+            nt_symbol_store_dir("srv*C:/Symbols*https://msdl.microsoft.com/download/symbols"),
+            Some("C:/Symbols")
+        );
+    }
+
+    #[test]
+    fn nt_store_cache_form() {
+        assert_eq!(nt_symbol_store_dir("cache*C:/Symbols"), Some("C:/Symbols"));
+    }
+
+    #[test]
+    fn nt_store_plain_dir() {
+        assert_eq!(nt_symbol_store_dir("C:/Symbols"), Some("C:/Symbols"));
+    }
+
+    #[test]
+    fn nt_store_symsrv_skips_dll_and_keyword() {
+        assert_eq!(
+            nt_symbol_store_dir("symsrv*symsrv.dll*C:/Symbols*https://msdl"),
+            Some("C:/Symbols")
+        );
+    }
+
+    #[test]
+    fn nt_store_only_url_is_none() {
+        assert_eq!(
+            nt_symbol_store_dir("srv*https://msdl.microsoft.com/download/symbols"),
+            None
+        );
+    }
+
+    #[test]
+    fn nt_store_first_usable_of_list() {
+        assert_eq!(
+            nt_symbol_store_dir("srv*https://msdl;C:/Local/Symbols"),
+            Some("C:/Local/Symbols")
+        );
     }
 
     // ── Task 5: Client tests (feature-gated) ──

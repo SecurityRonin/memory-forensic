@@ -24,10 +24,14 @@ pub struct AutoProfile {
 }
 
 impl AutoProfile {
-    /// Create an `AutoProfile` using the default cache directory (`~/.memf/symbols/`).
+    /// Create an `AutoProfile` using the resolved cache directory
+    /// (`$MEMF_SYMBOL_CACHE` / `_NT_SYMBOL_PATH` / Volatility `CACHE_PATH`).
     pub fn new() -> crate::Result<Self> {
-        let cache_dir = crate::symserver::default_cache_dir()
-            .ok_or_else(|| crate::Error::Cache("HOME not set".into()))?;
+        let cache_dir = crate::symserver::resolve_cache_dir().ok_or_else(|| {
+            crate::Error::Cache(
+                "no symbol cache dir (set $MEMF_SYMBOL_CACHE or $HOME/$APPDATA)".into(),
+            )
+        })?;
         Ok(Self {
             cache_dir,
             network_enabled: true,
