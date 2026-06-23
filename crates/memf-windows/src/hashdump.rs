@@ -26,7 +26,7 @@ use memf_format::PhysicalMemoryProvider;
 
 // Registry hive navigation is the shared, validated walker (correct stable-list
 // offsets + lf/lh/li/ri handling) so this module no longer carries its own copy.
-use crate::registry::{find_subkey_by_name, read_cell_addr};
+use crate::registry::{find_subkey_by_name, read_cell_addr, resolve_root_cell};
 
 /// Maximum number of user entries to enumerate (safety limit).
 const MAX_USERS: usize = 4096;
@@ -764,59 +764,6 @@ fn read_value_data<P: PhysicalMemoryProvider>(
     }
 
     Vec::new()
-}
-
-/// Resolve the virtual address of a hive's root key node.
-///
-/// Reads the `RootCell` index from `_HBASE_BLOCK` (pointed at by
-/// `_HHIVE.BaseBlock`, field at offset 0x24 in the base block) and translates
-/// it through the cell-map directory via [`read_cell_addr`]. `hhive_addr` is
-/// the `_CMHIVE`/`_HHIVE` virtual address used for cell-index translation.
-/// Returns 0 if the base block is unmapped or the root-cell index is invalid.
-fn resolve_root_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, hhive_addr: u64) -> u64 {
-    let base_block_off = reader
-        .symbols()
-        .field_offset("_HHIVE", "BaseBlock")
-        .unwrap_or(0x40);
-
-    let base_block_addr = reader
-        .read_bytes(hhive_addr.wrapping_add(base_block_off), 8)
-        .ok()
-        .and_then(|b| b.get(..8).and_then(|s| s.try_into().ok()))
-        .map_or(0, u64::from_le_bytes);
-
-    // Volatility `root_cell_offset` parity: honour _HBASE_BLOCK.RootCell only
-    // when the header is a readable "regf" block; otherwise the regf-format
-    // default cell 0x20. On real images the header page is frequently paged out
-    // (RootCell unreadable) while the bins, reached via the HMAP, stay resident
-    // — collapsing to 0 there would abandon an otherwise-navigable hive.
-    let root_cell_index = regf_root_cell_index(reader, base_block_addr).unwrap_or(0x20);
-
-    read_cell_addr(reader, hhive_addr, root_cell_index)
-}
-
-/// `Some(idx)` iff the block at `base_block_addr` is a readable `_HBASE_BLOCK`
-/// ("regf" signature) carrying a valid (non-zero, non-sentinel) RootCell index.
-/// `None` when the header is paged out, not "regf", or carries a bogus index —
-/// the caller then uses the regf-format default cell `0x20`.
-fn regf_root_cell_index<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    base_block_addr: u64,
-) -> Option<u32> {
-    if base_block_addr == 0 {
-        return None;
-    }
-    // _HBASE_BLOCK.Signature@0x0 == "regf" (0x6667_6572 little-endian).
-    let sig = reader.read_bytes(base_block_addr, 4).ok()?;
-    if u32::from_le_bytes(sig.get(..4)?.try_into().ok()?) != 0x6667_6572 {
-        return None;
-    }
-    // _HBASE_BLOCK.RootCell@0x24 (u32 cell index).
-    let raw = reader
-        .read_bytes(base_block_addr.wrapping_add(0x24), 4)
-        .ok()?;
-    let idx = u32::from_le_bytes(raw.get(..4)?.try_into().ok()?);
-    (idx != 0 && idx != u32::MAX).then_some(idx)
 }
 
 /// Format a byte slice as a lowercase hex string.
