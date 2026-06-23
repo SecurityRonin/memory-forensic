@@ -14,10 +14,12 @@
 //! Each cache entry value contains a DCC2 header (96 bytes) followed by
 //! UTF-16LE encoded username and domain name strings.
 
-use std::collections::HashSet;
-
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+
+use std::fmt::Write as _;
+
+use crate::registry;
 
 /// Maximum number of cached credential entries to enumerate (safety limit).
 const MAX_CACHED_CREDS: usize = 64;
@@ -26,17 +28,18 @@ const _: () = assert!(MAX_CACHED_CREDS >= 10 && MAX_CACHED_CREDS <= 1024);
 /// Information about a domain cached credential recovered from the SECURITY hive.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CachedCredentialInfo {
-    /// Domain username associated with the cached credential.
+    /// Decrypted domain username.
     pub username: String,
-    /// Domain name the user authenticated against.
+    /// Decrypted logon domain (NetBIOS).
     pub domain: String,
-    /// Domain SID string (extracted from cache entry metadata).
-    pub domain_sid: String,
-    /// PBKDF2 iteration count used for the DCC2 hash derivation.
+    /// Decrypted DNS domain name (may be empty).
+    pub domain_name: String,
+    /// MS-Cache v2 (DCC2) hash, hex — crackable offline as
+    /// `$DCC2$10240#<username>#<dcc2_hash>`.
+    pub dcc2_hash: String,
+    /// DCC2 PBKDF2 iteration count (fixed at 10240 by the algorithm).
     pub iteration_count: u32,
-    /// Length of the hash data portion in bytes.
-    pub hash_data_length: u32,
-    /// Whether this cached credential is suspicious based on heuristics.
+    /// Whether the credential looks suspicious (heuristic on the decrypted name).
     pub is_suspicious: bool,
 }
 
@@ -79,211 +82,127 @@ pub fn classify_cached_credential(username: &str, domain: &str, iteration_count:
 /// each entry, and returns the results.
 ///
 /// Returns an empty `Vec` if the hive address is zero or navigation fails.
+/// DCC2 PBKDF2 iteration count — fixed at 10240 by the MS-Cache-v2 algorithm
+/// (not stored per entry).
+const DCC2_ITERATIONS: u32 = 10240;
+
+/// Walk and **decrypt** cached domain credentials from the in-memory SECURITY
+/// hive (Vista+/Win8+ DCC2).
+///
+/// `system_hive_addr` supplies the boot key; `security_hive_addr` holds the
+/// cache. Derives the LSA key + `NL$KM` (reusing the validated
+/// [`crate::lsadump`] / [`crate::hashdump`] crypto), then decrypts each
+/// `Cache\\NL$N` record (AES-128-CBC) into the real username, domain, and DCC2
+/// hash. If the boot/LSA/NL$KM key cannot be derived, it **REFUSES** — returns
+/// an empty `Vec` rather than emitting undecrypted ciphertext as credentials.
 pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
+    system_hive_addr: u64,
     security_hive_addr: u64,
 ) -> crate::Result<Vec<CachedCredentialInfo>> {
     if security_hive_addr == 0 {
         return Ok(Vec::new());
     }
-
-    // Read _HHIVE.BaseBlock pointer to get _HBASE_BLOCK address.
-    let base_block_off = reader
-        .symbols()
-        .field_offset("_HHIVE", "BaseBlock")
-        .unwrap_or(0x10);
-
-    let base_block_addr = match reader.read_bytes(security_hive_addr + base_block_off, 8) {
-        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-        _ => return Ok(Vec::new()),
-    };
-
-    if base_block_addr == 0 {
+    let root = registry::resolve_root_cell(reader, security_hive_addr);
+    if root == 0 {
+        return Ok(Vec::new());
+    }
+    let policy = registry::find_subkey_by_name(reader, security_hive_addr, root, "Policy");
+    if policy == 0 {
         return Ok(Vec::new());
     }
 
-    // Read root cell offset from _HBASE_BLOCK (at offset 0x24, u32).
-    let root_cell_off = match reader.read_bytes(base_block_addr + 0x24, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return Ok(Vec::new()),
-    };
-
-    if root_cell_off == 0 || root_cell_off == u32::MAX {
+    // Keys: boot key (SYSTEM) → LSA key → NL$KM. Any failure ⇒ refuse, never
+    // fabricate plaintext from ciphertext.
+    let lsa_key =
+        crate::lsadump::derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy);
+    if lsa_key.is_empty() {
+        return Ok(Vec::new());
+    }
+    let nlkm = get_nlkm(reader, security_hive_addr, policy, &lsa_key);
+    if nlkm.len() < 32 {
         return Ok(Vec::new());
     }
 
-    // Compute flat storage base for cell address resolution.
-    let storage_off = reader
-        .symbols()
-        .field_offset("_HHIVE", "Storage")
-        .unwrap_or(0x30);
-
-    let flat_base = match reader.read_bytes(security_hive_addr + storage_off, 8) {
-        Ok(bytes) if bytes.len() == 8 => {
-            let addr = bytes[..8].try_into().map_or(0, u64::from_le_bytes);
-            if addr != 0 {
-                addr
-            } else {
-                base_block_addr + 0x1000
-            }
-        }
-        _ => base_block_addr + 0x1000,
-    };
-
-    // Navigate: root → Cache
-    let root_addr = read_cell_addr(reader, flat_base, root_cell_off);
-    if root_addr == 0 {
-        return Ok(Vec::new());
-    }
-
-    let cache_key = find_subkey_by_name(reader, flat_base, root_addr, "Cache");
-    if cache_key == 0 {
-        return Ok(Vec::new());
-    }
-
-    // Enumerate NL$1 through NL$10 value entries under the Cache key.
-    let val_count: u32 = match reader.read_bytes(cache_key + 0x28, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return Ok(Vec::new()),
-    };
-
-    if val_count == 0 {
-        return Ok(Vec::new());
-    }
-
-    let val_list_off: u32 = match reader.read_bytes(cache_key + 0x2C, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return Ok(Vec::new()),
-    };
-
-    let val_list_addr = read_cell_addr(reader, flat_base, val_list_off);
-    if val_list_addr == 0 {
+    let cache = registry::find_subkey_by_name(reader, security_hive_addr, root, "Cache");
+    if cache == 0 {
         return Ok(Vec::new());
     }
 
     let mut results = Vec::new();
-    let mut seen_addrs: HashSet<u64> = HashSet::new();
-
-    // Scan all values, looking for NL$1..NL$10 by name.
-    for v in 0..val_count.min(MAX_CACHED_CREDS as u32) {
-        let val_off: u32 = match reader.read_bytes(val_list_addr + u64::from(v) * 4, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        let val_addr = read_cell_addr(reader, flat_base, val_off);
-        if val_addr == 0 {
+    for value in registry::list_values(reader, security_hive_addr, cache)
+        .into_iter()
+        .take(MAX_CACHED_CREDS)
+    {
+        if value.name == "NL$Control" || !is_nl_entry(&value.name) {
             continue;
         }
-
-        // Cycle detection.
-        if !seen_addrs.insert(val_addr) {
+        if value.data.len() < 96 {
             continue;
         }
-
-        // _CM_KEY_VALUE: NameLength at 0x02 (u16), Name at 0x18.
-        let vname_len: u16 = match reader.read_bytes(val_addr + 0x02, 2) {
-            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-            _ => continue,
-        };
-
-        if vname_len == 0 || vname_len > 256 {
+        let (uname_len, domain_len, domain_name_len, enc_data, ch) = parse_cache_entry(&value.data);
+        if uname_len == 0 || ch.len() != 16 {
+            continue; // empty / unused cache slot
+        }
+        let dec = decrypt_dcc2(&enc_data, &nlkm, &ch);
+        let (username, domain, domain_name, hash) =
+            parse_decrypted_cache(&dec, uname_len, domain_len, domain_name_len);
+        if username.is_empty() {
             continue;
         }
-
-        let vname = match reader.read_bytes(val_addr + 0x18, vname_len as usize) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-            _ => continue,
-        };
-
-        // Only process NL$1 through NL$10 entries.
-        if !is_nl_entry(&vname) {
-            continue;
-        }
-
-        // Read value data: DataLength at 0x08 (u32), DataOffset at 0x0C (u32).
-        let data_len: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
-            Ok(bytes) if bytes.len() == 4 => {
-                bytes[..4].try_into().map_or(0, u32::from_le_bytes) & 0x7FFF_FFFF
-            }
-            _ => continue,
-        };
-
-        // DCC2 header is 96 bytes minimum; skip entries with insufficient data.
-        if data_len < 96 {
-            continue;
-        }
-
-        let data_off: u32 = match reader.read_bytes(val_addr + 0x0C, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        let data_addr = read_cell_addr(reader, flat_base, data_off);
-        if data_addr == 0 {
-            continue;
-        }
-
-        // Parse DCC2 header:
-        //   offset 0x00: username length (u16, in bytes)
-        //   offset 0x04: domain length (u16, in bytes)
-        //   offset 0x28 (40): iteration count (u32)
-        let username_len: u16 = match reader.read_bytes(data_addr, 2) {
-            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-            _ => continue,
-        };
-
-        let domain_len: u16 = match reader.read_bytes(data_addr + 4, 2) {
-            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-            _ => continue,
-        };
-
-        let iteration_count: u32 = match reader.read_bytes(data_addr + 40, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        // Skip empty entries (username_len == 0 means unused cache slot).
-        if username_len == 0 {
-            continue;
-        }
-
-        // Sanity-check string lengths.
-        if username_len > 512 || domain_len > 512 {
-            continue;
-        }
-
-        // Username starts at offset 96 (after the 96-byte header), UTF-16LE.
-        let username = match reader.read_bytes(data_addr + 96, username_len as usize) {
-            Ok(bytes) => decode_utf16le(&bytes),
-            _ => continue,
-        };
-
-        // Domain follows username (aligned to 2-byte boundary, but typically
-        // directly after username_len bytes from offset 96).
-        let domain_offset = 96 + u64::from(username_len);
-        let domain = match reader.read_bytes(data_addr + domain_offset, domain_len as usize) {
-            Ok(bytes) => decode_utf16le(&bytes),
-            _ => continue,
-        };
-
-        // Hash data length is the total data minus the header and string data.
-        let strings_total = u32::from(username_len) + u32::from(domain_len);
-        let hash_data_length = data_len.saturating_sub(96 + strings_total);
-
-        let is_suspicious = classify_cached_credential(&username, &domain, iteration_count);
-
+        let dcc2_hash = hash.iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        });
+        let is_suspicious = classify_cached_credential(&username, &domain, DCC2_ITERATIONS);
         results.push(CachedCredentialInfo {
             username,
             domain,
-            domain_sid: String::new(), // SID extraction requires additional parsing
-            iteration_count,
-            hash_data_length,
+            domain_name,
+            dcc2_hash,
+            iteration_count: DCC2_ITERATIONS,
             is_suspicious,
         });
     }
-
     Ok(results)
+}
+
+/// Decrypt the `NL$KM` cached-domain key material: the `NL$KM` LSA secret
+/// (`Policy\\Secrets\\NL$KM\\CurrVal`), decrypted with the LSA key.
+fn get_nlkm<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    security_hive_addr: u64,
+    policy: u64,
+    lsa_key: &[u8],
+) -> Vec<u8> {
+    let secrets = registry::find_subkey_by_name(reader, security_hive_addr, policy, "Secrets");
+    if secrets == 0 {
+        return Vec::new();
+    }
+    let nlkm_key = registry::find_subkey_by_name(reader, security_hive_addr, secrets, "NL$KM");
+    if nlkm_key == 0 {
+        return Vec::new();
+    }
+    let currval = registry::find_subkey_by_name(reader, security_hive_addr, nlkm_key, "CurrVal");
+    if currval == 0 {
+        return Vec::new();
+    }
+    let enc = registry::read_value_data(reader, security_hive_addr, currval, "");
+    crate::lsadump::lsa_decrypt_aes(&enc, lsa_key)
+}
+
+/// Decrypt a DCC2 cache record: AES-128-CBC with key `nlkm[16:32]` and IV `ch`
+/// (the record checksum). Reuses hashdump's validated `aes128_cbc_decrypt`;
+/// zero-pads `enc_data` to a 16-byte multiple.
+fn decrypt_dcc2(enc_data: &[u8], nlkm: &[u8], ch: &[u8]) -> Vec<u8> {
+    if nlkm.len() < 32 || ch.len() < 16 {
+        return Vec::new();
+    }
+    let mut padded = enc_data.to_vec();
+    while padded.len() % 16 != 0 {
+        padded.push(0);
+    }
+    crate::hashdump::aes128_cbc_decrypt(&nlkm[16..32], &ch[..16], &padded)
 }
 
 /// Check if a value name is a cached credential entry (`NL$1` through `NL$50`).
@@ -302,7 +221,21 @@ fn is_nl_entry(name: &str) -> bool {
 /// counts; `ch` is the 16-byte AES IV; `enc_data` is the encrypted region.
 /// Reference: Volatility3 registry/cachedump `parse_cache_entry`.
 fn parse_cache_entry(data: &[u8]) -> (u16, u16, u16, Vec<u8>, Vec<u8>) {
-    (0, 0, 0, Vec::new(), Vec::new())
+    let rd16 = |off: usize| {
+        data.get(off..off + 2)
+            .and_then(|b| b.try_into().ok())
+            .map_or(0, u16::from_le_bytes)
+    };
+    if data.len() < 96 {
+        return (rd16(0), rd16(2), 0, Vec::new(), Vec::new());
+    }
+    (
+        rd16(0),
+        rd16(2),
+        rd16(60),
+        data[96..].to_vec(),
+        data[64..80].to_vec(),
+    )
 }
 
 /// Split a decrypted DCC2 cache record into `(username, domain, domain_name,
@@ -315,7 +248,27 @@ fn parse_decrypted_cache(
     domain_len: u16,
     domain_name_len: u16,
 ) -> (String, String, String, Vec<u8>) {
-    (String::new(), String::new(), String::new(), Vec::new())
+    let hash = dec.get(0..16).map(<[u8]>::to_vec).unwrap_or_default();
+    // 4-byte alignment padding between strings (Volatility: 2*((len/2)%2)).
+    let pad = |len: u16| -> usize { 2 * usize::from((len / 2) % 2) };
+    let (ul, dl, dnl) = (
+        uname_len as usize,
+        domain_len as usize,
+        domain_name_len as usize,
+    );
+    let uname_off = 72usize;
+    let domain_off = uname_off + ul + pad(uname_len);
+    let domain_name_off = domain_off + dl + pad(domain_len);
+    let field = |off: usize, len: usize| -> String {
+        dec.get(off..off.saturating_add(len))
+            .map_or_else(String::new, decode_utf16le)
+    };
+    (
+        field(uname_off, ul),
+        field(domain_off, dl),
+        field(domain_name_off, dnl),
+        hash,
+    )
 }
 
 /// Decode a UTF-16LE byte slice into a String.
@@ -326,124 +279,12 @@ fn decode_utf16le(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&u16_iter.collect::<Vec<u16>>())
 }
 
-/// Read a cell address from the flat storage base + cell offset.
-fn read_cell_addr<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    flat_base: u64,
-    cell_off: u32,
-) -> u64 {
-    // Cell data starts 4 bytes after the cell offset (cell size header).
-    let addr = flat_base + u64::from(cell_off) + 4;
-    // Verify we can read from this address.
-    match reader.read_bytes(addr, 2) {
-        Ok(bytes) if bytes.len() == 2 => addr,
-        _ => 0,
-    }
-}
-
-/// Find a subkey by name under a parent `_CM_KEY_NODE`.
-fn find_subkey_by_name<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    flat_base: u64,
-    parent_addr: u64,
-    target_name: &str,
-) -> u64 {
-    let subkey_count: u32 = match reader.read_bytes(parent_addr + 0x18, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return 0,
-    };
-
-    if subkey_count == 0 || subkey_count > 4096 {
-        return 0;
-    }
-
-    let list_off: u32 = match reader.read_bytes(parent_addr + 0x20, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return 0,
-    };
-
-    let list_addr = read_cell_addr(reader, flat_base, list_off);
-    if list_addr == 0 {
-        return 0;
-    }
-
-    let list_sig = match reader.read_bytes(list_addr, 2) {
-        Ok(bytes) if bytes.len() == 2 => [bytes[0], bytes[1]],
-        _ => return 0,
-    };
-
-    let count: u16 = match reader.read_bytes(list_addr + 2, 2) {
-        Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-        _ => return 0,
-    };
-
-    for i in 0..count.min(4096) {
-        let entry_off = match list_sig {
-            [b'l', b'f' | b'h'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 8, 4) {
-                Ok(bytes) if bytes.len() == 4 => {
-                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                }
-                _ => continue,
-            },
-            [b'l', b'i'] => match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
-                Ok(bytes) if bytes.len() == 4 => {
-                    bytes[..4].try_into().map_or(0, u32::from_le_bytes)
-                }
-                _ => continue,
-            },
-            _ => return 0,
-        };
-
-        let key_addr = read_cell_addr(reader, flat_base, entry_off);
-        if key_addr == 0 {
-            continue;
-        }
-
-        let name_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
-            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-            _ => continue,
-        };
-
-        if name_len == 0 || name_len > 256 {
-            continue;
-        }
-
-        let name = match reader.read_bytes(key_addr + 0x4C, name_len as usize) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-            _ => continue,
-        };
-
-        if name.eq_ignore_ascii_case(target_name) {
-            return key_addr;
-        }
-    }
-
-    0
-}
-
 #[cfg(test)]
 mod tests {
     // Test fixtures declare layout consts/helpers beside the statements that use
     // them to keep each byte-plan readable; that ordering is intentional here.
     #![allow(clippy::items_after_statements)]
     use super::*;
-    use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::PageTableBuilder;
-    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
-    use memf_symbols::isf::IsfResolver;
-    use memf_symbols::test_builders::IsfBuilder;
-
-    fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
-    }
 
     // ── Classifier tests ─────────────────────────────────────────────
 
@@ -623,65 +464,6 @@ mod tests {
         assert_eq!(decode_utf16le(bytes), "CORP");
     }
 
-    // ── Walker tests ─────────────────────────────────────────────────
-
-    /// Zero hive address returns empty Vec (graceful degradation).
-    #[test]
-    fn walk_cached_credentials_zero_addr() {
-        let reader = make_reader();
-        let result = walk_cached_credentials(&reader, 0).unwrap();
-        assert!(
-            result.is_empty(),
-            "Zero hive address should return empty Vec"
-        );
-    }
-
-    /// Non-zero but unmapped hive address degrades gracefully to empty Vec.
-    #[test]
-    fn walk_cached_credentials_unmapped_addr_graceful() {
-        let reader = make_reader();
-        // Non-zero but unmapped address should return empty Vec, not panic.
-        let result = walk_cached_credentials(&reader, 0xDEAD_BEEF).unwrap();
-        assert!(
-            result.is_empty(),
-            "Unmapped hive address should degrade gracefully"
-        );
-    }
-
-    // ── CachedCredentialInfo struct tests ─────────────────────────────
-
-    #[test]
-    fn cached_credential_info_construction() {
-        let info = CachedCredentialInfo {
-            username: "john.doe".to_string(),
-            domain: "CONTOSO".to_string(),
-            domain_sid: "S-1-5-21-1234567890-1234567890-1234567890".to_string(),
-            iteration_count: 10240,
-            hash_data_length: 16,
-            is_suspicious: false,
-        };
-        assert_eq!(info.username, "john.doe");
-        assert_eq!(info.domain, "CONTOSO");
-        assert_eq!(info.iteration_count, 10240);
-        assert!(!info.is_suspicious);
-    }
-
-    #[test]
-    fn cached_credential_info_serialization() {
-        let info = CachedCredentialInfo {
-            username: "attacker".to_string(),
-            domain: String::new(),
-            domain_sid: String::new(),
-            iteration_count: 1024,
-            hash_data_length: 32,
-            is_suspicious: true,
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"username\":\"attacker\""));
-        assert!(json.contains("\"is_suspicious\":true"));
-        assert!(json.contains("\"iteration_count\":1024"));
-    }
-
     // ── MAX_CACHED_CREDS constant ─────────────────────────────────────
 
     // ── walk_cached_credentials body coverage ────────────────────────
@@ -690,134 +472,6 @@ mod tests {
     // → root_addr → Cache key → value list → NL$ entries.
     // We provide synthetic physical memory so the body is exercised
     // past the hive_addr=0 guard.
-
-    use memf_core::test_builders::flags;
-
-    fn make_cachedump_isf() -> serde_json::Value {
-        IsfBuilder::new()
-            .add_struct("_HHIVE", 0x600)
-            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
-            .add_field("_HHIVE", "Storage", 0x30, "pointer")
-            .build_json()
-    }
-
-    /// Hive mapped, base_block pointer at hive+0x10 is zero → early return.
-    #[test]
-    fn walk_cached_creds_null_base_block() {
-        let hive_vaddr: u64 = 0x0020_0000;
-        let hive_paddr: u64 = 0x0020_0000;
-        // All zeros in hive page → base_block_addr = 0 → early return
-        let hive_page = vec![0u8; 0x1000];
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "null base_block → empty Vec");
-    }
-
-    /// Hive mapped; base_block valid; root_cell = 0 → early return.
-    #[test]
-    fn walk_cached_creds_zero_root_cell() {
-        let hive_vaddr: u64 = 0x0030_0000;
-        let hive_paddr: u64 = 0x0030_0000;
-        let base_block: u64 = 0x0031_0000;
-        let base_block_paddr: u64 = 0x0031_0000;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        // root_cell_off = 0 → early return
-        bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty());
-    }
-
-    /// Hive mapped; base_block valid; root_cell u32::MAX sentinel → early return.
-    #[test]
-    fn walk_cached_creds_root_cell_sentinel() {
-        let hive_vaddr: u64 = 0x0040_0000;
-        let hive_paddr: u64 = 0x0040_0000;
-        let base_block: u64 = 0x0041_0000;
-        let base_block_paddr: u64 = 0x0041_0000;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        bb_page[0x24..0x28].copy_from_slice(&u32::MAX.to_le_bytes());
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(
-            result.is_empty(),
-            "u32::MAX root_cell → sentinel, empty Vec"
-        );
-    }
-
-    /// Hive mapped; base_block and root_cell valid; flat_base derived via
-    /// Storage=0 fallback; hbin area not mapped → read_cell_addr returns 0
-    /// → Cache key not found → empty Vec.
-    #[test]
-    fn walk_cached_creds_cache_key_not_found() {
-        let hive_vaddr: u64 = 0x0050_0000;
-        let hive_paddr: u64 = 0x0050_0000;
-        let base_block: u64 = 0x0051_0000;
-        let base_block_paddr: u64 = 0x0051_0000;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-        // Storage = 0 → flat_base = base_block + 0x1000 (not mapped)
-        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        bb_page[0x24..0x28].copy_from_slice(&0x20u32.to_le_bytes());
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(
-            result.is_empty(),
-            "hbin not mapped → Cache key not found → empty Vec"
-        );
-    }
 
     // ── Additional coverage: classify + helpers ──────────────────────
 
@@ -841,380 +495,6 @@ mod tests {
         let result = decode_utf16le(&bytes);
         // All null chars: should produce 4 null chars, but as a string.
         assert_eq!(result.len(), 4);
-    }
-
-    /// read_cell_addr with zero flat_base and cell_off=0 → addr=4; if not mapped → 0.
-    #[test]
-    fn read_cell_addr_unmapped_returns_zero() {
-        let reader = make_reader();
-        let result = read_cell_addr(&reader, 0, 0);
-        assert_eq!(result, 0, "unmapped address → read_cell_addr returns 0");
-    }
-
-    /// find_subkey_by_name with parent_addr in unmapped memory → 0.
-    #[test]
-    fn find_subkey_by_name_unmapped_returns_zero() {
-        let reader = make_reader();
-        let result = find_subkey_by_name(&reader, 0, 0xDEAD_BEEF_0000, "Cache");
-        assert_eq!(result, 0);
-    }
-
-    /// walk_cached_credentials with valid base_block but storage pointer is zero
-    /// falls through to base_block_addr + 0x1000 path (alternative flat_base calc).
-    #[test]
-    fn walk_cached_creds_zero_storage_ptr_uses_fallback_flat_base() {
-        use memf_core::test_builders::flags;
-
-        let hive_vaddr: u64 = 0x0050_0000;
-        let hive_paddr: u64 = 0x0050_0000;
-        let base_block: u64 = 0x0051_0000;
-        let base_block_paddr: u64 = 0x0051_0000;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        // BaseBlock pointer at hive + 0x10
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-        // Storage pointer at hive + 0x30 = 0 (causes fallback to base_block + 0x1000)
-        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        // root_cell_off = 0 (zero → early return after flat_base resolved)
-        bb_page[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // Should reach root_cell = 0 → early return → empty (exercises fallback flat_base path)
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(
-            result.is_empty(),
-            "zero storage ptr → fallback flat_base → root_cell=0 → empty"
-        );
-    }
-
-    // ── Additional coverage: li-list in find_subkey_by_name ─────────
-
-    /// Hive with a root NK cell that has an `li`-format subkey list
-    /// with a single child named "Cache" → finds Cache, but then
-    /// val_count at Cache + 0x28 is 0 → returns empty Vec.
-    /// This exercises the `li` list branch (line ≈ 369) in find_subkey_by_name.
-    #[test]
-    fn walk_cached_creds_li_list_cache_found_no_values() {
-        use memf_core::test_builders::flags;
-
-        // Addresses (virtual = physical):
-        //   hive_vaddr   = 0x0070_0000
-        //   base_block   = 0x0071_0000
-        //   flat_base    = 0x0072_0000  (base_block + 0x1000, storage = 0)
-        //
-        // flat_base page layout:
-        //   root cell at root_cell_off = 0x20 → root_addr = flat_base + 0x24
-        //     subkey_count at +0x18 = 1
-        //     list_off at +0x20 = 0x80 (within flat_base page)
-        //   list cell at flat_base + 0x84 (= flat_base + 0x80 + 4):
-        //     sig = "li" [0x6C, 0x69]
-        //     count = 1
-        //     entry[0] = 0xC0  (child cell offset)
-        //   child cell at flat_base + 0xC4 (= flat_base + 0xC0 + 4):
-        //     name_len at +0x4A = 5 ("Cache")
-        //     name at +0x4C = b"Cache"
-        //   → find_subkey_by_name("Cache") returns cache_key = flat_base + 0xC4
-        //   Cache key: val_count at +0x28 = 0 → returns empty Vec
-
-        let hive_vaddr: u64 = 0x0070_0000;
-        let hive_paddr: u64 = 0x0070_0000;
-        let base_block: u64 = 0x0071_0000;
-        let base_block_paddr: u64 = 0x0071_0000;
-        let flat_base_paddr: u64 = 0x0072_0000;
-
-        let root_cell_off: u32 = 0x20;
-        let root_off: usize = (root_cell_off + 4) as usize; // 0x24
-
-        let list_cell_off: u32 = 0x80;
-        let list_off: usize = (list_cell_off + 4) as usize; // 0x84
-
-        let child_cell_off: u32 = 0xC0;
-        let child_off: usize = (child_cell_off + 4) as usize; // 0xC4
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
-
-        let mut flat_page = vec![0u8; 0x1000];
-
-        // Root NK: subkey_count = 1, list_off = list_cell_off
-        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
-        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
-
-        // li list: sig = b"li", count = 1, entry[0] = child_cell_off
-        flat_page[list_off] = b'l';
-        flat_page[list_off + 1] = b'i';
-        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
-        flat_page[list_off + 4..list_off + 8].copy_from_slice(&child_cell_off.to_le_bytes());
-
-        // Cache NK: name = "Cache", val_count = 0
-        let name = b"Cache";
-        flat_page[child_off + 0x4A..child_off + 0x4C]
-            .copy_from_slice(&(name.len() as u16).to_le_bytes());
-        flat_page[child_off + 0x4C..child_off + 0x4C + name.len()].copy_from_slice(name);
-        // val_count at child_off + 0x28 = 0 (zero-init)
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
-            .write_phys(flat_base_paddr, &flat_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        // find_subkey_by_name uses li list, finds Cache, but val_count=0 → empty Vec.
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(
-            result.is_empty(),
-            "li list Cache found but val_count=0 → empty"
-        );
-    }
-
-    /// Hive with lf list finding Cache key, Cache has val_count=1 but
-    /// val_list_addr = 0 (list cell not readable) → returns empty Vec.
-    #[test]
-    fn walk_cached_creds_cache_val_list_unreadable() {
-        use memf_core::test_builders::flags;
-
-        let hive_vaddr: u64 = 0x0080_0000;
-        let hive_paddr: u64 = 0x0080_0000;
-        let base_block: u64 = 0x0081_0000;
-        let base_block_paddr: u64 = 0x0081_0000;
-        let flat_base_paddr: u64 = 0x0082_0000;
-
-        let root_cell_off: u32 = 0x20;
-        let root_off: usize = (root_cell_off + 4) as usize;
-
-        let list_cell_off: u32 = 0x80;
-        let list_off: usize = (list_cell_off + 4) as usize;
-
-        let child_cell_off: u32 = 0xC0;
-        let child_off: usize = (child_cell_off + 4) as usize;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-        hive_page[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        bb_page[0x24..0x28].copy_from_slice(&root_cell_off.to_le_bytes());
-
-        let mut flat_page = vec![0u8; 0x1000];
-
-        // Root NK with lf list:
-        flat_page[root_off + 0x18..root_off + 0x1C].copy_from_slice(&1u32.to_le_bytes());
-        flat_page[root_off + 0x20..root_off + 0x24].copy_from_slice(&list_cell_off.to_le_bytes());
-
-        // lf list:
-        flat_page[list_off] = b'l';
-        flat_page[list_off + 1] = b'f';
-        flat_page[list_off + 2..list_off + 4].copy_from_slice(&1u16.to_le_bytes());
-        flat_page[list_off + 4..list_off + 8].copy_from_slice(&child_cell_off.to_le_bytes());
-
-        // Cache NK with val_count = 1, val_list_off = 0xFF00 (unreadable)
-        let name = b"Cache";
-        flat_page[child_off + 0x4A..child_off + 0x4C]
-            .copy_from_slice(&(name.len() as u16).to_le_bytes());
-        flat_page[child_off + 0x4C..child_off + 0x4C + name.len()].copy_from_slice(name);
-        flat_page[child_off + 0x28..child_off + 0x2C].copy_from_slice(&1u32.to_le_bytes()); // val_count = 1
-                                                                                            // val_list_off at child_off + 0x2C = 0xFF00 → flat_base + 0xFF00 + 4 = not mapped → 0
-        flat_page[child_off + 0x2C..child_off + 0x30].copy_from_slice(&0xFF00u32.to_le_bytes());
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .map_4k(base_block + 0x1000, flat_base_paddr, flags::WRITABLE)
-            .write_phys(flat_base_paddr, &flat_page)
-            .build();
-
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(result.is_empty(), "val_list_addr=0 → empty Vec");
-    }
-
-    /// Full walk_cached_credentials traversal: hive → Cache → NL$1 → DCC2 data.
-    ///
-    /// Memory layout (explicit Storage pointer → flat_base):
-    ///   hive at 0x0090_0000: [+0x10]=bb_vaddr, [+0x30]=flat_vaddr
-    ///   bb at 0x0091_0000: [+0x24]=root_cell_off=0x100
-    ///   flat at 0x0092_0000:
-    ///     root nk at 0x104 (subkey_count=1, list_off=0x200)
-    ///     lf list at 0x204 → Cache nk at 0x300
-    ///     Cache nk at 0x304 (name="Cache", val_count=1, val_list_off=0x400)
-    ///     val list at 0x404 → NL$1 value at 0x500
-    ///     NL$1 value at 0x504: vname="NL$1", data_len=200, data_off=0x600
-    ///     data cell at 0x604: DCC2 header + "alice" + "CORP"
-    #[test]
-    fn walk_cached_credentials_full_traversal_finds_nl1_entry() {
-        let hive_vaddr: u64 = 0x0090_0000;
-        let hive_paddr: u64 = 0x0090_0000;
-        let bb_vaddr: u64 = 0x0091_0000;
-        let bb_paddr: u64 = 0x0091_0000;
-        let flat_vaddr: u64 = 0x0092_0000; // explicit Storage pointer
-        let flat_paddr: u64 = 0x0092_0000;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&bb_vaddr.to_le_bytes());
-        hive_page[0x30..0x38].copy_from_slice(&flat_vaddr.to_le_bytes()); // explicit flat_base
-
-        let mut bb_page = vec![0u8; 0x1000];
-        bb_page[0x24..0x28].copy_from_slice(&0x100u32.to_le_bytes()); // root_cell_off=0x100
-
-        let mut flat_page = vec![0u8; 0x2000]; // 2 pages (val list + data can span)
-
-        fn w32(page: &mut [u8], off: usize, val: u32) {
-            page[off..off + 4].copy_from_slice(&val.to_le_bytes());
-        }
-        fn w16(page: &mut [u8], off: usize, val: u16) {
-            page[off..off + 2].copy_from_slice(&val.to_le_bytes());
-        }
-
-        // root nk at flat_page[0x104]: subkey_count=1, list_off=0x200
-        let ro = 0x104usize;
-        w32(&mut flat_page, ro + 0x18, 1);
-        w32(&mut flat_page, ro + 0x20, 0x200);
-
-        // lf list at flat_page[0x204]: count=1, entry=0x300
-        let l1 = 0x204usize;
-        flat_page[l1] = b'l';
-        flat_page[l1 + 1] = b'f';
-        w16(&mut flat_page, l1 + 2, 1);
-        w32(&mut flat_page, l1 + 4, 0x300);
-        w32(&mut flat_page, l1 + 8, 0);
-
-        // Cache nk at flat_page[0x304]: name="Cache", val_count=1, val_list_off=0x400
-        let ca = 0x304usize;
-        // name_len at +0x4A, name at +0x4C (but subkey_count=0 since no subkeys here)
-        w32(&mut flat_page, ca + 0x18, 0); // subkey_count=0 for Cache (only values)
-        w32(&mut flat_page, ca + 0x28, 1); // val_count=1
-        w32(&mut flat_page, ca + 0x2C, 0x400); // val_list_off
-        w16(&mut flat_page, ca + 0x4A, 5); // name_len=5
-        flat_page[ca + 0x4C..ca + 0x51].copy_from_slice(b"Cache");
-
-        // Value list cell at flat_page[0x404]: one entry (4 bytes) → val_off=0x500
-        let vl = 0x404usize;
-        w32(&mut flat_page, vl, 0x500); // val_off
-
-        // NL$1 value cell at flat_page[0x504]:
-        //   [+0x02]: vname_len=4 ("NL$1")
-        //   [+0x08]: data_len=200 (no inline flag)
-        //   [+0x0C]: data_off=0x600
-        //   [+0x18]: vname="NL$1"
-        let vk = 0x504usize;
-        w16(&mut flat_page, vk + 0x02, 4); // vname_len=4
-        w32(&mut flat_page, vk + 0x08, 200); // data_len=200
-        w32(&mut flat_page, vk + 0x0C, 0x600); // data_off=0x600
-        flat_page[vk + 0x18..vk + 0x1C].copy_from_slice(b"NL$1");
-
-        // DCC2 data cell at flat_page[0x604]:
-        //   [0x00..0x02]: username_len (bytes of UTF-16LE "alice" = 10)
-        //   [0x04..0x06]: domain_len (bytes of UTF-16LE "CORP" = 8)
-        //   [0x28..0x2C]: iteration_count = 10240
-        //   [0x60..0x6A]: username "alice" UTF-16LE (10 bytes)
-        //   [0x6A..0x72]: domain "CORP" UTF-16LE (8 bytes)
-        let dc = 0x604usize;
-        let username_utf16: Vec<u8> = "alice".encode_utf16().flat_map(u16::to_le_bytes).collect(); // 10 bytes
-        let domain_utf16: Vec<u8> = "CORP".encode_utf16().flat_map(u16::to_le_bytes).collect(); // 8 bytes
-        w16(&mut flat_page, dc, username_utf16.len() as u16); // username_len
-        w16(&mut flat_page, dc + 0x04, domain_utf16.len() as u16); // domain_len
-        w32(&mut flat_page, dc + 0x28, 10240); // iteration_count=10240
-                                               // Username at data_addr + 96 = dc + 96 = dc + 0x60
-        flat_page[dc + 96..dc + 96 + username_utf16.len()].copy_from_slice(&username_utf16);
-        // Domain at data_addr + 96 + username_len
-        let dom_off = dc + 96 + username_utf16.len();
-        flat_page[dom_off..dom_off + domain_utf16.len()].copy_from_slice(&domain_utf16);
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        // Map flat_vaddr covering both 4K pages of flat_page
-        let flat_page2_vaddr: u64 = flat_vaddr + 0x1000;
-        let flat_page2_paddr: u64 = flat_paddr + 0x1000;
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(bb_vaddr, bb_paddr, flags::WRITABLE)
-            .write_phys(bb_paddr, &bb_page)
-            .map_4k(flat_vaddr, flat_paddr, flags::WRITABLE)
-            .write_phys(flat_paddr, &flat_page[..0x1000])
-            .map_4k(flat_page2_vaddr, flat_page2_paddr, flags::WRITABLE)
-            .write_phys(flat_page2_paddr, &flat_page[0x1000..])
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(!result.is_empty(), "should find one cached credential");
-        let cred = &result[0];
-        assert_eq!(cred.username, "alice");
-        assert_eq!(cred.domain, "CORP");
-        assert_eq!(cred.iteration_count, 10240);
-        assert!(
-            !cred.is_suspicious,
-            "alice/CORP with 10240 iterations should not be suspicious"
-        );
-    }
-
-    /// walk_cached_credentials with root_cell_off = u32::MAX → early return.
-    #[test]
-    fn walk_cached_creds_root_cell_max_sentinel() {
-        use memf_core::test_builders::flags;
-
-        let hive_vaddr: u64 = 0x0060_0000;
-        let hive_paddr: u64 = 0x0060_0000;
-        let base_block: u64 = 0x0061_0000;
-        let base_block_paddr: u64 = 0x0061_0000;
-
-        let mut hive_page = vec![0u8; 0x1000];
-        hive_page[0x10..0x18].copy_from_slice(&base_block.to_le_bytes());
-
-        let mut bb_page = vec![0u8; 0x1000];
-        bb_page[0x24..0x28].copy_from_slice(&u32::MAX.to_le_bytes());
-
-        let isf = make_cachedump_isf();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page)
-            .map_4k(base_block, base_block_paddr, flags::WRITABLE)
-            .write_phys(base_block_paddr, &bb_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-
-        let result = walk_cached_credentials(&reader, hive_vaddr).unwrap();
-        assert!(
-            result.is_empty(),
-            "root_cell = u32::MAX sentinel → early return"
-        );
     }
 
     /// RED — DCC2 record parsers (pure, synthetically testable). Stubs return
