@@ -1917,4 +1917,67 @@ mod tests {
             "missing Control → empty boot key → empty"
         );
     }
+
+    /// RED — rev-2 (AES) NT hash must use the NT window (salt +8..24, enc
+    /// +24..56), NOT the LM window (+4..20 / +20..52). Golden vector: encrypt the
+    /// independently-known NTLM(empty) hash at the CORRECT vol3 offsets, with
+    /// distinct garbage in +4..8; the buggy LM window then decrypts garbage and
+    /// fails to recover the known hash. (Independent expected value avoids the
+    /// self-consistent round-trip trap.)
+    #[test]
+    fn extract_hashes_from_v_rev2_nt_uses_nt_window() {
+        use aes::Aes128;
+        use cbc::Encryptor as CbcEncryptor;
+        use cipher::{block_padding::NoPadding, BlockEncrypt, BlockEncryptMut, KeyInit, KeyIvInit};
+        use des::Des;
+
+        // NTLM of the empty password — an independently known constant.
+        let known_nt: [u8; 16] = [
+            0x31, 0xd6, 0xcf, 0xe0, 0xd1, 0x6a, 0xe9, 0x31, 0xb7, 0x3c, 0x59, 0xd7, 0xe0, 0xc0,
+            0x89, 0xc0,
+        ];
+        let rid: u32 = 1001;
+        let hbootkey = [0x11u8; 16];
+        let salt = [0x22u8; 16];
+
+        // Forward chain (inverse of decrypt): obfkey = DES_encrypt(sid_keys, hash);
+        // enc = AES128-CBC-encrypt(hbootkey, salt, obfkey).
+        let (k1, k2) = sid_to_key(rid);
+        let des_enc = |key: [u8; 8], block: [u8; 8]| -> [u8; 8] {
+            let c = Des::new(&key.into());
+            let mut b = block.into();
+            c.encrypt_block(&mut b);
+            b.into()
+        };
+        let mut obfkey = [0u8; 16];
+        obfkey[..8].copy_from_slice(&des_enc(k1, known_nt[..8].try_into().unwrap()));
+        obfkey[8..].copy_from_slice(&des_enc(k2, known_nt[8..].try_into().unwrap()));
+        // rev-2 ciphertext is 32 bytes; decrypt takes [..16] as the obfkey.
+        let mut enc = [0u8; 32];
+        enc[..16].copy_from_slice(&obfkey);
+        CbcEncryptor::<Aes128>::new_from_slices(&hbootkey, &salt)
+            .unwrap()
+            .encrypt_padded_mut::<NoPadding>(&mut enc, 32)
+            .unwrap();
+
+        // NT blob (56 B): rev=2@+2, garbage@+4..8, salt@+8..24, enc@+24..56.
+        let mut nt_blob = [0u8; 56];
+        nt_blob[2] = 0x02;
+        nt_blob[4..8].copy_from_slice(&[0xAB, 0xCD, 0xEF, 0x99]); // wrong-window bait
+        nt_blob[8..24].copy_from_slice(&salt);
+        nt_blob[24..56].copy_from_slice(&enc);
+
+        let nt_off = 0xCCusize;
+        let mut v = vec![0u8; nt_off + nt_blob.len()];
+        v[0xA8..0xAC].copy_from_slice(&((nt_off - 0xCC) as u32).to_le_bytes()); // nt_offset
+        v[0xAC..0xB0].copy_from_slice(&56u32.to_le_bytes()); // nt_length
+        v[0xA0..0xA4].copy_from_slice(&0u32.to_le_bytes()); // lm_length 0 → skipped
+        v[nt_off..].copy_from_slice(&nt_blob);
+
+        let (_lm, nt) = extract_hashes_from_v(&v, &hbootkey, rid);
+        assert_eq!(
+            nt, "31d6cfe0d16ae931b73c59d7e0c089c0",
+            "rev-2 NT hash must use the +8/+24 window, got {nt}"
+        );
+    }
 }
