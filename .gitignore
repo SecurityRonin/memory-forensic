@@ -3,8 +3,10 @@
 # Visual brainstorming sessions
 .superpowers/
 
-# Binary test data (memory dumps, disk images, archives)
-tests/data/
+# Binary test data (memory dumps, disk images, archives) are ignored, but the
+# provenance README MUST be committed (mandatory per the fleet test-data standard).
+tests/data/*
+!tests/data/README.md
 .DS_Store
 
 # tooling / scratch artifacts
