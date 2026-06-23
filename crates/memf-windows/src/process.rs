@@ -1007,4 +1007,50 @@ mod tests {
             "expected MissingField(_RTL_USER_PROCESS_PARAMETERS.ImagePathName), got {result:?}"
         );
     }
+
+    /// RED — one unreadable _EPROCESS (smear/paged-out) must be SKIPPED, not
+    /// abort the whole walk. We map the middle process's ActiveProcessLinks page
+    /// (so list traversal reaches it) but NOT its UniqueProcessId page (so
+    /// read_process_info fails). Volatility skips such entries; memf currently
+    /// propagates the field error and returns Err for the entire list.
+    #[test]
+    fn walk_processes_skips_unreadable_entry() {
+        let head_v: u64 = 0xFFFF_8000_0010_0000;
+        let head_p: u64 = 0x0090_0000;
+        let e1_v: u64 = 0xFFFF_8000_0011_0000;
+        let e1_p: u64 = 0x0091_0000;
+        let e3_v: u64 = 0xFFFF_8000_0013_0000;
+        let e3_p: u64 = 0x0093_0000;
+        // e2's ActiveProcessLinks sits at a page boundary: map that page only,
+        // so PID (8 bytes below 0x448) lands on the UNMAPPED previous page.
+        let e2_links_v: u64 = 0xFFFF_8000_0040_0000; // own 2MB region
+        let e2_links_p: u64 = 0x00C0_0000;
+        let e2_v: u64 = e2_links_v - EPROCESS_LINKS;
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(head_v, head_p, flags::WRITABLE)
+            .map_4k(e1_v, e1_p, flags::WRITABLE)
+            .map_4k(e3_v, e3_p, flags::WRITABLE)
+            .map_4k(e2_links_v, e2_links_p, flags::WRITABLE) // e2 links page ONLY
+            // sentinel head: Flink → e1, Blink → e3
+            .write_phys_u64(head_p, e1_v + EPROCESS_LINKS)
+            .write_phys_u64(head_p + 8, e3_v + EPROCESS_LINKS)
+            // e2 links: Flink → e3, Blink → e1 (traversal passes through e2)
+            .write_phys_u64(e2_links_p, e3_v + EPROCESS_LINKS)
+            .write_phys_u64(e2_links_p + 8, e1_v + EPROCESS_LINKS);
+        let ptb = write_eprocess(
+            ptb, e1_p, e1_v, 100, 0, "proc1", 100, 0, 0x1000, 0,
+            e2_v + EPROCESS_LINKS, head_v,
+        );
+        let ptb = write_eprocess(
+            ptb, e3_p, e3_v, 300, 0, "proc3", 300, 0, 0x3000, 0,
+            head_v, e2_v + EPROCESS_LINKS,
+        );
+
+        let reader = make_win_reader(ptb);
+        let procs = walk_processes(&reader, head_v)
+            .expect("one unreadable _EPROCESS must be skipped, not abort the whole walk");
+        assert_eq!(procs.len(), 2, "the unreadable middle _EPROCESS must be skipped");
+        assert_eq!(procs.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![100, 300]);
+    }
 }
