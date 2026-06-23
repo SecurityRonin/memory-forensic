@@ -7,30 +7,8 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::registry;
 use crate::Result;
-
-// ── Registry cell layout constants ──────────────────────────────────────
-
-const HBIN_START: u64 = 0x1000;
-const ROOT_CELL_OFFSET: u64 = 0x24;
-const NK_SIG: u16 = 0x6B6E;
-
-/// Stable subkey count offset within a key node cell payload.
-const NK_STABLE_COUNT: usize = 0x14;
-/// Stable subkeys list cell index offset.
-const NK_STABLE_LIST: usize = 0x1C;
-/// Value count offset.
-const NK_VALUE_COUNT: usize = 0x24;
-/// Values list cell index offset.
-const NK_VALUES_LIST: usize = 0x28;
-/// Name length offset.
-const NK_NAME_LEN: usize = 0x48;
-/// Name data offset.
-const NK_NAME_DATA: usize = 0x4C;
-
-const VK_SIG: u16 = 0x6B76;
-const VK_DATA_LEN_OFF: usize = 0x04;
-const VK_DATA_OFF_OFF: usize = 0x08;
 
 /// Maximum CLSID subkeys to enumerate (safety cap).
 const MAX_CLSIDS: usize = 50_000;
@@ -94,55 +72,57 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    // Navigate to `Software\Classes\CLSID` in the HKCU hive.
-    let clsid_cell = match find_key_cell(reader, hku_hive_addr, &["Software", "Classes", "CLSID"]) {
-        Some(c) => c,
-        None => return Ok(Vec::new()),
-    };
+    let clsid_va = walk_key_path(reader, hku_hive_addr, &["Software", "Classes", "CLSID"]);
+    if clsid_va == 0 {
+        return Ok(Vec::new());
+    }
 
-    // Enumerate CLSID subkeys.
-    let clsid_children = match list_subkeys(reader, hku_hive_addr, clsid_cell) {
-        Some(v) => v,
-        None => return Ok(Vec::new()),
+    let clsid_children = registry::list_subkeys(reader, hku_hive_addr, clsid_va);
+
+    let hkcr_clsid_va = if hkcr_hive_addr != 0 {
+        walk_key_path(reader, hkcr_hive_addr, &["CLSID"])
+    } else {
+        0
     };
 
     let mut results = Vec::new();
 
-    for (guid_name, guid_cell) in clsid_children.iter().take(MAX_CLSIDS) {
-        // Find InprocServer32 under this GUID key in HKCU.
-        let hkcu_inproc_cell =
-            match find_subkey_named(reader, hku_hive_addr, *guid_cell, "InprocServer32") {
-                Some(c) => c,
-                None => continue,
-            };
+    for (guid_name, guid_va) in clsid_children.iter().take(MAX_CLSIDS) {
+        let hkcu_inproc_va =
+            registry::find_subkey_by_name(reader, hku_hive_addr, *guid_va, "InprocServer32");
+        if hkcu_inproc_va == 0 {
+            continue;
+        }
 
-        // Read the default value of InprocServer32 in HKCU.
-        let hkcu_server = match read_default_value_string(reader, hku_hive_addr, hkcu_inproc_cell) {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
+        let hkcu_raw = registry::read_value_data(reader, hku_hive_addr, hkcu_inproc_va, "");
+        let hkcu_server = decode_utf16le(&hkcu_raw);
+        if hkcu_server.is_empty() {
+            continue;
+        }
 
         let hkcu_path = format!(r"HKCU\Software\Classes\CLSID\{guid_name}\InprocServer32");
 
-        // Look up the same CLSID in HKCR.
-        let (hkcr_server, hkcr_path) = if hkcr_hive_addr != 0 {
-            let hkcr_guid_cell =
-                find_key_cell(reader, hkcr_hive_addr, &["CLSID", guid_name.as_str()]);
-            match hkcr_guid_cell {
-                Some(gc) => {
-                    let inproc_cell =
-                        find_subkey_named(reader, hkcr_hive_addr, gc, "InprocServer32");
-                    match inproc_cell {
-                        Some(ic) => {
-                            let srv = read_default_value_string(reader, hkcr_hive_addr, ic)
-                                .unwrap_or_default();
-                            let path = format!(r"HKCR\CLSID\{guid_name}\InprocServer32");
-                            (srv, path)
-                        }
-                        None => (String::new(), String::new()),
-                    }
+        let (hkcr_server, hkcr_path) = if hkcr_clsid_va != 0 {
+            let hkcr_guid_va =
+                registry::find_subkey_by_name(reader, hkcr_hive_addr, hkcr_clsid_va, guid_name);
+            if hkcr_guid_va != 0 {
+                let hkcr_inproc_va = registry::find_subkey_by_name(
+                    reader,
+                    hkcr_hive_addr,
+                    hkcr_guid_va,
+                    "InprocServer32",
+                );
+                if hkcr_inproc_va != 0 {
+                    let raw =
+                        registry::read_value_data(reader, hkcr_hive_addr, hkcr_inproc_va, "");
+                    let srv = decode_utf16le(&raw);
+                    let path = format!(r"HKCR\CLSID\{guid_name}\InprocServer32");
+                    (srv, path)
+                } else {
+                    (String::new(), String::new())
                 }
-                None => (String::new(), String::new()),
+            } else {
+                (String::new(), String::new())
             }
         } else {
             (String::new(), String::new())
@@ -164,251 +144,35 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
     Ok(results)
 }
 
-// ── Internal helpers ─────────────────────────────────────────────────────
-
-/// Compute the virtual address of a cell from its cell index.
-fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
-    hive_addr
-        .wrapping_add(HBIN_START)
-        .wrapping_add(u64::from(cell_index))
+/// Walk a registry key path component by component from the hive root.
+/// Returns the VA of the final key node, or `0` if any component is not found.
+fn walk_key_path<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    path: &[&str],
+) -> u64 {
+    let mut current = registry::resolve_root_cell(reader, hhive_addr);
+    for &component in path {
+        if current == 0 {
+            return 0;
+        }
+        current = registry::find_subkey_by_name(reader, hhive_addr, current, component);
+    }
+    current
 }
 
-/// Read raw cell payload (skipping the 4-byte size header).
-fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<Vec<u8>> {
-    reader.read_bytes(vaddr + 4, 4096).ok()
-}
-
-/// Read the ASCII name from a key node cell payload buffer.
-fn key_node_name(data: &[u8]) -> String {
-    if data.len() < NK_NAME_DATA {
+/// Decode a raw byte slice as a UTF-16LE string, stopping at the first null.
+fn decode_utf16le(raw: &[u8]) -> String {
+    if raw.len() < 2 {
         return String::new();
     }
-    let len = u16::from_le_bytes(
-        data[NK_NAME_LEN..NK_NAME_LEN + 2]
-            .try_into()
-            .unwrap_or([0; 2]),
-    ) as usize;
-    let available = data.len().saturating_sub(NK_NAME_DATA);
-    let end = NK_NAME_DATA + len.min(available);
-    String::from_utf8_lossy(&data[NK_NAME_DATA..end]).into_owned()
+    let words: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&w| w != 0)
+        .collect();
+    String::from_utf16_lossy(&words)
 }
-
-/// Navigate a key path (slice of components) from the hive root.
-/// Returns the cell index of the target key, or `None` if not found.
-fn find_key_cell<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    path: &[&str],
-) -> Option<u32> {
-    let root_bytes = reader.read_bytes(hive_addr + ROOT_CELL_OFFSET, 4).ok()?;
-    let mut current = u32::from_le_bytes(root_bytes[..4].try_into().ok()?);
-
-    for &component in path {
-        current = find_subkey_named(reader, hive_addr, current, component)?;
-    }
-    Some(current)
-}
-
-/// Find a direct child key by name under `parent_cell`.
-fn find_subkey_named<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    parent_cell: u32,
-    name: &str,
-) -> Option<u32> {
-    let data = read_cell(reader, cell_vaddr(hive_addr, parent_cell))?;
-    if data.len() < 4 {
-        return None;
-    }
-    let sig = u16::from_le_bytes(data[0..2].try_into().ok()?);
-    if sig != NK_SIG {
-        return None;
-    }
-
-    let count =
-        u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?) as usize;
-    if count == 0 {
-        return None;
-    }
-
-    let list_cell = u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
-    let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
-    if list_data.len() < 4 {
-        return None;
-    }
-
-    let list_sig = u16::from_le_bytes(list_data[0..2].try_into().ok()?);
-    let list_count = u16::from_le_bytes(list_data[2..4].try_into().ok()?) as usize;
-
-    let (entry_size, base) = match list_sig {
-        0x666C | 0x686C => (8usize, 4usize),
-        0x696C => (4usize, 4usize),
-        _ => return None,
-    };
-
-    for i in 0..list_count {
-        let off = base + i * entry_size;
-        if off + 4 > list_data.len() {
-            break;
-        }
-        let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
-        let child_data = read_cell(reader, cell_vaddr(hive_addr, child_cell))?;
-        let child_name = key_node_name(&child_data);
-        if child_name.eq_ignore_ascii_case(name) {
-            return Some(child_cell);
-        }
-    }
-    None
-}
-
-/// List all direct subkeys of `parent_cell` as `(name, cell_index)` pairs.
-fn list_subkeys<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    parent_cell: u32,
-) -> Option<Vec<(String, u32)>> {
-    let data = read_cell(reader, cell_vaddr(hive_addr, parent_cell))?;
-    if data.len() < 4 {
-        return None;
-    }
-    let sig = u16::from_le_bytes(data[0..2].try_into().ok()?);
-    if sig != NK_SIG {
-        return None;
-    }
-
-    let count =
-        u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?) as usize;
-    if count == 0 {
-        return Some(Vec::new());
-    }
-
-    let list_cell = u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
-    let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
-    if list_data.len() < 4 {
-        return None;
-    }
-
-    let list_sig = u16::from_le_bytes(list_data[0..2].try_into().ok()?);
-    let list_count = u16::from_le_bytes(list_data[2..4].try_into().ok()?) as usize;
-
-    let (entry_size, base) = match list_sig {
-        0x666C | 0x686C => (8usize, 4usize),
-        0x696C => (4usize, 4usize),
-        _ => return Some(Vec::new()),
-    };
-
-    let mut children = Vec::with_capacity(list_count.min(MAX_CLSIDS));
-    for i in 0..list_count.min(MAX_CLSIDS) {
-        let off = base + i * entry_size;
-        if off + 4 > list_data.len() {
-            break;
-        }
-        let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
-        let child_data = match read_cell(reader, cell_vaddr(hive_addr, child_cell)) {
-            Some(d) => d,
-            None => continue,
-        };
-        let child_name = key_node_name(&child_data);
-        if !child_name.is_empty() {
-            children.push((child_name, child_cell));
-        }
-    }
-    Some(children)
-}
-
-/// Read the default value (empty name) of a key as a UTF-16LE string.
-///
-/// Returns `None` if the key has no values, the default value is absent, or
-/// any read fails.
-fn read_default_value_string<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    key_cell: u32,
-) -> Option<String> {
-    let nk_data = read_cell(reader, cell_vaddr(hive_addr, key_cell))?;
-    if nk_data.len() < NK_VALUES_LIST + 4 {
-        return None;
-    }
-    let sig = u16::from_le_bytes(nk_data[0..2].try_into().ok()?);
-    if sig != NK_SIG {
-        return None;
-    }
-
-    let val_count = u32::from_le_bytes(
-        nk_data[NK_VALUE_COUNT..NK_VALUE_COUNT + 4]
-            .try_into()
-            .ok()?,
-    ) as usize;
-    if val_count == 0 {
-        return None;
-    }
-
-    let vl_cell = u32::from_le_bytes(
-        nk_data[NK_VALUES_LIST..NK_VALUES_LIST + 4]
-            .try_into()
-            .ok()?,
-    );
-    let vl_data = read_cell(reader, cell_vaddr(hive_addr, vl_cell))?;
-
-    // Scan values for the default (empty-name) entry.
-    for i in 0..val_count.min(1000) {
-        let off = i * 4;
-        if off + 4 > vl_data.len() {
-            break;
-        }
-        let vk_cell_idx = u32::from_le_bytes(vl_data[off..off + 4].try_into().ok()?);
-        let vk_data = read_cell(reader, cell_vaddr(hive_addr, vk_cell_idx))?;
-        if vk_data.len() < 0x14 {
-            continue;
-        }
-        let vk_sig = u16::from_le_bytes(vk_data[0..2].try_into().ok()?);
-        if vk_sig != VK_SIG {
-            continue;
-        }
-        let name_len = u16::from_le_bytes(vk_data[0x02..0x04].try_into().ok()?) as usize;
-        // Default value has name_len == 0.
-        if name_len != 0 {
-            continue;
-        }
-
-        let data_length_raw = u32::from_le_bytes(
-            vk_data[VK_DATA_LEN_OFF..VK_DATA_LEN_OFF + 4]
-                .try_into()
-                .ok()?,
-        );
-        let data_offset = u32::from_le_bytes(
-            vk_data[VK_DATA_OFF_OFF..VK_DATA_OFF_OFF + 4]
-                .try_into()
-                .ok()?,
-        );
-
-        let raw_bytes: Vec<u8> = if data_length_raw & 0x8000_0000 != 0 {
-            // Inline data (up to 4 bytes) stored in the DataOffset field.
-            let inline_len = ((data_length_raw & 0x7FFF_FFFF) as usize).min(4);
-            data_offset.to_le_bytes()[..inline_len].to_vec()
-        } else if data_length_raw > 0 {
-            let data_vaddr = cell_vaddr(hive_addr, data_offset);
-            let data_cell = read_cell(reader, data_vaddr)?;
-            let len = (data_length_raw as usize).min(data_cell.len());
-            data_cell[..len].to_vec()
-        } else {
-            return None;
-        };
-
-        // Decode UTF-16LE.
-        if raw_bytes.len() < 2 {
-            return None;
-        }
-        let words: Vec<u16> = raw_bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .take_while(|&w| w != 0)
-            .collect();
-        return Some(String::from_utf16_lossy(&words));
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,115 +183,9 @@ mod tests {
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
-    // ── Registry hive layout constants (mirrors run_keys.rs helpers) ─────
+    // ── Cell builder helpers (used by make_reader) ────────────────────────────
 
-    const HBIN_START: u64 = 0x1000;
-    #[allow(dead_code)]
-    const ROOT_CELL_OFFSET: u64 = 0x24;
-    const NK_SIG: u16 = 0x6B6E;
-    const VK_SIG: u16 = 0x6B76;
 
-    // _CM_KEY_NODE offsets (after the 4-byte cell-size prefix)
-    const NK_STABLE_COUNT: usize = 0x14;
-    const NK_STABLE_LIST: usize = 0x1C;
-    const NK_VALUE_COUNT: usize = 0x24;
-    const NK_VALUES_LIST: usize = 0x28;
-    const NK_NAME_LEN: usize = 0x48;
-    const NK_NAME_DATA: usize = 0x4C;
-
-    // _CM_KEY_VALUE offsets (after size prefix)
-    const VK_NAME_LEN: usize = 0x02;
-    const VK_DATA_LEN: usize = 0x04;
-    const VK_DATA_OFF: usize = 0x08;
-    const VK_NAME_DATA: usize = 0x14;
-
-    // ── Low-level cell builder helpers ────────────────────────────────────
-
-    /// Wrap `data` in a cell: i32 size (negative = allocated) + data + alignment padding.
-    fn build_cell(data: &[u8]) -> Vec<u8> {
-        let total = ((4 + data.len() + 7) & !7) as i32;
-        let mut cell = Vec::with_capacity(total as usize);
-        cell.extend_from_slice(&(-total).to_le_bytes());
-        cell.extend_from_slice(data);
-        cell.resize(total as usize, 0);
-        cell
-    }
-
-    /// Build an nk cell data buffer (the payload after the 4-byte size header).
-    fn build_nk(
-        name: &str,
-        stable_subkey_count: u32,
-        stable_subkeys_list: u32,
-        value_count: u32,
-        values_list: u32,
-    ) -> Vec<u8> {
-        let name_bytes = name.as_bytes();
-        let mut data = vec![0u8; NK_NAME_DATA + name_bytes.len()];
-        data[0..2].copy_from_slice(&NK_SIG.to_le_bytes());
-        // KEY_COMP_NAME flag (0x0020) → ASCII name
-        data[2..4].copy_from_slice(&0x0020u16.to_le_bytes());
-        data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4]
-            .copy_from_slice(&stable_subkey_count.to_le_bytes());
-        data[NK_STABLE_LIST..NK_STABLE_LIST + 4]
-            .copy_from_slice(&stable_subkeys_list.to_le_bytes());
-        data[NK_VALUE_COUNT..NK_VALUE_COUNT + 4].copy_from_slice(&value_count.to_le_bytes());
-        data[NK_VALUES_LIST..NK_VALUES_LIST + 4].copy_from_slice(&values_list.to_le_bytes());
-        data[NK_NAME_LEN..NK_NAME_LEN + 2]
-            .copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        data[NK_NAME_DATA..NK_NAME_DATA + name_bytes.len()].copy_from_slice(name_bytes);
-        data
-    }
-
-    /// Build an lf subkey list cell data buffer.
-    /// Each entry is 8 bytes: cell_index (u32) + hash (u32, zeroed).
-    fn build_lf(children: &[u32]) -> Vec<u8> {
-        let mut data = vec![0u8; 4 + children.len() * 8];
-        data[0..2].copy_from_slice(&0x666Cu16.to_le_bytes()); // "lf"
-        data[2..4].copy_from_slice(&(children.len() as u16).to_le_bytes());
-        for (i, &cell) in children.iter().enumerate() {
-            let off = 4 + i * 8;
-            data[off..off + 4].copy_from_slice(&cell.to_le_bytes());
-        }
-        data
-    }
-
-    /// Build a value-list cell: array of u32 cell indices.
-    fn build_value_list(val_cells: &[u32]) -> Vec<u8> {
-        let mut data = vec![0u8; val_cells.len() * 4];
-        for (i, &c) in val_cells.iter().enumerate() {
-            data[i * 4..i * 4 + 4].copy_from_slice(&c.to_le_bytes());
-        }
-        data
-    }
-
-    /// Build a vk cell data buffer with inline string data (MSB set, data in
-    /// DataOffset field as UTF-16LE first 4 bytes) — only works for short strings.
-    ///
-    /// For longer strings we use an external data cell; see `build_vk_external`.
-    fn build_vk_external(name: &str, data_cell_index: u32, data_len: u32) -> Vec<u8> {
-        let name_bytes = name.as_bytes();
-        let mut data = vec![0u8; VK_NAME_DATA + name_bytes.len()];
-        data[0..2].copy_from_slice(&VK_SIG.to_le_bytes());
-        data[VK_NAME_LEN..VK_NAME_LEN + 2]
-            .copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        // REG_SZ = 1
-        data[0x0C..0x10].copy_from_slice(&1u32.to_le_bytes());
-        data[VK_DATA_LEN..VK_DATA_LEN + 4].copy_from_slice(&data_len.to_le_bytes());
-        data[VK_DATA_OFF..VK_DATA_OFF + 4].copy_from_slice(&data_cell_index.to_le_bytes());
-        data[VK_NAME_DATA..VK_NAME_DATA + name_bytes.len()].copy_from_slice(name_bytes);
-        data
-    }
-
-    /// Build a data cell containing a UTF-16LE string.
-    #[allow(dead_code)]
-    fn build_utf16_data_cell(s: &str) -> Vec<u8> {
-        let utf16: Vec<u8> = s
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .chain([0u8, 0u8]) // null terminator
-            .collect();
-        build_cell(&utf16)
-    }
 
     /// Build a minimal `ObjectReader` from a `PageTableBuilder`.
     fn make_reader(
@@ -540,234 +198,7 @@ mod tests {
         ObjectReader::new(vas, Box::new(resolver))
     }
 
-    // ── Hive layout builder ───────────────────────────────────────────────
-    //
-    // For HKCU the registry path under which CLSIDs live is:
-    //   Software\Classes\CLSID\{guid}\InprocServer32
-    //
-    // For HKCR the path is:
-    //   CLSID\{guid}\InprocServer32
-    //
-    // Both hives are built flat in a single 4-KB HBIN page.
-    // We use a simple bump-allocator: cell offsets start at 0x20 and advance.
-    //
-    // Hive layout (all offsets within the HBIN page, i.e. cell indices):
-    //
-    //   HKCU hive (hive_paddr = 0x010000):
-    //     0x0020  root nk  ("ROOT", 1 subkey → lf@0x0100)
-    //     0x0100  lf list  [0x0140]
-    //     0x0140  nk "Software" (1 subkey → lf@0x01C0)
-    //     0x01C0  lf [0x0200]
-    //     0x0200  nk "Classes" (1 subkey → lf@0x0280)
-    //     0x0280  lf [0x02C0]
-    //     0x02C0  nk "CLSID"   (1 subkey → lf@0x0340)
-    //     0x0340  lf [0x0380]
-    //     0x0380  nk "{GUID}"  (1 subkey → lf@0x0400)
-    //     0x0400  lf [0x0440]
-    //     0x0440  nk "InprocServer32" (0 subkeys, 1 value → vl@0x04C0)
-    //     0x04C0  value-list [0x0500]
-    //     0x0500  vk "(default)"  data→0x0580  len=<string length>
-    //     0x0580  data cell: UTF-16LE DLL path
-    //
-    //   HKCR hive (hive_paddr = 0x020000):
-    //     0x0020  root nk  ("ROOT", 1 subkey → lf@0x0100)
-    //     0x0100  lf [0x0140]
-    //     0x0140  nk "CLSID" (1 subkey → lf@0x01C0)
-    //     0x01C0  lf [0x0200]
-    //     0x0200  nk "{GUID}" (1 subkey → lf@0x0280)
-    //     0x0280  lf [0x02C0]
-    //     0x02C0  nk "InprocServer32" (0 subkeys, 1 value → vl@0x0340)
-    //     0x0340  value-list [0x0380]
-    //     0x0380  vk "(default)"  data→0x03C0  len=<string length>
-    //     0x03C0  data cell: UTF-16LE DLL path
 
-    struct HiveLayout {
-        /// Physical base address of the _HBASE_BLOCK page.
-        hive_paddr: u64,
-        /// Virtual base address of the _HBASE_BLOCK page.
-        hive_vaddr: u64,
-        /// Physical base address of the HBIN page (hive + 0x1000).
-        hbin_paddr: u64,
-        /// Virtual base address of the HBIN page.
-        hbin_vaddr: u64,
-        /// 4 KB HBASE_BLOCK page bytes.
-        hbase: Vec<u8>,
-        /// 4 KB HBIN page bytes.
-        hbin: Vec<u8>,
-    }
-
-    /// Build an HKCU hive page-pair.
-    ///
-    /// The CLSID path is `Software\Classes\CLSID\{clsid}\InprocServer32`
-    /// and the default value is `hkcu_dll`.
-    fn build_hkcu_hive(
-        hive_vaddr: u64,
-        hive_paddr: u64,
-        clsid: &str,
-        hkcu_dll: &str,
-    ) -> HiveLayout {
-        let hbin_vaddr = hive_vaddr + HBIN_START;
-        let hbin_paddr = hive_paddr + HBIN_START;
-
-        let root_cell: u32 = 0x0020;
-        let lf_root: u32 = 0x0100;
-        let nk_software: u32 = 0x0140;
-        let lf_software: u32 = 0x01C0;
-        let nk_classes: u32 = 0x0200;
-        let lf_classes: u32 = 0x0280;
-        let nk_clsid: u32 = 0x02C0;
-        let lf_clsid: u32 = 0x0340;
-        let nk_guid: u32 = 0x0380;
-        let lf_guid: u32 = 0x0400;
-        let nk_inproc: u32 = 0x0440;
-        let vl_inproc: u32 = 0x04C0;
-        let vk_default: u32 = 0x0500;
-        let data_cell: u32 = 0x0580;
-
-        let dll_utf16: Vec<u8> = hkcu_dll
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .chain([0u8, 0u8])
-            .collect();
-        let dll_data_cell = build_cell(&dll_utf16);
-
-        let mut hbase = vec![0u8; 4096];
-        hbase[0x24..0x28].copy_from_slice(&root_cell.to_le_bytes());
-
-        let mut hbin = vec![0u8; 4096];
-
-        macro_rules! place {
-            ($off:expr, $cell:expr) => {
-                let c = $cell;
-                hbin[$off as usize..$off as usize + c.len()].copy_from_slice(&c);
-            };
-        }
-
-        place!(root_cell, build_cell(&build_nk("ROOT", 1, lf_root, 0, 0)));
-        place!(lf_root, build_cell(&build_lf(&[nk_software])));
-        place!(
-            nk_software,
-            build_cell(&build_nk("Software", 1, lf_software, 0, 0))
-        );
-        place!(lf_software, build_cell(&build_lf(&[nk_classes])));
-        place!(
-            nk_classes,
-            build_cell(&build_nk("Classes", 1, lf_classes, 0, 0))
-        );
-        place!(lf_classes, build_cell(&build_lf(&[nk_clsid])));
-        place!(nk_clsid, build_cell(&build_nk("CLSID", 1, lf_clsid, 0, 0)));
-        place!(lf_clsid, build_cell(&build_lf(&[nk_guid])));
-        place!(nk_guid, build_cell(&build_nk(clsid, 1, lf_guid, 0, 0)));
-        place!(lf_guid, build_cell(&build_lf(&[nk_inproc])));
-        place!(
-            nk_inproc,
-            build_cell(&build_nk("InprocServer32", 0, 0, 1, vl_inproc))
-        );
-        place!(vl_inproc, build_cell(&build_value_list(&[vk_default])));
-        place!(
-            vk_default,
-            build_cell(&build_vk_external("", data_cell, dll_utf16.len() as u32))
-        );
-        place!(data_cell, dll_data_cell);
-
-        HiveLayout {
-            hive_paddr,
-            hive_vaddr,
-            hbin_paddr,
-            hbin_vaddr,
-            hbase,
-            hbin,
-        }
-    }
-
-    /// Build an HKCR hive page-pair.
-    ///
-    /// The CLSID path is `CLSID\{clsid}\InprocServer32` and the default value
-    /// is `hkcr_dll`.  Pass `hkcr_dll = ""` to omit the InprocServer32 key
-    /// entirely (simulates "no HKCR entry").
-    fn build_hkcr_hive(
-        hive_vaddr: u64,
-        hive_paddr: u64,
-        clsid: &str,
-        hkcr_dll: &str,
-    ) -> HiveLayout {
-        let hbin_vaddr = hive_vaddr + HBIN_START;
-        let hbin_paddr = hive_paddr + HBIN_START;
-
-        let root_cell: u32 = 0x0020;
-        let lf_root: u32 = 0x0100;
-        let nk_clsid: u32 = 0x0140;
-        let lf_clsid: u32 = 0x01C0;
-        let nk_guid: u32 = 0x0200;
-
-        let mut hbase = vec![0u8; 4096];
-        hbase[0x24..0x28].copy_from_slice(&root_cell.to_le_bytes());
-
-        let mut hbin = vec![0u8; 4096];
-
-        macro_rules! place {
-            ($off:expr, $cell:expr) => {
-                let c = $cell;
-                hbin[$off as usize..$off as usize + c.len()].copy_from_slice(&c);
-            };
-        }
-
-        if hkcr_dll.is_empty() {
-            // No InprocServer32 — GUID key has no subkeys
-            place!(root_cell, build_cell(&build_nk("ROOT", 1, lf_root, 0, 0)));
-            place!(lf_root, build_cell(&build_lf(&[nk_clsid])));
-            place!(nk_clsid, build_cell(&build_nk("CLSID", 1, lf_clsid, 0, 0)));
-            place!(lf_clsid, build_cell(&build_lf(&[nk_guid])));
-            place!(nk_guid, build_cell(&build_nk(clsid, 0, 0, 0, 0)));
-        } else {
-            let lf_guid: u32 = 0x0280;
-            let nk_inproc: u32 = 0x02C0;
-            let vl_inproc: u32 = 0x0340;
-            let vk_default: u32 = 0x0380;
-            let data_cell: u32 = 0x03C0;
-
-            let dll_utf16: Vec<u8> = hkcr_dll
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .chain([0u8, 0u8])
-                .collect();
-            let dll_data_cell = build_cell(&dll_utf16);
-
-            place!(root_cell, build_cell(&build_nk("ROOT", 1, lf_root, 0, 0)));
-            place!(lf_root, build_cell(&build_lf(&[nk_clsid])));
-            place!(nk_clsid, build_cell(&build_nk("CLSID", 1, lf_clsid, 0, 0)));
-            place!(lf_clsid, build_cell(&build_lf(&[nk_guid])));
-            place!(nk_guid, build_cell(&build_nk(clsid, 1, lf_guid, 0, 0)));
-            place!(lf_guid, build_cell(&build_lf(&[nk_inproc])));
-            place!(
-                nk_inproc,
-                build_cell(&build_nk("InprocServer32", 0, 0, 1, vl_inproc))
-            );
-            place!(vl_inproc, build_cell(&build_value_list(&[vk_default])));
-            place!(
-                vk_default,
-                build_cell(&build_vk_external("", data_cell, dll_utf16.len() as u32))
-            );
-            place!(data_cell, dll_data_cell);
-        }
-
-        HiveLayout {
-            hive_paddr,
-            hive_vaddr,
-            hbin_paddr,
-            hbin_vaddr,
-            hbase,
-            hbin,
-        }
-    }
-
-    /// Map both hive page-pairs into a `PageTableBuilder`.
-    fn map_hive(ptb: PageTableBuilder, h: &HiveLayout) -> PageTableBuilder {
-        ptb.map_4k(h.hive_vaddr, h.hive_paddr, flags::WRITABLE)
-            .map_4k(h.hbin_vaddr, h.hbin_paddr, flags::WRITABLE)
-            .write_phys(h.hive_paddr, &h.hbase)
-            .write_phys(h.hbin_paddr, &h.hbin)
-    }
 
     // ── classify_com_hijack unit tests ────────────────────────────────────
 
@@ -791,6 +222,53 @@ mod tests {
 
     // ── walk_com_hijacking integration tests ──────────────────────────────
 
+    /// Build an HKCU CellHive with `Software\Classes\CLSID\{clsid}\InprocServer32`
+    /// pointing to `dll`.
+    fn make_hkcu_hive(va: u64, clsid: &str, dll: &str) -> CellHive {
+        let mut h = CellHive::new(va);
+        h.nk(0x020, b"Root",            1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"Software",        1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Classes",         1, 0x200, 0);
+        h.lf(0x200, &[0x240]);
+        h.nk(0x240, b"CLSID",           1, 0x2C0, 0);
+        h.lf(0x2C0, &[0x300]);
+        h.nk(0x300, clsid.as_bytes(),   1, 0x380, 0);
+        h.lf(0x380, &[0x3C0]);
+        h.nk(0x3C0, b"InprocServer32",  0, 0, 0);
+        let data = utf16le(dll);
+        h.values(0x3C0, 1, 0x440);
+        h.value_list(0x440, &[0x480]);
+        h.vk(0x480, b"", 1, data.len() as u32, 0x4C0);
+        h.data(0x4C0, &data);
+        h
+    }
+
+    /// Build an HKCR CellHive with `CLSID\{clsid}\InprocServer32` pointing to
+    /// `dll`.  Pass `dll = ""` to omit InprocServer32 (the GUID key has no
+    /// subkeys), simulating "no HKCR entry".
+    fn make_hkcr_hive(va: u64, clsid: &str, dll: &str) -> CellHive {
+        let mut h = CellHive::new(va);
+        h.nk(0x020, b"Root",          1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"CLSID",         1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        if dll.is_empty() {
+            h.nk(0x180, clsid.as_bytes(), 0, 0, 0);
+        } else {
+            h.nk(0x180, clsid.as_bytes(), 1, 0x200, 0);
+            h.lf(0x200, &[0x240]);
+            h.nk(0x240, b"InprocServer32", 0, 0, 0);
+            let data = utf16le(dll);
+            h.values(0x240, 1, 0x2C0);
+            h.value_list(0x2C0, &[0x300]);
+            h.vk(0x300, b"", 1, data.len() as u32, 0x340);
+            h.data(0x340, &data);
+        }
+        h
+    }
+
     /// Zero hive addresses → empty Vec (graceful degradation).
     #[test]
     fn walk_com_hijacking_empty_when_no_hive() {
@@ -810,21 +288,11 @@ mod tests {
         let hkcu_dll = r"C:\Users\evil\payload.dll";
         let hkcr_dll = r"C:\Windows\System32\shell32.dll";
 
-        // HKCU hive: vaddr/paddr pair A (must be < 0x00FF_FFFF physical)
-        let hkcu_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let hkcu_paddr: u64 = 0x0010_0000;
+        let hkcu = make_hkcu_hive(0x0070_0000, clsid, hkcu_dll);
+        let hkcr = make_hkcr_hive(0x0080_0000, clsid, hkcr_dll);
+        let r = two_hive_reader(&hkcu, &hkcr);
 
-        // HKCR hive: vaddr/paddr pair B
-        let hkcr_vaddr: u64 = 0xFFFF_8000_0030_0000;
-        let hkcr_paddr: u64 = 0x0030_0000;
-
-        let hkcu = build_hkcu_hive(hkcu_vaddr, hkcu_paddr, clsid, hkcu_dll);
-        let hkcr = build_hkcr_hive(hkcr_vaddr, hkcr_paddr, clsid, hkcr_dll);
-
-        let ptb = map_hive(map_hive(PageTableBuilder::new(), &hkcu), &hkcr);
-        let reader = make_reader(ptb);
-
-        let results = walk_com_hijacking(&reader, hkcu_vaddr, hkcr_vaddr).unwrap();
+        let results = walk_com_hijacking(&r, hkcu.hhive_va, hkcr.hhive_va).unwrap();
 
         assert_eq!(results.len(), 1, "expected exactly one COM hijack entry");
         let entry = &results[0];
@@ -834,32 +302,20 @@ mod tests {
             "hkcu_server mismatch: {}",
             entry.hkcu_server
         );
-        assert!(
-            entry.is_suspicious,
-            "override of HKCR entry must be suspicious"
-        );
+        assert!(entry.is_suspicious, "override of HKCR entry must be suspicious");
     }
 
-    /// CLSID in HKCU but absent from HKCR → should still be flagged suspicious.
+    /// CLSID in HKCU but HKCR GUID has no InprocServer32 → still suspicious.
     #[test]
     fn walk_com_hijacking_no_hkcr_entry_is_suspicious() {
         let clsid = "{22222222-2222-2222-2222-222222222222}";
         let hkcu_dll = r"C:\Users\victim\AppData\Roaming\evil.dll";
 
-        let hkcu_vaddr: u64 = 0xFFFF_8000_0050_0000;
-        let hkcu_paddr: u64 = 0x0050_0000;
+        let hkcu = make_hkcu_hive(0x0070_0000, clsid, hkcu_dll);
+        let hkcr = make_hkcr_hive(0x0080_0000, clsid, "");
+        let r = two_hive_reader(&hkcu, &hkcr);
 
-        let hkcr_vaddr: u64 = 0xFFFF_8000_0070_0000;
-        let hkcr_paddr: u64 = 0x0070_0000;
-
-        // HKCR has the CLSID key but no InprocServer32 (hkcr_dll = "")
-        let hkcu = build_hkcu_hive(hkcu_vaddr, hkcu_paddr, clsid, hkcu_dll);
-        let hkcr = build_hkcr_hive(hkcr_vaddr, hkcr_paddr, clsid, "");
-
-        let ptb = map_hive(map_hive(PageTableBuilder::new(), &hkcu), &hkcr);
-        let reader = make_reader(ptb);
-
-        let results = walk_com_hijacking(&reader, hkcu_vaddr, hkcr_vaddr).unwrap();
+        let results = walk_com_hijacking(&r, hkcu.hhive_va, hkcr.hhive_va).unwrap();
 
         assert!(
             !results.is_empty(),
@@ -871,28 +327,18 @@ mod tests {
         );
     }
 
-    /// HKCU and HKCR both have the same DLL path → benign, should not be returned
-    /// (or if returned, is_suspicious = false).
+    /// HKCU and HKCR both have the same DLL path → benign.
     #[test]
     fn walk_com_hijacking_matching_paths_benign() {
         let clsid = "{33333333-3333-3333-3333-333333333333}";
         let dll = r"C:\Windows\System32\shell32.dll";
 
-        let hkcu_vaddr: u64 = 0xFFFF_8000_0090_0000;
-        let hkcu_paddr: u64 = 0x0090_0000;
+        let hkcu = make_hkcu_hive(0x0070_0000, clsid, dll);
+        let hkcr = make_hkcr_hive(0x0080_0000, clsid, dll);
+        let r = two_hive_reader(&hkcu, &hkcr);
 
-        let hkcr_vaddr: u64 = 0xFFFF_8000_00B0_0000;
-        let hkcr_paddr: u64 = 0x00B0_0000;
+        let results = walk_com_hijacking(&r, hkcu.hhive_va, hkcr.hhive_va).unwrap();
 
-        let hkcu = build_hkcu_hive(hkcu_vaddr, hkcu_paddr, clsid, dll);
-        let hkcr = build_hkcr_hive(hkcr_vaddr, hkcr_paddr, clsid, dll);
-
-        let ptb = map_hive(map_hive(PageTableBuilder::new(), &hkcu), &hkcr);
-        let reader = make_reader(ptb);
-
-        let results = walk_com_hijacking(&reader, hkcu_vaddr, hkcr_vaddr).unwrap();
-
-        // Matching paths are benign — either empty or all is_suspicious = false.
         assert!(
             results.is_empty() || results.iter().all(|e| !e.is_suspicious),
             "matching HKCU/HKCR paths should not produce suspicious entries"
