@@ -75,12 +75,108 @@ const MAX_SHIMCACHE_ENTRIES: usize = 4096;
 /// parse each node (Win8.1+/Win10 x64 layout). `head_va` is the sentinel head
 /// (the `_RTL_AVL_TABLE`-adjacent cache head); the sentinel itself is not
 /// emitted. Bounded by `MAX_SHIMCACHE_ENTRIES`.
+// _SHIM_CACHE_ENTRY (Win8.1+/Win10 x64) field offsets — cited to Volatility
+// shimcache-win10-x64.json: ListEntry@0x0, Path(_UNICODE_STRING)@0x18,
+// ListEntryDetail(ptr)@0x28; detail: LastModified@0x8, BlobSize@0x10, BlobBuffer@0x18.
+const SHIM_ENTRY_PATH: u64 = 0x18;
+const SHIM_ENTRY_DETAIL: u64 = 0x28;
+const SHIM_DETAIL_LASTMOD: u64 = 0x8;
+const SHIM_DETAIL_BLOBSIZE: u64 = 0x10;
+const SHIM_DETAIL_BLOBBUF: u64 = 0x18;
+
 #[allow(dead_code)] // wired into walk_shimcache in increment 3
 fn parse_shimcache_list<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
-    _head_va: u64,
+    reader: &ObjectReader<P>,
+    head_va: u64,
 ) -> Vec<ShimcacheEntry> {
-    Vec::new()
+    let read_u64 = |va: u64| -> Option<u64> {
+        let b = reader.read_bytes(va, 8).ok()?;
+        Some(u64::from_le_bytes(b.get(..8)?.try_into().ok()?))
+    };
+
+    let mut entries = Vec::new();
+    // The sentinel head's ListEntry.Flink @ +0 is the first real node.
+    let Some(mut current) = read_u64(head_va) else {
+        return entries;
+    };
+    let mut position = 0u32;
+    while current != head_va && current != 0 && entries.len() < MAX_SHIMCACHE_ENTRIES {
+        let path = read_shim_unicode(reader, current + SHIM_ENTRY_PATH);
+
+        let (last_modified, exec_flag) = match read_u64(current + SHIM_ENTRY_DETAIL) {
+            Some(d) if d != 0 => (
+                read_u64(d + SHIM_DETAIL_LASTMOD).unwrap_or(0),
+                read_exec_blob(reader, d),
+            ),
+            _ => (0, false),
+        };
+
+        entries.push(ShimcacheEntry {
+            path,
+            last_modified,
+            exec_flag,
+            data_size: 0, // not present in the Win10 SHIM_CACHE_ENTRY layout
+            position,
+        });
+        position += 1;
+
+        let Some(next) = read_u64(current) else { break };
+        current = next;
+    }
+    entries
+}
+
+/// Read a `_UNICODE_STRING` (x64 ABI: Length@0x0 u16, Buffer@0x8 ptr) at `va`
+/// and decode its buffer as UTF-16LE. ISF-independent: the layout is fixed ABI,
+/// so this works whether or not the active symbol table defines the type.
+fn read_shim_unicode<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, va: u64) -> String {
+    let len = match reader.read_bytes(va, 2) {
+        Ok(b) if b.len() == 2 => u16::from_le_bytes([b[0], b[1]]) as usize,
+        _ => return String::new(),
+    };
+    if len == 0 || len > 0x1000 {
+        return String::new();
+    }
+    let buf = match reader.read_bytes(va + 8, 8) {
+        Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])),
+        _ => return String::new(),
+    };
+    if buf == 0 {
+        return String::new();
+    }
+    match reader.read_bytes(buf, len) {
+        Ok(raw) => {
+            let words: Vec<u16> = raw
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            String::from_utf16_lossy(&words)
+        }
+        _ => String::new(),
+    }
+}
+
+/// Win10 exec flag: a non-zero u32 in the `BlobSize`-byte blob at
+/// `detail.BlobBuffer` is the CSRSS-created (executed) marker.
+fn read_exec_blob<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, detail_va: u64) -> bool {
+    let blob_size = match reader.read_bytes(detail_va + SHIM_DETAIL_BLOBSIZE, 4) {
+        Ok(b) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().unwrap_or([0; 4])),
+        _ => return false,
+    };
+    if blob_size < 4 {
+        return false;
+    }
+    let blob_buf = match reader.read_bytes(detail_va + SHIM_DETAIL_BLOBBUF, 8) {
+        Ok(b) if b.len() == 8 => u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])),
+        _ => return false,
+    };
+    if blob_buf == 0 {
+        return false;
+    }
+    match reader.read_bytes(blob_buf, 4) {
+        Ok(b) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().unwrap_or([0; 4])) != 0,
+        _ => false,
+    }
 }
 
 /// A single Application Compatibility Cache (Shimcache) entry.
@@ -492,8 +588,15 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let mut ptb = PageTableBuilder::new();
         for (i, (va, pg)) in [
-            (head, &head_pg), (e1, &e1_pg), (e2, &e2_pg), (d1, &d1_pg), (d2, &d2_pg),
-            (p1, &p1_pg), (p2, &p2_pg), (b1, &b1_pg), (b2, &b2_pg),
+            (head, &head_pg),
+            (e1, &e1_pg),
+            (e2, &e2_pg),
+            (d1, &d1_pg),
+            (d2, &d2_pg),
+            (p1, &p1_pg),
+            (p2, &p2_pg),
+            (b1, &b1_pg),
+            (b2, &b2_pg),
         ]
         .into_iter()
         .enumerate()
@@ -506,7 +609,12 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let entries = parse_shimcache_list(&reader, head);
-        assert_eq!(entries.len(), 2, "expected 2 entries, got {}", entries.len());
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected 2 entries, got {}",
+            entries.len()
+        );
         assert_eq!(entries[0].path, path1);
         assert_eq!(entries[0].last_modified, ts1);
         assert!(entries[0].exec_flag, "blob != 0 -> executed");
