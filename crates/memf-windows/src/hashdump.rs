@@ -497,6 +497,7 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
         lm_offset,
         lm_length,
         LMPASSWORD,
+        4, // LM rev-2 salt window: blob[+4..+20]
     )
     .map_or(empty_lm, |h| hex_encode(&h));
     let nt_hash = decrypt_user_hash(
@@ -506,6 +507,7 @@ fn extract_hashes_from_v(v_data: &[u8], hashed_boot_key: &[u8], rid: u32) -> (St
         nt_offset,
         nt_length,
         NTPASSWORD,
+        8, // NT rev-2 salt window: blob[+8..+24]
     )
     .map_or(empty_nt, |h| hex_encode(&h));
 
@@ -522,6 +524,7 @@ fn decrypt_user_hash(
     offset: usize,
     length: usize,
     lmnt: &[u8],
+    aes_salt_off: usize,
 ) -> Option<[u8; 16]> {
     // Per-hash revision is blob[+2]; need at least 3 bytes to read it.
     let revision = *v_data.get(offset.checked_add(2)?)?;
@@ -541,10 +544,12 @@ fn decrypt_user_hash(
             k
         }
         2 if length == 56 => {
-            // rev 2: salt = blob[+4..+20], enc = blob[+20..+52];
-            // obfkey = AES128-CBC(hbootkey, salt, enc)[..16]
-            let salt = v_data.get(offset + 4..offset + 20)?;
-            let enc = v_data.get(offset + 20..offset + 52)?;
+            // rev 2 (AES): 16-byte salt then 32-byte ciphertext, after the
+            // per-hash header — 4 bytes for the LM hash (salt @ +4) but 8 for the
+            // NT hash (salt @ +8). vol3 hashdump get_user_hashes parity
+            // (LM +4/+20, NT +8/+24). obfkey = AES128-CBC(hbootkey, salt, enc)[..16].
+            let salt = v_data.get(offset + aes_salt_off..offset + aes_salt_off + 16)?;
+            let enc = v_data.get(offset + aes_salt_off + 16..offset + aes_salt_off + 48)?;
             let dec = aes128_cbc_decrypt(&hbootkey[..16], salt, enc);
             let mut k = [0u8; 16];
             k.copy_from_slice(dec.get(..16)?);
