@@ -617,11 +617,42 @@ fn format_data_preview(value_type: u32, data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_hive::CellHive;
     use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::{flags, PageTableBuilder};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
+
+    /// In-memory hives are HMAP-scattered, NOT flat: a value read must route
+    /// through `_HHIVE.Storage[].Map` cell translation. With the nk at the regf
+    /// default root cell 0x20 and cells laid into a single HMAP bin, the flat
+    /// `cell_address = hive + 0x1000 + idx` model cannot resolve them — this
+    /// test fails until `read_registry_values` translates via the HMAP.
+    #[test]
+    fn read_registry_values_via_cell_map() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        // nk "Run" at cell 0x20 with 1 value; value-list cell at 0x100.
+        let nk = build_cell(&build_nk_cell_data("Run", 0, 0, 0, 1, 0x100));
+        let vl = build_cell(&0x120u32.to_le_bytes());
+        let data: Vec<u8> = "evil.exe"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let vk = build_cell(&build_vk_cell_data("Updater", 1, data.len() as u32, 0x180));
+        let data_cell = build_cell(&data);
+        let mut bin = vec![0u8; 0x1000];
+        bin[0x20..0x20 + nk.len()].copy_from_slice(&nk);
+        bin[0x100..0x100 + vl.len()].copy_from_slice(&vl);
+        bin[0x120..0x120 + vk.len()].copy_from_slice(&vk);
+        bin[0x180..0x180 + data_cell.len()].copy_from_slice(&data_cell);
+        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
+        let vals = read_registry_values(&reader, hive_vaddr, 0x20).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0].name, "Updater");
+        assert_eq!(vals[0].value_type, "REG_SZ");
+        assert!(vals[0].data_preview.contains("evil.exe"));
+    }
 
     /// Helper: build a minimal ISF resolver (no kernel symbols needed for
     /// registry_keys since we read raw cell data, not ISF-resolved structs).

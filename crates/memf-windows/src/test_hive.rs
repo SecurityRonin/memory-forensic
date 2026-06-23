@@ -44,6 +44,16 @@ impl CellHive {
     pub(crate) fn ao(idx: u32) -> usize {
         (idx + 4) as usize
     }
+    /// Build a hive whose single 4 KiB bin IS the given buffer — cell index ==
+    /// byte offset within `bin` (cells already laid out, e.g. from `build_cell`
+    /// placed at their offsets). Lets a flat-fixture test reuse its `hbin_page`/
+    /// `cell_page` directly as the HMAP bin. The root cell is the regf default 0x20.
+    pub(crate) fn with_bin(base: u64, bin: Vec<u8>) -> Self {
+        let mut h = Self::new(base);
+        let n = bin.len().min(h.bin.len());
+        h.bin[..n].copy_from_slice(&bin[..n]);
+        h
+    }
     /// `_CM_KEY_NODE` with CORRECT offsets: SubKeyCounts[Stable]@0x14,
     /// SubKeyLists[Stable]@0x1c, [Volatile]@0x20, NameLength@0x48, Name@0x4c.
     pub(crate) fn nk(
@@ -121,17 +131,22 @@ impl CellHive {
         dir[0..8].copy_from_slice(&table_va.to_le_bytes());
         let mut table = vec![0u8; 0x1000];
         table[0..8].copy_from_slice(&self.bin_va.to_le_bytes());
+        // Map each page to a DISTINCT LOW physical address: identity (va==paddr)
+        // would overflow SyntheticPhysMem for a high kernel-VA base, so callers
+        // can use a real hive VA (e.g. 0xFFFF_8000_…) without lowering it.
+        let (hh_pa, bb_pa, dir_pa, table_pa, bin_pa) =
+            (0x20_0000u64, 0x20_1000, 0x20_2000, 0x20_3000, 0x20_4000);
         let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(self.hhive_va, self.hhive_va, flags::WRITABLE)
-            .write_phys(self.hhive_va, &hh)
-            .map_4k(bb_va, bb_va, flags::WRITABLE)
-            .write_phys(bb_va, &vec![0u8; 0x1000])
-            .map_4k(dir_va, dir_va, flags::WRITABLE)
-            .write_phys(dir_va, &dir)
-            .map_4k(table_va, table_va, flags::WRITABLE)
-            .write_phys(table_va, &table)
-            .map_4k(self.bin_va, self.bin_va, flags::WRITABLE)
-            .write_phys(self.bin_va, &self.bin)
+            .map_4k(self.hhive_va, hh_pa, flags::WRITABLE)
+            .write_phys(hh_pa, &hh)
+            .map_4k(bb_va, bb_pa, flags::WRITABLE)
+            .write_phys(bb_pa, &vec![0u8; 0x1000])
+            .map_4k(dir_va, dir_pa, flags::WRITABLE)
+            .write_phys(dir_pa, &dir)
+            .map_4k(table_va, table_pa, flags::WRITABLE)
+            .write_phys(table_pa, &table)
+            .map_4k(self.bin_va, bin_pa, flags::WRITABLE)
+            .write_phys(bin_pa, &self.bin)
             .build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         ObjectReader::new(vas, Box::new(resolver))

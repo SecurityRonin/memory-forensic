@@ -364,11 +364,103 @@ mod tests {
     // them to keep each byte-plan readable; that ordering is intentional here.
     #![allow(clippy::items_after_statements)]
     use super::*;
+    use crate::test_hive::CellHive;
     use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::PageTableBuilder;
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
+
+    /// Build an allocated cell: i32 size header (negative) + data, 8-aligned.
+    fn build_cell(data: &[u8]) -> Vec<u8> {
+        let total = ((4 + data.len() + 7) & !7) as i32;
+        let mut cell = Vec::with_capacity(total as usize);
+        cell.extend_from_slice(&(-total).to_le_bytes());
+        cell.extend_from_slice(data);
+        cell.resize(total as usize, 0);
+        cell
+    }
+
+    /// Build an nk cell-data buffer (Stable subkey count@0x14, list@0x1c,
+    /// NameLength@0x48, Name@0x4c).
+    fn nk_data(name: &[u8], stable_count: u32, stable_list: u32) -> Vec<u8> {
+        let mut d = vec![0u8; NK_NAME_DATA + name.len()];
+        d[0..2].copy_from_slice(&NK_SIG.to_le_bytes());
+        d[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].copy_from_slice(&stable_count.to_le_bytes());
+        d[NK_STABLE_LIST..NK_STABLE_LIST + 4].copy_from_slice(&stable_list.to_le_bytes());
+        d[NK_NAME_LEN..NK_NAME_LEN + 2].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        d[NK_NAME_DATA..NK_NAME_DATA + name.len()].copy_from_slice(name);
+        d
+    }
+
+    /// Build an lf list cell-data buffer (8-byte entries: cell index + hash).
+    fn lf_data(children: &[u32]) -> Vec<u8> {
+        let mut d = vec![0u8; 4 + children.len() * 8];
+        d[0..2].copy_from_slice(&0x666Cu16.to_le_bytes());
+        d[2..4].copy_from_slice(&(children.len() as u16).to_le_bytes());
+        for (i, &c) in children.iter().enumerate() {
+            d[4 + i * 8..4 + i * 8 + 4].copy_from_slice(&c.to_le_bytes());
+        }
+        d
+    }
+
+    /// SYSTEM services live in an HMAP-scattered hive reached via cell
+    /// translation, not the flat `hive + 0x1000 + idx` model. With the root nk
+    /// at the regf default 0x20 and the `CurrentControlSet\Services\BackdoorSvc`
+    /// tree laid into one HMAP bin, `walk_svc_diff` must navigate it via the
+    /// shared walker — the flat helpers cannot, so this fails until migrated.
+    #[test]
+    fn walk_svc_diff_registry_only_via_cell_map() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0030_0000;
+        let mut bin = vec![0u8; 0x1000];
+        let place = |bin: &mut [u8], off: usize, cell: &[u8]| {
+            bin[off..off + cell.len()].copy_from_slice(cell);
+        };
+        // root(0x20) → lf(0x80) → CurrentControlSet(0x100)
+        place(&mut bin, 0x20, &build_cell(&nk_data(b"", 1, 0x80)));
+        place(&mut bin, 0x80, &build_cell(&lf_data(&[0x100])));
+        // CurrentControlSet(0x100) → lf(0x180) → Services(0x200)
+        place(
+            &mut bin,
+            0x100,
+            &build_cell(&nk_data(b"CurrentControlSet", 1, 0x180)),
+        );
+        place(&mut bin, 0x180, &build_cell(&lf_data(&[0x200])));
+        // Services(0x200) → lf(0x280) → BackdoorSvc(0x300)
+        place(
+            &mut bin,
+            0x200,
+            &build_cell(&nk_data(b"Services", 1, 0x280)),
+        );
+        place(&mut bin, 0x280, &build_cell(&lf_data(&[0x300])));
+        // BackdoorSvc(0x300): no subkeys, 1 value-list@0x380.
+        let mut bd = nk_data(b"BackdoorSvc", 0, 0);
+        bd[0x24..0x28].copy_from_slice(&1u32.to_le_bytes()); // ValueCount
+        bd[0x28..0x2c].copy_from_slice(&0x380u32.to_le_bytes()); // ValueList
+        place(&mut bin, 0x300, &build_cell(&bd));
+        // value-list(0x380) → vk(0x400)
+        place(&mut bin, 0x380, &build_cell(&0x400u32.to_le_bytes()));
+        // vk(0x400): "Start" = REG_SZ inline UTF-16LE '2'.
+        let mut vk = vec![0u8; 0x14 + 5];
+        vk[0..2].copy_from_slice(&0x6B76u16.to_le_bytes());
+        vk[0x02..0x04].copy_from_slice(&5u16.to_le_bytes()); // NameLength "Start"
+        vk[0x04..0x08].copy_from_slice(&0x8000_0002u32.to_le_bytes()); // inline, 2 bytes
+        vk[0x08..0x0c].copy_from_slice(&0x0000_0032u32.to_le_bytes()); // '2' UTF-16LE
+        vk[0x0c..0x10].copy_from_slice(&1u32.to_le_bytes()); // REG_SZ
+        vk[0x14..0x19].copy_from_slice(b"Start");
+        place(&mut bin, 0x400, &build_cell(&vk));
+
+        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
+        let result = walk_svc_diff(&reader, 0, hive_vaddr).unwrap();
+        let entry = result
+            .iter()
+            .find(|e| e.service_name == "BackdoorSvc")
+            .expect("BackdoorSvc found via HMAP");
+        assert!(!entry.in_scm);
+        assert!(entry.in_registry);
+        assert_eq!(entry.start_type, 2);
+        assert!(entry.is_suspicious);
+    }
 
     fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
