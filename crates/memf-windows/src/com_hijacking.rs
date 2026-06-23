@@ -113,8 +113,7 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
                     "InprocServer32",
                 );
                 if hkcr_inproc_va != 0 {
-                    let raw =
-                        registry::read_value_data(reader, hkcr_hive_addr, hkcr_inproc_va, "");
+                    let raw = registry::read_value_data(reader, hkcr_hive_addr, hkcr_inproc_va, "");
                     let srv = decode_utf16le(&raw);
                     let path = format!(r"HKCR\CLSID\{guid_name}\InprocServer32");
                     (srv, path)
@@ -176,16 +175,14 @@ fn decode_utf16le(raw: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memf_core::object_reader::ObjectReader;
     use crate::test_hive::CellHive;
+    use memf_core::object_reader::ObjectReader;
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
 
     // ── Cell builder helpers (used by make_reader) ────────────────────────────
-
-
 
     /// Build a minimal `ObjectReader` from a `PageTableBuilder`.
     fn make_reader(
@@ -197,8 +194,6 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         ObjectReader::new(vas, Box::new(resolver))
     }
-
-
 
     // ── classify_com_hijack unit tests ────────────────────────────────────
 
@@ -226,17 +221,17 @@ mod tests {
     /// pointing to `dll`.
     fn make_hkcu_hive(va: u64, clsid: &str, dll: &str) -> CellHive {
         let mut h = CellHive::new(va);
-        h.nk(0x020, b"Root",            1, 0x080, 0);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
         h.lf(0x080, &[0x0C0]);
-        h.nk(0x0C0, b"Software",        1, 0x140, 0);
+        h.nk(0x0C0, b"Software", 1, 0x140, 0);
         h.lf(0x140, &[0x180]);
-        h.nk(0x180, b"Classes",         1, 0x200, 0);
+        h.nk(0x180, b"Classes", 1, 0x200, 0);
         h.lf(0x200, &[0x240]);
-        h.nk(0x240, b"CLSID",           1, 0x2C0, 0);
+        h.nk(0x240, b"CLSID", 1, 0x2C0, 0);
         h.lf(0x2C0, &[0x300]);
-        h.nk(0x300, clsid.as_bytes(),   1, 0x380, 0);
+        h.nk(0x300, clsid.as_bytes(), 1, 0x380, 0);
         h.lf(0x380, &[0x3C0]);
-        h.nk(0x3C0, b"InprocServer32",  0, 0, 0);
+        h.nk(0x3C0, b"InprocServer32", 0, 0, 0);
         let data = utf16le(dll);
         h.values(0x3C0, 1, 0x440);
         h.value_list(0x440, &[0x480]);
@@ -250,9 +245,9 @@ mod tests {
     /// subkeys), simulating "no HKCR entry".
     fn make_hkcr_hive(va: u64, clsid: &str, dll: &str) -> CellHive {
         let mut h = CellHive::new(va);
-        h.nk(0x020, b"Root",          1, 0x080, 0);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
         h.lf(0x080, &[0x0C0]);
-        h.nk(0x0C0, b"CLSID",         1, 0x140, 0);
+        h.nk(0x0C0, b"CLSID", 1, 0x140, 0);
         h.lf(0x140, &[0x180]);
         if dll.is_empty() {
             h.nk(0x180, clsid.as_bytes(), 0, 0, 0);
@@ -302,7 +297,10 @@ mod tests {
             "hkcu_server mismatch: {}",
             entry.hkcu_server
         );
-        assert!(entry.is_suspicious, "override of HKCR entry must be suspicious");
+        assert!(
+            entry.is_suspicious,
+            "override of HKCR entry must be suspicious"
+        );
     }
 
     /// CLSID in HKCU but HKCR GUID has no InprocServer32 → still suspicious.
@@ -399,10 +397,7 @@ mod tests {
 
     /// Build a single `ObjectReader` with HKCU (PA 0x30_0000) and HKCR
     /// (PA 0x31_0000) both visible in the same VAS.
-    fn two_hive_reader(
-        hkcu: &CellHive,
-        hkcr: &CellHive,
-    ) -> ObjectReader<SyntheticPhysMem> {
+    fn two_hive_reader(hkcu: &CellHive, hkcr: &CellHive) -> ObjectReader<SyntheticPhysMem> {
         let resolver = IsfResolver::from_value(&com_cellmap_isf()).unwrap();
         let ptb = add_hive_pages(PageTableBuilder::new(), hkcu, 0x30_0000);
         let ptb = add_hive_pages(ptb, hkcr, 0x31_0000);
@@ -422,17 +417,17 @@ mod tests {
 
         // ── HKCU: Software\Classes\CLSID\{guid}\InprocServer32 ──
         let mut hkcu = CellHive::new(0x0050_0000);
-        hkcu.nk(0x020, b"Root",            1, 0x080, 0);
+        hkcu.nk(0x020, b"Root", 1, 0x080, 0);
         hkcu.lf(0x080, &[0x0C0]);
-        hkcu.nk(0x0C0, b"Software",        1, 0x140, 0);
+        hkcu.nk(0x0C0, b"Software", 1, 0x140, 0);
         hkcu.lf(0x140, &[0x180]);
-        hkcu.nk(0x180, b"Classes",         1, 0x200, 0);
+        hkcu.nk(0x180, b"Classes", 1, 0x200, 0);
         hkcu.lf(0x200, &[0x240]);
-        hkcu.nk(0x240, b"CLSID",           1, 0x2C0, 0);
+        hkcu.nk(0x240, b"CLSID", 1, 0x2C0, 0);
         hkcu.lf(0x2C0, &[0x300]);
-        hkcu.nk(0x300, guid.as_bytes(),    1, 0x380, 0);
+        hkcu.nk(0x300, guid.as_bytes(), 1, 0x380, 0);
         hkcu.lf(0x380, &[0x3C0]);
-        hkcu.nk(0x3C0, b"InprocServer32",  0, 0,     0);
+        hkcu.nk(0x3C0, b"InprocServer32", 0, 0, 0);
         let hkcu_data = utf16le(hkcu_dll);
         hkcu.values(0x3C0, 1, 0x440);
         hkcu.value_list(0x440, &[0x480]);
@@ -441,13 +436,13 @@ mod tests {
 
         // ── HKCR: CLSID\{guid}\InprocServer32 ──
         let mut hkcr = CellHive::new(0x0060_0000);
-        hkcr.nk(0x020, b"Root",            1, 0x080, 0);
+        hkcr.nk(0x020, b"Root", 1, 0x080, 0);
         hkcr.lf(0x080, &[0x0C0]);
-        hkcr.nk(0x0C0, b"CLSID",           1, 0x140, 0);
+        hkcr.nk(0x0C0, b"CLSID", 1, 0x140, 0);
         hkcr.lf(0x140, &[0x180]);
-        hkcr.nk(0x180, guid.as_bytes(),    1, 0x200, 0);
+        hkcr.nk(0x180, guid.as_bytes(), 1, 0x200, 0);
         hkcr.lf(0x200, &[0x240]);
-        hkcr.nk(0x240, b"InprocServer32",  0, 0,     0);
+        hkcr.nk(0x240, b"InprocServer32", 0, 0, 0);
         let hkcr_data = utf16le(hkcr_dll);
         hkcr.values(0x240, 1, 0x2C0);
         hkcr.value_list(0x2C0, &[0x300]);
@@ -456,7 +451,12 @@ mod tests {
 
         let r = two_hive_reader(&hkcu, &hkcr);
         let results = walk_com_hijacking(&r, hkcu.hhive_va, hkcr.hhive_va).unwrap();
-        assert_eq!(results.len(), 1, "expected one hijack, got {}", results.len());
+        assert_eq!(
+            results.len(),
+            1,
+            "expected one hijack, got {}",
+            results.len()
+        );
         assert_eq!(results[0].clsid, guid);
         assert!(results[0].is_suspicious);
     }
