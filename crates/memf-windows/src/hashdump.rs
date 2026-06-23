@@ -777,28 +777,46 @@ fn resolve_root_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, hhive_
     let base_block_off = reader
         .symbols()
         .field_offset("_HHIVE", "BaseBlock")
-        .unwrap_or(0x10);
+        .unwrap_or(0x40);
 
-    let base_block_addr = match reader.read_bytes(hhive_addr + base_block_off, 8) {
-        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-        _ => return 0,
-    };
+    let base_block_addr = reader
+        .read_bytes(hhive_addr.wrapping_add(base_block_off), 8)
+        .ok()
+        .and_then(|b| b.get(..8).and_then(|s| s.try_into().ok()))
+        .map_or(0, u64::from_le_bytes);
 
-    if base_block_addr == 0 {
-        return 0;
-    }
-
-    // _HBASE_BLOCK.RootCell at offset 0x24 (u32) — a cell index.
-    let root_cell_index = match reader.read_bytes(base_block_addr + 0x24, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return 0,
-    };
-
-    if root_cell_index == 0 || root_cell_index == u32::MAX {
-        return 0;
-    }
+    // Volatility `root_cell_offset` parity: honour _HBASE_BLOCK.RootCell only
+    // when the header is a readable "regf" block; otherwise the regf-format
+    // default cell 0x20. On real images the header page is frequently paged out
+    // (RootCell unreadable) while the bins, reached via the HMAP, stay resident
+    // — collapsing to 0 there would abandon an otherwise-navigable hive.
+    let root_cell_index = regf_root_cell_index(reader, base_block_addr).unwrap_or(0x20);
 
     read_cell_addr(reader, hhive_addr, root_cell_index)
+}
+
+/// `Some(idx)` iff the block at `base_block_addr` is a readable `_HBASE_BLOCK`
+/// ("regf" signature) carrying a valid (non-zero, non-sentinel) RootCell index.
+/// `None` when the header is paged out, not "regf", or carries a bogus index —
+/// the caller then uses the regf-format default cell `0x20`.
+fn regf_root_cell_index<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    base_block_addr: u64,
+) -> Option<u32> {
+    if base_block_addr == 0 {
+        return None;
+    }
+    // _HBASE_BLOCK.Signature@0x0 == "regf" (0x6667_6572 little-endian).
+    let sig = reader.read_bytes(base_block_addr, 4).ok()?;
+    if u32::from_le_bytes(sig.get(..4)?.try_into().ok()?) != 0x6667_6572 {
+        return None;
+    }
+    // _HBASE_BLOCK.RootCell@0x24 (u32 cell index).
+    let raw = reader
+        .read_bytes(base_block_addr.wrapping_add(0x24), 4)
+        .ok()?;
+    let idx = u32::from_le_bytes(raw.get(..4)?.try_into().ok()?);
+    (idx != 0 && idx != u32::MAX).then_some(idx)
 }
 
 /// Format a byte slice as a lowercase hex string.
@@ -941,17 +959,28 @@ mod tests {
         /// Register this hive's pages into a `PageTableBuilder` and return the
         /// (hhive_va) handle. Consumes nothing; call before `.build()`.
         fn install(&self, b: PageTableBuilder) -> PageTableBuilder {
-            self.install_inner(b, true)
+            self.install_inner(b, true, true)
         }
 
         /// Like [`install`](Self::install) but leaves the `_HBASE_BLOCK` page
         /// UNMAPPED — models the common real-image case where the hive header is
         /// paged out while the bins (reached via the HMAP) stay resident.
         fn install_paged_base_block(&self, b: PageTableBuilder) -> PageTableBuilder {
-            self.install_inner(b, false)
+            self.install_inner(b, false, true)
         }
 
-        fn install_inner(&self, b: PageTableBuilder, map_base_block: bool) -> PageTableBuilder {
+        /// Like [`install`](Self::install) but the mapped `_HBASE_BLOCK` carries a
+        /// NON-"regf" signature (corrupt header) — its RootCell must be ignored.
+        fn install_corrupt_base_block(&self, b: PageTableBuilder) -> PageTableBuilder {
+            self.install_inner(b, true, false)
+        }
+
+        fn install_inner(
+            &self,
+            b: PageTableBuilder,
+            map_base_block: bool,
+            regf_sig: bool,
+        ) -> PageTableBuilder {
             let bb_va = self.hhive_va + 0x1000;
             let dir_va = self.hhive_va + 0x2000;
             let table_va = self.hhive_va + 0x3000;
@@ -964,6 +993,10 @@ mod tests {
             hhive_page[map_off..map_off + 8].copy_from_slice(&dir_va.to_le_bytes());
 
             let mut bb_page = vec![0u8; 0x1000];
+            // _HBASE_BLOCK.Signature@0x0 == "regf" (a corrupt header omits it).
+            if regf_sig {
+                bb_page[0x0..0x4].copy_from_slice(b"regf");
+            }
             // _HBASE_BLOCK.RootCell@0x24
             bb_page[0x24..0x28].copy_from_slice(&self.root_cell_index.to_le_bytes());
 
@@ -1045,6 +1078,39 @@ mod tests {
             resolve_root_cell(&reader, hive.hhive_va),
             hive.bin_va + 0x20 + 4,
             "paged-out base block must fall back to root cell 0x20"
+        );
+    }
+
+    /// A mapped `_HBASE_BLOCK` whose signature is NOT "regf" (corrupt header) is
+    /// not trusted: RootCell (here 0x40) is ignored and 0x20 is used instead.
+    #[test]
+    fn resolve_root_cell_non_regf_header_falls_back_to_0x20() {
+        let hive = CellMapHive::new(0x00B0_0000, 0x40);
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive
+            .install_corrupt_base_block(PageTableBuilder::new())
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        assert_eq!(
+            resolve_root_cell(&reader, hive.hhive_va),
+            hive.bin_va + 0x20 + 4
+        );
+    }
+
+    /// A regf header with the sentinel RootCell index `u32::MAX` falls back to 0x20.
+    #[test]
+    fn resolve_root_cell_sentinel_index_falls_back_to_0x20() {
+        let hive = CellMapHive::new(0x00C0_0000, u32::MAX);
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+        assert_eq!(
+            resolve_root_cell(&reader, hive.hhive_va),
+            hive.bin_va + 0x20 + 4
         );
     }
 
@@ -1443,22 +1509,27 @@ mod tests {
         assert_eq!(resolve_root_cell(&reader, 0xDEAD_BEEF), 0);
     }
 
-    /// resolve_root_cell returns 0 when RootCell index is 0.
+    /// A regf header carrying RootCell index 0 (malformed) falls back to the
+    /// regf-format default cell 0x20 rather than abandoning the hive.
     #[test]
-    fn resolve_root_cell_zero_index_returns_zero() {
+    fn resolve_root_cell_zero_index_falls_back_to_0x20() {
         let hive = CellMapHive::new(0x0040_0000, 0);
         let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let (cr3, mem) = hive.install(PageTableBuilder::new()).build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
-        assert_eq!(resolve_root_cell(&reader, hive.hhive_va), 0);
+        assert_eq!(
+            resolve_root_cell(&reader, hive.hhive_va),
+            hive.bin_va + 0x20 + 4
+        );
     }
 
     /// walk_hashdump returns empty when the SYSTEM root cell cannot be resolved.
     #[test]
     fn walk_hashdump_system_root_zero_empty() {
-        // SYSTEM hive with RootCell index = 0 → resolve_root_cell returns 0.
+        // RootCell=0 falls back to cell 0x20 — here an empty node with no
+        // CurrentControlSet, so no boot key can be assembled → empty result.
         let hive = CellMapHive::new(0x0050_0000, 0);
         let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
@@ -1467,7 +1538,7 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_hashdump(&reader, 0xDEAD_0000, hive.hhive_va).unwrap();
-        assert!(result.is_empty(), "system_root==0 → empty");
+        assert!(result.is_empty(), "no boot key (empty root node) → empty");
     }
 
     /// walk_hashdump returns empty when the SAM root cell cannot be resolved,
@@ -1475,7 +1546,7 @@ mod tests {
     #[test]
     fn walk_hashdump_sam_root_zero_empty() {
         let sys = CellMapHive::new(0x0060_0000, 0x20); // root resolvable
-        let sam = CellMapHive::new(0x0068_0000, 0); // RootCell=0 → 0
+        let sam = CellMapHive::new(0x0068_0000, 0); // RootCell=0 → 0x20 (empty node)
         let isf = cellmap_isf_builder().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let b = sam.install(sys.install(PageTableBuilder::new()));
@@ -1484,7 +1555,7 @@ mod tests {
         let reader = ObjectReader::new(vas, Box::new(resolver));
 
         let result = walk_hashdump(&reader, sam.hhive_va, sys.hhive_va).unwrap();
-        assert!(result.is_empty(), "sam_root==0 → empty");
+        assert!(result.is_empty(), "sam structure absent → empty");
     }
 
     /// Non-zero hive addresses but unreadable memory → empty Vec.
