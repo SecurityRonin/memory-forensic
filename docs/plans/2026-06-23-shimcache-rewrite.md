@@ -76,3 +76,35 @@ memf walker returns 0 — a demonstrable bug this rewrite fixes.
 - exec_flag = `InsertFlags & 0x2` / blob bool (not `!= 0`).
 - Path at +0x18 (not the old hardcoded +0x10); LastModified nested in ListEntryDetail.
 - No fabricated symbol dependence; fail-loud on unsupported OS.
+
+## Outcome — COMPLETE
+
+Built as: increment 1 `module_section_range` (RED+GREEN), increment 2
+`parse_shimcache_list` walk+parse (RED+GREEN), increment 3 `ahcache.sys` scan +
+validation + wire + delete `g_ShimCache` (absorbed plan steps 2–5), plus the
+path-aware per-entry filter (RED+GREEN) and the tier-2 issen validation. The
+scan heuristic (ERESOURCE/AVL validation) is genuinely un-unit-testable, so it
+is validated on the real dump, not synthetically (Humble Object).
+
+**Real-data bug only the oracle caught:** the shimcache table defines
+`_RTL_BALANCED_LINKS.Parent` at offset **0x0** (shimcache-specific; the standard
+ntoskrnl layout is 0x10). The first implementation used 0x10, found 0 handles,
+and passed every synthetic unit test — the live Volatility comparison exposed it.
+
+### Per-entry filter — evidence-preserving (path-aware) by design
+
+Volatility's `SHIM_CACHE_ENTRY.is_valid` drops *every* node failing its
+`_LIST_ENTRY` pointer-consistency check. We deliberately relax this to a **strict
+superset**: a node is suppressed **only when it is both link-inconsistent and
+pathless**. A node that still carries a readable path is recovered execution
+evidence, and a forensic tool should surface it rather than discard it over one
+imperfect neighbour link (e.g. a back-pointer paged out of the capture). On
+`DESKTOP-SDN1RPT.mem` this yields 11 entries vs Volatility's 10 — the extra is a
+path-bearing node the oracle's filter would drop; memf never drops a path-bearing
+entry the oracle keeps. (Documented on `parse_shimcache_list` + at the filter site.)
+
+### Release coupling (owed)
+
+issen depends on **published** memf-windows via crates.io (no path dep), so the
+issen tier-2 tests only exercise the new walkers under a local `[patch.crates-io]`
+or once **memf-windows 0.2.3** (com_hijacking + amcache + shimcache) is published.
