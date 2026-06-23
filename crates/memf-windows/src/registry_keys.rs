@@ -498,9 +498,19 @@ fn read_single_value<P: PhysicalMemoryProvider>(
 
     let value_type = reg_type_name(value_type_raw);
 
-    // DataLength MSB set means data is stored inline in the DataOffset field
+    // DataLength MSB set means data is stored inline in the DataOffset field.
+    // Inline data lives in the 4-byte DataOffset field, so only ≤4 bytes can be
+    // inline; a masked length > 4 is malformed. Reject it (Volatility
+    // `CM_KEY_VALUE.decode_data` parity) rather than truncate to 4 bytes — the
+    // caller (`read_registry_values`) then skips this single value.
     let (actual_data_length, data_preview) = if data_length_raw & 0x8000_0000 != 0 {
-        let inline_len = (data_length_raw & 0x7FFF_FFFF).min(4);
+        let inline_len = data_length_raw & 0x7FFF_FFFF;
+        if inline_len > 4 {
+            return Err(crate::Error::WalkFailed {
+                walker: "registry_keys",
+                reason: format!("inline value DataLength {inline_len} exceeds 4 bytes"),
+            });
+        }
         let inline_bytes = data_offset.to_le_bytes();
         let preview = format_data_preview(value_type_raw, &inline_bytes[..inline_len as usize]);
         (inline_len, preview)

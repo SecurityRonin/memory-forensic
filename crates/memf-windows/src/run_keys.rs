@@ -207,9 +207,6 @@ pub fn walk_run_keys<P: PhysicalMemoryProvider>(
 // ── Internal hive navigation helpers ─────────────────────────────────
 
 /// Hive cell storage starts at hive_addr + 0x1000.
-const HBIN_START: u64 = 0x1000;
-/// Root cell index offset within `_HBASE_BLOCK`.
-const ROOT_CELL_OFFSET: u64 = 0x24;
 /// "nk" key node signature.
 const NK_SIG: u16 = 0x6B6E;
 
@@ -222,11 +219,15 @@ const NK_NAME_LEN: usize = 0x48;
 /// Name data offset.
 const NK_NAME_DATA: usize = 0x4C;
 
-/// Compute the virtual address of a cell from its cell index.
-fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
-    hive_addr
-        .wrapping_add(HBIN_START)
-        .wrapping_add(cell_index as u64)
+/// Translate a registry **cell index** to the virtual address of its `_HCELL`
+/// size header. In-memory hives are HMAP-scattered, not flat: cells are reached
+/// through `_HHIVE.Storage[].Map` (see [`crate::registry::cell_index_to_va`]).
+fn cell_vaddr<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    cell_index: u32,
+) -> u64 {
+    crate::registry::cell_index_to_va(reader, hive_addr, cell_index).unwrap_or(0)
 }
 
 /// Read raw cell data (skipping the 4-byte size header) from a cell vaddr.
@@ -259,12 +260,13 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
     hive_addr: u64,
     path: &str,
 ) -> Option<u32> {
-    // Read root cell index from _HBASE_BLOCK.
-    let root_bytes = reader.read_bytes(hive_addr + ROOT_CELL_OFFSET, 4).ok()?;
-    let mut current_cell = u32::from_le_bytes(root_bytes[..4].try_into().ok()?);
+    // Resolve the root cell index via the HMAP-aware helper (regf RootCell, else
+    // the regf-format default 0x20) — the flat _HBASE_BLOCK read does not apply
+    // to HMAP-scattered in-memory hives.
+    let mut current_cell = crate::registry::root_cell_index(reader, hive_addr);
 
     for component in path.split('\\').filter(|s| !s.is_empty()) {
-        let data = read_cell(reader, cell_vaddr(hive_addr, current_cell))?;
+        let data = read_cell(reader, cell_vaddr(reader, hive_addr, current_cell))?;
         if data.len() < 4 {
             return None;
         }
@@ -282,7 +284,7 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
 
         let list_cell =
             u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
-        let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
+        let list_data = read_cell(reader, cell_vaddr(reader, hive_addr, list_cell))?;
         if list_data.len() < 4 {
             return None;
         }
@@ -303,7 +305,7 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
                 break;
             }
             let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
-            let child_data = read_cell(reader, cell_vaddr(hive_addr, child_cell))?;
+            let child_data = read_cell(reader, cell_vaddr(reader, hive_addr, child_cell))?;
             let name = key_node_name(&child_data);
             if name.eq_ignore_ascii_case(component) {
                 found = Some(child_cell);
@@ -366,34 +368,36 @@ mod tests {
         let place = |bin: &mut [u8], off: usize, cell: &[u8]| {
             bin[off..off + cell.len()].copy_from_slice(cell);
         };
-        // root(0x20) → lf(0x80) → Microsoft(0x100)
-        place(&mut bin, 0x20, &build_cell(&nk_data(b"", 1, 0x80)));
-        place(&mut bin, 0x80, &build_cell(&lf_data(&[0x100])));
-        // Microsoft(0x100) → lf(0x140) → Windows(0x180)
-        place(
-            &mut bin,
-            0x100,
-            &build_cell(&nk_data(b"Microsoft", 1, 0x140)),
-        );
-        place(&mut bin, 0x140, &build_cell(&lf_data(&[0x180])));
-        // Windows(0x180) → lf(0x1c0) → CurrentVersion(0x200)
-        place(&mut bin, 0x180, &build_cell(&nk_data(b"Windows", 1, 0x1c0)));
-        place(&mut bin, 0x1c0, &build_cell(&lf_data(&[0x200])));
-        // CurrentVersion(0x200) → lf(0x240) → Run(0x280)
+        // nk cells need 0x4c + name bytes (~96 bytes); space cells 0x100 apart so
+        // a key cell never overlaps the next one.
+        // root(0x20) → lf(0x100) → Microsoft(0x200)
+        place(&mut bin, 0x20, &build_cell(&nk_data(b"", 1, 0x100)));
+        place(&mut bin, 0x100, &build_cell(&lf_data(&[0x200])));
+        // Microsoft(0x200) → lf(0x300) → Windows(0x400)
         place(
             &mut bin,
             0x200,
-            &build_cell(&nk_data(b"CurrentVersion", 1, 0x240)),
+            &build_cell(&nk_data(b"Microsoft", 1, 0x300)),
         );
-        place(&mut bin, 0x240, &build_cell(&lf_data(&[0x280])));
-        // Run(0x280): no subkeys, 1 value-list@0x300.
+        place(&mut bin, 0x300, &build_cell(&lf_data(&[0x400])));
+        // Windows(0x400) → lf(0x500) → CurrentVersion(0x600)
+        place(&mut bin, 0x400, &build_cell(&nk_data(b"Windows", 1, 0x500)));
+        place(&mut bin, 0x500, &build_cell(&lf_data(&[0x600])));
+        // CurrentVersion(0x600) → lf(0x700) → Run(0x800)
+        place(
+            &mut bin,
+            0x600,
+            &build_cell(&nk_data(b"CurrentVersion", 1, 0x700)),
+        );
+        place(&mut bin, 0x700, &build_cell(&lf_data(&[0x800])));
+        // Run(0x800): no subkeys, 1 value-list@0x900.
         let mut run = nk_data(b"Run", 0, 0);
         run[0x24..0x28].copy_from_slice(&1u32.to_le_bytes()); // ValueCount
-        run[0x28..0x2c].copy_from_slice(&0x300u32.to_le_bytes()); // ValueList
-        place(&mut bin, 0x280, &build_cell(&run));
-        // value-list(0x300) → vk(0x340)
-        place(&mut bin, 0x300, &build_cell(&0x340u32.to_le_bytes()));
-        // vk(0x340): "Updater" = REG_SZ inline UTF-16LE 'X' (2 inline bytes).
+        run[0x28..0x2c].copy_from_slice(&0x900u32.to_le_bytes()); // ValueList
+        place(&mut bin, 0x800, &build_cell(&run));
+        // value-list(0x900) → vk(0x980)
+        place(&mut bin, 0x900, &build_cell(&0x980u32.to_le_bytes()));
+        // vk(0x980): "Updater" = REG_SZ inline UTF-16LE 'X' (2 inline bytes).
         let mut vk = vec![0u8; 0x14 + 7];
         vk[0..2].copy_from_slice(&0x6B76u16.to_le_bytes());
         vk[0x02..0x04].copy_from_slice(&7u16.to_le_bytes()); // NameLength "Updater"
@@ -401,7 +405,7 @@ mod tests {
         vk[0x08..0x0c].copy_from_slice(&0x0000_0058u32.to_le_bytes()); // 'X' UTF-16LE
         vk[0x0c..0x10].copy_from_slice(&1u32.to_le_bytes()); // REG_SZ
         vk[0x14..0x1b].copy_from_slice(b"Updater");
-        place(&mut bin, 0x340, &build_cell(&vk));
+        place(&mut bin, 0x980, &build_cell(&vk));
 
         let reader = CellHive::with_bin(hive_vaddr, bin).reader();
         let entries = walk_run_keys(&reader, hive_vaddr, 0).unwrap();
@@ -545,7 +549,7 @@ mod tests {
     #[test]
     fn walk_run_keys_both_zero_hives() {
         use memf_core::object_reader::ObjectReader;
-        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::test_builders::PageTableBuilder;
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;
@@ -567,7 +571,7 @@ mod tests {
     #[test]
     fn walk_run_keys_software_zero_skipped() {
         use memf_core::object_reader::ObjectReader;
-        use memf_core::test_builders::{flags, PageTableBuilder};
+        use memf_core::test_builders::PageTableBuilder;
         use memf_core::vas::{TranslationMode, VirtualAddressSpace};
         use memf_symbols::isf::IsfResolver;
         use memf_symbols::test_builders::IsfBuilder;

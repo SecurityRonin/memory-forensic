@@ -130,6 +130,12 @@ fn read_hive_info<P: PhysicalMemoryProvider>(
     let volatile_length: u32 = reader.read_field(volatile_dual_addr, "_DUAL", "Length")?;
 
     Ok(RegistryHive {
+        // `base_addr` is the `_CMHIVE`/`_HHIVE` VA — the value the HMAP cell
+        // walkers (`cell_index_to_va`, `read_registry_values`,
+        // `walk_registry_keys`, svc_diff, run_keys) require. `hive_addr` is the
+        // `_HBASE_BLOCK` pointer and must NOT be handed to those walkers; it is
+        // only for reading the base block (regf signature / RootCell). Keeping
+        // the two distinct prevents wiring the wrong field into a cell walker.
         base_addr: cmhive_addr,
         file_full_path,
         file_user_name,
@@ -509,9 +515,14 @@ fn read_value<P: PhysicalMemoryProvider>(
     } else if data_len > VK_MAX_DATA_LEN {
         return None;
     } else if inline {
-        // Inline data is at most 4 bytes, stored in the Data field itself.
+        // Inline data is stored in the 4-byte Data field itself, so only ≤4 bytes
+        // can be inline. A masked DataLength > 4 is malformed — reject the value
+        // (Volatility `CM_KEY_VALUE.decode_data` parity) rather than truncate it.
+        if data_len > 4 {
+            return None;
+        }
         reader
-            .read_bytes(val_addr.wrapping_add(VK_DATA), data_len.min(4) as usize)
+            .read_bytes(val_addr.wrapping_add(VK_DATA), data_len as usize)
             .ok()?
     } else {
         let data_off = le_u32(reader, val_addr.wrapping_add(VK_DATA))?;

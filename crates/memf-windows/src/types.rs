@@ -589,13 +589,27 @@ pub struct DnsCacheEntry {
 /// and storage sizes.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RegistryHive {
-    /// Virtual address of the `_CMHIVE` structure.
+    /// Virtual address of the `_CMHIVE`/`_HHIVE` structure.
+    ///
+    /// This is the address the HMAP cell walkers require: pass `base_addr` (NOT
+    /// [`hive_addr`](Self::hive_addr)) to [`crate::registry::cell_index_to_va`],
+    /// [`crate::registry_keys::read_registry_values`],
+    /// [`crate::registry_keys::walk_registry_keys`], and the svc_diff / run_keys
+    /// navigators. They translate cell indices through `_HHIVE.Storage[].Map`,
+    /// which is reachable only from the `_CMHIVE`/`_HHIVE` VA.
     pub base_addr: u64,
     /// Full registry path (e.g., `\REGISTRY\MACHINE\SYSTEM`).
     pub file_full_path: String,
     /// User-mode file path (e.g., `\??\C:\Windows\System32\config\SYSTEM`).
     pub file_user_name: String,
-    /// Pointer to the actual hive data (`_HHIVE` base block).
+    /// `_HHIVE.BaseBlock` pointer — the `_HBASE_BLOCK` ("regf" header) VA.
+    ///
+    /// This is NOT a cell-walker input. Do NOT pass it to
+    /// [`crate::registry::cell_index_to_va`], `read_registry_values`,
+    /// `walk_registry_keys`, svc_diff, or run_keys — those need
+    /// [`base_addr`](Self::base_addr) (the `_CMHIVE`/`_HHIVE` VA). Use
+    /// `hive_addr` only for reading the base block itself (e.g. the regf
+    /// signature / `RootCell`), never for HMAP cell translation.
     pub hive_addr: u64,
     /// Size of stable (non-volatile) storage in bytes.
     pub stable_length: u32,

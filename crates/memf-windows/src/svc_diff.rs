@@ -224,6 +224,72 @@ fn key_node_name(data: &[u8]) -> String {
     String::from_utf8_lossy(&data[NK_NAME_DATA..end]).into_owned()
 }
 
+/// Index-root (`ri`) sublist cap — bounds recursion on untrusted hives.
+const MAX_RI_SUBLISTS: usize = 4096;
+
+/// Collect the child `_CM_KEY_NODE` cell indices referenced by a subkey-list
+/// cell's data. Handles `lf`/`lh` (8-byte entries) and `li` (4-byte entries)
+/// directly, and descends one level of an `ri` (index-root, 0x6972) list whose
+/// entries point to lf/lh/li sublists (used by LARGE keys such as `\Services`).
+/// Mirrors `registry_keys::walk_key_recursive`'s list handling. Returns an empty
+/// vec for an unknown list signature.
+fn list_child_cells<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    list_data: &[u8],
+) -> Vec<u32> {
+    fn direct_children(list_data: &[u8], entry_size: usize) -> Vec<u32> {
+        let count = u16::from_le_bytes([list_data[2], list_data[3]]) as usize;
+        let mut out = Vec::new();
+        for i in 0..count {
+            let off = 4 + i * entry_size;
+            let Some(slice) = list_data.get(off..off + 4) else {
+                break;
+            };
+            out.push(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]));
+        }
+        out
+    }
+
+    if list_data.len() < 4 {
+        return Vec::new();
+    }
+    let list_sig = u16::from_le_bytes([list_data[0], list_data[1]]);
+    match list_sig {
+        0x666C | 0x686C => direct_children(list_data, 8),
+        0x696C => direct_children(list_data, 4),
+        // "ri": each 4-byte entry is a cell index to a sub-list (lf/lh/li).
+        0x6972 => {
+            let sub_count =
+                (u16::from_le_bytes([list_data[2], list_data[3]]) as usize).min(MAX_RI_SUBLISTS);
+            let mut out = Vec::new();
+            for i in 0..sub_count {
+                let off = 4 + i * 4;
+                let Some(slice) = list_data.get(off..off + 4) else {
+                    break;
+                };
+                let sub_cell = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
+                let Some(sub_data) = read_cell(reader, cell_vaddr(reader, hive_addr, sub_cell))
+                else {
+                    continue;
+                };
+                if sub_data.len() < 4 {
+                    continue;
+                }
+                let sub_sig = u16::from_le_bytes([sub_data[0], sub_data[1]]);
+                let entry_size = match sub_sig {
+                    0x666C | 0x686C => 8,
+                    0x696C => 4,
+                    _ => continue,
+                };
+                out.extend(direct_children(&sub_data, entry_size));
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn find_key_cell<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
@@ -248,23 +314,8 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
         let list_cell =
             u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
         let list_data = read_cell(reader, cell_vaddr(reader, hive_addr, list_cell))?;
-        if list_data.len() < 4 {
-            return None;
-        }
-        let list_sig = u16::from_le_bytes(list_data[0..2].try_into().ok()?);
-        let list_count = u16::from_le_bytes(list_data[2..4].try_into().ok()?) as usize;
-        let entry_size = match list_sig {
-            0x666C | 0x686C => 8,
-            0x696C => 4,
-            _ => return None,
-        };
         let mut found = None;
-        for i in 0..list_count {
-            let off = 4 + i * entry_size;
-            if off + 4 > list_data.len() {
-                break;
-            }
-            let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
+        for child_cell in list_child_cells(reader, hive_addr, &list_data) {
             let child_data = read_cell(reader, cell_vaddr(reader, hive_addr, child_cell))?;
             if key_node_name(&child_data).eq_ignore_ascii_case(component) {
                 found = Some(child_cell);
@@ -317,36 +368,8 @@ fn enum_direct_subkeys<P: PhysicalMemoryProvider>(
         Some(d) => d,
         None => return Vec::new(),
     };
-    if list_data.len() < 4 {
-        return Vec::new();
-    }
-    let list_sig = u16::from_le_bytes(match list_data[0..2].try_into() {
-        Ok(b) => b,
-        Err(_) => return Vec::new(),
-    });
-    let list_count = u16::from_le_bytes(match list_data[2..4].try_into() {
-        Ok(b) => b,
-        Err(_) => return Vec::new(),
-    }) as usize;
-    let entry_size = match list_sig {
-        0x666C | 0x686C => 8,
-        0x696C => 4,
-        _ => return Vec::new(),
-    };
     let mut names = Vec::new();
-    for i in 0..list_count {
-        let off = 4 + i * entry_size;
-        if off + 4 > list_data.len() {
-            break;
-        }
-        let child_cell = match list_data[off..off + 4]
-            .try_into()
-            .ok()
-            .map(u32::from_le_bytes)
-        {
-            Some(c) => c,
-            None => continue,
-        };
+    for child_cell in list_child_cells(reader, hive_addr, &list_data) {
         if let Some(child_data) = read_cell(reader, cell_vaddr(reader, hive_addr, child_cell)) {
             let name = key_node_name(&child_data);
             if !name.is_empty() {
