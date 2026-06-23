@@ -33,7 +33,12 @@ pub fn walk_processes<P: PhysicalMemoryProvider>(
 
     let mut procs = Vec::with_capacity(eproc_addrs.len());
     for addr in eproc_addrs {
-        procs.push(read_process_info(reader, addr)?);
+        // Skip a single unreadable _EPROCESS (smear / paged-out field) rather than
+        // aborting the whole list — Volatility pslist parity. One torn entry must
+        // never turn an N-process machine into a hard failure or empty result.
+        if let Ok(info) = read_process_info(reader, addr) {
+            procs.push(info);
+        }
     }
 
     procs.sort_by_key(|p| p.pid);
@@ -1039,18 +1044,45 @@ mod tests {
             .write_phys_u64(e2_links_p, e3_v + EPROCESS_LINKS)
             .write_phys_u64(e2_links_p + 8, e1_v + EPROCESS_LINKS);
         let ptb = write_eprocess(
-            ptb, e1_p, e1_v, 100, 0, "proc1", 100, 0, 0x1000, 0,
-            e2_v + EPROCESS_LINKS, head_v,
+            ptb,
+            e1_p,
+            e1_v,
+            100,
+            0,
+            "proc1",
+            100,
+            0,
+            0x1000,
+            0,
+            e2_v + EPROCESS_LINKS,
+            head_v,
         );
         let ptb = write_eprocess(
-            ptb, e3_p, e3_v, 300, 0, "proc3", 300, 0, 0x3000, 0,
-            head_v, e2_v + EPROCESS_LINKS,
+            ptb,
+            e3_p,
+            e3_v,
+            300,
+            0,
+            "proc3",
+            300,
+            0,
+            0x3000,
+            0,
+            head_v,
+            e2_v + EPROCESS_LINKS,
         );
 
         let reader = make_win_reader(ptb);
         let procs = walk_processes(&reader, head_v)
             .expect("one unreadable _EPROCESS must be skipped, not abort the whole walk");
-        assert_eq!(procs.len(), 2, "the unreadable middle _EPROCESS must be skipped");
-        assert_eq!(procs.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![100, 300]);
+        assert_eq!(
+            procs.len(),
+            2,
+            "the unreadable middle _EPROCESS must be skipped"
+        );
+        assert_eq!(
+            procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            vec![100, 300]
+        );
     }
 }
