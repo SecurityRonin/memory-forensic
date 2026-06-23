@@ -31,6 +31,11 @@ pub fn default_server_url() -> &'static str {
     "https://msdl.microsoft.com/download/symbols"
 }
 
+/// `Some(s)` only when `s` is present and non-empty (treat `""` as unset).
+fn nonempty(s: Option<&str>) -> Option<&str> {
+    s.filter(|v| !v.is_empty())
+}
+
 /// Compute Volatility3's `CACHE_PATH` for a platform from raw env values.
 ///
 /// Pure (no env reads, no I/O) so every platform branch is unit-testable from
@@ -44,9 +49,6 @@ fn volatility_cache_path_from(
     appdata: Option<&str>,
     userprofile: Option<&str>,
 ) -> Option<PathBuf> {
-    fn nonempty(s: Option<&str>) -> Option<&str> {
-        s.filter(|v| !v.is_empty())
-    }
     if is_windows {
         nonempty(appdata)
             .or_else(|| nonempty(userprofile))
@@ -84,8 +86,35 @@ pub fn default_cache_dir() -> Option<PathBuf> {
 /// Handles `;`-separated elements in the forms `srv*DIR*URL`, `cache*DIR`,
 /// `symsrv*symsrv.dll*DIR*URL`, and a plain `DIR`.
 fn nt_symbol_store_dir(nt_symbol_path: &str) -> Option<&str> {
-    let _ = nt_symbol_path;
-    todo!("GREEN: parse _NT_SYMBOL_PATH downstream store")
+    for element in nt_symbol_path.split(';') {
+        let element = element.trim();
+        if element.is_empty() {
+            continue;
+        }
+        if element.contains('*') {
+            // srv*[downstream]*server / cache*dir / symsrv*symsrv.dll*dir*server
+            for tok in element.split('*') {
+                let tok = tok.trim();
+                if tok.is_empty() {
+                    continue;
+                }
+                let low = tok.to_ascii_lowercase();
+                let is_dll = Path::new(tok)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("dll"));
+                if low == "srv" || low == "cache" || low == "symsrv" || is_dll {
+                    continue;
+                }
+                if tok.contains("://") {
+                    continue; // a server URL, not a local store
+                }
+                return Some(tok);
+            }
+        } else if !element.contains("://") {
+            return Some(element); // a plain local directory
+        }
+    }
+    None
 }
 
 /// Resolve the symbol cache dir honoring overrides, else the platform default.
@@ -97,8 +126,13 @@ fn resolve_cache_dir_from(
     nt_symbol_path: Option<&str>,
     default: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    let _ = (memf_symbol_cache, nt_symbol_path, default);
-    todo!("GREEN: layer env overrides over the default")
+    if let Some(dir) = nonempty(memf_symbol_cache) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(store) = nonempty(nt_symbol_path).and_then(nt_symbol_store_dir) {
+        return Some(PathBuf::from(store));
+    }
+    default
 }
 
 /// Resolve the symbol cache dir from the environment, falling back to
@@ -126,10 +160,14 @@ impl SymbolServerClient {
         }
     }
 
-    /// Create a client using Microsoft's public symbol server and default cache dir.
+    /// Create a client using Microsoft's public symbol server and the resolved
+    /// cache dir (`$MEMF_SYMBOL_CACHE` / `_NT_SYMBOL_PATH` / Volatility `CACHE_PATH`).
     pub fn microsoft() -> crate::Result<Self> {
-        let cache_dir =
-            default_cache_dir().ok_or_else(|| crate::Error::Cache("HOME not set".into()))?;
+        let cache_dir = resolve_cache_dir().ok_or_else(|| {
+            crate::Error::Cache(
+                "no symbol cache dir (set $MEMF_SYMBOL_CACHE or $HOME/$APPDATA)".into(),
+            )
+        })?;
         Ok(Self::new(default_server_url(), cache_dir))
     }
 
