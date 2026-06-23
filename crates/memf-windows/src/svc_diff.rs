@@ -461,6 +461,42 @@ mod tests {
         assert!(entry.is_suspicious);
     }
 
+    /// A LARGE key's subkey list can be an `ri` (index-root) cell whose entries
+    /// point to sub-lists (lf/lh/li). The flat lf/lh/li-only walk drops `ri`, so
+    /// `enum_direct_subkeys` and `find_key_cell` must descend one `ri` level to
+    /// find the child nk. Root(0x20) → ri(0x80) → li(0x100) → child nk(0x180).
+    #[test]
+    fn enum_direct_subkeys_via_ri_sublist() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0110_0000;
+        let mut bin = vec![0u8; 0x1000];
+        let place = |bin: &mut [u8], off: usize, cell: &[u8]| {
+            bin[off..off + cell.len()].copy_from_slice(cell);
+        };
+        // root(0x20): 1 subkey, list cell = ri(0x80).
+        place(&mut bin, 0x20, &build_cell(&nk_data(b"", 1, 0x80)));
+        // ri(0x80): one sublist entry → li(0x100).
+        let mut ri = vec![0u8; 4 + 4];
+        ri[0..2].copy_from_slice(&0x6972u16.to_le_bytes()); // "ri"
+        ri[2..4].copy_from_slice(&1u16.to_le_bytes());
+        ri[4..8].copy_from_slice(&0x100u32.to_le_bytes());
+        place(&mut bin, 0x80, &build_cell(&ri));
+        // li(0x100): one child entry → child nk(0x180).
+        let mut li = vec![0u8; 4 + 4];
+        li[0..2].copy_from_slice(&0x696Cu16.to_le_bytes()); // "li"
+        li[2..4].copy_from_slice(&1u16.to_le_bytes());
+        li[4..8].copy_from_slice(&0x180u32.to_le_bytes());
+        place(&mut bin, 0x100, &build_cell(&li));
+        // child nk(0x180): "Dnscache".
+        place(&mut bin, 0x180, &build_cell(&nk_data(b"Dnscache", 0, 0)));
+
+        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
+        let names = enum_direct_subkeys(&reader, hive_vaddr, "");
+        assert_eq!(names, vec!["Dnscache".to_string()], "ri→li child found");
+        // find_key_cell must also descend the ri list to reach the child.
+        let cell = find_key_cell(&reader, hive_vaddr, "Dnscache");
+        assert_eq!(cell, Some(0x180), "ri→li navigation finds child cell");
+    }
+
     fn make_reader() -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
         let isf = IsfBuilder::new().add_struct("_HHIVE", 0x600).build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();

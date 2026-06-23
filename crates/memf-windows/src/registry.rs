@@ -1054,6 +1054,30 @@ mod tests {
         assert_eq!(vals[1].data, b"abcdef");
     }
 
+    /// Volatility `CM_KEY_VALUE.decode_data` REJECTS an inline value whose
+    /// (high-bit-masked) DataLength exceeds 4 — only ≤4 bytes fit inline. Such a
+    /// value is malformed and must be skipped, not truncated to 4 bytes.
+    #[test]
+    fn list_values_rejects_inline_len_over_four() {
+        let mut h = CellHive::new(0x0040_0000);
+        // Key node at cell 0x40 with 2 values; value-list cell at 0x100.
+        h.nk(0x40, b"Run", 0, 0, 0);
+        h.values(0x40, 2, 0x100);
+        h.value_list(0x100, &[0x200, 0x300]);
+        // Value "Bad": inline flag set, masked DataLength = 5 (> 4) → rejected.
+        h.vk(0x200, b"Bad", 4, 0x8000_0005, 0xDEAD_BEEF);
+        // Value "Good": inline flag set, masked DataLength = 4 → kept.
+        h.vk(0x300, b"Good", 4, 0x8000_0004, 0x0000_002A);
+
+        let r = h.reader();
+        let key = read_cell_addr(&r, h.hhive_va, 0x40);
+        let vals = list_values(&r, h.hhive_va, key);
+
+        assert_eq!(vals.len(), 1, "the >4-byte inline value is skipped");
+        assert_eq!(vals[0].name, "Good");
+        assert_eq!(vals[0].data.len(), 4);
+    }
+
     #[test]
     fn find_subkey_lf_finds_child() {
         let mut h = CellHive::new(0x0010_0000);

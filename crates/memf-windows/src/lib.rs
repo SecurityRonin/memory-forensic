@@ -85,6 +85,7 @@ pub mod psxview_cid;
 pub mod rdp_sessions;
 pub mod registry;
 pub mod registry_keys;
+pub mod run_keys;
 pub mod sam;
 pub mod scheduled_tasks;
 pub mod section_object;
