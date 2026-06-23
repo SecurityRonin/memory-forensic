@@ -550,6 +550,98 @@ pub(crate) fn read_value_data<P: PhysicalMemoryProvider>(
         .map_or_else(Vec::new, |v| v.data)
 }
 
+/// List all stable subkeys of the key node at `parent_addr` as `(name, key_va)` pairs.
+///
+/// Returns an empty vec if the key has no stable subkeys or any read fails.
+/// Handles `lf`/`lh`/`li`/`ri` (index-root) list formats with bounded `ri` recursion —
+/// the same traversal as [`find_subkey_by_name`] but collecting every entry.
+pub(crate) fn list_subkeys<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    parent_addr: u64,
+) -> Vec<(String, u64)> {
+    let subkey_count = match reader.read_bytes(parent_addr + NK_SUBKEY_COUNT, 4) {
+        Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+        _ => return Vec::new(),
+    };
+    if subkey_count == 0 || subkey_count > u32::from(MAX_SUBKEY_LIST) {
+        return Vec::new();
+    }
+    let list_off = match reader.read_bytes(parent_addr + NK_SUBKEY_LIST, 4) {
+        Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(subkey_count as usize);
+    collect_subkey_list(reader, hhive_addr, list_off, &mut out, RI_MAX_DEPTH);
+    out
+}
+
+/// Walk a subkey-list cell (`lf`/`lh`/`li`/`ri`) and push every `(name, key_va)` into `out`.
+/// `ri` entries recurse into nested sub-lists bounded by `depth`.
+fn collect_subkey_list<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    list_index: u32,
+    out: &mut Vec<(String, u64)>,
+    depth: u32,
+) {
+    if depth == 0 {
+        return; // cov:unreachable: RI_MAX_DEPTH exceeds any well-formed ri nesting
+    }
+    let list_addr = read_cell_addr(reader, hhive_addr, list_index);
+    if list_addr == 0 {
+        return;
+    }
+    let sig = match reader.read_bytes(list_addr, 2) {
+        Ok(b) if b.len() == 2 => [b[0], b[1]],
+        _ => return,
+    };
+    let count = match reader.read_bytes(list_addr + 2, 2) {
+        Ok(b) if b.len() == 2 => b[..2].try_into().map_or(0, u16::from_le_bytes),
+        _ => return,
+    }
+    .min(MAX_SUBKEY_LIST);
+
+    if sig == [b'r', b'i'] {
+        for i in 0..count {
+            let sub = match reader.read_bytes(list_addr + 4 + u64::from(i) * 4, 4) {
+                Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+                _ => continue,
+            };
+            collect_subkey_list(reader, hhive_addr, sub, out, depth - 1);
+        }
+        return;
+    }
+
+    let stride: u64 = match sig {
+        [b'l', b'f' | b'h'] => 8,
+        [b'l', b'i'] => 4,
+        _ => return,
+    };
+    for i in 0..count {
+        let entry = match reader.read_bytes(list_addr + 4 + u64::from(i) * stride, 4) {
+            Ok(b) if b.len() == 4 => b[..4].try_into().map_or(0, u32::from_le_bytes),
+            _ => continue,
+        };
+        let key_addr = read_cell_addr(reader, hhive_addr, entry);
+        if key_addr == 0 {
+            continue;
+        }
+        let name_len = match reader.read_bytes(key_addr + NK_NAME_LENGTH, 2) {
+            Ok(b) if b.len() == 2 => b[..2].try_into().map_or(0, u16::from_le_bytes),
+            _ => continue,
+        };
+        if name_len == 0 || name_len > 256 {
+            continue;
+        }
+        let name = match reader.read_bytes(key_addr + NK_NAME, name_len as usize) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            _ => continue,
+        };
+        out.push((name, key_addr));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1192,5 +1284,48 @@ mod tests {
         let r = h.reader();
         let parent = read_cell_addr(&r, h.hhive_va, 0x40);
         assert_eq!(find_subkey_by_name(&r, h.hhive_va, parent, "X"), 0);
+    }
+
+    #[test]
+    fn list_subkeys_returns_all_children_lf() {
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x20, b"Root", 2, 0x100, 0);
+        h.lf(0x100, &[0x200, 0x300]);
+        h.nk(0x200, b"Alpha", 0, 0, 0);
+        h.nk(0x300, b"Beta", 0, 0, 0);
+        let r = h.reader();
+        let root_va = resolve_root_cell(&r, h.hhive_va);
+        assert_ne!(root_va, 0);
+        let kids = list_subkeys(&r, h.hhive_va, root_va);
+        assert_eq!(kids.len(), 2);
+        assert!(kids.iter().any(|(n, _)| n == "Alpha"));
+        assert!(kids.iter().any(|(n, _)| n == "Beta"));
+    }
+
+    #[test]
+    fn list_subkeys_empty_parent_returns_empty() {
+        let mut h = CellHive::new(0x0051_0000);
+        h.nk(0x20, b"Root", 0, 0, 0);
+        let r = h.reader();
+        let root_va = resolve_root_cell(&r, h.hhive_va);
+        let kids = list_subkeys(&r, h.hhive_va, root_va);
+        assert!(kids.is_empty());
+    }
+
+    #[test]
+    fn list_subkeys_ri_collects_from_all_sublists() {
+        let mut h = CellHive::new(0x0052_0000);
+        h.nk(0x20, b"Root", 2, 0x100, 0);
+        h.ri(0x100, &[0x200, 0x300]);
+        h.lf(0x200, &[0x400]);
+        h.nk(0x400, b"CLSID_A", 0, 0, 0);
+        h.li(0x300, &[0x500]);
+        h.nk(0x500, b"CLSID_B", 0, 0, 0);
+        let r = h.reader();
+        let root_va = resolve_root_cell(&r, h.hhive_va);
+        let kids = list_subkeys(&r, h.hhive_va, root_va);
+        assert_eq!(kids.len(), 2);
+        assert!(kids.iter().any(|(n, _)| n == "CLSID_A"));
+        assert!(kids.iter().any(|(n, _)| n == "CLSID_B"));
     }
 }
