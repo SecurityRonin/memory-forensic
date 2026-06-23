@@ -1627,4 +1627,52 @@ mod tests {
         let result = walk_typed_urls(&reader, hive_vaddr, "alice").unwrap();
         assert!(result.is_empty());
     }
+
+    /// RED (flat→HMAP migration): a real cell-map NTUSER.DAT with
+    /// Software\Microsoft\Internet Explorer\{TypedURLs,TypedURLsTime}, each with
+    /// a "url1" value (the URL string + its FILETIME), built with the shared
+    /// CellHive harness. The flat walker reads the root cell from
+    /// _HBASE_BLOCK+0x24 (zeroed on a cell-map hive) → empty; fails until
+    /// walk_typed_urls uses the shared HMAP walker.
+    #[test]
+    fn walk_typed_urls_hmap_recovers_entry() {
+        use crate::test_hive::CellHive;
+        let url = "http://evil.com/";
+        let ts = 0x01D9_AAAA_BBBB_CCCCu64;
+        let utf16 = |s: &str| -> Vec<u8> {
+            s.encode_utf16().flat_map(u16::to_le_bytes).chain([0u8, 0u8]).collect()
+        };
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"Software", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Microsoft", 1, 0x200, 0);
+        h.lf(0x200, &[0x240]);
+        h.nk(0x240, b"Internet Explorer", 2, 0x300, 0);
+        h.lf(0x300, &[0x340, 0x400]);
+        // TypedURLs\url1 = url string
+        h.nk(0x340, b"TypedURLs", 0, 0, 0);
+        h.values(0x340, 1, 0x600);
+        h.value_list(0x600, &[0x700]);
+        let url_data = utf16(url);
+        h.vk(0x700, b"url1", 1, url_data.len() as u32, 0x880);
+        h.data(0x880, &url_data);
+        // TypedURLsTime\url1 = FILETIME
+        h.nk(0x400, b"TypedURLsTime", 0, 0, 0);
+        h.values(0x400, 1, 0x680);
+        h.value_list(0x680, &[0x780]);
+        h.vk(0x780, b"url1", 3, 8, 0x900);
+        h.data(0x900, &ts.to_le_bytes());
+
+        let reader = h.reader();
+        let entries = walk_typed_urls(&reader, h.hhive_va, "rick").unwrap();
+
+        assert_eq!(entries.len(), 1, "expected 1 typed-url entry, got {}", entries.len());
+        let e = &entries[0];
+        assert_eq!(e.url, url);
+        assert_eq!(e.timestamp, ts, "url1 must correlate with its TypedURLsTime");
+        assert_eq!(e.username, "rick");
+    }
 }
