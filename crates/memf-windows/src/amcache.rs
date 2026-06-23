@@ -2016,4 +2016,72 @@ mod tests {
         let result = walk_amcache(&reader, hive_vaddr).unwrap();
         assert!(result.is_empty(), "IAF subkey_count=0 → empty Vec");
     }
+
+    /// RED (flat→HMAP migration): a real cell-map Amcache.hve laid out as
+    /// hive-root → `Root` → `InventoryApplicationFile` → one file entry, built
+    /// with the shared `CellHive` harness (cells reached via the `_HHIVE`
+    /// `Storage[].Map` directory, NOT flat `base + 0x1000 + index`).
+    ///
+    /// The flat walker reads the root cell from `_HBASE_BLOCK + 0x24` — a zeroed
+    /// page on a cell-map hive — so it returns empty. This asserts the entry is
+    /// recovered, so it FAILS until `walk_amcache` uses the shared HMAP walker.
+    #[test]
+    fn walk_amcache_hmap_recovers_inventory_entry() {
+        use crate::test_hive::CellHive;
+        fn utf16le(s: &str) -> Vec<u8> {
+            s.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .chain([0u8, 0u8])
+                .collect()
+        }
+        const REG_SZ_T: u32 = 1;
+        const REG_QWORD_T: u32 = 11;
+
+        let path = r"c:\users\rick\appdata\local\temp\evil.exe";
+        let sha1 = "1111222233334444555566667777888899990000";
+        let publisher = "Evil Corp";
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"amcache", 1, 0x060, 0);
+        h.lf(0x060, &[0x0A0]);
+        h.nk(0x0A0, b"Root", 1, 0x0E0, 0);
+        h.lf(0x0E0, &[0x120]);
+        h.nk(0x120, b"InventoryApplicationFile", 1, 0x180, 0);
+        h.lf(0x180, &[0x1C0]);
+        // One file-entry key: 0 subkeys, 4 values.
+        h.nk(0x1C0, b"0000file", 0, 0, 0);
+        h.values(0x1C0, 4, 0x220);
+        h.value_list(0x220, &[0x260, 0x2C0, 0x320, 0x380]);
+
+        let path_data = utf16le(path);
+        h.vk(0x260, b"LowerCaseLongPath", REG_SZ_T, path_data.len() as u32, 0x400);
+        h.data(0x400, &path_data);
+
+        let fileid_data = utf16le(&format!("0000{sha1}"));
+        h.vk(0x2C0, b"FileId", REG_SZ_T, fileid_data.len() as u32, 0x460);
+        h.data(0x460, &fileid_data);
+
+        let pub_data = utf16le(publisher);
+        h.vk(0x320, b"Publisher", REG_SZ_T, pub_data.len() as u32, 0x500);
+        h.data(0x500, &pub_data);
+
+        h.vk(0x380, b"Size", REG_QWORD_T, 8, 0x540);
+        h.data(0x540, &12345u64.to_le_bytes());
+
+        let reader = h.reader();
+        let entries = walk_amcache(&reader, h.hhive_va).unwrap();
+
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected 1 amcache entry, got {}",
+            entries.len()
+        );
+        let e = &entries[0];
+        assert_eq!(e.file_path, path);
+        assert_eq!(e.sha1_hash, sha1, "0000 prefix must be stripped");
+        assert_eq!(e.publisher, publisher);
+        assert_eq!(e.file_size, 12345);
+        assert!(e.is_suspicious, "temp-path exe must be flagged");
+    }
 }
