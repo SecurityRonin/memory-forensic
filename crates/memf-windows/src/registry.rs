@@ -408,6 +408,33 @@ fn regf_root_cell_index<P: PhysicalMemoryProvider>(
     (idx != 0 && idx != u32::MAX).then_some(idx)
 }
 
+/// A registry value enumerated from a key node's value list.
+#[derive(Debug, Clone)]
+pub(crate) struct RegistryValue {
+    /// Value name (empty for the key's default value).
+    pub name: String,
+    /// `_CM_KEY_VALUE.Type` (REG_SZ=1, REG_EXPAND_SZ=2, REG_BINARY=3, REG_DWORD=4, …).
+    pub kind: u32,
+    /// Raw value data bytes (inline or from the data cell).
+    pub data: Vec<u8>,
+}
+
+/// Enumerate **all** values of the key node at `key_addr` (a `_CM_KEY_NODE` VA).
+///
+/// Walks `ValueCount@0x24` / `ValueList@0x28` → the value-list cell (an array of
+/// `_CM_KEY_VALUE` cell indices) → each `_CM_KEY_VALUE`
+/// (`NameLength@0x02`, `DataLength@0x04`, `Data@0x08`, `Type@0x0C`, `Name@0x14`).
+/// `DataLength`'s high bit means the data is stored inline at `Data`. Returns an
+/// empty vec on any read fault. The count is bounded as an allocation guard.
+pub(crate) fn list_values<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    key_addr: u64,
+) -> Vec<RegistryValue> {
+    let _ = (reader, hhive_addr, key_addr);
+    todo!("GREEN: enumerate _CM_KEY_NODE.ValueList")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,6 +993,36 @@ mod tests {
         fn ri(&mut self, idx: u32, sublists: &[u32]) {
             self.list(idx, *b"ri", sublists, 4);
         }
+        /// Set `_CM_KEY_NODE` ValueCount@0x24 + ValueList@0x28 on cell `idx`.
+        fn values(&mut self, idx: u32, count: u32, list_idx: u32) {
+            let o = Self::ao(idx);
+            self.bin[o + 0x24..o + 0x28].copy_from_slice(&count.to_le_bytes());
+            self.bin[o + 0x28..o + 0x2c].copy_from_slice(&list_idx.to_le_bytes());
+        }
+        /// Write a value-list cell: a packed array of `_CM_KEY_VALUE` cell indices.
+        fn value_list(&mut self, idx: u32, values: &[u32]) {
+            let o = Self::ao(idx);
+            for (i, &v) in values.iter().enumerate() {
+                self.bin[o + i * 4..o + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        /// `_CM_KEY_VALUE` with data stored in a separate (non-inline) data cell:
+        /// "vk"@0, NameLength@0x02, DataLength@0x04, Data@0x08 (=data cell idx),
+        /// Type@0x0C, Name@0x14.
+        fn vk(&mut self, idx: u32, name: &[u8], kind: u32, data_len: u32, data_idx: u32) {
+            let o = Self::ao(idx);
+            self.bin[o..o + 2].copy_from_slice(b"vk");
+            self.bin[o + 2..o + 4].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            self.bin[o + 4..o + 8].copy_from_slice(&data_len.to_le_bytes());
+            self.bin[o + 8..o + 0xc].copy_from_slice(&data_idx.to_le_bytes());
+            self.bin[o + 0xc..o + 0x10].copy_from_slice(&kind.to_le_bytes());
+            self.bin[o + 0x14..o + 0x14 + name.len()].copy_from_slice(name);
+        }
+        /// Place raw bytes at cell `idx`'s data start (e.g. a value's data cell).
+        fn data(&mut self, idx: u32, bytes: &[u8]) {
+            let o = Self::ao(idx);
+            self.bin[o..o + bytes.len()].copy_from_slice(bytes);
+        }
         fn reader(&self) -> ObjectReader<SyntheticPhysMem> {
             let resolver = IsfResolver::from_value(&cellmap_isf()).unwrap();
             let bb_va = self.hhive_va + 0x1000;
@@ -993,6 +1050,34 @@ mod tests {
             let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
             ObjectReader::new(vas, Box::new(resolver))
         }
+    }
+
+    #[test]
+    fn list_values_enumerates_all_values() {
+        let mut h = CellHive::new(0x0030_0000);
+        // Key node at cell 0x40 with 2 values; value-list cell at 0x100.
+        h.nk(0x40, b"Run", 0, 0, 0);
+        h.values(0x40, 2, 0x100);
+        h.value_list(0x100, &[0x200, 0x300]);
+        // Value "Updater" (REG_SZ) → data cell 0x210.
+        let updater = utf16le_bytes("evil.exe");
+        h.vk(0x200, b"Updater", 1, updater.len() as u32, 0x210);
+        h.data(0x210, &updater);
+        // Value "Backup" (REG_BINARY) → data cell 0x310.
+        h.vk(0x300, b"Backup", 3, 6, 0x310);
+        h.data(0x310, b"abcdef");
+
+        let r = h.reader();
+        let key = read_cell_addr(&r, h.hhive_va, 0x40);
+        let vals = list_values(&r, h.hhive_va, key);
+
+        assert_eq!(vals.len(), 2, "both values enumerated");
+        assert_eq!(vals[0].name, "Updater");
+        assert_eq!(vals[0].kind, 1);
+        assert_eq!(vals[0].data, updater);
+        assert_eq!(vals[1].name, "Backup");
+        assert_eq!(vals[1].kind, 3);
+        assert_eq!(vals[1].data, b"abcdef");
     }
 
     #[test]
