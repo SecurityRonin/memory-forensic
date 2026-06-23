@@ -788,4 +788,49 @@ mod tests {
         let result = walk_shellbags(&reader, 0x0010_0000).unwrap();
         assert!(result.is_empty());
     }
+
+    /// RED (rewrite): a real cell-map UsrClass.dat laid out as
+    /// Local Settings\Software\Microsoft\Windows\Shell\BagMRU → subkey "0" with a
+    /// value "0" whose shell item names folder "Desktop". The current walker
+    /// treats hive_addr as a key node and reads SubKeyLists/ValueList as raw VA
+    /// pointers (never reaching BagMRU) → recovers nothing. Asserts the path is
+    /// reconstructed, so it FAILS until walk_shellbags uses the HMAP walker.
+    #[test]
+    fn walk_shellbags_hmap_recovers_bagmru_path() {
+        use crate::test_hive::CellHive;
+        // Shell item value data: cb(2)=11, type(1)=0x31, "Desktop\0".
+        let mut item = vec![0x0Bu8, 0x00, 0x31];
+        item.extend_from_slice(b"Desktop\0");
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x0A0, 0);
+        h.lf(0x0A0, &[0x120]);
+        h.nk(0x120, b"Local Settings", 1, 0x1A0, 0);
+        h.lf(0x1A0, &[0x220]);
+        h.nk(0x220, b"Software", 1, 0x2A0, 0);
+        h.lf(0x2A0, &[0x320]);
+        h.nk(0x320, b"Microsoft", 1, 0x3A0, 0);
+        h.lf(0x3A0, &[0x420]);
+        h.nk(0x420, b"Windows", 1, 0x4A0, 0);
+        h.lf(0x4A0, &[0x520]);
+        h.nk(0x520, b"Shell", 1, 0x5A0, 0);
+        h.lf(0x5A0, &[0x620]);
+        // BagMRU: 1 subkey ("0"), 1 value ("0" = the Desktop shell item).
+        h.nk(0x620, b"BagMRU", 1, 0x6A0, 0);
+        h.values(0x620, 1, 0x720);
+        h.lf(0x6A0, &[0x800]);
+        h.value_list(0x720, &[0x760]);
+        h.vk(0x760, b"0", 3, item.len() as u32, 0x880);
+        h.nk(0x800, b"0", 0, 0, 0); // child node (leaf)
+        h.data(0x880, &item);
+
+        let reader = h.reader();
+        let bags = walk_shellbags(&reader, h.hhive_va).unwrap();
+
+        assert!(
+            bags.iter().any(|b| b.path == "Desktop"),
+            "expected a BagMRU entry with path 'Desktop', got {:?}",
+            bags.iter().map(|b| &b.path).collect::<Vec<_>>()
+        );
+    }
 }
