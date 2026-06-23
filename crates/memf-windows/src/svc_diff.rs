@@ -227,12 +227,18 @@ fn key_node_name(data: &[u8]) -> String {
 /// Index-root (`ri`) sublist cap — bounds recursion on untrusted hives.
 const MAX_RI_SUBLISTS: usize = 4096;
 
+/// Max `ri` (index-root) nesting depth. Windows nests at most one or two
+/// levels; the cap bounds traversal against a cyclic/maliciously-deep
+/// index-root chain on an untrusted hive (Paranoid Gatekeeper).
+const MAX_RI_DEPTH: u32 = 8;
+
 /// Collect the child `_CM_KEY_NODE` cell indices referenced by a subkey-list
 /// cell's data. Handles `lf`/`lh` (8-byte entries) and `li` (4-byte entries)
-/// directly, and descends one level of an `ri` (index-root, 0x6972) list whose
-/// entries point to lf/lh/li sublists (used by LARGE keys such as `\Services`).
-/// Mirrors `registry_keys::walk_key_recursive`'s list handling. Returns an empty
-/// vec for an unknown list signature.
+/// directly, and descends an `ri` (index-root, 0x6972) list whose entries point
+/// to sub-lists — each itself `lf`/`lh`/`li` OR another `ri` (used by LARGE keys
+/// such as `\Services`). Mirrors Volatility's `_get_subkeys_recursive`, which
+/// recurses through nested `ri` nodes. Returns an empty vec for an unknown list
+/// signature.
 fn list_child_cells<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
@@ -251,43 +257,46 @@ fn list_child_cells<P: PhysicalMemoryProvider>(
         out
     }
 
-    if list_data.len() < 4 {
-        return Vec::new();
-    }
-    let list_sig = u16::from_le_bytes([list_data[0], list_data[1]]);
-    match list_sig {
-        0x666C | 0x686C => direct_children(list_data, 8),
-        0x696C => direct_children(list_data, 4),
-        // "ri": each 4-byte entry is a cell index to a sub-list (lf/lh/li).
-        0x6972 => {
-            let sub_count =
-                (u16::from_le_bytes([list_data[2], list_data[3]]) as usize).min(MAX_RI_SUBLISTS);
-            let mut out = Vec::new();
-            for i in 0..sub_count {
-                let off = 4 + i * 4;
-                let Some(slice) = list_data.get(off..off + 4) else {
-                    break;
-                };
-                let sub_cell = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
-                let Some(sub_data) = read_cell(reader, cell_vaddr(reader, hive_addr, sub_cell))
-                else {
-                    continue;
-                };
-                if sub_data.len() < 4 {
-                    continue;
-                }
-                let sub_sig = u16::from_le_bytes([sub_data[0], sub_data[1]]);
-                let entry_size = match sub_sig {
-                    0x666C | 0x686C => 8,
-                    0x696C => 4,
-                    _ => continue,
-                };
-                out.extend(direct_children(&sub_data, entry_size));
-            }
-            out
+    fn collect<P: PhysicalMemoryProvider>(
+        reader: &ObjectReader<P>,
+        hive_addr: u64,
+        list_data: &[u8],
+        depth: u32,
+    ) -> Vec<u32> {
+        if list_data.len() < 4 {
+            return Vec::new();
         }
-        _ => Vec::new(),
+        match u16::from_le_bytes([list_data[0], list_data[1]]) {
+            0x666C | 0x686C => direct_children(list_data, 8),
+            0x696C => direct_children(list_data, 4),
+            // "ri": each 4-byte entry is a cell index to a sub-list, itself
+            // lf/lh/li OR another ri — recurse (Volatility does the same).
+            0x6972 => {
+                if depth >= MAX_RI_DEPTH {
+                    return Vec::new();
+                }
+                let sub_count = (u16::from_le_bytes([list_data[2], list_data[3]]) as usize)
+                    .min(MAX_RI_SUBLISTS);
+                let mut out = Vec::new();
+                for i in 0..sub_count {
+                    let off = 4 + i * 4;
+                    let Some(slice) = list_data.get(off..off + 4) else {
+                        break;
+                    };
+                    let sub_cell = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
+                    let Some(sub_data) = read_cell(reader, cell_vaddr(reader, hive_addr, sub_cell))
+                    else {
+                        continue;
+                    };
+                    out.extend(collect(reader, hive_addr, &sub_data, depth + 1));
+                }
+                out
+            }
+            _ => Vec::new(),
+        }
     }
+
+    collect(reader, hive_addr, list_data, 0)
 }
 
 fn find_key_cell<P: PhysicalMemoryProvider>(
