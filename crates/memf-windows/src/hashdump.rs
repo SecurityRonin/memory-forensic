@@ -941,6 +941,17 @@ mod tests {
         /// Register this hive's pages into a `PageTableBuilder` and return the
         /// (hhive_va) handle. Consumes nothing; call before `.build()`.
         fn install(&self, b: PageTableBuilder) -> PageTableBuilder {
+            self.install_inner(b, true)
+        }
+
+        /// Like [`install`](Self::install) but leaves the `_HBASE_BLOCK` page
+        /// UNMAPPED — models the common real-image case where the hive header is
+        /// paged out while the bins (reached via the HMAP) stay resident.
+        fn install_paged_base_block(&self, b: PageTableBuilder) -> PageTableBuilder {
+            self.install_inner(b, false)
+        }
+
+        fn install_inner(&self, b: PageTableBuilder, map_base_block: bool) -> PageTableBuilder {
             let bb_va = self.hhive_va + 0x1000;
             let dir_va = self.hhive_va + 0x2000;
             let table_va = self.hhive_va + 0x3000;
@@ -965,16 +976,21 @@ mod tests {
             table_page[0..8].copy_from_slice(&self.bin_va.to_le_bytes());
             table_page[8..12].copy_from_slice(&0u32.to_le_bytes());
 
-            b.map_4k(self.hhive_va, self.hhive_va, flags::WRITABLE)
+            let b = b
+                .map_4k(self.hhive_va, self.hhive_va, flags::WRITABLE)
                 .write_phys(self.hhive_va, &hhive_page)
-                .map_4k(bb_va, bb_va, flags::WRITABLE)
-                .write_phys(bb_va, &bb_page)
                 .map_4k(dir_va, dir_va, flags::WRITABLE)
                 .write_phys(dir_va, &dir_page)
                 .map_4k(table_va, table_va, flags::WRITABLE)
                 .write_phys(table_va, &table_page)
                 .map_4k(self.bin_va, self.bin_va, flags::WRITABLE)
-                .write_phys(self.bin_va, &self.bin_page)
+                .write_phys(self.bin_va, &self.bin_page);
+            if map_base_block {
+                b.map_4k(bb_va, bb_va, flags::WRITABLE)
+                    .write_phys(bb_va, &bb_page)
+            } else {
+                b
+            }
         }
     }
 
@@ -1003,6 +1019,33 @@ mod tests {
         // An unmapped cell index (would translate past the bin region's data)
         // still resolves arithmetically but its bytes are zero — read_cell_addr
         // only requires the 2 bytes to be *readable*, which they are (mapped page).
+    }
+
+    /// Real-image case: the `_HBASE_BLOCK` header page is PAGED OUT (so
+    /// `RootCell` is unreadable) while the bins stay resident. `resolve_root_cell`
+    /// must fall back to the regf-format default root cell `0x20` (Volatility
+    /// `root_cell_offset` parity), NOT collapse to 0 and abandon the hive.
+    #[test]
+    fn resolve_root_cell_falls_back_to_0x20_when_base_block_paged_out() {
+        let mut hive = CellMapHive::new(0x00A0_0000, 0x20);
+        // Mark the root key node at cell 0x20 readable ("nk").
+        let d = ao(0x20);
+        hive.bin_page[d] = b'n';
+        hive.bin_page[d + 1] = b'k';
+
+        let isf = cellmap_isf_builder().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = hive
+            .install_paged_base_block(PageTableBuilder::new())
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(
+            resolve_root_cell(&reader, hive.hhive_va),
+            hive.bin_va + 0x20 + 4,
+            "paged-out base block must fall back to root cell 0x20"
+        );
     }
 
     // ---------------------------------------------------------------
