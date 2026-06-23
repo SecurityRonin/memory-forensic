@@ -199,6 +199,11 @@ fn ipv4_to_string(addr: u32) -> String {
 const TCPE_TAG: &[u8; 4] = b"TcpE";
 /// Candidate `_TCP_ENDPOINT` start offsets relative to the pool block base.
 const TCPE_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
+
+/// `_UDP_ENDPOINT` pool tag (Volatility netscan `UdpA`).
+const UDPA_TAG: &[u8; 4] = b"UdpA";
+/// Candidate `_UDP_ENDPOINT` start offsets relative to the pool block base.
+const UDPA_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
 /// Physical scan chunk.
 const SCAN_CHUNK: usize = 1 << 20;
 
@@ -629,18 +634,204 @@ fn read_phys_u_via<P: PhysicalMemoryProvider>(
     Some(u64::from_le_bytes(buf))
 }
 
+/// x64 `_UDP_ENDPOINT` field offsets. `InetAF`/`Owner`/`CreateTime` are constant
+/// across the supported builds; only `LocalAddr`/`Port` move. `_INETAF.AddressFamily`
+/// (0x18) and `_LOCAL_ADDRESS.pData` (0x10) are constant. Source: Volatility3
+/// netscan ISFs (`netscan-*-x64.json`).
+pub struct UdpEndpointLayout {
+    /// Offset of `InetAF` (pointer to `_INETAF`) in `_UDP_ENDPOINT`.
+    pub inet_af: u64,
+    /// Offset of the owning-process pointer in `_UDP_ENDPOINT`.
+    pub owner: u64,
+    /// Offset of `CreateTime` in `_UDP_ENDPOINT`.
+    pub create_time: u64,
+    /// Offset of `LocalAddr` (pointer to `_LOCAL_ADDRESS`) in `_UDP_ENDPOINT`.
+    pub local_addr: u64,
+    /// Offset of the local port (big-endian u16) in `_UDP_ENDPOINT`.
+    pub port: u64,
+    /// Offset of the address family in `_INETAF`.
+    pub inetaf_af: u64,
+    /// Offset of `pData` (pointer to `_IN_ADDR`) in `_LOCAL_ADDRESS`.
+    pub la_pdata: u64,
+}
+
+impl UdpEndpointLayout {
+    /// Only `LocalAddr`/`Port` vary between supported builds.
+    const fn at(local_addr: u64, port: u64) -> Self {
+        Self {
+            inet_af: 0x20,
+            owner: 0x28,
+            create_time: 0x58,
+            local_addr,
+            port,
+            inetaf_af: 0x18,
+            la_pdata: 0x10,
+        }
+    }
+}
+
+/// Select the `_UDP_ENDPOINT` layout for an NT `build` number (x64), from the
+/// Volatility3 netscan ISFs. Early Win10 x64 builds (10240/10586/14393) have no
+/// dedicated x64 netscan ISF and are intentionally omitted (None) rather than
+/// guessed — extend per build validated against a real image.
+fn udp_endpoint_layout_x64(build: u32) -> Option<UdpEndpointLayout> {
+    Some(match build {
+        7600 | 7601 | 8400 | 9200 => UdpEndpointLayout::at(0x60, 0x80), // Win7 / Win8
+        9600 => UdpEndpointLayout::at(0x60, 0x78),                      // Win8.1 / Server 2012 R2
+        15063 | 16299 | 17134 | 17763 | 18362 => UdpEndpointLayout::at(0x80, 0x78),
+        18363 => UdpEndpointLayout::at(0x88, 0x80),
+        19041 | 20348 => UdpEndpointLayout::at(0xA8, 0xA0),
+        _ => return None,
+    })
+}
+
 /// Enumerate UDP endpoints by **physically pool-tag scanning** for `_UDP_ENDPOINT`
 /// objects (`UdpA`), mirroring Volatility3 netscan. Each object's `InetAF`/`Owner`/
 /// `LocalAddr` pointers are followed through the address space; the `_UDP_ENDPOINT`
 /// overlay is selected from the dump's `NtBuildNumber`. IPv4 only for now (the
 /// IPv6 increment lifts the `AF_INET` gate). Unrecognized build ⇒ empty.
 ///
+/// Address chain (vol3 `_TCP_LISTENER.get_in_addr`): `LocalAddr` → `_LOCAL_ADDRESS`
+/// → `pData` → `_IN_ADDR` (a *single* `pData` deref, unlike the `_ADDRINFO` chain
+/// `scan_tcp_endpoints` uses — confirm against the citadel oracle when wiring the
+/// issen tier-2 test).
+///
 /// # Errors
 /// Propagates address-space read failures encountered while following pointers.
 pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
-    Ok(Vec::new())
+    let Some(build) = nt_build_number(reader) else {
+        return Ok(Vec::new());
+    };
+    let Some(u) = udp_endpoint_layout_x64(build) else {
+        return Ok(Vec::new());
+    };
+    let (pid_off, name_off) = eprocess_offsets(reader, build);
+    let prov = reader.vas().physical();
+
+    let ranges: Vec<(u64, u64)> = {
+        let r = prov.ranges();
+        if r.is_empty() {
+            vec![(0, prov.total_size())]
+        } else {
+            r.iter().map(|x| (x.start, x.end)).collect()
+        }
+    };
+
+    let read_phys_u = |pa: u64, n: usize| -> Option<u64> {
+        let mut b = [0u8; 8];
+        if prov.read_phys(pa, &mut b[..n]).unwrap_or(0) < n {
+            return None;
+        }
+        Some(u64::from_le_bytes(b))
+    };
+    let read_virt_u64 = |va: u64| -> Option<u64> {
+        reader
+            .read_bytes(va, 8)
+            .ok()
+            .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])))
+    };
+    let read_ipv4 = |va: u64| -> Option<String> {
+        reader
+            .read_bytes(va, 4)
+            .ok()
+            .map(|b| format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]))
+    };
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut buf = vec![0u8; SCAN_CHUNK + 4];
+    for (start, end) in ranges {
+        let mut addr = start;
+        while addr < end {
+            let n = prov.read_phys(addr, &mut buf).unwrap_or(0);
+            if n < 4 {
+                addr = addr.saturating_add(SCAN_CHUNK as u64);
+                continue;
+            }
+            let mut i = 0usize;
+            while i + 4 <= n {
+                if &buf[i..i + 4] != UDPA_TAG {
+                    i += 1;
+                    continue;
+                }
+                let pool_base = (addr + i as u64).saturating_sub(4);
+                i += 1;
+                for &delta in UDPA_DELTAS {
+                    let ep = pool_base + delta;
+                    let (Some(inetaf), Some(owner)) =
+                        (read_phys_u(ep + u.inet_af, 8), read_phys_u(ep + u.owner, 8))
+                    else {
+                        continue;
+                    };
+                    if !is_kernel_va(inetaf) {
+                        continue;
+                    }
+                    // Address family must be AF_INET (this path emits IPv4).
+                    let Some(af) = read_phys_u_via(reader, inetaf + u.inetaf_af, 2) else {
+                        continue;
+                    };
+                    if af as u16 != AF_INET {
+                        continue;
+                    }
+                    // Owner is OPTIONAL (ownerless system/transient endpoints carry 0).
+                    let (pid, process_name) = if owner == 0 {
+                        (0, String::new())
+                    } else if is_kernel_va(owner) {
+                        let Some(p) = read_virt_u64(owner + pid_off) else {
+                            continue;
+                        };
+                        if p > 0xFFFF {
+                            continue;
+                        }
+                        let name = reader
+                            .read_bytes(owner + name_off, 15)
+                            .map(|b| {
+                                String::from_utf8_lossy(&b)
+                                    .trim_end_matches('\0')
+                                    .to_string()
+                            })
+                            .unwrap_or_default();
+                        (p, name)
+                    } else {
+                        continue;
+                    };
+
+                    // Local: LocalAddr -> _LOCAL_ADDRESS.pData -> _IN_ADDR (single deref).
+                    let local_addr = read_phys_u(ep + u.local_addr, 8)
+                        .filter(|&p| is_kernel_va(p))
+                        .and_then(|la| read_virt_u64(la + u.la_pdata))
+                        .filter(|&p| is_kernel_va(p))
+                        .and_then(read_ipv4)
+                        .unwrap_or_else(|| "0.0.0.0".to_string());
+                    let local_port =
+                        read_phys_u(ep + u.port, 2).map_or(0, |v| u16::from_be(v as u16));
+                    let create_time = read_phys_u(ep + u.create_time, 8).unwrap_or(0);
+
+                    let key = (local_addr.clone(), local_port, pid);
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    out.push(WinConnectionInfo {
+                        protocol: "UDPv4".to_string(),
+                        local_addr,
+                        local_port,
+                        remote_addr: "*".to_string(),
+                        remote_port: 0,
+                        state: WinTcpState::None,
+                        pid,
+                        process_name,
+                        create_time,
+                        offset: ep,
+                    });
+                    break;
+                }
+            }
+            addr = addr.saturating_add(SCAN_CHUNK as u64 - 4);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1439,7 +1630,7 @@ mod tests {
 
         let mut inetaf = vec![0u8; 0x1000];
         inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
-        // Local: LocalAddr -> _LOCAL_ADDRESS.pData -> _IN_ADDR (vol3 single deref).
+                                                                               // Local: LocalAddr -> _LOCAL_ADDRESS.pData -> _IN_ADDR (vol3 single deref).
         let mut la = vec![0u8; 0x1000];
         la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&in_addr_va.to_le_bytes());
         let mut inb = vec![0u8; 0x1000];

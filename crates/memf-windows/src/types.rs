@@ -327,6 +327,8 @@ pub enum WinTcpState {
     TimeWait,
     /// Waiting for all packets to be received before deletion.
     DeleteTcb,
+    /// No TCP connection state — a UDP endpoint (or otherwise stateless object).
+    None,
     /// Unknown or unrecognized state value.
     Unknown(u32),
 }
@@ -367,6 +369,7 @@ impl fmt::Display for WinTcpState {
             Self::LastAck => write!(f, "LAST_ACK"),
             Self::TimeWait => write!(f, "TIME_WAIT"),
             Self::DeleteTcb => write!(f, "DELETE_TCB"),
+            Self::None => Ok(()),
             Self::Unknown(v) => write!(f, "Unknown({v})"),
         }
     }
