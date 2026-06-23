@@ -2228,4 +2228,60 @@ mod tests {
         assert_eq!(e.last_run_time, 132_111_000_000);
         assert!(e.is_suspicious, "mimikatz.exe should be suspicious");
     }
+
+    /// RED (flat→HMAP migration): a real cell-map NTUSER.DAT laid out as
+    /// Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\{GUID}\Count
+    /// with one ROT13-named value (72-byte Vista+ blob), built with the shared
+    /// CellHive harness. The flat walker reads the root cell from
+    /// _HBASE_BLOCK+0x24 (a zeroed page on a cell-map hive) → empty. Asserts the
+    /// entry is recovered, so it FAILS until walk_userassist uses the HMAP walker.
+    #[test]
+    fn walk_userassist_hmap_recovers_entry() {
+        use crate::test_hive::CellHive;
+        let decoded = r"C:\Windows\System32\cmd.exe";
+        let encoded = rot13_decode(decoded); // ROT13 is involutory → stored name
+        let guid = "{CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}";
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x0A0, 0);
+        h.lf(0x0A0, &[0x0E0]);
+        h.nk(0x0E0, b"Software", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Microsoft", 1, 0x1E0, 0);
+        h.lf(0x1E0, &[0x220]);
+        h.nk(0x220, b"Windows", 1, 0x280, 0);
+        h.lf(0x280, &[0x2C0]);
+        h.nk(0x2C0, b"CurrentVersion", 1, 0x320, 0);
+        h.lf(0x320, &[0x360]);
+        h.nk(0x360, b"Explorer", 1, 0x3C0, 0);
+        h.lf(0x3C0, &[0x400]);
+        h.nk(0x400, b"UserAssist", 1, 0x460, 0);
+        h.lf(0x460, &[0x4A0]);
+        h.nk(0x4A0, guid.as_bytes(), 1, 0x520, 0);
+        h.lf(0x520, &[0x560]);
+        h.nk(0x560, b"Count", 0, 0, 0);
+        h.values(0x560, 1, 0x600);
+        h.value_list(0x600, &[0x640]);
+
+        // 72-byte Vista+ UserAssist blob: run_count@4, focus_count@8,
+        // focus_time_ms@12, last_run_time(FILETIME)@60.
+        let mut blob = vec![0u8; 72];
+        blob[4..8].copy_from_slice(&7u32.to_le_bytes());
+        blob[8..12].copy_from_slice(&3u32.to_le_bytes());
+        blob[12..16].copy_from_slice(&1500u32.to_le_bytes());
+        blob[60..68].copy_from_slice(&0x01D9_1234_5678_9ABCu64.to_le_bytes());
+        h.vk(0x640, encoded.as_bytes(), 3, blob.len() as u32, 0x700);
+        h.data(0x700, &blob);
+
+        let reader = h.reader();
+        let entries = walk_userassist(&reader, h.hhive_va).unwrap();
+
+        assert_eq!(entries.len(), 1, "expected 1 userassist entry, got {}", entries.len());
+        let e = &entries[0];
+        assert_eq!(e.name, decoded, "ROT13 value name must decode");
+        assert_eq!(e.run_count, 7);
+        assert_eq!(e.focus_count, 3);
+        assert_eq!(e.focus_time_ms, 1500);
+        assert_eq!(e.last_run_time, 0x01D9_1234_5678_9ABC);
+    }
 }
