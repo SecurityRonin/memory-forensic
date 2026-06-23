@@ -16,6 +16,22 @@ use memf_format::PhysicalMemoryProvider;
 
 use crate::unicode::read_unicode_string;
 
+/// Resolve a PE section's virtual range `(section_va, virtual_size)` within an
+/// in-memory module image mapped at `module_base`, looked up by name (e.g.
+/// `".data"`, `"PAGE"`). Parses the DOS (`e_lfanew`@0x3C) and PE headers, then
+/// the section table (40-byte entries: Name[8]@0, VirtualSize@8, VirtualAddress
+/// @0xC). Returns `None` if the headers are unreadable or the section is absent.
+// Wired into walk_shimcache in increment 5 of the shimcache rewrite; until then
+// it is exercised only by unit tests.
+#[allow(dead_code)]
+fn module_section_range<P: PhysicalMemoryProvider>(
+    _reader: &ObjectReader<P>,
+    _module_base: u64,
+    _section_name: &str,
+) -> Option<(u64, u64)> {
+    None
+}
+
 /// Maximum number of shimcache entries to iterate (safety limit).
 const MAX_SHIMCACHE_ENTRIES: usize = 4096;
 
@@ -321,5 +337,50 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert!(entries[0].exec_flag);
+    }
+
+    /// `module_section_range` parses the PE section table of an in-memory module
+    /// and returns each named section's (va, size). The stub returns None, so
+    /// this FAILS until the parser is implemented (increment 1 GREEN).
+    #[test]
+    fn module_section_range_parses_named_sections() {
+        let base: u64 = 0xFFFF_F800_0010_0000;
+        let paddr: u64 = 0x0050_0000;
+        let mut page = vec![0u8; 4096];
+        // DOS: e_lfanew @ 0x3C -> 0x80
+        page[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        // PE signature @ 0x80
+        page[0x80..0x84].copy_from_slice(b"PE\0\0");
+        // COFF: NumberOfSections @ 0x86 = 2; SizeOfOptionalHeader @ 0x94 = 0xF0
+        page[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        page[0x94..0x96].copy_from_slice(&0xF0u16.to_le_bytes());
+        // Section table @ 0x98 + 0xF0 = 0x188 (PE sig 4 + COFF 0x14 = 0x18)
+        let sec0 = 0x188usize;
+        page[sec0..sec0 + 4].copy_from_slice(b"PAGE");
+        page[sec0 + 8..sec0 + 12].copy_from_slice(&0x3000u32.to_le_bytes());
+        page[sec0 + 12..sec0 + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        let sec1 = sec0 + 40;
+        page[sec1..sec1 + 5].copy_from_slice(b".data");
+        page[sec1 + 8..sec1 + 12].copy_from_slice(&0x2000u32.to_le_bytes());
+        page[sec1 + 12..sec1 + 16].copy_from_slice(&0x5000u32.to_le_bytes());
+
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+        let (cr3, mem) = PageTableBuilder::new()
+            .map_4k(base, paddr, flags::WRITABLE)
+            .write_phys(paddr, &page)
+            .build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        assert_eq!(
+            module_section_range(&reader, base, ".data"),
+            Some((base + 0x5000, 0x2000))
+        );
+        assert_eq!(
+            module_section_range(&reader, base, "PAGE"),
+            Some((base + 0x1000, 0x3000))
+        );
+        assert_eq!(module_section_range(&reader, base, ".missing"), None);
     }
 }
