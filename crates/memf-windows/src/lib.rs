@@ -100,6 +100,8 @@ pub mod suspicious_threads;
 pub mod svc_diff;
 pub mod symlinks;
 pub mod sysinfo;
+#[cfg(test)]
+pub(crate) mod test_hive;
 pub mod thread;
 pub mod timers;
 pub mod tls_callbacks;
