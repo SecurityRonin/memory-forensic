@@ -230,6 +230,20 @@ pub(crate) const NK_SUBKEY_LIST: u64 = 0x1c;
 pub(crate) const NK_NAME_LENGTH: u64 = 0x48;
 pub(crate) const NK_NAME: u64 = 0x4c;
 
+// `_CM_KEY_NODE` value-list + `_CM_KEY_VALUE` field offsets (x64).
+const NK_VALUE_COUNT: u64 = 0x24;
+const NK_VALUE_LIST: u64 = 0x28;
+const VK_NAME_LENGTH: u64 = 0x02;
+const VK_DATA_LENGTH: u64 = 0x04;
+const VK_DATA: u64 = 0x08;
+const VK_NAME: u64 = 0x14;
+/// Per-value-list / name / data caps (allocation-bomb defense on untrusted hives).
+const MAX_VALUE_COUNT: u32 = 4096;
+const VK_MAX_NAME_LEN: u16 = 256;
+const VK_MAX_DATA_LEN: u32 = 0x10_0000;
+/// `_CM_KEY_VALUE.DataLength` high bit: data is stored inline at `Data@0x08`.
+const VK_INLINE_FLAG: u32 = 0x8000_0000;
+
 /// Per-list subkey cap (runaway / allocation-bomb defense on untrusted hives).
 const MAX_SUBKEY_LIST: u16 = 4096;
 /// `ri` (index-root) nesting bound (untrusted-input recursion guard).
@@ -413,8 +427,6 @@ fn regf_root_cell_index<P: PhysicalMemoryProvider>(
 pub(crate) struct RegistryValue {
     /// Value name (empty for the key's default value).
     pub name: String,
-    /// `_CM_KEY_VALUE.Type` (REG_SZ=1, REG_EXPAND_SZ=2, REG_BINARY=3, REG_DWORD=4, …).
-    pub kind: u32,
     /// Raw value data bytes (inline or from the data cell).
     pub data: Vec<u8>,
 }
@@ -431,8 +443,94 @@ pub(crate) fn list_values<P: PhysicalMemoryProvider>(
     hhive_addr: u64,
     key_addr: u64,
 ) -> Vec<RegistryValue> {
-    let _ = (reader, hhive_addr, key_addr);
-    todo!("GREEN: enumerate _CM_KEY_NODE.ValueList")
+    let val_count = le_u32(reader, key_addr.wrapping_add(NK_VALUE_COUNT)).unwrap_or(0);
+    if val_count == 0 {
+        return Vec::new();
+    }
+    let Some(val_list_off) = le_u32(reader, key_addr.wrapping_add(NK_VALUE_LIST)) else {
+        return Vec::new();
+    };
+    let val_list_addr = read_cell_addr(reader, hhive_addr, val_list_off);
+    if val_list_addr == 0 {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for v in 0..val_count.min(MAX_VALUE_COUNT) {
+        let Some(val_off) = le_u32(reader, val_list_addr.wrapping_add(u64::from(v) * 4)) else {
+            continue;
+        };
+        let val_addr = read_cell_addr(reader, hhive_addr, val_off);
+        if val_addr == 0 {
+            continue;
+        }
+        if let Some(rv) = read_value(reader, hhive_addr, val_addr) {
+            out.push(rv);
+        }
+    }
+    out
+}
+
+/// Decode a single `_CM_KEY_VALUE` at `val_addr`. `None` on a read fault or an
+/// implausible name/data length (that value is skipped, not the whole list).
+fn read_value<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    val_addr: u64,
+) -> Option<RegistryValue> {
+    // NameLength@0x02 (u16); Name@0x14. NameLength 0 = the key's default value.
+    let name_bytes = reader
+        .read_bytes(val_addr.wrapping_add(VK_NAME_LENGTH), 2)
+        .ok()?;
+    let name_len = u16::from_le_bytes(name_bytes.get(..2)?.try_into().ok()?);
+    let name = if name_len == 0 {
+        String::new()
+    } else if name_len > VK_MAX_NAME_LEN {
+        return None;
+    } else {
+        let raw = reader
+            .read_bytes(val_addr.wrapping_add(VK_NAME), name_len as usize)
+            .ok()?;
+        String::from_utf8_lossy(&raw).into_owned()
+    };
+
+    // DataLength@0x04 (u32); high bit set => data stored inline at Data@0x08.
+    let raw_len = le_u32(reader, val_addr.wrapping_add(VK_DATA_LENGTH))?;
+    let inline = (raw_len & VK_INLINE_FLAG) != 0;
+    let data_len = raw_len & !VK_INLINE_FLAG;
+    let data = if data_len == 0 {
+        Vec::new()
+    } else if data_len > VK_MAX_DATA_LEN {
+        return None;
+    } else if inline {
+        // Inline data is at most 4 bytes, stored in the Data field itself.
+        reader
+            .read_bytes(val_addr.wrapping_add(VK_DATA), data_len.min(4) as usize)
+            .ok()?
+    } else {
+        let data_off = le_u32(reader, val_addr.wrapping_add(VK_DATA))?;
+        let data_addr = read_cell_addr(reader, hhive_addr, data_off);
+        if data_addr == 0 {
+            return None;
+        }
+        reader.read_bytes(data_addr, data_len as usize).ok()?
+    };
+
+    Some(RegistryValue { name, data })
+}
+
+/// Read the data of the named value (case-insensitive) of the key at `key_addr`,
+/// or an empty vec if absent. Thin filter over [`list_values`].
+pub(crate) fn read_value_data<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+    key_addr: u64,
+    target_name: &str,
+) -> Vec<u8> {
+    list_values(reader, hhive_addr, key_addr)
+        .into_iter()
+        .find(|v| v.name.eq_ignore_ascii_case(target_name))
+        .map_or_else(Vec::new, |v| v.data)
 }
 
 #[cfg(test)]
@@ -1059,13 +1157,13 @@ mod tests {
         h.nk(0x40, b"Run", 0, 0, 0);
         h.values(0x40, 2, 0x100);
         h.value_list(0x100, &[0x200, 0x300]);
-        // Value "Updater" (REG_SZ) → data cell 0x210.
+        // Value "Updater" (REG_SZ) → data cell 0x280 (spaced clear of the vk cell).
         let updater = utf16le_bytes("evil.exe");
-        h.vk(0x200, b"Updater", 1, updater.len() as u32, 0x210);
-        h.data(0x210, &updater);
-        // Value "Backup" (REG_BINARY) → data cell 0x310.
-        h.vk(0x300, b"Backup", 3, 6, 0x310);
-        h.data(0x310, b"abcdef");
+        h.vk(0x200, b"Updater", 1, updater.len() as u32, 0x280);
+        h.data(0x280, &updater);
+        // Value "Backup" (REG_BINARY) → data cell 0x380.
+        h.vk(0x300, b"Backup", 3, 6, 0x380);
+        h.data(0x380, b"abcdef");
 
         let r = h.reader();
         let key = read_cell_addr(&r, h.hhive_va, 0x40);
@@ -1073,10 +1171,8 @@ mod tests {
 
         assert_eq!(vals.len(), 2, "both values enumerated");
         assert_eq!(vals[0].name, "Updater");
-        assert_eq!(vals[0].kind, 1);
         assert_eq!(vals[0].data, updater);
         assert_eq!(vals[1].name, "Backup");
-        assert_eq!(vals[1].kind, 3);
         assert_eq!(vals[1].data, b"abcdef");
     }
 

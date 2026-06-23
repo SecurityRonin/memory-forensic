@@ -26,7 +26,7 @@ use memf_format::PhysicalMemoryProvider;
 
 // Registry hive navigation is the shared, validated walker (correct stable-list
 // offsets + lf/lh/li/ri handling) so this module no longer carries its own copy.
-use crate::registry::{find_subkey_by_name, read_cell_addr, resolve_root_cell};
+use crate::registry::{find_subkey_by_name, read_cell_addr, read_value_data, resolve_root_cell};
 
 /// Maximum number of user entries to enumerate (safety limit).
 const MAX_USERS: usize = 4096;
@@ -663,107 +663,6 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
     reader
         .read_bytes(class_addr, class_len as usize)
         .unwrap_or_default()
-}
-
-/// Read the named value data from a registry key's value list.
-/// Returns the raw data bytes, or an empty vec on failure.
-fn read_value_data<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hhive_addr: u64,
-    key_addr: u64,
-    target_name: &str,
-) -> Vec<u8> {
-    let val_count: u32 = match reader.read_bytes(key_addr + 0x24, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return Vec::new(),
-    };
-
-    if val_count == 0 {
-        return Vec::new();
-    }
-
-    let val_list_off: u32 = match reader.read_bytes(key_addr + 0x28, 4) {
-        Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-        _ => return Vec::new(),
-    };
-
-    let val_list_addr = read_cell_addr(reader, hhive_addr, val_list_off);
-    if val_list_addr == 0 {
-        return Vec::new();
-    }
-
-    for v in 0..val_count.min(64) {
-        let val_off: u32 = match reader.read_bytes(val_list_addr + u64::from(v) * 4, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => continue,
-        };
-
-        let val_addr = read_cell_addr(reader, hhive_addr, val_off);
-        if val_addr == 0 {
-            continue;
-        }
-
-        // _CM_KEY_VALUE: NameLength at 0x02 (u16), Name at 0x14.
-        let vname_len: u16 = match reader.read_bytes(val_addr + 0x02, 2) {
-            Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
-            _ => continue,
-        };
-
-        if vname_len == 0 || vname_len > 256 {
-            continue;
-        }
-
-        let vname = match reader.read_bytes(val_addr + 0x14, vname_len as usize) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-            _ => continue,
-        };
-
-        if !vname.eq_ignore_ascii_case(target_name) {
-            continue;
-        }
-
-        // DataLength at 0x04 (u32), DataOffset at 0x08 (u32).
-        let data_len: u32 = match reader.read_bytes(val_addr + 0x04, 4) {
-            Ok(bytes) if bytes.len() == 4 => {
-                bytes[..4].try_into().map_or(0, u32::from_le_bytes) & 0x7FFF_FFFF
-            }
-            _ => return Vec::new(),
-        };
-
-        if data_len == 0 || data_len > 0x10_0000 {
-            return Vec::new();
-        }
-
-        // Small data (high bit set in original length) is stored inline at offset 0x08.
-        let raw_len_bytes = match reader.read_bytes(val_addr + 0x04, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => return Vec::new(),
-        };
-
-        if (raw_len_bytes & 0x8000_0000) != 0 {
-            // Inline data at 0x0C, up to 4 bytes.
-            let inline_len = data_len.min(4) as usize;
-            return reader
-                .read_bytes(val_addr + 0x08, inline_len)
-                .unwrap_or_default();
-        }
-
-        let data_off: u32 = match reader.read_bytes(val_addr + 0x08, 4) {
-            Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
-            _ => return Vec::new(),
-        };
-
-        let data_addr = read_cell_addr(reader, hhive_addr, data_off);
-        if data_addr == 0 {
-            return Vec::new();
-        }
-
-        return reader
-            .read_bytes(data_addr, data_len as usize)
-            .unwrap_or_default();
-    }
-
-    Vec::new()
 }
 
 /// Format a byte slice as a lowercase hex string.
