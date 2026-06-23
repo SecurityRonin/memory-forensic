@@ -31,7 +31,27 @@ pub fn default_server_url() -> &'static str {
     "https://msdl.microsoft.com/download/symbols"
 }
 
-/// Return the default local cache directory (`~/.memf/symbols/`).
+/// Compute Volatility3's `CACHE_PATH` for a platform from raw env values.
+///
+/// Pure (no env reads, no I/O) so every platform branch is unit-testable from
+/// any host. Mirrors volatility3 `framework/constants/__init__.py` (v2.x):
+/// - Unix (Linux/macOS): `${XDG_CACHE_HOME:-$HOME/.cache}/volatility3`
+/// - Windows: `%APPDATA%\volatility3` (falling back to `%USERPROFILE%\volatility3`)
+fn volatility_cache_path_from(
+    is_windows: bool,
+    xdg_cache_home: Option<&str>,
+    home: Option<&str>,
+    appdata: Option<&str>,
+    userprofile: Option<&str>,
+) -> Option<PathBuf> {
+    let _ = (is_windows, xdg_cache_home, home, appdata, userprofile);
+    todo!("GREEN: implement Volatility CACHE_PATH resolution")
+}
+
+/// Return the shared symbol cache directory — Volatility3's `CACHE_PATH`.
+///
+/// memf deliberately shares Volatility's store (not a memf-private dir) so a
+/// single download serves both tools. See [`volatility_cache_path_from`].
 pub fn default_cache_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".memf").join("symbols"))
 }
@@ -209,6 +229,78 @@ mod tests {
             );
         }
         // If HOME is not set we just skip — no panic.
+    }
+
+    // ── Volatility CACHE_PATH resolution (shared symbol store, all platforms) ──
+
+    #[test]
+    fn vol_cache_unix_prefers_xdg_cache_home() {
+        assert_eq!(
+            volatility_cache_path_from(false, Some("/x/cache"), Some("/home/u"), None, None),
+            Some(PathBuf::from("/x/cache").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_unix_falls_back_to_home_dot_cache() {
+        assert_eq!(
+            volatility_cache_path_from(false, None, Some("/home/u"), None, None),
+            Some(PathBuf::from("/home/u").join(".cache").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_unix_empty_xdg_uses_home() {
+        assert_eq!(
+            volatility_cache_path_from(false, Some(""), Some("/home/u"), None, None),
+            Some(PathBuf::from("/home/u").join(".cache").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_unix_none_without_home() {
+        assert_eq!(
+            volatility_cache_path_from(false, None, None, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_prefers_appdata() {
+        assert_eq!(
+            volatility_cache_path_from(
+                true,
+                None,
+                None,
+                Some("C:/Users/u/AppData/Roaming"),
+                Some("C:/Users/u")
+            ),
+            Some(PathBuf::from("C:/Users/u/AppData/Roaming").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_falls_back_to_userprofile() {
+        assert_eq!(
+            volatility_cache_path_from(true, None, None, None, Some("C:/Users/u")),
+            Some(PathBuf::from("C:/Users/u").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_empty_appdata_uses_userprofile() {
+        assert_eq!(
+            volatility_cache_path_from(true, None, None, Some(""), Some("C:/Users/u")),
+            Some(PathBuf::from("C:/Users/u").join("volatility3"))
+        );
+    }
+
+    #[test]
+    fn vol_cache_windows_none_without_either() {
+        assert_eq!(
+            volatility_cache_path_from(true, None, None, None, None),
+            None
+        );
     }
 
     // ── Task 5: Client tests (feature-gated) ──
