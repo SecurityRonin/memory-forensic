@@ -73,6 +73,19 @@ const MAX_SHIMCACHE_ENTRIES: usize = 4096;
 /// parse each node (Win8.1+/Win10 x64 layout). `head_va` is the sentinel head
 /// (the `_RTL_AVL_TABLE`-adjacent cache head); the sentinel itself is not
 /// emitted. Bounded by `MAX_SHIMCACHE_ENTRIES`.
+///
+/// # Per-entry filtering — evidence-preserving by design
+///
+/// Volatility's `SHIM_CACHE_ENTRY.is_valid` drops *every* node that fails its
+/// `_LIST_ENTRY` pointer-consistency check. We deliberately relax that: a node
+/// is suppressed **only when it is both link-inconsistent and carries no usable
+/// path**. A node that still has a readable path is recovered evidence of
+/// execution, and a forensic tool should surface it rather than discard it over
+/// a single slightly-off neighbour link (e.g. a back-pointer that was paged out
+/// of the capture). We suppress a node only when it is *both* structurally
+/// broken *and* has nothing for the analyst — so this walker is a strict
+/// superset of Volatility's results, never dropping a path-bearing entry the
+/// reference oracle would have kept.
 // _SHIM_CACHE_ENTRY (Win8.1+/Win10 x64) field offsets — cited to Volatility
 // shimcache-win10-x64.json: ListEntry@0x0, Path(_UNICODE_STRING)@0x18,
 // ListEntryDetail(ptr)@0x28; detail: LastModified@0x8, BlobSize@0x10, BlobBuffer@0x18.
@@ -108,6 +121,17 @@ fn parse_shimcache_list<P: PhysicalMemoryProvider>(
             _ => (0, false),
         };
 
+        // Path-aware filter: drop a node ONLY when it is both link-inconsistent
+        // AND pathless. A path-bearing node is always kept — even with an
+        // imperfect neighbour link — because the path is recovered execution
+        // evidence; only a node that is structurally broken *and* carries nothing
+        // is suppressed. (See the function doc: superset of Volatility's filter.)
+        if path.is_empty() && !list_entry_consistent(reader, current) {
+            let Some(next) = read_u64(current) else { break };
+            current = next;
+            continue;
+        }
+
         entries.push(ShimcacheEntry {
             path,
             last_modified,
@@ -121,6 +145,44 @@ fn parse_shimcache_list<P: PhysicalMemoryProvider>(
         current = next;
     }
     entries
+}
+
+/// Volatility's `SHIM_CACHE_ENTRY.is_valid` `_LIST_ENTRY` pointer-consistency
+/// check (Win8.1+/Win10): the node's `Flink` is non-null, the prev/next nodes
+/// resolve to distinct entries (`*Blink != *Flink`), and the next node's
+/// back-pointer (`Flink.Blink`) is readable. Any unreadable pointer along the
+/// way yields `false`. This inspects the links only, never the path — so a
+/// valid-link node with an empty/garbage path is still "consistent" here; the
+/// path-vs-drop decision is made by [`parse_shimcache_list`].
+fn list_entry_consistent<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    node_va: u64,
+) -> bool {
+    let r = |va: u64| -> Option<u64> {
+        let b = reader.read_bytes(va, 8).ok()?;
+        Some(u64::from_le_bytes(b.get(..8)?.try_into().ok()?))
+    };
+    let Some(flink) = r(node_va) else {
+        return false;
+    };
+    if flink == 0 {
+        return false;
+    }
+    let Some(blink) = r(node_va + 8) else {
+        return false;
+    };
+    // Prev and next must resolve to distinct nodes.
+    let (Some(star_blink), Some(star_flink)) = (r(blink), r(flink)) else {
+        return false;
+    };
+    if star_blink == star_flink {
+        return false;
+    }
+    // The next node's back-pointer must be readable.
+    let Some(flink_blink) = r(flink + 8) else {
+        return false;
+    };
+    r(flink_blink).is_some()
 }
 
 /// Read a `_UNICODE_STRING` (x64 ABI: Length@0x0 u16, Buffer@0x8 ptr) at `va`
@@ -508,7 +570,12 @@ mod tests {
         let resolver = IsfResolver::from_value(&isf).unwrap();
         let mut ptb = PageTableBuilder::new();
         for (i, (va, pg)) in [
-            (head, &head_pg), (a, &a_pg), (b, &b_pg), (cc, &cc_pg), (pa, &pa_pg), (pc, &pc_pg),
+            (head, &head_pg),
+            (a, &a_pg),
+            (b, &b_pg),
+            (cc, &cc_pg),
+            (pa, &pa_pg),
+            (pc, &pc_pg),
         ]
         .into_iter()
         .enumerate()
