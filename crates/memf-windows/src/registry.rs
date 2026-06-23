@@ -377,6 +377,19 @@ pub(crate) fn resolve_root_cell<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
 ) -> u64 {
+    read_cell_addr(reader, hhive_addr, root_cell_index(reader, hhive_addr))
+}
+
+/// The hive's root key **cell index** (not VA). Volatility `root_cell_offset`
+/// parity: honour `_HBASE_BLOCK.RootCell` only when the header is a readable
+/// "regf" block; otherwise the regf-format default cell `0x20`. On real images
+/// the header page is frequently paged out (RootCell unreadable) while the bins,
+/// reached via the HMAP, stay resident — collapsing to 0 there would abandon an
+/// otherwise-navigable hive.
+pub(crate) fn root_cell_index<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hhive_addr: u64,
+) -> u32 {
     let base_block_off = reader
         .symbols()
         .field_offset("_HHIVE", "BaseBlock")
@@ -388,14 +401,7 @@ pub(crate) fn resolve_root_cell<P: PhysicalMemoryProvider>(
         .and_then(|b| b.get(..8).and_then(|s| s.try_into().ok()))
         .map_or(0, u64::from_le_bytes);
 
-    // Volatility `root_cell_offset` parity: honour _HBASE_BLOCK.RootCell only
-    // when the header is a readable "regf" block; otherwise the regf-format
-    // default cell 0x20. On real images the header page is frequently paged out
-    // (RootCell unreadable) while the bins, reached via the HMAP, stay resident
-    // — collapsing to 0 there would abandon an otherwise-navigable hive.
-    let root_cell_index = regf_root_cell_index(reader, base_block_addr).unwrap_or(0x20);
-
-    read_cell_addr(reader, hhive_addr, root_cell_index)
+    regf_root_cell_index(reader, base_block_addr).unwrap_or(0x20)
 }
 
 /// `Some(idx)` iff the block at `base_block_addr` is a readable `_HBASE_BLOCK`

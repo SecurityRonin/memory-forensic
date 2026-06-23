@@ -48,10 +48,11 @@ impl CellHive {
     /// byte offset within `bin` (cells already laid out, e.g. from `build_cell`
     /// placed at their offsets). Lets a flat-fixture test reuse its `hbin_page`/
     /// `cell_page` directly as the HMAP bin. The root cell is the regf default 0x20.
-    pub(crate) fn with_bin(base: u64, bin: Vec<u8>) -> Self {
+    pub(crate) fn with_bin(base: u64, mut bin: Vec<u8>) -> Self {
         let mut h = Self::new(base);
-        let n = bin.len().min(h.bin.len());
-        h.bin[..n].copy_from_slice(&bin[..n]);
+        // The bin is exactly one 4 KiB block: pad/truncate the caller's buffer.
+        bin.resize(h.bin.len(), 0);
+        h.bin = bin;
         h
     }
     /// `_CM_KEY_NODE` with CORRECT offsets: SubKeyCounts[Stable]@0x14,

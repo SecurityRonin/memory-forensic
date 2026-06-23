@@ -6,10 +6,12 @@
 //!
 //! ## Hive internals
 //!
-//! - `hive_addr` is the virtual address of the `_HBASE_BLOCK` (hive header,
-//!   typically at `_HHIVE.BaseBlock`).
-//! - `_HBASE_BLOCK.RootCell` (offset 0x24, u32) — cell index of root key node.
-//! - Cell storage starts at `hive_addr + 0x1000` (first HBIN).
+//! - `hive_addr` is the virtual address of the `_HHIVE`/`_CMHIVE` (since
+//!   `_CMHIVE.Hive` is at offset 0, the `_CMHIVE` VA serves directly).
+//! - In-memory hives are NOT flat: a cell index is translated to its cell VA
+//!   through the `_HHIVE.Storage[].Map` directory (see
+//!   [`super::registry::cell_index_to_va`]). The root cell index comes from
+//!   [`super::registry::root_cell_index`] (regf `RootCell`, else default 0x20).
 //! - Each cell: `i32` size (negative = allocated), followed by cell data.
 //! - Key node (`_CM_KEY_NODE`): Signature `0x6B6E` ("nk"), Flags, LastWriteTime,
 //!   SubKeyCount, SubKeys pointer, ValueCount, Values pointer, NameLength, Name.
@@ -18,14 +20,6 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
-
-// ── _HBASE_BLOCK offsets ─────────────────────────────────────────────
-
-/// Offset of `RootCell` (u32) within `_HBASE_BLOCK`.
-const HBASE_BLOCK_ROOT_CELL_OFFSET: u64 = 0x24;
-
-/// Offset from `_HBASE_BLOCK` to the first HBIN (cell storage start).
-const HBIN_START_OFFSET: u64 = 0x1000;
 
 // ── CM_KEY_NODE ("nk") layout offsets (relative to cell data start) ──
 
@@ -128,26 +122,19 @@ pub struct RegistryValueInfo {
 
 /// Walk registry keys starting from the root of a hive.
 ///
-/// `hive_addr` is the virtual address of the `_HBASE_BLOCK` (the value
-/// stored in `RegistryHive::hive_addr` / `_HHIVE.BaseBlock`).
+/// `hive_addr` is the virtual address of the `_HHIVE`/`_CMHIVE`; cell indices
+/// are translated through its `Storage[].Map` directory.
 ///
 /// Returns all key nodes reachable up to `max_depth` levels deep.
-/// Returns an empty `Vec` if the root cell index is zero.
 pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
     max_depth: usize,
 ) -> crate::Result<Vec<RegistryKeyInfo>> {
-    // Read root cell index from _HBASE_BLOCK
-    let root_cell_bytes =
-        reader.read_bytes(hive_addr.wrapping_add(HBASE_BLOCK_ROOT_CELL_OFFSET), 4)?;
-    let root_cell = root_cell_bytes[..4]
-        .try_into()
-        .map_or(0, u32::from_le_bytes);
-
-    if root_cell == 0 {
-        return Ok(Vec::new());
-    }
+    // Honour _HBASE_BLOCK.RootCell when the header is a readable "regf" block;
+    // otherwise fall back to the regf-format default cell 0x20 (Volatility
+    // parity — the header page is often paged out on real images).
+    let root_cell = crate::registry::root_cell_index(reader, hive_addr);
 
     let depth = max_depth.min(MAX_DEPTH);
     let mut keys = Vec::new();
@@ -164,14 +151,14 @@ pub fn walk_registry_keys<P: PhysicalMemoryProvider>(
 
 /// Read registry values for a specific key identified by its cell offset.
 ///
-/// `hive_addr` is the virtual address of the `_HBASE_BLOCK`.
+/// `hive_addr` is the virtual address of the `_HHIVE`/`_CMHIVE`.
 /// `key_cell_offset` is the cell index of the `_CM_KEY_NODE`.
 pub fn read_registry_values<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
     key_cell_offset: u32,
 ) -> crate::Result<Vec<RegistryValueInfo>> {
-    let cell_vaddr = cell_address(hive_addr, key_cell_offset);
+    let cell_vaddr = resolve_cell_va(reader, hive_addr, key_cell_offset);
 
     // Read enough of the key node to get value count and value list pointer.
     let nk_data = read_cell_data(reader, cell_vaddr)?;
@@ -198,7 +185,7 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
         .map_or(0, u32::from_le_bytes);
 
     // The value list cell contains an array of u32 cell indices (one per value).
-    let vl_vaddr = cell_address(hive_addr, values_list_cell);
+    let vl_vaddr = resolve_cell_va(reader, hive_addr, values_list_cell);
     let vl_data = read_cell_data(reader, vl_vaddr)?;
 
     let key_name = read_key_name(&nk_data);
@@ -223,14 +210,16 @@ pub fn read_registry_values<P: PhysicalMemoryProvider>(
 
 // ── Internal helpers ─────────────────────────────────────────────────
 
-/// Compute the virtual address of a cell given its cell index.
-///
-/// Cells are addressed relative to the start of cell storage (HBIN area),
-/// which begins at `hive_addr + 0x1000`.
-fn cell_address(hive_addr: u64, cell_index: u32) -> u64 {
-    hive_addr
-        .wrapping_add(HBIN_START_OFFSET)
-        .wrapping_add(u64::from(cell_index))
+/// Translate a cell index to its raw cell virtual address (at the 4-byte
+/// `_HCELL` size header), or 0 if it does not translate. In-memory hives are
+/// NOT flat — cells are reached via the `_HHIVE.Storage[].Map` directory.
+/// `hive_addr` is the `_HHIVE`/`_CMHIVE` VA.
+fn resolve_cell_va<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    cell_index: u32,
+) -> u64 {
+    crate::registry::cell_index_to_va(reader, hive_addr, cell_index).unwrap_or(0)
 }
 
 /// Read cell data from a cell at `cell_vaddr`.
@@ -293,7 +282,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
         return Ok(());
     }
 
-    let cell_vaddr = cell_address(hive_addr, cell_index);
+    let cell_vaddr = resolve_cell_va(reader, hive_addr, cell_index);
     let nk_data = read_cell_data(reader, cell_vaddr)?;
 
     if nk_data.len() < NK_NAME_OFFSET {
@@ -342,7 +331,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
 
     // The subkeys list cell can be an "lf", "lh", "ri", or "li" index node.
     // For simplicity, we handle "lf"/"lh" (most common) and fall back gracefully.
-    let sl_vaddr = cell_address(hive_addr, subkeys_list_cell);
+    let sl_vaddr = resolve_cell_va(reader, hive_addr, subkeys_list_cell);
     let sl_data = read_cell_data(reader, sl_vaddr)?;
 
     if sl_data.len() < 4 {
@@ -413,7 +402,7 @@ fn walk_key_recursive<P: PhysicalMemoryProvider>(
                     .try_into()
                     .map_or(0, u32::from_le_bytes);
                 // Read the sub-list and enumerate its children
-                let sub_vaddr = cell_address(hive_addr, sub_list_cell);
+                let sub_vaddr = resolve_cell_va(reader, hive_addr, sub_list_cell);
                 let sub_data = read_cell_data(reader, sub_vaddr)?;
                 if sub_data.len() < 4 {
                     continue;
@@ -462,7 +451,7 @@ fn read_single_value<P: PhysicalMemoryProvider>(
     val_cell: u32,
     key_path: &str,
 ) -> crate::Result<RegistryValueInfo> {
-    let vk_vaddr = cell_address(hive_addr, val_cell);
+    let vk_vaddr = resolve_cell_va(reader, hive_addr, val_cell);
     let vk_data = read_cell_data(reader, vk_vaddr)?;
 
     if vk_data.len() < VK_NAME_OFFSET {
@@ -517,7 +506,7 @@ fn read_single_value<P: PhysicalMemoryProvider>(
         (inline_len, preview)
     } else if data_length_raw > 0 && data_length_raw < 0x8000_0000 {
         // Data is in a separate cell
-        let data_vaddr = cell_address(hive_addr, data_offset);
+        let data_vaddr = resolve_cell_va(reader, hive_addr, data_offset);
         match read_cell_data(reader, data_vaddr) {
             Ok(data_cell) => {
                 let len = (data_length_raw as usize).min(data_cell.len());
@@ -618,12 +607,6 @@ fn format_data_preview(value_type: u32, data: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::test_hive::CellHive;
-    use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::{flags, PageTableBuilder};
-    use memf_core::vas::{TranslationMode, VirtualAddressSpace};
-    use memf_symbols::isf::IsfResolver;
-    use memf_symbols::test_builders::IsfBuilder;
-
     /// In-memory hives are HMAP-scattered, NOT flat: a value read must route
     /// through `_HHIVE.Storage[].Map` cell translation. With the nk at the regf
     /// default root cell 0x20 and cells laid into a single HMAP bin, the flat
@@ -652,22 +635,6 @@ mod tests {
         assert_eq!(vals[0].name, "Updater");
         assert_eq!(vals[0].value_type, "REG_SZ");
         assert!(vals[0].data_preview.contains("evil.exe"));
-    }
-
-    /// Helper: build a minimal ISF resolver (no kernel symbols needed for
-    /// registry_keys since we read raw cell data, not ISF-resolved structs).
-    fn make_reader(
-        builder: PageTableBuilder,
-    ) -> ObjectReader<memf_core::test_builders::SyntheticPhysMem> {
-        let isf = IsfBuilder::new()
-            .add_struct("_LIST_ENTRY", 16)
-            .add_field("_LIST_ENTRY", "Flink", 0, "pointer")
-            .add_field("_LIST_ENTRY", "Blink", 8, "pointer")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = builder.build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        ObjectReader::new(vas, Box::new(resolver))
     }
 
     /// Build a cell: i32 size (negative = allocated) followed by cell data.
@@ -893,9 +860,6 @@ mod tests {
         // Inline: DataLength = 0x8000_0004 (4 bytes inline), DataOffset = value 0xDEAD_BEEF
 
         let hive_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let hive_paddr: u64 = 0x0080_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -924,15 +888,7 @@ mod tests {
         hbin_page[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
         hbin_page[vk_offset as usize..vk_offset as usize + vk_cell.len()].copy_from_slice(&vk_cell);
 
-        let hbase_block = vec![0u8; 4096];
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase_block)
-            .write_phys(hbin_paddr, &hbin_page);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin_page).reader();
         let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
 
         assert_eq!(values.len(), 1);
@@ -952,48 +908,24 @@ mod tests {
 
     #[test]
     fn walk_registry_keys_empty_hive() {
-        // _HBASE_BLOCK at a known virtual address with RootCell = 0.
+        // Empty bin: the regf default root cell 0x20 holds no nk (zero size
+        // header → empty cell data → nk-signature check fails) → no keys.
         let hive_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let hive_paddr: u64 = 0x0080_0000;
-
-        // _HBASE_BLOCK: zero-filled → RootCell at offset 0x24 = 0
-        let hbase_block = vec![0u8; 4096];
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase_block);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, vec![0u8; 0x1000]).reader();
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
-        assert!(keys.is_empty(), "Expected empty Vec for zero root cell");
+        assert!(keys.is_empty(), "Expected empty Vec for empty root cell");
     }
 
     // ── Test 2: Single key node ─────────────────────────────────────
 
     #[test]
     fn walk_registry_keys_single_key() {
-        // Memory layout:
-        //   Page 0 (vaddr 0xFFFF_8000_0010_0000): _HBASE_BLOCK
-        //   Page 1 (vaddr 0xFFFF_8000_0010_1000): HBIN area (cell storage)
-        //
-        // _HBASE_BLOCK:
-        //   RootCell at offset 0x24 = 0x20 (cell index within HBIN)
-        //
-        // HBIN at hive_addr + 0x1000:
-        //   Cell at offset 0x20: nk cell for "CMI-CreateHive{ROOT}"
+        // The regf default root cell 0x20 holds the nk for "CMI-CreateHive{ROOT}";
+        // cells are reached via HMAP cell translation, not a flat HBIN page.
 
         let hive_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let hive_paddr: u64 = 0x0080_0000;
-        // HBIN page is at hive_vaddr + 0x1000
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
-        // Build _HBASE_BLOCK
-        let mut hbase_block = vec![0u8; 4096];
-        let root_cell_index: u32 = 0x20;
-        hbase_block[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
-
-        // Build the nk cell at offset 0x20 within HBIN
+        // Build the nk cell at cell index 0x20.
         let last_write: u64 = 132800000000000000;
         let nk_data = build_nk_cell_data(
             "CMI-CreateHive{ROOT}",
@@ -1006,16 +938,9 @@ mod tests {
         let nk_cell = build_cell(&nk_data);
 
         let mut hbin_page = vec![0u8; 4096];
-        // Place cell at offset 0x20 within the HBIN page
         hbin_page[0x20..0x20 + nk_cell.len()].copy_from_slice(&nk_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase_block)
-            .write_phys(hbin_paddr, &hbin_page);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin_page).reader();
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
 
         assert_eq!(keys.len(), 1);
@@ -1029,19 +954,13 @@ mod tests {
 
     #[test]
     fn read_registry_values_single_value() {
-        // Memory layout:
-        //   Page 0: _HBASE_BLOCK (unused for read_registry_values but needed for context)
-        //   Page 1: HBIN with nk cell, value-list cell, vk cell, and data cell
-        //
-        // nk cell at offset 0x20: key "TestKey" with 1 value
-        // value-list cell at offset 0x100: [vk_cell_index]
+        // Cell layout in the HMAP bin (cell index == byte offset):
+        //   nk cell at offset 0x20: key "TestKey" with 1 value
+        //   value-list cell at offset 0x100: [vk_cell_index]
         // vk cell at offset 0x120: "TestValue", REG_SZ, data at offset 0x180
         // data cell at offset 0x180: UTF-16LE "Hello"
 
         let hive_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let hive_paddr: u64 = 0x0080_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         // Key cell offset (used as the key_cell_offset parameter)
         let nk_offset: u32 = 0x20;
@@ -1090,16 +1009,7 @@ mod tests {
         hbin_page[data_cell_offset as usize..data_cell_offset as usize + data_cell.len()]
             .copy_from_slice(&data_cell);
 
-        // _HBASE_BLOCK (not strictly needed for read_registry_values but present)
-        let hbase_block = vec![0u8; 4096];
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase_block)
-            .write_phys(hbin_paddr, &hbin_page);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin_page).reader();
         let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
 
         assert_eq!(values.len(), 1);
@@ -1117,11 +1027,8 @@ mod tests {
     #[test]
     fn walk_registry_keys_li_list_child() {
         let hive_vaddr: u64 = 0xFFFF_8000_0020_0000;
-        let hive_paddr: u64 = 0x0090_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
-        // Offsets within the HBIN page:
+        // Cell indices (the root nk sits at the regf default cell 0x20):
         let root_cell_index: u32 = 0x20; // root nk cell
         let list_cell_index: u32 = 0x100; // li list cell
         let child_cell_index: u32 = 0x200; // child nk cell
@@ -1141,9 +1048,6 @@ mod tests {
         let child_nk = build_nk_cell_data("ChildKey", 9999, 0, 0, 0, 0);
         let child_cell = build_cell(&child_nk);
 
-        let mut hbase = vec![0u8; 4096];
-        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
-
         let mut hbin = vec![0u8; 4096];
         hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
             .copy_from_slice(&root_cell);
@@ -1152,13 +1056,7 @@ mod tests {
         hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
             .copy_from_slice(&child_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase)
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
 
         // Should get both root and child
@@ -1182,9 +1080,6 @@ mod tests {
     #[test]
     fn walk_registry_keys_ri_list_child() {
         let hive_vaddr: u64 = 0xFFFF_8000_0030_0000;
-        let hive_paddr: u64 = 0x00A0_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let ri_cell_index: u32 = 0x100; // ri index of indices
@@ -1214,9 +1109,6 @@ mod tests {
         let child_nk = build_nk_cell_data("RIChild", 1234, 0, 0, 0, 0);
         let child_cell = build_cell(&child_nk);
 
-        let mut hbase = vec![0u8; 4096];
-        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
-
         let mut hbin = vec![0u8; 4096];
         hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
             .copy_from_slice(&root_cell);
@@ -1227,13 +1119,7 @@ mod tests {
         hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
             .copy_from_slice(&child_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase)
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
 
         assert!(keys.len() >= 2, "expected root+child, got {}", keys.len());
@@ -1251,9 +1137,6 @@ mod tests {
     #[test]
     fn walk_registry_keys_unknown_list_type_skipped() {
         let hive_vaddr: u64 = 0xFFFF_8000_0040_0000;
-        let hive_paddr: u64 = 0x00B0_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let list_cell_index: u32 = 0x100;
@@ -1269,22 +1152,13 @@ mod tests {
         unk_data[4..8].copy_from_slice(&0u32.to_le_bytes());
         let unk_cell = build_cell(&unk_data);
 
-        let mut hbase = vec![0u8; 4096];
-        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
-
         let mut hbin = vec![0u8; 4096];
         hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
             .copy_from_slice(&root_cell);
         hbin[list_cell_index as usize..list_cell_index as usize + unk_cell.len()]
             .copy_from_slice(&unk_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase)
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
 
         // Should return just the root key (unknown list skipped silently)
@@ -1299,9 +1173,6 @@ mod tests {
     #[test]
     fn read_registry_values_bad_nk_signature_returns_error() {
         let hive_vaddr: u64 = 0xFFFF_8000_0050_0000;
-        let hive_paddr: u64 = 0x00C0_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
 
@@ -1310,17 +1181,10 @@ mod tests {
         bad_data[0..2].copy_from_slice(&0xFFFFu16.to_le_bytes()); // bad sig
         let bad_cell = build_cell(&bad_data);
 
-        let hbase = vec![0u8; 4096];
         let mut hbin = vec![0u8; 4096];
         hbin[nk_offset as usize..nk_offset as usize + bad_cell.len()].copy_from_slice(&bad_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase)
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let result = read_registry_values(&reader, hive_vaddr, nk_offset);
         assert!(result.is_err(), "bad nk signature should return error");
     }
@@ -1332,9 +1196,6 @@ mod tests {
     #[test]
     fn read_registry_values_zero_data_length() {
         let hive_vaddr: u64 = 0xFFFF_8000_0060_0000;
-        let hive_paddr: u64 = 0x00D0_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -1355,13 +1216,7 @@ mod tests {
         hbin[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
         hbin[vk_offset as usize..vk_offset as usize + vk_cell.len()].copy_from_slice(&vk_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &vec![0u8; 4096])
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].data_length, 0);
@@ -1374,9 +1229,6 @@ mod tests {
     #[test]
     fn read_registry_values_bad_vk_signature_skipped() {
         let hive_vaddr: u64 = 0xFFFF_8000_0070_0000;
-        let hive_paddr: u64 = 0x00E0_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -1400,13 +1252,7 @@ mod tests {
         hbin[vk_offset as usize..vk_offset as usize + bad_vk_cell.len()]
             .copy_from_slice(&bad_vk_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &vec![0u8; 4096])
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
         // Bad sig causes an error inside read_single_value which is `continue`d
         assert_eq!(values.len(), 0, "bad vk sig should be skipped");
@@ -1449,13 +1295,8 @@ mod tests {
         // abs_size of a positive i32 cell: |+8| = 8, data_len = 4
         // (positive = free cell, but we still read data)
         let hive_vaddr: u64 = 0xFFFF_8000_0080_0000;
-        let hive_paddr: u64 = 0x00F0_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let cell_index: u32 = 0x20;
-        let cell_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET + u64::from(cell_index);
-        let _cell_paddr: u64 = hive_paddr + HBIN_START_OFFSET + u64::from(cell_index);
 
         // +8 raw_size: abs = 8, data_len = 4 → should read 4 bytes
         let raw_size: i32 = 8i32; // positive (free cell), abs = 8
@@ -1464,16 +1305,9 @@ mod tests {
         cell_page[cell_off..cell_off + 4].copy_from_slice(&raw_size.to_le_bytes());
         cell_page[cell_off + 4..cell_off + 8].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr & !0xFFF, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr & !0xFFF, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &vec![0u8; 4096])
-            .write_phys(hbin_paddr, &cell_page);
-
-        let reader = make_reader(ptb);
-        // cell_address computes: hive_vaddr + HBIN_START_OFFSET + cell_index
-        let cell_vaddr_computed = cell_address(hive_vaddr, cell_index);
-        assert_eq!(cell_vaddr_computed, cell_vaddr);
+        let reader = CellHive::with_bin(hive_vaddr, cell_page).reader();
+        // The cell is reached via HMAP translation, not the flat HBIN math.
+        let cell_vaddr_computed = resolve_cell_va(&reader, hive_vaddr, cell_index);
         let data = read_cell_data(&reader, cell_vaddr_computed).unwrap();
         assert!(
             !data.is_empty(),
@@ -1487,9 +1321,6 @@ mod tests {
     #[test]
     fn walk_registry_keys_depth_zero_stops_at_root() {
         let hive_vaddr: u64 = 0xFFFF_8000_0090_0000;
-        let hive_paddr: u64 = 0x0070_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let list_cell_index: u32 = 0x100;
@@ -1508,9 +1339,6 @@ mod tests {
         let child_nk = build_nk_cell_data("DCHILD", 0, 0, 0, 0, 0);
         let child_cell = build_cell(&child_nk);
 
-        let mut hbase = vec![0u8; 4096];
-        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
-
         let mut hbin = vec![0u8; 4096];
         hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
             .copy_from_slice(&root_cell);
@@ -1519,13 +1347,7 @@ mod tests {
         hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
             .copy_from_slice(&child_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase)
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         // depth=0 → no recursion
         let keys = walk_registry_keys(&reader, hive_vaddr, 0).unwrap();
         assert_eq!(keys.len(), 1, "depth=0 should only return root");
@@ -1538,9 +1360,6 @@ mod tests {
     #[test]
     fn read_registry_values_name_length_overflow_empty_name() {
         let hive_vaddr: u64 = 0xFFFF_8000_00A0_0000;
-        let hive_paddr: u64 = 0x0075_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let nk_offset: u32 = 0x20;
         let vl_offset: u32 = 0x100;
@@ -1566,13 +1385,7 @@ mod tests {
         hbin[vl_offset as usize..vl_offset as usize + vl_cell.len()].copy_from_slice(&vl_cell);
         hbin[vk_offset as usize..vk_offset as usize + vk_cell.len()].copy_from_slice(&vk_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &vec![0u8; 4096])
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let values = read_registry_values(&reader, hive_vaddr, nk_offset).unwrap();
         // name_length overflow → name = ""
         assert_eq!(values.len(), 1);
@@ -1617,9 +1430,6 @@ mod tests {
     #[test]
     fn walk_registry_keys_ri_with_li_sublist() {
         let hive_vaddr: u64 = 0xFFFF_8000_00B0_0000;
-        let hive_paddr: u64 = 0x007A_0000;
-        let hbin_vaddr: u64 = hive_vaddr + HBIN_START_OFFSET;
-        let hbin_paddr: u64 = hive_paddr + HBIN_START_OFFSET;
 
         let root_cell_index: u32 = 0x20;
         let ri_cell_index: u32 = 0x100;
@@ -1647,9 +1457,6 @@ mod tests {
         let child_nk = build_nk_cell_data("RILIChild", 0, 0, 0, 0, 0);
         let child_cell = build_cell(&child_nk);
 
-        let mut hbase = vec![0u8; 4096];
-        hbase[0x24..0x28].copy_from_slice(&root_cell_index.to_le_bytes());
-
         let mut hbin = vec![0u8; 4096];
         hbin[root_cell_index as usize..root_cell_index as usize + root_cell.len()]
             .copy_from_slice(&root_cell);
@@ -1660,13 +1467,7 @@ mod tests {
         hbin[child_cell_index as usize..child_cell_index as usize + child_cell.len()]
             .copy_from_slice(&child_cell);
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hbin_vaddr, hbin_paddr, flags::WRITABLE)
-            .write_phys(hive_paddr, &hbase)
-            .write_phys(hbin_paddr, &hbin);
-
-        let reader = make_reader(ptb);
+        let reader = CellHive::with_bin(hive_vaddr, hbin).reader();
         let keys = walk_registry_keys(&reader, hive_vaddr, 10).unwrap();
         assert!(
             keys.len() >= 2,
@@ -1683,31 +1484,16 @@ mod tests {
     // RED: read_registry_values with wrong nk signature → WalkFailed
     #[test]
     fn read_registry_values_invalid_nk_signature_returns_walk_failed() {
-        // Build a hive with a root cell that has an invalid signature (not 0x6B6E).
-        // cell_address(hive_addr, cell_offset) = hive_addr + HBIN_START_OFFSET + cell_offset + 4
-        // We'll use key_cell_offset = 0x20 (a typical value).
-        // Layout: hive_page at vaddr_base; nk cell starts at hive_addr + 0x1000 + 0x20 + 4
-        let hive_paddr: u64 = 0x0090_0000;
+        // Root cell 0x20 carries an allocated cell whose signature is not "nk".
         let hive_vaddr: u64 = 0xFFFF_8000_C000_0000;
-        let mut hive_page = vec![0u8; 8192]; // 2 pages
-
         let key_cell_offset: u32 = 0x20;
-        // cell data starts at: HBIN_START_OFFSET(0x1000) + key_cell_offset + 4 (skip size)
-        // = 0x1000 + 0x20 + 4 = 0x1024
-        let cell_data_start: usize = 0x1000 + 0x20 + 4;
-        // Allocated cell: size = -64 (0xFFFFFFC0 as i32 LE)
-        let cell_size: i32 = -64;
-        hive_page[0x1000 + 0x20..0x1000 + 0x20 + 4].copy_from_slice(&cell_size.to_le_bytes());
-        // Write wrong signature: 0xDEAD instead of NK_SIGNATURE (0x6B6E)
-        hive_page[cell_data_start..cell_data_start + 2].copy_from_slice(&0xDEADu16.to_le_bytes());
+        let mut bin = vec![0u8; 0x1000];
+        // Allocated cell: size = -64; data starts 4 bytes past the index.
+        bin[0x20..0x24].copy_from_slice(&(-64i32).to_le_bytes());
+        // Wrong signature 0xDEAD instead of NK_SIGNATURE (0x6B6E).
+        bin[0x24..0x26].copy_from_slice(&0xDEADu16.to_le_bytes());
 
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hive_vaddr + 0x1000, hive_paddr + 0x1000, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page[..4096])
-            .write_phys(hive_paddr + 0x1000, &hive_page[4096..]);
-        let reader = make_reader(ptb);
-
+        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
         let result = read_registry_values(&reader, hive_vaddr, key_cell_offset);
         assert!(
             matches!(
@@ -1722,25 +1508,12 @@ mod tests {
     // Call read_single_value directly (private fn accessible from mod tests).
     #[test]
     fn read_single_value_vk_cell_too_small_returns_walk_failed() {
-        let hive_paddr: u64 = 0x0091_0000;
         let hive_vaddr: u64 = 0xFFFF_8000_D000_0000;
-        let mut hive_page = vec![0u8; 8192];
+        let mut bin = vec![0u8; 0x1000];
+        // VK cell at index 0x100, size = -2 (too small for vk data: 2 bytes < 0x14).
+        bin[0x100..0x104].copy_from_slice(&(-2i32).to_le_bytes());
 
-        // VK cell at cell index 0x100 (physical: 0x1000 + 0x100)
-        // cell_address(hive_addr, 0x100) = hive_addr + 0x1000 + 0x100
-        let vk_cell_start: usize = 0x1000 + 0x100;
-        // Cell size = -2 (allocated, too small for vk data: only 2 bytes < VK_NAME_OFFSET=0x14)
-        let vk_size: i32 = -2;
-        hive_page[vk_cell_start..vk_cell_start + 4].copy_from_slice(&vk_size.to_le_bytes());
-        // vk data: 2 bytes of zeros
-
-        let ptb = PageTableBuilder::new()
-            .map_4k(hive_vaddr, hive_paddr, flags::WRITABLE)
-            .map_4k(hive_vaddr + 0x1000, hive_paddr + 0x1000, flags::WRITABLE)
-            .write_phys(hive_paddr, &hive_page[..4096])
-            .write_phys(hive_paddr + 0x1000, &hive_page[4096..]);
-        let reader = make_reader(ptb);
-
+        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
         let result = read_single_value(&reader, hive_vaddr, 0x100u32, "HKLM\\test");
         assert!(
             matches!(
