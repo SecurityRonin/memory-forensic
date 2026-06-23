@@ -30,7 +30,7 @@ fn cellmap_isf() -> serde_json::Value {
 pub(crate) struct CellHive {
     pub(crate) hhive_va: u64,
     pub(crate) bin_va: u64,
-    bin: Vec<u8>,
+    pub(crate) bin: Vec<u8>,
 }
 
 impl CellHive {

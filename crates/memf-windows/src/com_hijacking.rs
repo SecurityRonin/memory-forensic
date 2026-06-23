@@ -413,7 +413,8 @@ fn read_default_value_string<P: PhysicalMemoryProvider>(
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::{flags, PageTableBuilder};
+    use crate::test_hive::CellHive;
+    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
@@ -896,5 +897,121 @@ mod tests {
             results.is_empty() || results.iter().all(|e| !e.is_suspicious),
             "matching HKCU/HKCR paths should not produce suspicious entries"
         );
+    }
+
+    // ── CellHive (HMAP) tests ─────────────────────────────────────────────
+
+    /// Reconstruct the per-cell cellmap ISF — mirrors `cellmap_isf()` in test_hive.rs.
+    fn com_cellmap_isf() -> serde_json::Value {
+        IsfBuilder::new()
+            .add_struct("_HHIVE", 0x800)
+            .add_field("_HHIVE", "BaseBlock", 0x10, "pointer")
+            .add_field("_HHIVE", "Storage", 0xb8, "char")
+            .add_struct("_DUAL", 0x278)
+            .add_field("_DUAL", "Map", 0x18, "pointer")
+            .add_struct("_HMAP_ENTRY", 0x20)
+            .add_field("_HMAP_ENTRY", "PermanentBinAddress", 0x0, "pointer")
+            .add_field("_HMAP_ENTRY", "BlockOffset", 0x8, "unsigned long")
+            .build_json()
+    }
+
+    /// Encode `s` as UTF-16LE with a null terminator.
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .chain([0u8, 0u8])
+            .collect()
+    }
+
+    /// Map all 5 HMAP pages of a CellHive into a `PageTableBuilder` at `pa_base`.
+    fn add_hive_pages(ptb: PageTableBuilder, h: &CellHive, pa_base: u64) -> PageTableBuilder {
+        let bb_va = h.hhive_va + 0x1000;
+        let dir_va = h.hhive_va + 0x2000;
+        let table_va = h.hhive_va + 0x3000;
+
+        let mut hh = vec![0u8; 0x1000];
+        hh[0x10..0x18].copy_from_slice(&bb_va.to_le_bytes());
+        hh[0xb8 + 0x18..0xb8 + 0x18 + 8].copy_from_slice(&dir_va.to_le_bytes());
+
+        let mut dir = vec![0u8; 0x1000];
+        dir[0..8].copy_from_slice(&table_va.to_le_bytes());
+
+        let mut table = vec![0u8; 0x1000];
+        table[0..8].copy_from_slice(&h.bin_va.to_le_bytes());
+
+        ptb.map_4k(h.hhive_va, pa_base, flags::WRITABLE)
+            .write_phys(pa_base, &hh)
+            .map_4k(bb_va, pa_base + 0x1000, flags::WRITABLE)
+            .write_phys(pa_base + 0x1000, &vec![0u8; 0x1000])
+            .map_4k(dir_va, pa_base + 0x2000, flags::WRITABLE)
+            .write_phys(pa_base + 0x2000, &dir)
+            .map_4k(table_va, pa_base + 0x3000, flags::WRITABLE)
+            .write_phys(pa_base + 0x3000, &table)
+            .map_4k(h.bin_va, pa_base + 0x4000, flags::WRITABLE)
+            .write_phys(pa_base + 0x4000, &h.bin)
+    }
+
+    /// Build a single `ObjectReader` with HKCU (PA 0x30_0000) and HKCR
+    /// (PA 0x31_0000) both visible in the same VAS.
+    fn two_hive_reader(
+        hkcu: &CellHive,
+        hkcr: &CellHive,
+    ) -> ObjectReader<SyntheticPhysMem> {
+        let resolver = IsfResolver::from_value(&com_cellmap_isf()).unwrap();
+        let ptb = add_hive_pages(PageTableBuilder::new(), hkcu, 0x30_0000);
+        let ptb = add_hive_pages(ptb, hkcr, 0x31_0000);
+        let (cr3, mem) = ptb.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// HKCU has `Software\Classes\CLSID\{guid}\InprocServer32` pointing to an
+    /// AppData path; HKCR has a different (legitimate) path. The flat walker
+    /// cannot navigate the HMAP bin layout → returns empty → test fails RED.
+    #[test]
+    fn com_hijacking_detects_hkcu_override_via_hmap() {
+        let guid = "{AB000001-0000-0000-0000-000000000001}";
+        let hkcu_dll = r"C:\AppData\evil.dll";
+        let hkcr_dll = r"C:\Windows\System32\real.dll";
+
+        // ── HKCU: Software\Classes\CLSID\{guid}\InprocServer32 ──
+        let mut hkcu = CellHive::new(0x0050_0000);
+        hkcu.nk(0x020, b"Root",            1, 0x080, 0);
+        hkcu.lf(0x080, &[0x0C0]);
+        hkcu.nk(0x0C0, b"Software",        1, 0x140, 0);
+        hkcu.lf(0x140, &[0x180]);
+        hkcu.nk(0x180, b"Classes",         1, 0x200, 0);
+        hkcu.lf(0x200, &[0x240]);
+        hkcu.nk(0x240, b"CLSID",           1, 0x2C0, 0);
+        hkcu.lf(0x2C0, &[0x300]);
+        hkcu.nk(0x300, guid.as_bytes(),    1, 0x380, 0);
+        hkcu.lf(0x380, &[0x3C0]);
+        hkcu.nk(0x3C0, b"InprocServer32",  0, 0,     0);
+        let hkcu_data = utf16le(hkcu_dll);
+        hkcu.values(0x3C0, 1, 0x440);
+        hkcu.value_list(0x440, &[0x480]);
+        hkcu.vk(0x480, b"", 1, hkcu_data.len() as u32, 0x4C0);
+        hkcu.data(0x4C0, &hkcu_data);
+
+        // ── HKCR: CLSID\{guid}\InprocServer32 ──
+        let mut hkcr = CellHive::new(0x0060_0000);
+        hkcr.nk(0x020, b"Root",            1, 0x080, 0);
+        hkcr.lf(0x080, &[0x0C0]);
+        hkcr.nk(0x0C0, b"CLSID",           1, 0x140, 0);
+        hkcr.lf(0x140, &[0x180]);
+        hkcr.nk(0x180, guid.as_bytes(),    1, 0x200, 0);
+        hkcr.lf(0x200, &[0x240]);
+        hkcr.nk(0x240, b"InprocServer32",  0, 0,     0);
+        let hkcr_data = utf16le(hkcr_dll);
+        hkcr.values(0x240, 1, 0x2C0);
+        hkcr.value_list(0x2C0, &[0x300]);
+        hkcr.vk(0x300, b"", 1, hkcr_data.len() as u32, 0x340);
+        hkcr.data(0x340, &hkcr_data);
+
+        let r = two_hive_reader(&hkcu, &hkcr);
+        let results = walk_com_hijacking(&r, hkcu.hhive_va, hkcr.hhive_va).unwrap();
+        assert_eq!(results.len(), 1, "expected one hijack, got {}", results.len());
+        assert_eq!(results[0].clsid, guid);
+        assert!(results[0].is_suspicious);
     }
 }
