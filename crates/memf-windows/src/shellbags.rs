@@ -3,6 +3,8 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
+use crate::registry;
+
 const MAX_SUBKEYS_PER_LEVEL: usize = 256;
 const MAX_DEPTH: usize = 32;
 
@@ -51,157 +53,158 @@ pub fn classify_shellbag(path: &str) -> bool {
     false
 }
 
-/// Walk shellbag entries from a registry hive in memory.
+/// `Shell\BagMRU` lives under one of two paths: `Local Settings\Software\...`
+/// in UsrClass.dat, or `Software\...` in NTUSER.DAT.
+const BAGMRU_PATHS: &[&[&str]] = &[
+    &[
+        "Local Settings",
+        "Software",
+        "Microsoft",
+        "Windows",
+        "Shell",
+        "BagMRU",
+    ],
+    &["Software", "Microsoft", "Windows", "Shell", "BagMRU"],
+];
+
+/// Walk shellbag folder-access evidence from a registry hive in memory.
+///
+/// Navigates the HMAP cell map to `Shell\BagMRU` and recurses the BagMRU tree:
+/// each numbered subkey "N" is a folder whose name comes from the parent's value
+/// "N" (a shell item), and whose registry LastWriteTime is the subkey's own.
 pub fn walk_shellbags<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
 ) -> crate::Result<Vec<ShellbagEntry>> {
-    let _sig_offset = match reader.symbols().field_offset("_CM_KEY_NODE", "Signature") {
-        Some(offset) => offset,
-        None => return Ok(Vec::new()),
-    };
-
     if hive_addr == 0 {
         return Ok(Vec::new());
     }
+    let root = registry::resolve_root_cell(reader, hive_addr);
+    if root == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(bagmru) = find_bagmru(reader, hive_addr, root) else {
+        return Ok(Vec::new());
+    };
 
-    let subkeys_offset = reader
-        .symbols()
-        .field_offset("_CM_KEY_NODE", "SubKeyLists")
-        .unwrap_or(0x20);
-
-    let value_list_offset = reader
-        .symbols()
-        .field_offset("_CM_KEY_NODE", "ValueList")
-        .unwrap_or(0x28);
-
-    let last_write_offset = reader
+    let last_write_off = reader
         .symbols()
         .field_offset("_CM_KEY_NODE", "LastWriteTime")
-        .unwrap_or(0x08);
+        .unwrap_or(0x04);
 
     let mut entries = Vec::new();
-
     walk_bagmru_node(
         reader,
         hive_addr,
-        String::new(),
+        bagmru,
+        "",
         0,
-        subkeys_offset,
-        value_list_offset,
-        last_write_offset,
+        last_write_off,
         &mut entries,
     );
-
     Ok(entries)
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::only_used_in_recursion)]
+/// Navigate `root` down to the first `Shell\BagMRU` key that exists (UsrClass.dat
+/// or NTUSER.DAT layout), returning its cell VA.
+fn find_bagmru<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    hive_addr: u64,
+    root: u64,
+) -> Option<u64> {
+    for path in BAGMRU_PATHS {
+        let mut cur = root;
+        for &component in *path {
+            cur = registry::find_subkey_by_name(reader, hive_addr, cur, component);
+            if cur == 0 {
+                break;
+            }
+        }
+        if cur != 0 {
+            return Some(cur);
+        }
+    }
+    None
+}
+
 fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
+    hive_addr: u64,
     node_addr: u64,
-    parent_path: String,
+    parent_path: &str,
     depth: usize,
-    subkeys_offset: u64,
-    value_list_offset: u64,
-    last_write_offset: u64,
+    last_write_off: u64,
     entries: &mut Vec<ShellbagEntry>,
 ) {
     if depth >= MAX_DEPTH || node_addr == 0 {
         return;
     }
 
-    let slot_modified_time: u64 = reader
-        .read_field(node_addr, "_CM_KEY_NODE", "LastWriteTime")
-        .unwrap_or(0);
+    // Each child's folder name is carried by the parent's value of the same name
+    // (the shell item); MRUListEx / NodeSlot values have no matching subkey.
+    let values = registry::list_values(reader, hive_addr, node_addr);
 
-    let value_list_addr: u64 = match reader.read_bytes(node_addr + value_list_offset, 8) {
-        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-        _ => 0,
-    };
+    for (name, child_addr) in registry::list_subkeys(reader, hive_addr, node_addr)
+        .into_iter()
+        .take(MAX_SUBKEYS_PER_LEVEL)
+    {
+        let (folder_name, access_time, creation_time) = values
+            .iter()
+            .find(|v| v.name == name)
+            .map_or((String::new(), 0, 0), |v| parse_shell_item(&v.data));
 
-    let (folder_name, access_time, creation_time) = if value_list_addr != 0 {
-        parse_shitemid(reader, value_list_addr)
-    } else {
-        (String::new(), 0u64, 0u64)
-    };
-
-    let current_path = if parent_path.is_empty() {
-        folder_name.clone()
-    } else if folder_name.is_empty() {
-        parent_path.clone()
-    } else {
-        format!("{parent_path}\\{folder_name}")
-    };
-
-    if !current_path.is_empty() {
-        let is_suspicious = classify_shellbag(&current_path);
-        entries.push(ShellbagEntry {
-            path: current_path.clone(),
-            slot_modified_time,
-            access_time,
-            creation_time,
-            is_suspicious,
-        });
-    }
-
-    let subkeys_list_addr: u64 = match reader.read_bytes(node_addr + subkeys_offset, 8) {
-        Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-        _ => return,
-    };
-
-    if subkeys_list_addr == 0 {
-        return;
-    }
-
-    for i in 0..MAX_SUBKEYS_PER_LEVEL {
-        let subkey_ptr_addr = subkeys_list_addr + (i as u64) * 8;
-        let subkey_addr: u64 = match reader.read_bytes(subkey_ptr_addr, 8) {
-            Ok(bytes) if bytes.len() == 8 => bytes[..8].try_into().map_or(0, u64::from_le_bytes),
-            _ => break,
+        let current_path = if parent_path.is_empty() {
+            folder_name.clone()
+        } else if folder_name.is_empty() {
+            parent_path.to_string()
+        } else {
+            format!("{parent_path}\\{folder_name}")
         };
 
-        if subkey_addr == 0 {
-            break;
+        if !current_path.is_empty() {
+            // The bag slot's registry LastWriteTime is this subkey's own.
+            let slot_modified_time = reader
+                .read_bytes(child_addr + last_write_off, 8)
+                .ok()
+                .filter(|b| b.len() == 8)
+                .map_or(0, |b| {
+                    u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8]))
+                });
+            entries.push(ShellbagEntry {
+                path: current_path.clone(),
+                slot_modified_time,
+                access_time,
+                creation_time,
+                is_suspicious: classify_shellbag(&current_path),
+            });
         }
 
         walk_bagmru_node(
             reader,
-            subkey_addr,
-            current_path.clone(),
+            hive_addr,
+            child_addr,
+            &current_path,
             depth + 1,
-            subkeys_offset,
-            value_list_offset,
-            last_write_offset,
+            last_write_off,
             entries,
         );
     }
 }
 
-fn parse_shitemid<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    value_addr: u64,
-) -> (String, u64, u64) {
-    let header = match reader.read_bytes(value_addr, 4) {
-        Ok(bytes) if bytes.len() >= 4 => bytes,
-        _ => return (String::new(), 0, 0),
-    };
-
-    let cb = u16::from_le_bytes([header[0], header[1]]) as usize;
+/// Parse a BagMRU value's shell-item bytes → (folder name, access, creation).
+/// The value data is a SHITEMID: `cb`(2) size then the item body; the folder name
+/// and the BEEF extension-block timestamps live within.
+fn parse_shell_item(data: &[u8]) -> (String, u64, u64) {
+    if data.len() < 4 {
+        return (String::new(), 0, 0);
+    }
+    let cb = u16::from_le_bytes([data[0], data[1]]) as usize;
     if !(4..=0x800).contains(&cb) {
         return (String::new(), 0, 0);
     }
-
-    let blob = match reader.read_bytes(value_addr, cb) {
-        Ok(bytes) if bytes.len() == cb => bytes,
-        _ => return (String::new(), 0, 0),
-    };
-
+    let blob = &data[..cb.min(data.len())];
     let name = extract_folder_name(&blob[2..]);
-    let (access_time, creation_time) = find_extension_timestamps(&blob);
-
+    let (access_time, creation_time) = find_extension_timestamps(blob);
     (name, access_time, creation_time)
 }
 
@@ -554,16 +557,7 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
         let mut entries = Vec::new();
-        walk_bagmru_node(
-            &reader,
-            0x1000,
-            String::new(),
-            MAX_DEPTH,
-            0x20,
-            0x28,
-            0x08,
-            &mut entries,
-        );
+        walk_bagmru_node(&reader, 0x1000, 0x2000, "", MAX_DEPTH, 0x08, &mut entries);
         assert!(entries.is_empty(), "max depth should yield no entries");
     }
 
@@ -581,166 +575,8 @@ mod tests {
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         let reader = ObjectReader::new(vas, Box::new(resolver));
         let mut entries = Vec::new();
-        walk_bagmru_node(&reader, 0, String::new(), 0, 0x20, 0x28, 0x08, &mut entries);
+        walk_bagmru_node(&reader, 0, 0, "", 0, 0x08, &mut entries);
         assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn walk_bagmru_node_mapped_node_with_value_list() {
-        use memf_core::test_builders::{flags, SyntheticPhysMem};
-
-        let node_vaddr: u64 = 0xFFFF_8000_0010_0000;
-        let node_paddr: u64 = 0x0010_0000;
-        let shitemid_vaddr: u64 = 0xFFFF_8000_0020_0000;
-        let shitemid_paddr: u64 = 0x0020_0000;
-
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
-            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
-            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
-            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let mut node_page = vec![0u8; 0x1000];
-        node_page[0x08..0x10].copy_from_slice(&0x0000_0000_0000_1234u64.to_le_bytes());
-        node_page[0x28..0x30].copy_from_slice(&shitemid_vaddr.to_le_bytes());
-        node_page[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut shitem_page = vec![0u8; 0x1000];
-        shitem_page[0] = 12u8;
-        shitem_page[1] = 0u8;
-        shitem_page[2] = 0x31;
-        shitem_page[3] = b'D';
-        shitem_page[4] = b'o';
-        shitem_page[5] = b'c';
-        shitem_page[6] = 0;
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(node_vaddr, node_paddr, flags::WRITABLE)
-            .write_phys(node_paddr, &node_page)
-            .map_4k(shitemid_vaddr, shitemid_paddr, flags::WRITABLE)
-            .write_phys(shitemid_paddr, &shitem_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let mut entries = Vec::new();
-        walk_bagmru_node(
-            &reader,
-            node_vaddr,
-            "C:\\Users".to_string(),
-            0,
-            0x20,
-            0x28,
-            0x08,
-            &mut entries,
-        );
-
-        assert_eq!(entries.len(), 1, "should push one entry");
-        assert!(
-            entries[0].path.contains("Doc"),
-            "path should contain folder name"
-        );
-        assert_eq!(entries[0].slot_modified_time, 0x1234);
-    }
-
-    #[test]
-    fn walk_bagmru_node_empty_folder_uses_parent_path() {
-        use memf_core::test_builders::{flags, SyntheticPhysMem};
-
-        let node_vaddr: u64 = 0xFFFF_8000_0030_0000;
-        let node_paddr: u64 = 0x0030_0000;
-
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
-            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
-            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
-            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let mut node_page = vec![0u8; 0x1000];
-        node_page[0x28..0x30].copy_from_slice(&0u64.to_le_bytes());
-        node_page[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(node_vaddr, node_paddr, flags::WRITABLE)
-            .write_phys(node_paddr, &node_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let mut entries = Vec::new();
-        walk_bagmru_node(
-            &reader,
-            node_vaddr,
-            "C:\\Desktop".to_string(),
-            0,
-            0x20,
-            0x28,
-            0x08,
-            &mut entries,
-        );
-        assert_eq!(entries.len(), 1, "should push one entry with parent path");
-        assert_eq!(entries[0].path, "C:\\Desktop");
-    }
-
-    #[test]
-    fn walk_bagmru_node_with_subkeys_recurses() {
-        use memf_core::test_builders::{flags, SyntheticPhysMem};
-
-        let root_vaddr: u64 = 0xFFFF_8000_0040_0000;
-        let root_paddr: u64 = 0x0040_0000;
-        let sklist_vaddr: u64 = 0xFFFF_8000_0050_0000;
-        let sklist_paddr: u64 = 0x0050_0000;
-        let child_vaddr: u64 = 0xFFFF_8000_0060_0000;
-        let child_paddr: u64 = 0x0060_0000;
-
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
-            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
-            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
-            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-
-        let mut root_page = vec![0u8; 0x1000];
-        root_page[0x20..0x28].copy_from_slice(&sklist_vaddr.to_le_bytes());
-        root_page[0x28..0x30].copy_from_slice(&0u64.to_le_bytes());
-
-        let mut sklist_page = vec![0u8; 0x1000];
-        sklist_page[0..8].copy_from_slice(&child_vaddr.to_le_bytes());
-        sklist_page[8..16].copy_from_slice(&0u64.to_le_bytes());
-
-        let child_page = vec![0u8; 0x1000];
-
-        let (cr3, mem) = PageTableBuilder::new()
-            .map_4k(root_vaddr, root_paddr, flags::WRITABLE)
-            .write_phys(root_paddr, &root_page)
-            .map_4k(sklist_vaddr, sklist_paddr, flags::WRITABLE)
-            .write_phys(sklist_paddr, &sklist_page)
-            .map_4k(child_vaddr, child_paddr, flags::WRITABLE)
-            .write_phys(child_paddr, &child_page)
-            .build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader: ObjectReader<SyntheticPhysMem> = ObjectReader::new(vas, Box::new(resolver));
-
-        let mut entries = Vec::new();
-        walk_bagmru_node(
-            &reader,
-            root_vaddr,
-            "C:\\BagMRU".to_string(),
-            0,
-            0x20,
-            0x28,
-            0x08,
-            &mut entries,
-        );
-        assert!(!entries.is_empty(), "should push at least root entry");
     }
 
     #[test]
@@ -831,6 +667,56 @@ mod tests {
             bags.iter().any(|b| b.path == "Desktop"),
             "expected a BagMRU entry with path 'Desktop', got {:?}",
             bags.iter().map(|b| &b.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// HMAP recursion: BagMRU\0 (Desktop) → \0 (Downloads). Each level's folder
+    /// name comes from the parent node's value of the same name; the walker must
+    /// descend and join the path. Covers multi-level recursion + path joining.
+    #[test]
+    fn walk_shellbags_hmap_recurses_nested_path() {
+        use crate::test_hive::CellHive;
+        let mut desktop = vec![0x0Bu8, 0x00, 0x31];
+        desktop.extend_from_slice(b"Desktop\0");
+        let mut downloads = vec![0x0Du8, 0x00, 0x31];
+        downloads.extend_from_slice(b"Downloads\0");
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x0A0, 0);
+        h.lf(0x0A0, &[0x120]);
+        h.nk(0x120, b"Local Settings", 1, 0x1A0, 0);
+        h.lf(0x1A0, &[0x220]);
+        h.nk(0x220, b"Software", 1, 0x2A0, 0);
+        h.lf(0x2A0, &[0x320]);
+        h.nk(0x320, b"Microsoft", 1, 0x3A0, 0);
+        h.lf(0x3A0, &[0x420]);
+        h.nk(0x420, b"Windows", 1, 0x4A0, 0);
+        h.lf(0x4A0, &[0x520]);
+        h.nk(0x520, b"Shell", 1, 0x5A0, 0);
+        h.lf(0x5A0, &[0x620]);
+        // BagMRU → subkey 0 (Desktop), value 0 (Desktop shell item).
+        h.nk(0x620, b"BagMRU", 1, 0x6A0, 0);
+        h.values(0x620, 1, 0x720);
+        h.lf(0x6A0, &[0x800]);
+        h.value_list(0x720, &[0x760]);
+        h.vk(0x760, b"0", 3, desktop.len() as u32, 0x880);
+        h.data(0x880, &desktop);
+        // Desktop node → subkey 0 (Downloads), value 0 (Downloads shell item).
+        h.nk(0x800, b"0", 1, 0x8A0, 0);
+        h.values(0x800, 1, 0x920);
+        h.lf(0x8A0, &[0xA00]);
+        h.value_list(0x920, &[0x960]);
+        h.vk(0x960, b"0", 3, downloads.len() as u32, 0xA80);
+        h.data(0xA80, &downloads);
+        h.nk(0xA00, b"0", 0, 0, 0); // Downloads leaf
+
+        let reader = h.reader();
+        let bags = walk_shellbags(&reader, h.hhive_va).unwrap();
+        let paths: Vec<&String> = bags.iter().map(|b| &b.path).collect();
+        assert!(paths.iter().any(|p| *p == "Desktop"), "got {paths:?}");
+        assert!(
+            paths.iter().any(|p| *p == "Desktop\\Downloads"),
+            "expected nested path Desktop\\Downloads, got {paths:?}"
         );
     }
 }
