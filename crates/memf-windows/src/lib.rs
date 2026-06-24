@@ -56,6 +56,7 @@ pub mod handles;
 pub mod hashdump;
 pub mod heap_spray;
 pub(crate) mod heap_walker;
+pub mod hive_reader;
 pub mod hollowing;
 pub mod iat_hooks;
 pub mod kerberos_tickets;
