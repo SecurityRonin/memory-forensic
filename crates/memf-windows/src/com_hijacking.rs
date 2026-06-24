@@ -460,4 +460,96 @@ mod tests {
         assert_eq!(results[0].clsid, guid);
         assert!(results[0].is_suspicious);
     }
+
+    /// RED (registry-dedup migration): drive the cross-hive CLSID navigation
+    /// through the shared winreg-core seam. `walk_key_path` must take a
+    /// [`MemfHiveReader`]-backed root [`Key`] and a backslash `&str`, returning
+    /// an `Option<Key>` — not a raw `u64` cell VA from the dead `registry::`
+    /// flat walker. This fixture pins the exact behavior contract of the OLD
+    /// code so the migration is behavior-preserving:
+    ///   - GUID-1 (HKU AppData override, different HKCR path) → suspicious, kept.
+    ///   - GUID-2 (HKU == HKCR System32 path, no temp dir) → benign, dropped.
+    /// Both hkcr_server/hkcr_path are populated from the HKCR side; the empty
+    /// HKU default value would `continue` (skip), and only suspicious entries
+    /// are pushed. Compile-fails until `walk_key_path` navigates winreg-core
+    /// `Key`s with a `&str` path.
+    #[test]
+    fn com_hijacking_winreg_core_navigation_contract() {
+        use crate::hive_reader::MemfHiveReader;
+
+        let guid1 = "{AB000001-0000-0000-0000-0000000000AA}";
+        let guid2 = "{AB000002-0000-0000-0000-0000000000BB}";
+        let evil = r"C:\Users\v\AppData\Roaming\evil.dll";
+        let legit = r"C:\Windows\System32\shell32.dll";
+
+        // HKU: Software\Classes\CLSID with TWO GUID children, each → InprocServer32.
+        let mut hkcu = CellHive::new(0x0050_0000);
+        hkcu.nk(0x020, b"Root", 1, 0x080, 0);
+        hkcu.lf(0x080, &[0x0C0]);
+        hkcu.nk(0x0C0, b"Software", 1, 0x140, 0);
+        hkcu.lf(0x140, &[0x180]);
+        hkcu.nk(0x180, b"Classes", 1, 0x200, 0);
+        hkcu.lf(0x200, &[0x240]);
+        hkcu.nk(0x240, b"CLSID", 2, 0x2C0, 0);
+        hkcu.lf(0x2C0, &[0x300, 0x700]);
+        // GUID-1 → InprocServer32 = evil (AppData)
+        hkcu.nk(0x300, guid1.as_bytes(), 1, 0x380, 0);
+        hkcu.lf(0x380, &[0x3C0]);
+        hkcu.nk(0x3C0, b"InprocServer32", 0, 0, 0);
+        let d1 = utf16le(evil);
+        hkcu.values(0x3C0, 1, 0x440);
+        hkcu.value_list(0x440, &[0x480]);
+        hkcu.vk(0x480, b"", 1, d1.len() as u32, 0x4C0);
+        hkcu.data(0x4C0, &d1);
+        // GUID-2 → InprocServer32 = legit (System32, matches HKCR)
+        hkcu.nk(0x700, guid2.as_bytes(), 1, 0x780, 0);
+        hkcu.lf(0x780, &[0x7C0]);
+        hkcu.nk(0x7C0, b"InprocServer32", 0, 0, 0);
+        let d2 = utf16le(legit);
+        hkcu.values(0x7C0, 1, 0x840);
+        hkcu.value_list(0x840, &[0x880]);
+        hkcu.vk(0x880, b"", 1, d2.len() as u32, 0x8C0);
+        hkcu.data(0x8C0, &d2);
+
+        // HKCR: CLSID\{guid2}\InprocServer32 = legit (guid1 absent in HKCR).
+        let mut hkcr = CellHive::new(0x0060_0000);
+        hkcr.nk(0x020, b"Root", 1, 0x080, 0);
+        hkcr.lf(0x080, &[0x0C0]);
+        hkcr.nk(0x0C0, b"CLSID", 1, 0x140, 0);
+        hkcr.lf(0x140, &[0x180]);
+        hkcr.nk(0x180, guid2.as_bytes(), 1, 0x200, 0);
+        hkcr.lf(0x200, &[0x240]);
+        hkcr.nk(0x240, b"InprocServer32", 0, 0, 0);
+        let hd = utf16le(legit);
+        hkcr.values(0x240, 1, 0x2C0);
+        hkcr.value_list(0x2C0, &[0x300]);
+        hkcr.vk(0x300, b"", 1, hd.len() as u32, 0x340);
+        hkcr.data(0x340, &hd);
+
+        let r = two_hive_reader(&hkcu, &hkcr);
+
+        // Migration seam: walk_key_path over a winreg-core root Key + &str path.
+        // (Compile-fails pre-migration: old walk_key_path is (reader,hive,&[&str])->u64.)
+        let hive = MemfHiveReader::new(&r, hkcu.hhive_va);
+        let root = hive.root_key().unwrap();
+        let clsid = walk_key_path(&root, r"Software\Classes\CLSID");
+        assert!(clsid.is_some(), "HKU CLSID must resolve via winreg-core");
+
+        let results = walk_com_hijacking(&r, hkcu.hhive_va, hkcr.hhive_va).unwrap();
+        // Only the suspicious GUID-1 override survives; GUID-2 matches HKCR → dropped.
+        assert_eq!(results.len(), 1, "only the AppData override is kept");
+        let e = &results[0];
+        assert_eq!(e.clsid, guid1);
+        assert!(e.hkcu_server.eq_ignore_ascii_case(evil));
+        assert_eq!(
+            e.hkcr_server, "",
+            "guid1 absent in HKCR → empty hkcr_server"
+        );
+        assert_eq!(e.hkcr_path, "", "guid1 absent in HKCR → empty hkcr_path");
+        assert_eq!(
+            e.hkcu_path,
+            format!(r"HKCU\Software\Classes\CLSID\{guid1}\InprocServer32")
+        );
+        assert!(e.is_suspicious);
+    }
 }
