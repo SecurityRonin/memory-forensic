@@ -18,7 +18,8 @@ license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 
 [workspace.dependencies]
-forensicnomicon = { version = "0.5", features = ["std", "serde"] }
+forensicnomicon = { version = "0.10", features = ["std", "serde"] }
+winreg-core = "0.1.1"
 jsonguard = { version = "0.2.3", features = ["std", "serde"] }
 # winevt-core is now published — use the registry (drops the cross-repo path).
 winevt-core = "0.2"

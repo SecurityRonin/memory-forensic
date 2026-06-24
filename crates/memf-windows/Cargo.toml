@@ -24,6 +24,7 @@ memf-symbols.workspace = true
 memf-core.workspace = true
 memf-correlate.workspace = true
 forensicnomicon.workspace = true
+winreg-core.workspace = true
 shellitem.workspace = true
 prefetch-core.workspace = true
 winevt-core.workspace = true
