@@ -586,4 +586,70 @@ mod tests {
         assert_eq!(e.file_size, 12345);
         assert!(e.is_suspicious, "temp-path exe must be flagged");
     }
+
+    /// RED (registry-dedup migration): drive the conditional InventoryApplication
+    /// File navigation through the shared winreg-core seam. `find_inventory_key`
+    /// must resolve the key from a [`MemfHiveReader`]-backed root [`Key`] —
+    /// direct `InventoryApplicationFile`, else under `Root` — returning a `Key`,
+    /// not a raw `u64` cell VA from the dead `registry::` flat walker. The
+    /// fixture places IAF directly under root (no `Root` parent), exercising the
+    /// FIRST conditional branch, and per-child values decode through
+    /// `Value::raw_data`. Compile-fails until `find_inventory_key` exists over
+    /// winreg-core `Key`s.
+    #[test]
+    fn walk_amcache_winreg_core_conditional_navigation() {
+        use crate::hive_reader::MemfHiveReader;
+        use crate::test_hive::CellHive;
+        fn utf16le(s: &str) -> Vec<u8> {
+            s.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .chain([0u8, 0u8])
+                .collect()
+        }
+        const REG_SZ_T: u32 = 1;
+
+        let path = r"c:\program files\acme\acme.exe";
+        let publisher = "Acme Corp";
+
+        // IAF directly under root (no intermediate `Root` key) → first branch.
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"amcache", 1, 0x0A0, 0);
+        h.lf(0x0A0, &[0x120]);
+        h.nk(0x120, b"InventoryApplicationFile", 1, 0x1A0, 0);
+        h.lf(0x1A0, &[0x220]);
+        h.nk(0x220, b"0000file", 0, 0, 0);
+        h.values(0x220, 2, 0x2A0);
+        h.value_list(0x2A0, &[0x2E0, 0x340]);
+        let path_data = utf16le(path);
+        h.vk(
+            0x2E0,
+            b"LowerCaseLongPath",
+            REG_SZ_T,
+            path_data.len() as u32,
+            0x3A0,
+        );
+        h.data(0x3A0, &path_data);
+        let pub_data = utf16le(publisher);
+        h.vk(0x340, b"Publisher", REG_SZ_T, pub_data.len() as u32, 0x420);
+        h.data(0x420, &pub_data);
+
+        let reader = h.reader();
+
+        // Migration seam: conditional IAF lookup returns an Option<Key> over the
+        // winreg-core backend. (Compile-fails pre-migration: no find_inventory_key.)
+        let hive = MemfHiveReader::new(&reader, h.hhive_va);
+        let root = hive.root_key().unwrap();
+        let iaf = find_inventory_key(&root);
+        assert!(iaf.is_some(), "IAF must resolve directly under root");
+
+        let entries = walk_amcache(&reader, h.hhive_va).unwrap();
+        assert_eq!(entries.len(), 1, "one inventory entry recovered");
+        let e = &entries[0];
+        assert_eq!(e.file_path, path);
+        assert_eq!(e.publisher, publisher);
+        assert!(
+            !e.is_suspicious,
+            "program-files exe with publisher is benign"
+        );
+    }
 }
