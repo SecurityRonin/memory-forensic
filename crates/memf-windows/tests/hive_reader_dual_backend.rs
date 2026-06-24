@@ -217,11 +217,18 @@ fn build_memory_backed_reader(
     let mut dir_page = vec![0u8; 4096];
     dir_page[0..8].copy_from_slice(&table_vaddr.to_le_bytes());
 
-    // Table[0] @ 0: PermanentBinAddress = bins base (clean, no flags),
-    // BlockOffset = 0. cell_index N → (bins & !0xF) + 0 + N = bins + N.
+    // Table[0] @ 0: exercise the REAL block_va math, not the trivial case.
+    // PermanentBinAddress carries low-nibble flags (must be masked) AND points
+    // 0x40 before the block, with BlockOffset = 0x40 — so the resolved block
+    // still lands at bins_vaddr but only if both terms are applied:
+    //   block_va = (PermanentBinAddress & !0xF) + BlockOffset + N
+    //            = ((bins-0x40) | 0x7  & !0xF) + 0x40 + N = bins + N.
+    // A dropped mask (off by +0x7) or dropped BlockOffset (off by -0x40) → wrong
+    // VA → unmapped/garbage read → test fails. (bins-0x40 is 16-aligned.)
     let mut table_page = vec![0u8; 4096];
-    table_page[0..8].copy_from_slice(&bins_vaddr.to_le_bytes());
-    table_page[8..12].copy_from_slice(&0u32.to_le_bytes());
+    let perm_bin_addr = (bins_vaddr - 0x40) | 0x7;
+    table_page[0..8].copy_from_slice(&perm_bin_addr.to_le_bytes());
+    table_page[8..12].copy_from_slice(&0x40u32.to_le_bytes());
 
     // Bins-data page: everything after the 4096-byte base block.
     let bins = &hive[BaseBlock::SIZE..];
