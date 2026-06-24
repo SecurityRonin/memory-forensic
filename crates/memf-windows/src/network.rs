@@ -864,6 +864,18 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
     Ok(out)
 }
 
+/// Enumerate TCP listeners by pool-tag scanning for `_TCP_LISTENER` objects
+/// (`TcpL`), mirroring vol3 netscan. Same parse shape as `_UDP_ENDPOINT`; rows
+/// carry state `LISTENING`, remote = the family `INADDR_ANY`, remote port 0.
+///
+/// # Errors
+/// Propagates address-space read failures encountered while following pointers.
+pub fn scan_tcp_listeners<P: PhysicalMemoryProvider>(
+    _reader: &ObjectReader<P>,
+) -> Result<Vec<WinConnectionInfo>> {
+    Ok(Vec::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2059,5 +2071,87 @@ mod tests {
             2,
             "two distinct chunks (freed copy) must both appear, got {conns:?}"
         );
+    }
+
+    #[test]
+    fn scan_tcp_listeners_recovers_a_listener_from_a_tcpl_pool_object() {
+        // Build 9600 (citadel) _TCP_LISTENER offsets (vol3 netscan-win81-x64):
+        // InetAF 0x60, Owner 0x28, CreateTime 0x40, LocalAddr 0x58, Port 0x6a.
+        // Bound to 127.0.0.1:53 (dns.exe) → one TCPv4 LISTENING row, remote
+        // 0.0.0.0:0.
+        const L_INETAF: usize = 0x60;
+        const L_OWNER: usize = 0x28;
+        const L_LOCALADDR: usize = 0x58;
+        const L_PORT: usize = 0x6a;
+        const INETAF_AF: usize = 0x18;
+        const LA_PDATA: usize = 0x10;
+
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let la_va = 0xFFFF_C000_0001_3000u64;
+        let in_addr_va = 0xFFFF_C000_0001_5000u64;
+        let ep_va = 0xFFFF_C000_0001_6000u64;
+        let (pa_inetaf, pa_la, pa_in, pa_ep) = (0x70_000u64, 0x73_000, 0x75_000, 0x76_000);
+
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
+        let mut la = vec![0u8; 0x1000];
+        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&in_addr_va.to_le_bytes());
+        let mut inb = vec![0u8; 0x1000];
+        inb[0..4].copy_from_slice(&[127, 0, 0, 1]); // 127.0.0.1
+        let mut ep = vec![0u8; 0x1000];
+        ep[EPROC_PID..EPROC_PID + 8].copy_from_slice(&1368u64.to_le_bytes());
+        ep[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 7].copy_from_slice(b"dns.exe");
+
+        let pool_base = 0x50_000u64;
+        let obj_off = pool_base + 0x10;
+        let mut obj = vec![0u8; 0x200];
+        obj[L_INETAF..L_INETAF + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[L_OWNER..L_OWNER + 8].copy_from_slice(&ep_va.to_le_bytes());
+        obj[L_LOCALADDR..L_LOCALADDR + 8].copy_from_slice(&la_va.to_le_bytes());
+        obj[L_PORT..L_PORT + 2].copy_from_slice(&53u16.to_be_bytes());
+
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_2580u32.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
+            .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(in_addr_va, pa_in, flags::WRITABLE)
+            .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
+            .write_phys(pa_inetaf, &inetaf)
+            .write_phys(pa_la, &la)
+            .write_phys(pa_in, &inb)
+            .write_phys(pa_ep, &ep)
+            .write_phys(pool_base + 4, b"TcpL")
+            .write_phys(obj_off, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_tcp_listeners(&reader).expect("scan ok");
+        assert_eq!(conns.len(), 1, "one listener, got {conns:?}");
+        let c = &conns[0];
+        assert_eq!(c.protocol, "TCPv4");
+        assert_eq!(c.local_addr, "127.0.0.1");
+        assert_eq!(c.local_port, 53);
+        assert_eq!(c.remote_addr, "0.0.0.0");
+        assert_eq!(c.remote_port, 0);
+        assert_eq!(c.state, WinTcpState::Listen);
+        assert_eq!(c.pid, 1368);
+        assert_eq!(c.process_name, "dns.exe");
     }
 }
