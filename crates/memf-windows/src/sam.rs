@@ -14,8 +14,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of SAM user entries to walk (safety limit).
 const MAX_USERS: usize = 4096;
@@ -114,24 +116,23 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
     if hive_addr == 0 {
         return Ok(Vec::new());
     }
-    // Navigate SAM\\Domains\\Account\\Users via the shared HMAP walker.
-    let mut key = registry::resolve_root_cell(reader, hive_addr);
-    for component in ["SAM", "Domains", "Account", "Users"] {
-        if key == 0 {
-            return Ok(Vec::new());
-        }
-        key = registry::find_subkey_by_name(reader, hive_addr, key, component);
-    }
-    if key == 0 {
+    // Navigate SAM\Domains\Account\Users through winreg-core's shared Key
+    // decoder (canonical _CM_KEY_NODE/_CM_KEY_VALUE offsets) over MemfHiveReader.
+    let hive = MemfHiveReader::new(reader, hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    let users_key = key;
+    };
+    let Some(users_key) = find_users_key(&root) else {
+        return Ok(Vec::new());
+    };
+
+    let Ok(rid_keys) = users_key.subkeys() else {
+        return Ok(Vec::new());
+    };
 
     let mut users = Vec::new();
-    for (key_name, key_addr) in registry::list_subkeys(reader, hive_addr, users_key)
-        .into_iter()
-        .take(MAX_USERS)
-    {
+    for rid_key in rid_keys.into_iter().take(MAX_USERS) {
+        let key_name = rid_key.name();
         // RID subkeys are hex strings (e.g. "000001F4"); skip the "Names" index.
         if key_name.eq_ignore_ascii_case("Names") {
             continue;
@@ -144,12 +145,12 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
         // Username comes from the V value header. Metadata only — the encrypted
         // hash blobs the V value also carries are NOT read here; decryption is
         // hashdump's concern, deliberately kept out of this walker.
-        let v_data = registry::read_value_data(reader, hive_addr, key_addr, "V");
+        let v_data = named_value(&rid_key, "V");
         let username =
             crate::hashdump::username_from_v(&v_data).unwrap_or_else(|| format!("RID-{rid}"));
 
         // Account flags + timestamps from the per-user F value.
-        let f_data = registry::read_value_data(reader, hive_addr, key_addr, "F");
+        let f_data = named_value(&rid_key, "F");
         let (account_flags, last_login_time, last_password_change, account_created, login_count) =
             parse_f_value(&f_data);
 
@@ -171,6 +172,24 @@ pub fn walk_sam_users<P: PhysicalMemoryProvider>(
         });
     }
     Ok(users)
+}
+
+/// Resolve `SAM\Domains\Account\Users` from the hive root, or `None` if absent.
+fn find_users_key<'h, R: CellReader>(root: &Key<'h, R>) -> Option<Key<'h, R>> {
+    root.subkey_path(r"SAM\Domains\Account\Users")
+        .ok()
+        .flatten()
+}
+
+/// Read a key's named value (case-insensitive) as raw bytes, or empty on an
+/// absent value or read fault — `username_from_v` then yields the RID fallback
+/// and `parse_f_value` yields zeros, preserving the old `read_value_data`
+/// contract where a missing V/F is benign, not a skip.
+fn named_value<R: CellReader>(key: &Key<'_, R>, name: &str) -> Vec<u8> {
+    match key.value(name) {
+        Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Parse the SAM per-user `F` value (account control block): last_login@0x08,
