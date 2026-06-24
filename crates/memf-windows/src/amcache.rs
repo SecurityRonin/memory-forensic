@@ -21,8 +21,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of Amcache entries to enumerate (safety limit).
 const MAX_AMCACHE_ENTRIES: usize = 8192;
@@ -133,6 +135,22 @@ fn decode_u64(raw: &[u8]) -> u64 {
     }
 }
 
+/// Resolve the `InventoryApplicationFile` key from the hive root, returning its
+/// [`Key`] or `None` if absent.
+///
+/// It is a direct child of the hive root on some layouts, otherwise one level
+/// under `Root`. A read fault mid-path degrades to "absent" (the candidate is
+/// skipped), matching the old silent-empty contract.
+fn find_inventory_key<'h, R: CellReader>(root: &Key<'h, R>) -> Option<Key<'h, R>> {
+    if let Ok(Some(direct)) = root.subkey_path("InventoryApplicationFile") {
+        return Some(direct);
+    }
+    if let Ok(Some(under_root)) = root.subkey_path(r"Root\InventoryApplicationFile") {
+        return Some(under_root);
+    }
+    None
+}
+
 /// Walk the Amcache registry hive from kernel memory.
 ///
 /// `amcache_hive_addr` is the `_CMHIVE`/`_HHIVE` virtual address. Navigates
@@ -153,61 +171,34 @@ pub fn walk_amcache<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    let root_va = registry::resolve_root_cell(reader, amcache_hive_addr);
-    if root_va == 0 {
+    let hive = MemfHiveReader::new(reader, amcache_hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
+    };
 
     // Navigate to InventoryApplicationFile: a direct child of the hive root on
     // some layouts, otherwise one level under "Root".
-    let iaf_va = {
-        let direct = registry::find_subkey_by_name(
-            reader,
-            amcache_hive_addr,
-            root_va,
-            "InventoryApplicationFile",
-        );
-        if direct != 0 {
-            direct
-        } else {
-            let root_child =
-                registry::find_subkey_by_name(reader, amcache_hive_addr, root_va, "Root");
-            if root_child == 0 {
-                return Ok(Vec::new());
-            }
-            registry::find_subkey_by_name(
-                reader,
-                amcache_hive_addr,
-                root_child,
-                "InventoryApplicationFile",
-            )
-        }
-    };
-    if iaf_va == 0 {
+    let Some(iaf) = find_inventory_key(&root) else {
         return Ok(Vec::new());
-    }
+    };
+
+    let Ok(children) = iaf.subkeys() else {
+        return Ok(Vec::new());
+    };
 
     let mut entries = Vec::new();
-    for (_name, child_va) in registry::list_subkeys(reader, amcache_hive_addr, iaf_va)
-        .into_iter()
-        .take(MAX_AMCACHE_ENTRIES)
-    {
-        let read_str = |name: &str| -> String {
-            decode_utf16le(&registry::read_value_data(
-                reader,
-                amcache_hive_addr,
-                child_va,
-                name,
-            ))
+    for child in children.into_iter().take(MAX_AMCACHE_ENTRIES) {
+        // Read a named value's raw bytes (case-insensitive), or empty on absent
+        // or a read fault — the decoders then yield "" / 0, preserving the old
+        // read_value_data contract where a missing value is benign, not a skip.
+        let raw = |name: &str| -> Vec<u8> {
+            match child.value(name) {
+                Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+                _ => Vec::new(),
+            }
         };
-        let read_num = |name: &str| -> u64 {
-            decode_u64(&registry::read_value_data(
-                reader,
-                amcache_hive_addr,
-                child_va,
-                name,
-            ))
-        };
+        let read_str = |name: &str| -> String { decode_utf16le(&raw(name)) };
+        let read_num = |name: &str| -> u64 { decode_u64(&raw(name)) };
 
         let file_path = read_str("LowerCaseLongPath");
         let sha1_raw = read_str("FileId");
