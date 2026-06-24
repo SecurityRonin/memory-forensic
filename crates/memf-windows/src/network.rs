@@ -840,8 +840,11 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
                     // both a v4 (0.0.0.0) and a v6 (::) row.
                     for (suffix, local_addr) in dual_stack_rows(af, bound) {
                         let protocol = format!("UDP{suffix}");
-                        let key = (protocol.clone(), local_addr.clone(), local_port, pid);
-                        if !seen.insert(key) {
+                        // Dedup per object offset (+ protocol for the dual-stack
+                        // pair), matching vol3's one-row-per-tag — this removes only
+                        // scan-overlap re-finds, keeping distinct (live + freed)
+                        // pool chunks rather than collapsing freed copies.
+                        if !seen.insert((ep, protocol.clone())) {
                             continue;
                         }
                         out.push(WinConnectionInfo {
