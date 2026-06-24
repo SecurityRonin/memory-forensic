@@ -2,8 +2,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 const MAX_SUBKEYS_PER_LEVEL: usize = 256;
 const MAX_DEPTH: usize = 32;
@@ -55,23 +57,17 @@ pub fn classify_shellbag(path: &str) -> bool {
 
 /// `Shell\BagMRU` lives under one of two paths: `Local Settings\Software\...`
 /// in UsrClass.dat, or `Software\...` in NTUSER.DAT.
-const BAGMRU_PATHS: &[&[&str]] = &[
-    &[
-        "Local Settings",
-        "Software",
-        "Microsoft",
-        "Windows",
-        "Shell",
-        "BagMRU",
-    ],
-    &["Software", "Microsoft", "Windows", "Shell", "BagMRU"],
+const BAGMRU_PATHS: &[&str] = &[
+    r"Local Settings\Software\Microsoft\Windows\Shell\BagMRU",
+    r"Software\Microsoft\Windows\Shell\BagMRU",
 ];
 
 /// Walk shellbag folder-access evidence from a registry hive in memory.
 ///
-/// Navigates the HMAP cell map to `Shell\BagMRU` and recurses the BagMRU tree:
-/// each numbered subkey "N" is a folder whose name comes from the parent's value
-/// "N" (a shell item), and whose registry LastWriteTime is the subkey's own.
+/// Navigates the HMAP cell map to `Shell\BagMRU` (through winreg-core's shared
+/// `Key` navigation over [`MemfHiveReader`]) and recurses the BagMRU tree: each
+/// numbered subkey "N" is a folder whose name comes from the parent's value "N"
+/// (a shell item), and whose registry LastWriteTime is the subkey's own.
 pub fn walk_shellbags<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
@@ -79,79 +75,60 @@ pub fn walk_shellbags<P: PhysicalMemoryProvider>(
     if hive_addr == 0 {
         return Ok(Vec::new());
     }
-    let root = registry::resolve_root_cell(reader, hive_addr);
-    if root == 0 {
+    let hive = MemfHiveReader::new(reader, hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    let Some(bagmru) = find_bagmru(reader, hive_addr, root) else {
+    };
+    let Some(bagmru) = find_bagmru(&root) else {
         return Ok(Vec::new());
     };
 
-    let last_write_off = reader
-        .symbols()
-        .field_offset("_CM_KEY_NODE", "LastWriteTime")
-        .unwrap_or(0x04);
-
     let mut entries = Vec::new();
-    walk_bagmru_node(
-        reader,
-        hive_addr,
-        bagmru,
-        "",
-        0,
-        last_write_off,
-        &mut entries,
-    );
+    walk_bagmru_node(&bagmru, "", 0, &mut entries);
     Ok(entries)
 }
 
 /// Navigate `root` down to the first `Shell\BagMRU` key that exists (UsrClass.dat
-/// or NTUSER.DAT layout), returning its cell VA.
-fn find_bagmru<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    root: u64,
-) -> Option<u64> {
+/// or NTUSER.DAT layout), returning its [`Key`].
+fn find_bagmru<'h, R: CellReader>(root: &Key<'h, R>) -> Option<Key<'h, R>> {
     for path in BAGMRU_PATHS {
-        let mut cur = root;
-        for &component in *path {
-            cur = registry::find_subkey_by_name(reader, hive_addr, cur, component);
-            if cur == 0 {
-                break;
-            }
-        }
-        if cur != 0 {
-            return Some(cur);
+        // A read fault mid-path degrades to "this candidate is absent" rather
+        // than aborting the whole walk, matching the old silent-empty contract.
+        if let Ok(Some(key)) = root.subkey_path(path) {
+            return Some(key);
         }
     }
     None
 }
 
-fn walk_bagmru_node<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    node_addr: u64,
+fn walk_bagmru_node<R: CellReader>(
+    node: &Key<'_, R>,
     parent_path: &str,
     depth: usize,
-    last_write_off: u64,
     entries: &mut Vec<ShellbagEntry>,
 ) {
-    if depth >= MAX_DEPTH || node_addr == 0 {
+    if depth >= MAX_DEPTH {
         return;
     }
 
     // Each child's folder name is carried by the parent's value of the same name
     // (the shell item); MRUListEx / NodeSlot values have no matching subkey.
-    let values = registry::list_values(reader, hive_addr, node_addr);
+    let Ok(values) = node.values() else {
+        return;
+    };
+    let Ok(subkeys) = node.subkeys() else {
+        return;
+    };
 
-    for (name, child_addr) in registry::list_subkeys(reader, hive_addr, node_addr)
-        .into_iter()
-        .take(MAX_SUBKEYS_PER_LEVEL)
-    {
+    for child in subkeys.into_iter().take(MAX_SUBKEYS_PER_LEVEL) {
+        let name = child.name();
         let (folder_name, access_time, creation_time) = values
             .iter()
-            .find(|v| v.name == name)
-            .map_or((String::new(), 0, 0), |v| parse_shell_item(&v.data));
+            .find(|v| v.name() == name)
+            .map_or((String::new(), 0, 0), |v| {
+                v.raw_data()
+                    .map_or((String::new(), 0, 0), |d| parse_shell_item(&d))
+            });
 
         let current_path = if parent_path.is_empty() {
             folder_name.clone()
@@ -163,13 +140,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
 
         if !current_path.is_empty() {
             // The bag slot's registry LastWriteTime is this subkey's own.
-            let slot_modified_time = reader
-                .read_bytes(child_addr + last_write_off, 8)
-                .ok()
-                .filter(|b| b.len() == 8)
-                .map_or(0, |b| {
-                    u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8]))
-                });
+            let slot_modified_time = child.last_written_raw();
             entries.push(ShellbagEntry {
                 path: current_path.clone(),
                 slot_modified_time,
@@ -179,15 +150,7 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
             });
         }
 
-        walk_bagmru_node(
-            reader,
-            hive_addr,
-            child_addr,
-            &current_path,
-            depth + 1,
-            last_write_off,
-            entries,
-        );
+        walk_bagmru_node(&child, &current_path, depth + 1, entries);
     }
 }
 
@@ -384,38 +347,25 @@ mod tests {
 
     #[test]
     fn walk_bagmru_node_max_depth_returns_early() {
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
-            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
-            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
-            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
-        let mut entries = Vec::new();
-        walk_bagmru_node(&reader, 0x1000, 0x2000, "", MAX_DEPTH, 0x08, &mut entries);
-        assert!(entries.is_empty(), "max depth should yield no entries");
-    }
+        use crate::test_hive::CellHive;
+        // A BagMRU node with one populated child slot. Entering at depth ==
+        // MAX_DEPTH must bail before recording anything (recursion guard).
+        let item = dir_item(b"Desktop\0");
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x0A0, 0);
+        h.values(0x020, 1, 0x120);
+        h.lf(0x0A0, &[0x200]);
+        h.value_list(0x120, &[0x160]);
+        h.vk(0x160, b"0", 3, item.len() as u32, 0x280);
+        h.nk(0x200, b"0", 0, 0, 0);
+        h.data(0x280, &item);
 
-    #[test]
-    fn walk_bagmru_node_zero_addr_returns_early() {
-        let isf = IsfBuilder::new()
-            .add_struct("_CM_KEY_NODE", 0x50)
-            .add_field("_CM_KEY_NODE", "Signature", 0x00, "unsigned short")
-            .add_field("_CM_KEY_NODE", "SubKeyLists", 0x20, "pointer")
-            .add_field("_CM_KEY_NODE", "ValueList", 0x28, "pointer")
-            .add_field("_CM_KEY_NODE", "LastWriteTime", 0x08, "unsigned long long")
-            .build_json();
-        let resolver = IsfResolver::from_value(&isf).unwrap();
-        let (cr3, mem) = PageTableBuilder::new().build();
-        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
-        let reader = ObjectReader::new(vas, Box::new(resolver));
+        let reader = h.reader();
+        let hive = MemfHiveReader::new(&reader, h.hhive_va);
+        let root = hive.root_key().unwrap();
         let mut entries = Vec::new();
-        walk_bagmru_node(&reader, 0, 0, "", 0, 0x08, &mut entries);
-        assert!(entries.is_empty());
+        walk_bagmru_node(&root, "", MAX_DEPTH, &mut entries);
+        assert!(entries.is_empty(), "max depth should yield no entries");
     }
 
     #[test]

@@ -44,6 +44,16 @@ impl CellHive {
     pub(crate) fn ao(idx: u32) -> usize {
         (idx + 4) as usize
     }
+    /// Write a live cell's 4-byte `_HCELL` size header at `idx` (the bytes a real
+    /// hive carries, which winreg-core reads to bound the cell body). The size is
+    /// negative (allocated) and spans to the end of the 4 KiB bin — parsers slice
+    /// only the prefix each cell type needs, so an over-long body is harmless and
+    /// stays within the single mapped page. memf's own field-offset walkers
+    /// ignore this header (they read `idx + 4` directly).
+    fn size_hdr(&mut self, idx: u32) {
+        let span = (self.bin.len() - idx as usize) as i32;
+        self.bin[idx as usize..idx as usize + 4].copy_from_slice(&(-span).to_le_bytes());
+    }
     /// Build a hive whose single 4 KiB bin IS the given buffer — cell index ==
     /// byte offset within `bin` (cells already laid out, e.g. from `build_cell`
     /// placed at their offsets). Lets a flat-fixture test reuse its `hbin_page`/
@@ -55,8 +65,11 @@ impl CellHive {
         h.bin = bin;
         h
     }
-    /// `_CM_KEY_NODE` with CORRECT offsets: SubKeyCounts[Stable]@0x14,
-    /// SubKeyLists[Stable]@0x1c, [Volatile]@0x20, NameLength@0x48, Name@0x4c.
+    /// `_CM_KEY_NODE` with CORRECT offsets: Signature("nk")@0x00,
+    /// SubKeyCounts[Stable]@0x14, SubKeyLists[Stable]@0x1c, [Volatile]@0x20,
+    /// NameLength@0x48, Name@0x4c. The on-disk "nk" signature (which a live hive
+    /// cell carries, and which winreg-core's `RawKeyNode::parse` validates) is
+    /// written; memf's own field-offset walkers ignore bytes 0-1.
     pub(crate) fn nk(
         &mut self,
         idx: u32,
@@ -65,7 +78,13 @@ impl CellHive {
         stable_list: u32,
         volatile_list: u32,
     ) {
+        self.size_hdr(idx);
         let o = Self::ao(idx);
+        self.bin[o..o + 2].copy_from_slice(b"nk");
+        // Flags@0x02: KEY_COMP_NAME (0x20) — the ASCII-name marker a live hive
+        // sets for the Latin-1 names written below, so winreg-core decodes them
+        // as bytes rather than UTF-16. memf's field walkers ignore flags.
+        self.bin[o + 0x02..o + 0x04].copy_from_slice(&0x0020u16.to_le_bytes());
         self.bin[o + 0x14..o + 0x18].copy_from_slice(&stable_count.to_le_bytes());
         self.bin[o + 0x18..o + 0x1c].copy_from_slice(&1u32.to_le_bytes()); // volatile count
         self.bin[o + 0x1c..o + 0x20].copy_from_slice(&stable_list.to_le_bytes());
@@ -74,6 +93,7 @@ impl CellHive {
         self.bin[o + 0x4c..o + 0x4c + name.len()].copy_from_slice(name);
     }
     pub(crate) fn list(&mut self, idx: u32, sig: [u8; 2], entries: &[u32], stride: usize) {
+        self.size_hdr(idx);
         let o = Self::ao(idx);
         self.bin[o..o + 2].copy_from_slice(&sig);
         self.bin[o + 2..o + 4].copy_from_slice(&(entries.len() as u16).to_le_bytes());
@@ -98,6 +118,7 @@ impl CellHive {
     }
     /// Write a value-list cell: a packed array of `_CM_KEY_VALUE` cell indices.
     pub(crate) fn value_list(&mut self, idx: u32, values: &[u32]) {
+        self.size_hdr(idx);
         let o = Self::ao(idx);
         for (i, &v) in values.iter().enumerate() {
             self.bin[o + i * 4..o + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
@@ -107,16 +128,21 @@ impl CellHive {
     /// "vk"@0, NameLength@0x02, DataLength@0x04, Data@0x08 (=data cell idx),
     /// Type@0x0C, Name@0x14.
     pub(crate) fn vk(&mut self, idx: u32, name: &[u8], kind: u32, data_len: u32, data_idx: u32) {
+        self.size_hdr(idx);
         let o = Self::ao(idx);
         self.bin[o..o + 2].copy_from_slice(b"vk");
         self.bin[o + 2..o + 4].copy_from_slice(&(name.len() as u16).to_le_bytes());
         self.bin[o + 4..o + 8].copy_from_slice(&data_len.to_le_bytes());
         self.bin[o + 8..o + 0xc].copy_from_slice(&data_idx.to_le_bytes());
         self.bin[o + 0xc..o + 0x10].copy_from_slice(&kind.to_le_bytes());
+        // Flags@0x10: VALUE_COMP_NAME (0x1) — the ASCII value-name marker, so
+        // winreg-core decodes the Latin-1 name below as bytes, not UTF-16.
+        self.bin[o + 0x10..o + 0x12].copy_from_slice(&0x0001u16.to_le_bytes());
         self.bin[o + 0x14..o + 0x14 + name.len()].copy_from_slice(name);
     }
     /// Place raw bytes at cell `idx`'s data start (e.g. a value's data cell).
     pub(crate) fn data(&mut self, idx: u32, bytes: &[u8]) {
+        self.size_hdr(idx);
         let o = Self::ao(idx);
         self.bin[o..o + bytes.len()].copy_from_slice(bytes);
     }
