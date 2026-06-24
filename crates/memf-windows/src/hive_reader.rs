@@ -60,6 +60,14 @@ impl<'r, P: PhysicalMemoryProvider> MemfHiveReader<'r, P> {
     pub fn cell_offset_to_va(&self, offset: CellOffset) -> Option<u64> {
         cell_index_to_va(self.reader, self.hhive_addr, offset.0)
     }
+
+    /// Borrow the underlying [`ObjectReader`], for the rare validated raw-byte
+    /// read that a winreg-core [`Key`] cannot express (e.g. hashdump's
+    /// `_CM_KEY_NODE` class-name read for boot-key extraction), used together
+    /// with [`cell_offset_to_va`](Self::cell_offset_to_va).
+    pub fn object_reader(&self) -> &'r ObjectReader<P> {
+        self.reader
+    }
 }
 
 impl<P: PhysicalMemoryProvider> CellReader for MemfHiveReader<'_, P> {

@@ -145,17 +145,13 @@ pub(crate) fn derive_lsa_key<P: PhysicalMemoryProvider>(
     if system_hive_addr == 0 {
         return Vec::new();
     }
-    // SYSTEM root VA for extract_boot_key (hashdump owns its own VA-based
-    // navigation, kept intact), resolved through winreg-core then bridged to a
-    // VA via cell_offset_to_va.
+    // Boot key from the SYSTEM hive, navigated through winreg-core (extract_boot_key
+    // takes the SYSTEM MemfHiveReader + root Key).
     let sys_hive = MemfHiveReader::new(reader, system_hive_addr);
     let Ok(sys_root) = sys_hive.root_key() else {
         return Vec::new();
     };
-    let Some(sys_root_va) = sys_hive.cell_offset_to_va(sys_root.offset()) else {
-        return Vec::new();
-    };
-    let boot_key = crate::hashdump::extract_boot_key(reader, system_hive_addr, sys_root_va);
+    let boot_key = crate::hashdump::extract_boot_key(&sys_hive, &sys_root);
     if boot_key.len() != 16 {
         return Vec::new();
     }

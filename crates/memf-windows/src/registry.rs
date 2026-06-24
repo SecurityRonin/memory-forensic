@@ -237,17 +237,31 @@ pub(crate) const NK_NAME_LENGTH: u64 = 0x48;
 pub(crate) const NK_NAME: u64 = 0x4c;
 
 // `_CM_KEY_NODE` value-list + `_CM_KEY_VALUE` field offsets (x64).
+// Orphaned in lib builds by the registry-dedup migration (hashdump, the last
+// value-reader consumer, moved onto winreg-core); kept with the flat walker and
+// its unit tests until the whole walker is removed in the final
+// registry.rs-deletion pass (mirrors the `list_subkeys` note below).
+#[allow(dead_code)]
 const NK_VALUE_COUNT: u64 = 0x24;
+#[allow(dead_code)]
 const NK_VALUE_LIST: u64 = 0x28;
+#[allow(dead_code)]
 const VK_NAME_LENGTH: u64 = 0x02;
+#[allow(dead_code)]
 const VK_DATA_LENGTH: u64 = 0x04;
+#[allow(dead_code)]
 const VK_DATA: u64 = 0x08;
+#[allow(dead_code)]
 const VK_NAME: u64 = 0x14;
 /// Per-value-list / name / data caps (allocation-bomb defense on untrusted hives).
+#[allow(dead_code)]
 const MAX_VALUE_COUNT: u32 = 4096;
+#[allow(dead_code)]
 const VK_MAX_NAME_LEN: u16 = 256;
+#[allow(dead_code)]
 const VK_MAX_DATA_LEN: u32 = 0x10_0000;
 /// `_CM_KEY_VALUE.DataLength` high bit: data is stored inline at `Data@0x08`.
+#[allow(dead_code)]
 const VK_INLINE_FLAG: u32 = 0x8000_0000;
 
 /// Per-list subkey cap (runaway / allocation-bomb defense on untrusted hives).
@@ -276,6 +290,10 @@ pub(crate) fn read_cell_addr<P: PhysicalMemoryProvider>(
 /// returning the child key's cell VA or 0. Reads the STABLE subkey list and
 /// handles `lf`/`lh`/`li`/`ri` (index-root) lists with bounded `ri` recursion.
 /// The single correct walker every registry consumer should call.
+//
+// Orphaned in lib builds by the registry-dedup migration; kept with its unit
+// tests until the flat walker is removed in the final registry.rs-deletion pass.
+#[allow(dead_code)]
 pub(crate) fn find_subkey_by_name<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
@@ -299,6 +317,7 @@ pub(crate) fn find_subkey_by_name<P: PhysicalMemoryProvider>(
 /// Recursively search a subkey-list cell (`lf`/`lh`/`li`/`ri`) for `target_name`,
 /// returning the matching child key's cell VA or 0. `ri` (index-root) entries
 /// point at nested sub-lists; recursion is bounded by `depth`.
+#[allow(dead_code)] // reachable only from the orphaned `find_subkey_by_name`; see its note.
 fn search_subkey_list<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
@@ -379,6 +398,11 @@ fn search_subkey_list<P: PhysicalMemoryProvider>(
 /// [`read_cell_addr`]. `hhive_addr` is the `_CMHIVE`/`_HHIVE` virtual address
 /// used for cell-index translation. Returns 0 if the root cell cannot be
 /// translated.
+//
+// Orphaned in lib builds by the registry-dedup migration (hashdump, its last
+// caller, moved onto winreg-core's `root_key()`); `root_cell_index` below stays
+// live via hive_reader. Kept until the final registry.rs-deletion pass.
+#[allow(dead_code)]
 pub(crate) fn resolve_root_cell<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
@@ -435,6 +459,11 @@ fn regf_root_cell_index<P: PhysicalMemoryProvider>(
 }
 
 /// A registry value enumerated from a key node's value list.
+//
+// Orphaned in lib builds by the registry-dedup migration (hashdump, the last
+// value-reader consumer, moved onto winreg-core); kept with its unit tests until
+// the flat walker is removed in the final registry.rs-deletion pass.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct RegistryValue {
     /// Value name (empty for the key's default value).
@@ -450,6 +479,7 @@ pub(crate) struct RegistryValue {
 /// (`NameLength@0x02`, `DataLength@0x04`, `Data@0x08`, `Type@0x0C`, `Name@0x14`).
 /// `DataLength`'s high bit means the data is stored inline at `Data`. Returns an
 /// empty vec on any read fault. The count is bounded as an allocation guard.
+#[allow(dead_code)] // orphaned by the registry-dedup migration; see `RegistryValue` note.
 pub(crate) fn list_values<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
@@ -485,6 +515,7 @@ pub(crate) fn list_values<P: PhysicalMemoryProvider>(
 
 /// Decode a single `_CM_KEY_VALUE` at `val_addr`. `None` on a read fault or an
 /// implausible name/data length (that value is skipped, not the whole list).
+#[allow(dead_code)] // reachable only from the orphaned `list_values`; see its note.
 fn read_value<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
@@ -538,6 +569,7 @@ fn read_value<P: PhysicalMemoryProvider>(
 
 /// Read the data of the named value (case-insensitive) of the key at `key_addr`,
 /// or an empty vec if absent. Thin filter over [`list_values`].
+#[allow(dead_code)] // orphaned by the registry-dedup migration; see `RegistryValue` note.
 pub(crate) fn read_value_data<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
