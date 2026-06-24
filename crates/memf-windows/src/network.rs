@@ -1690,4 +1690,180 @@ mod tests {
         assert_eq!(c.pid, 1368);
         assert_eq!(c.process_name, "dns.exe");
     }
+
+    #[test]
+    fn scan_tcp_endpoints_recovers_an_ipv6_connection() {
+        // Same _TCP_ENDPOINT layout as the IPv4 case but AF_INET6 (0x17) with
+        // 16-byte addresses — must emit "TCPv6" and the canonical v6 strings.
+        let t = tcp_endpoint_layout_x64(9600).unwrap();
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let ai_va = 0xFFFF_C000_0001_1000u64;
+        let remote_in_va = 0xFFFF_C000_0001_2000u64;
+        let la_va = 0xFFFF_C000_0001_3000u64;
+        let pdata_va = 0xFFFF_C000_0001_4000u64;
+        let local_in_va = 0xFFFF_C000_0001_5000u64;
+        let ep_va = 0xFFFF_C000_0001_6000u64;
+        let (pa_inetaf, pa_ai, pa_rin, pa_la, pa_pdata, pa_lin, pa_ep) = (
+            0x70_000u64,
+            0x71_000,
+            0x72_000,
+            0x73_000,
+            0x74_000,
+            0x75_000,
+            0x76_000,
+        );
+
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[t.inetaf_af as usize..t.inetaf_af as usize + 2]
+            .copy_from_slice(&0x17u16.to_le_bytes()); // AF_INET6
+        let mut ai = vec![0u8; 0x1000];
+        ai[t.ai_local as usize..t.ai_local as usize + 8].copy_from_slice(&la_va.to_le_bytes());
+        ai[t.ai_remote as usize..t.ai_remote as usize + 8]
+            .copy_from_slice(&remote_in_va.to_le_bytes());
+        let mut rin = vec![0u8; 0x1000];
+        rin[0..16].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]); // 2001:db8::1
+        let mut la = vec![0u8; 0x1000];
+        la[t.la_pdata as usize..t.la_pdata as usize + 8].copy_from_slice(&pdata_va.to_le_bytes());
+        let mut pdata = vec![0u8; 0x1000];
+        pdata[0..8].copy_from_slice(&local_in_va.to_le_bytes());
+        let mut lin = vec![0u8; 0x1000];
+        lin[0..16].copy_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0a]); // fe80::a
+        let mut ep = vec![0u8; 0x1000];
+        ep[EPROC_PID..EPROC_PID + 8].copy_from_slice(&3644u64.to_le_bytes());
+        ep[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 4].copy_from_slice(b"beac");
+
+        let ep_obj = 0x50_010u64;
+        let mut obj = vec![0u8; 0x300];
+        obj[t.state as usize..t.state as usize + 4].copy_from_slice(&4u32.to_le_bytes());
+        obj[t.local_port as usize..t.local_port as usize + 2]
+            .copy_from_slice(&50000u16.to_be_bytes());
+        obj[t.remote_port as usize..t.remote_port as usize + 2]
+            .copy_from_slice(&443u16.to_be_bytes());
+        obj[t.inet_af as usize..t.inet_af as usize + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[t.addr_info as usize..t.addr_info as usize + 8].copy_from_slice(&ai_va.to_le_bytes());
+        obj[t.owner as usize..t.owner as usize + 8].copy_from_slice(&ep_va.to_le_bytes());
+
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_2580u32.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
+            .map_4k(ai_va, pa_ai, flags::WRITABLE)
+            .map_4k(remote_in_va, pa_rin, flags::WRITABLE)
+            .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(pdata_va, pa_pdata, flags::WRITABLE)
+            .map_4k(local_in_va, pa_lin, flags::WRITABLE)
+            .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
+            .write_phys(pa_inetaf, &inetaf)
+            .write_phys(pa_ai, &ai)
+            .write_phys(pa_rin, &rin)
+            .write_phys(pa_la, &la)
+            .write_phys(pa_pdata, &pdata)
+            .write_phys(pa_lin, &lin)
+            .write_phys(pa_ep, &ep)
+            .write_phys(0x50_004u64, b"TcpE")
+            .write_phys(ep_obj, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_tcp_endpoints(&reader).expect("scan ok");
+        assert_eq!(conns.len(), 1, "one v6 endpoint, got {conns:?}");
+        let c = &conns[0];
+        assert_eq!(c.protocol, "TCPv6");
+        assert_eq!(c.remote_addr, "2001:db8::1");
+        assert_eq!(c.local_addr, "fe80::a");
+        assert_eq!(c.remote_port, 443);
+    }
+
+    #[test]
+    fn scan_udp_endpoints_dual_stack_ipv6_unbound_yields_v4_and_v6() {
+        // An AF_INET6 UDP endpoint with no bound LocalAddr (null) listens on all
+        // addresses → vol3 dual_stack_sockets yields BOTH a v4 (0.0.0.0) and a v6
+        // (::) row. Build-9600 _UDP_ENDPOINT offsets.
+        const U_INETAF: usize = 0x20;
+        const U_OWNER: usize = 0x28;
+        const U_LOCALADDR: usize = 0x60;
+        const U_PORT: usize = 0x78;
+        const INETAF_AF: usize = 0x18;
+
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let ep_va = 0xFFFF_C000_0001_6000u64;
+        let (pa_inetaf, pa_ep) = (0x70_000u64, 0x76_000);
+
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&0x17u16.to_le_bytes()); // AF_INET6
+        let mut ep_page = vec![0u8; 0x1000];
+        ep_page[EPROC_PID..EPROC_PID + 8].copy_from_slice(&1368u64.to_le_bytes());
+        ep_page[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 7].copy_from_slice(b"dns.exe");
+
+        let pool_base = 0x50_000u64;
+        let obj_off = pool_base + 0x10;
+        let mut obj = vec![0u8; 0x200];
+        obj[U_INETAF..U_INETAF + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[U_OWNER..U_OWNER + 8].copy_from_slice(&ep_va.to_le_bytes());
+        // LocalAddr left 0 (null) → unbound.
+        obj[U_PORT..U_PORT + 2].copy_from_slice(&53u16.to_be_bytes());
+
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_2580u32.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
+            .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
+            .write_phys(pa_inetaf, &inetaf)
+            .write_phys(pa_ep, &ep_page)
+            .write_phys(pool_base + 4, b"UdpA")
+            .write_phys(obj_off, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_udp_endpoints(&reader).expect("scan ok");
+        assert_eq!(
+            conns.len(),
+            2,
+            "dual-stack unbound yields v4 + v6, got {conns:?}"
+        );
+        assert!(
+            conns
+                .iter()
+                .any(|c| c.protocol == "UDPv4" && c.local_addr == "0.0.0.0"),
+            "missing UDPv4 0.0.0.0 row: {conns:?}"
+        );
+        assert!(
+            conns
+                .iter()
+                .any(|c| c.protocol == "UDPv6" && c.local_addr == "::"),
+            "missing UDPv6 :: row: {conns:?}"
+        );
+    }
 }
