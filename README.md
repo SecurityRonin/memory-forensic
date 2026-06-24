@@ -345,31 +345,31 @@ Format is detected from file headers — no flags required.
 
 ## What's Different
 
-The nearest alternatives are **Volatility 3** (Python, plugin architecture), **MemProcFS** (Rust, primarily Windows), and **Rekall** (Python, unmaintained). The comparison below reflects each tool's official core and known plugin repository.
+The nearest alternatives are **Volatility 3** (Python, plugin architecture), **MemProcFS** (Rust, primarily Windows), **Rekall** (Python, unmaintained), and **MemNixFS** (C++, Linux dumps mounted as a filesystem). The comparison below reflects each tool's official core and known plugin repository. MemNixFS targets *Linux* images with a filesystem UX, so it shares memf's page-cache file recovery but is `n/a` on the Windows self-profiling and EDR-bypass rows.
 
 ### Parity — capabilities shared with mature tools
 
-| | memory-forensic | Volatility 3 | MemProcFS | Rekall |
-|--|:-:|:-:|:-:|:-:|
-| Linux + Windows kernel walkers | ✅ | ✅ | Windows-first | ✅ |
-| Process, module, network enumeration | ✅ | ✅ | ✅ | ✅ |
-| Injected memory detection | ✅ | ✅ | ✅ | ✅ |
-| ISF symbol pack compatible | ✅ | ✅ | — | — |
-| Runs on Linux / macOS | ✅ | ✅ | partial | ✅ |
-| Actively maintained | ✅ | ✅ | ✅ | — |
-| Free & open source | ✅ | ✅ | ✅ | ✅ |
+| | memory-forensic | Volatility 3 | MemProcFS | Rekall | MemNixFS |
+|--|:-:|:-:|:-:|:-:|:-:|
+| Linux + Windows kernel walkers | ✅ | ✅ | Windows-first | ✅ | Linux-only |
+| Process, module, network enumeration | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Injected memory detection | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ISF symbol pack compatible | ✅ | ✅ | — | — | ✅ |
+| Runs on Linux / macOS | ✅ | ✅ | partial | ✅ | Linux + Win |
+| Actively maintained | ✅ | ✅ | ✅ | — | ✅ |
+| Free & open source | ✅ | ✅ | ✅ | ✅ | no license |
 
 ### Capabilities absent from other tools' official distributions
 
-| | memory-forensic | Volatility 3 | MemProcFS | Rekall |
-|--|:-:|:-:|:-:|:-:|
-| Single static binary — no Python, no runtime | ✅ | — | — | — |
-| Windows auto-profile (no symbol file needed) | ✅ | — | — | — |
-| Library API for embedding in Rust tools | ✅ | — | ✅ | — |
-| ELF behavioral rootkit fingerprinting | ✅ | — | — | — |
-| tmpfs / ramfs file recovery | ✅ | — | — | — |
-| memfd fileless execution detection | ✅ | — | — | — |
-| Direct syscall / EDR bypass detection | ✅ | plugin? | — | — |
+| | memory-forensic | Volatility 3 | MemProcFS | Rekall | MemNixFS |
+|--|:-:|:-:|:-:|:-:|:-:|
+| Single static binary — no Python, no runtime | ✅ | — | — | — | partial |
+| Windows auto-profile (no symbol file needed) | ✅ | — | — | — | n/a |
+| Library API for embedding in Rust tools | ✅ | — | ✅ | — | — |
+| ELF behavioral rootkit fingerprinting | ✅ | — | — | — | — |
+| tmpfs / ramfs file recovery | ✅ | — | — | — | ✅ |
+| memfd fileless execution detection | ✅ | — | — | — | — |
+| Direct syscall / EDR bypass detection | ✅ | plugin? | — | — | n/a |
 | ETW / AMSI / DSE bypass detection | ✅ | plugin? | — | — |
 | io_uring / netfilter / perf\_event abuse | ✅ | — | — | — |
 | Container escape indicators | ✅ | — | — | — |
