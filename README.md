@@ -349,27 +349,27 @@ The nearest alternatives are **Volatility 3** (Python, plugin architecture), **M
 
 ### Parity — capabilities shared with mature tools
 
-| | memory-forensic | Volatility 3 | MemProcFS | Rekall | MemNixFS |
+| | memory-forensic | Volatility 3 | MemProcFS | MemNixFS | Rekall |
 |--|:-:|:-:|:-:|:-:|:-:|
-| Linux + Windows kernel walkers | ✅ | ✅ | Windows-first | ✅ | Linux-only |
+| Linux + Windows kernel walkers | ✅ | ✅ | Windows-first | Linux-only | ✅ |
 | Process, module, network enumeration | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Injected memory detection | ✅ | ✅ | ✅ | ✅ | ✅ |
-| ISF symbol pack compatible | ✅ | ✅ | — | — | ✅ |
-| Runs on Linux / macOS | ✅ | ✅ | partial | ✅ | Linux + Win |
-| Actively maintained | ✅ | ✅ | ✅ | — | ✅ |
-| Free & open source | ✅ | ✅ | ✅ | ✅ | no license |
+| ISF symbol pack compatible | ✅ | ✅ | — | ✅ | — |
+| Runs on Linux / macOS | ✅ | ✅ | partial | Linux + Win | ✅ |
+| Actively maintained | ✅ | ✅ | ✅ | ✅ | — |
+| Free & open source | ✅ | ✅ | ✅ | no license | ✅ |
 
 ### Capabilities absent from other tools' official distributions
 
-| | memory-forensic | Volatility 3 | MemProcFS | Rekall | MemNixFS |
+| | memory-forensic | Volatility 3 | MemProcFS | MemNixFS | Rekall |
 |--|:-:|:-:|:-:|:-:|:-:|
-| Single static binary — no Python, no runtime | ✅ | — | — | — | partial |
-| Windows auto-profile (no symbol file needed) | ✅ | — | — | — | n/a |
+| Single static binary — no Python, no runtime | ✅ | — | — | partial | — |
+| Windows auto-profile (no symbol file needed) | ✅ | — | — | n/a | — |
 | Library API for embedding in Rust tools | ✅ | — | ✅ | — | — |
 | ELF behavioral rootkit fingerprinting | ✅ | — | — | — | — |
-| tmpfs / ramfs file recovery | ✅ | — | — | — | ✅ |
+| tmpfs / ramfs file recovery | ✅ | — | — | ✅ | — |
 | memfd fileless execution detection | ✅ | — | — | — | — |
-| Direct syscall / EDR bypass detection | ✅ | plugin? | — | — | n/a |
+| Direct syscall / EDR bypass detection | ✅ | plugin? | — | n/a | — |
 | ETW / AMSI / DSE bypass detection | ✅ | plugin? | — | — |
 | io_uring / netfilter / perf\_event abuse | ✅ | — | — | — |
 | Container escape indicators | ✅ | — | — | — |
