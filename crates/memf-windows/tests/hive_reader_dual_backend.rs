@@ -8,6 +8,8 @@
 //! address — so agreement proves the HMAP translation, independent of any
 //! oracle: the ground truth is the *construction* of the hive itself.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use memf_core::object_reader::ObjectReader;
 use memf_core::test_builders::{flags, PageTableBuilder};
 use memf_core::vas::{TranslationMode, VirtualAddressSpace};
@@ -72,7 +74,7 @@ fn build_hive() -> Vec<u8> {
 
     // ── root nk ──
     {
-        let mut body = vec![0u8; 2 + 80]; // sig + 76-byte header + "ROOT"
+        let mut body = vec![0u8; 2 + 78]; // sig + 74-byte header + "ROOT"
         body[0..2].copy_from_slice(b"nk");
         let nk = &mut body[2..]; // after-sig view, matching RawKeyNode::parse
         nk[0..2]
@@ -83,7 +85,7 @@ fn build_hive() -> Vec<u8> {
         nk[34..38].copy_from_slice(&1u32.to_le_bytes()); // value_count
         nk[38..42].copy_from_slice(&VLIST_OFF.to_le_bytes()); // values_list_offset
         nk[70..72].copy_from_slice(&4u16.to_le_bytes()); // key_name_len
-        nk[76..80].copy_from_slice(b"ROOT");
+        nk[74..78].copy_from_slice(b"ROOT"); // name @ after-sig offset 74
         let p = write_cell_header(&mut buf, ROOT_OFF, body.len());
         buf[p..p + body.len()].copy_from_slice(&body);
     }
@@ -101,7 +103,7 @@ fn build_hive() -> Vec<u8> {
 
     // ── child nk ("Child"), no subkeys, no values ──
     {
-        let mut body = vec![0u8; 2 + 81]; // sig + 76 header + "Child"(5)
+        let mut body = vec![0u8; 2 + 79]; // sig + 74 header + "Child"(5)
         body[0..2].copy_from_slice(b"nk");
         let nk = &mut body[2..];
         nk[0..2].copy_from_slice(&KEY_NODE_FLAGS_COMP_NAME.to_le_bytes());
@@ -109,7 +111,7 @@ fn build_hive() -> Vec<u8> {
         nk[18..22].copy_from_slice(&0u32.to_le_bytes()); // subkey_count
         nk[34..38].copy_from_slice(&0u32.to_le_bytes()); // value_count
         nk[70..72].copy_from_slice(&5u16.to_le_bytes()); // key_name_len
-        nk[76..81].copy_from_slice(b"Child");
+        nk[74..79].copy_from_slice(b"Child"); // name @ after-sig offset 74
         let p = write_cell_header(&mut buf, CHILD_OFF, body.len());
         buf[p..p + body.len()].copy_from_slice(&body);
     }
@@ -124,15 +126,15 @@ fn build_hive() -> Vec<u8> {
 
     // ── vk ("Val"), resident 2-byte data "AB" ──
     {
-        let mut body = vec![0u8; 18 + 3]; // sig + 16 header + "Val"
+        let mut body = vec![0u8; 2 + 18 + 3]; // sig + 18-byte header + "Val"
         body[0..2].copy_from_slice(b"vk");
-        let vk = &mut body[2..];
+        let vk = &mut body[2..]; // after-sig view, matching RawKeyValue::parse
         vk[0..2].copy_from_slice(&3u16.to_le_bytes()); // name_len
         vk[2..6].copy_from_slice(&(2u32 | VK_RESIDENT_FLAG).to_le_bytes()); // data_size + resident
         vk[6..10].copy_from_slice(&u32::from_le_bytes([b'A', b'B', 0, 0]).to_le_bytes()); // inline data
         vk[10..14].copy_from_slice(&1u32.to_le_bytes()); // type = REG_SZ
         vk[14..16].copy_from_slice(&VALUE_FLAG_COMP_NAME.to_le_bytes());
-        vk[16..19].copy_from_slice(b"Val");
+        vk[18..21].copy_from_slice(b"Val"); // name @ after-sig offset 18
         let p = write_cell_header(&mut buf, VK_OFF, body.len());
         buf[p..p + body.len()].copy_from_slice(&body);
     }
@@ -253,6 +255,12 @@ fn both_backends_agree_on_walked_keys_and_values() {
     let memf = MemfHiveReader::new(&reader, hhive_addr);
     let memf_root =
         Key::from_cell_offset(&memf, CellOffset(ROOT_OFF)).expect("memf root from cell offset");
+
+    // The `root_key()` convenience (which resolves the root cell index the way
+    // every memf walker does, defaulting to 0x20 when the base block is absent)
+    // must reach the same root as the explicit `from_cell_offset` seam.
+    let memf_root_via_helper = memf.root_key().expect("memf root via root_key()");
+    assert_eq!(snapshot(&memf_root), snapshot(&memf_root_via_helper));
 
     // Root agrees.
     let flat_snap = snapshot(&flat_root);

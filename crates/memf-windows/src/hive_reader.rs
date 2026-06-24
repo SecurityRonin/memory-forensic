@@ -16,7 +16,10 @@ use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 use winreg_core::cell_reader::CellReader;
 use winreg_core::error::{HiveError, Result as HiveResult};
+use winreg_core::key::Key;
 use winreg_format::cells::{CellHeader, CellOffset};
+
+use crate::registry::{cell_index_to_va, root_cell_index};
 
 /// A winreg-core [`CellReader`] that resolves cells through memf's HMAP cell map.
 ///
@@ -35,6 +38,18 @@ impl<'r, P: PhysicalMemoryProvider> MemfHiveReader<'r, P> {
     pub fn new(reader: &'r ObjectReader<P>, hhive_addr: u64) -> Self {
         Self { reader, hhive_addr }
     }
+
+    /// Mint the hive's root [`Key`] for generic winreg-core navigation.
+    ///
+    /// Resolves the root **cell index** the same way every memf registry walker
+    /// does (`_HBASE_BLOCK.RootCell` when the header page is resident, else the
+    /// regf default `0x20`) and bootstraps a `Key` through winreg-core's
+    /// documented [`Key::from_cell_offset`] seam. From the returned key, all
+    /// generic navigation (`subkeys`, `values`, `subkey_path`, …) follows.
+    pub fn root_key(&self) -> HiveResult<Key<'_, Self>> {
+        let root = root_cell_index(self.reader, self.hhive_addr);
+        Key::from_cell_offset(self, CellOffset(root))
+    }
 }
 
 impl<P: PhysicalMemoryProvider> CellReader for MemfHiveReader<'_, P> {
@@ -44,9 +59,43 @@ impl<P: PhysicalMemoryProvider> CellReader for MemfHiveReader<'_, P> {
     /// Unlike the flat-file backend this does **not** reject unallocated cells:
     /// a live in-memory hive is allocation-agnostic, and the shared navigation
     /// only ever follows offsets the hive itself recorded.
-    fn read_cell_raw(&self, _offset: CellOffset) -> HiveResult<(CellHeader, Vec<u8>)> {
-        // RED stub — not yet implemented.
-        let _ = (self.reader, self.hhive_addr);
-        Err(HiveError::NullOffset)
+    fn read_cell_raw(&self, offset: CellOffset) -> HiveResult<(CellHeader, Vec<u8>)> {
+        if offset.is_null() {
+            return Err(HiveError::NullOffset);
+        }
+
+        let overflow = |cell_size: u32| HiveError::CellOverflow {
+            offset,
+            cell_size,
+            hbin_end: 0,
+        };
+
+        let cell_va =
+            cell_index_to_va(self.reader, self.hhive_addr, offset.0).ok_or_else(|| overflow(0))?;
+
+        let header_bytes = self
+            .reader
+            .read_bytes(cell_va, 4)
+            .ok()
+            .filter(|b| b.len() == 4)
+            .ok_or_else(|| overflow(0))?;
+        let header = CellHeader::from_bytes(&[
+            header_bytes[0],
+            header_bytes[1],
+            header_bytes[2],
+            header_bytes[3],
+        ]);
+
+        // size() includes the 4-byte header; the body is everything after it.
+        let total = header.size() as usize;
+        let body_len = total.saturating_sub(4);
+        let body = self
+            .reader
+            .read_bytes(cell_va.wrapping_add(4), body_len)
+            .ok()
+            .filter(|b| b.len() == body_len)
+            .ok_or_else(|| overflow(header.size()))?;
+
+        Ok((header, body))
     }
 }
