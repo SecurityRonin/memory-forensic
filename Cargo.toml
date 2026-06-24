@@ -9,6 +9,7 @@ members = [
     "crates/memf-windows",
     "crates/forensic-hashdb",
     "crates/memf-correlate",
+    "crates/memf-session",
 ]
 
 [workspace.package]
@@ -35,6 +36,7 @@ memf-strings = { version = "0.2.1", path = "crates/memf-strings" }
 memf-symbols = { version = "0.2.1", path = "crates/memf-symbols" }
 memf-core    = { version = "0.2.1", path = "crates/memf-core" }
 memf-linux   = { version = "0.2.1", path = "crates/memf-linux" }
+memf-session = { version = "0.2.1", path = "crates/memf-session" }
 memf-windows = { version = "0.2.1", path = "crates/memf-windows" }
 memf-correlate    = { version = "0.2.1", path = "crates/memf-correlate" }
 assert_cmd = "2"
