@@ -6,8 +6,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 use crate::Result;
 
 /// Maximum CLSID subkeys to enumerate (safety cap).
@@ -72,65 +74,61 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
         return Ok(Vec::new());
     }
 
-    let clsid_va = walk_key_path(reader, hku_hive_addr, &["Software", "Classes", "CLSID"]);
-    if clsid_va == 0 {
+    let hku = MemfHiveReader::new(reader, hku_hive_addr);
+    let Ok(hku_root) = hku.root_key() else {
         return Ok(Vec::new());
-    }
-
-    let clsid_children = registry::list_subkeys(reader, hku_hive_addr, clsid_va);
-
-    let hkcr_clsid_va = if hkcr_hive_addr != 0 {
-        walk_key_path(reader, hkcr_hive_addr, &["CLSID"])
-    } else {
-        0
     };
+    let Some(clsid) = walk_key_path(&hku_root, r"Software\Classes\CLSID") else {
+        return Ok(Vec::new());
+    };
+
+    let Ok(clsid_children) = clsid.subkeys() else {
+        return Ok(Vec::new());
+    };
+
+    // HKCR is optional; resolve its `CLSID` key only when that hive is present.
+    // The backend must outlive the loop below (each `Key` borrows it), so bind
+    // it at function scope.
+    let hkcr_backend = (hkcr_hive_addr != 0).then(|| MemfHiveReader::new(reader, hkcr_hive_addr));
+    let hkcr = hkcr_backend
+        .as_ref()
+        .and_then(|b| b.root_key().ok())
+        .and_then(|root| walk_key_path(&root, "CLSID"));
 
     let mut results = Vec::new();
 
-    for (guid_name, guid_va) in clsid_children.iter().take(MAX_CLSIDS) {
-        let hkcu_inproc_va =
-            registry::find_subkey_by_name(reader, hku_hive_addr, *guid_va, "InprocServer32");
-        if hkcu_inproc_va == 0 {
+    for guid in clsid_children.iter().take(MAX_CLSIDS) {
+        let guid_name = guid.name();
+        let Ok(Some(hkcu_inproc)) = guid.subkey_path("InprocServer32") else {
             continue;
-        }
+        };
 
-        let hkcu_raw = registry::read_value_data(reader, hku_hive_addr, hkcu_inproc_va, "");
-        let hkcu_server = decode_utf16le(&hkcu_raw);
+        let hkcu_server = decode_utf16le(&default_value(&hkcu_inproc));
         if hkcu_server.is_empty() {
             continue;
         }
 
         let hkcu_path = format!(r"HKCU\Software\Classes\CLSID\{guid_name}\InprocServer32");
 
-        let (hkcr_server, hkcr_path) = if hkcr_clsid_va != 0 {
-            let hkcr_guid_va =
-                registry::find_subkey_by_name(reader, hkcr_hive_addr, hkcr_clsid_va, guid_name);
-            if hkcr_guid_va != 0 {
-                let hkcr_inproc_va = registry::find_subkey_by_name(
-                    reader,
-                    hkcr_hive_addr,
-                    hkcr_guid_va,
-                    "InprocServer32",
-                );
-                if hkcr_inproc_va != 0 {
-                    let raw = registry::read_value_data(reader, hkcr_hive_addr, hkcr_inproc_va, "");
-                    let srv = decode_utf16le(&raw);
+        // HKCR baseline: the trusted system-wide registration, if the HKCR hive
+        // has this GUID's InprocServer32. Any missing level → empty server/path.
+        let (hkcr_server, hkcr_path) = hkcr
+            .as_ref()
+            .and_then(|hkcr_clsid| hkcr_clsid.subkey_path(&guid_name).ok().flatten())
+            .and_then(|hkcr_guid| hkcr_guid.subkey_path("InprocServer32").ok().flatten())
+            .map_or_else(
+                || (String::new(), String::new()),
+                |hkcr_inproc| {
+                    let srv = decode_utf16le(&default_value(&hkcr_inproc));
                     let path = format!(r"HKCR\CLSID\{guid_name}\InprocServer32");
                     (srv, path)
-                } else {
-                    (String::new(), String::new())
-                }
-            } else {
-                (String::new(), String::new())
-            }
-        } else {
-            (String::new(), String::new())
-        };
+                },
+            );
 
         let is_suspicious = classify_com_hijack(&hkcr_server, &hkcu_server);
         if is_suspicious {
             results.push(ComHijackInfo {
-                clsid: guid_name.clone(),
+                clsid: guid_name,
                 hkcr_path,
                 hkcu_path,
                 hkcr_server,
@@ -143,21 +141,21 @@ pub fn walk_com_hijacking<P: PhysicalMemoryProvider>(
     Ok(results)
 }
 
-/// Walk a registry key path component by component from the hive root.
-/// Returns the VA of the final key node, or `0` if any component is not found.
-fn walk_key_path<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hhive_addr: u64,
-    path: &[&str],
-) -> u64 {
-    let mut current = registry::resolve_root_cell(reader, hhive_addr);
-    for &component in path {
-        if current == 0 {
-            return 0;
-        }
-        current = registry::find_subkey_by_name(reader, hhive_addr, current, component);
+/// Navigate a backslash-delimited registry key path from `root`, returning the
+/// final [`Key`] or `None` if any component is absent (a read fault mid-path
+/// degrades to "absent", matching the old `0`-on-miss contract).
+fn walk_key_path<'h, R: CellReader>(root: &Key<'h, R>, path: &str) -> Option<Key<'h, R>> {
+    root.subkey_path(path).ok().flatten()
+}
+
+/// Read a key's default (empty-name) value as raw bytes, or empty on an absent
+/// value or read fault. The decoder then yields `""`, preserving the old
+/// `read_value_data(.., "")` contract where a missing default is benign.
+fn default_value<R: CellReader>(key: &Key<'_, R>) -> Vec<u8> {
+    match key.value("") {
+        Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+        _ => Vec::new(),
     }
-    current
 }
 
 /// Decode a raw byte slice as a UTF-16LE string, stopping at the first null.
@@ -466,13 +464,12 @@ mod tests {
     /// [`MemfHiveReader`]-backed root [`Key`] and a backslash `&str`, returning
     /// an `Option<Key>` — not a raw `u64` cell VA from the dead `registry::`
     /// flat walker. This fixture pins the exact behavior contract of the OLD
-    /// code so the migration is behavior-preserving:
-    ///   - GUID-1 (HKU AppData override, different HKCR path) → suspicious, kept.
-    ///   - GUID-2 (HKU == HKCR System32 path, no temp dir) → benign, dropped.
-    /// Both hkcr_server/hkcr_path are populated from the HKCR side; the empty
-    /// HKU default value would `continue` (skip), and only suspicious entries
-    /// are pushed. Compile-fails until `walk_key_path` navigates winreg-core
-    /// `Key`s with a `&str` path.
+    /// code so the migration is behavior-preserving: GUID-1 (HKU AppData
+    /// override, different HKCR path) is suspicious and kept; GUID-2 (HKU equal
+    /// to its HKCR System32 path, no temp dir) is benign and dropped. Only
+    /// suspicious entries are pushed, and an empty HKU default value would
+    /// `continue` (skip). Compile-fails until `walk_key_path` navigates
+    /// winreg-core `Key`s with a `&str` path.
     #[test]
     fn com_hijacking_winreg_core_navigation_contract() {
         use crate::hive_reader::MemfHiveReader;
