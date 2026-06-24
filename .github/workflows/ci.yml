@@ -66,8 +66,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      # Pin to rust-toolchain.toml's channel (1.96.0) so the musl target is added
+      # to the SAME toolchain the build uses — a floating `stable` here adds the
+      # target to the wrong toolchain and the pinned build fails with E0463.
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.96.0"
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
