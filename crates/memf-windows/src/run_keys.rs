@@ -15,6 +15,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
+
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of autorun entries to extract (safety limit).
 const MAX_ENTRIES: usize = 10_000;
@@ -142,7 +146,7 @@ pub fn walk_run_keys<P: PhysicalMemoryProvider>(
             if entries.len() >= MAX_ENTRIES {
                 break;
             }
-            let cell = match find_key_cell(reader, software_hive_addr, key_path) {
+            let cell = match find_run_key_cell(reader, software_hive_addr, key_path) {
                 Some(c) => c,
                 None => continue,
             };
@@ -176,7 +180,7 @@ pub fn walk_run_keys<P: PhysicalMemoryProvider>(
             if entries.len() >= MAX_ENTRIES {
                 break;
             }
-            let cell = match find_key_cell(reader, ntuser_hive_addr, key_path) {
+            let cell = match find_run_key_cell(reader, ntuser_hive_addr, key_path) {
                 Some(c) => c,
                 None => continue,
             };
@@ -204,118 +208,32 @@ pub fn walk_run_keys<P: PhysicalMemoryProvider>(
     Ok(entries)
 }
 
-// ── Internal hive navigation helpers ─────────────────────────────────
+// ── Internal hive navigation helper ──────────────────────────────────
 
-/// Hive cell storage starts at hive_addr + 0x1000.
-/// "nk" key node signature.
-const NK_SIG: u16 = 0x6B6E;
-
-/// Stable subkey count offset within a key node cell (after the 4-byte cell size header).
-const NK_STABLE_COUNT: usize = 0x14;
-/// Stable subkeys list cell index offset.
-const NK_STABLE_LIST: usize = 0x1C;
-/// Name length offset.
-const NK_NAME_LEN: usize = 0x48;
-/// Name data offset.
-const NK_NAME_DATA: usize = 0x4C;
-
-/// Translate a registry **cell index** to the virtual address of its `_HCELL`
-/// size header. In-memory hives are HMAP-scattered, not flat: cells are reached
-/// through `_HHIVE.Storage[].Map` (see [`crate::registry::cell_index_to_va`]).
-fn cell_vaddr<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    hive_addr: u64,
-    cell_index: u32,
-) -> u64 {
-    crate::registry::cell_index_to_va(reader, hive_addr, cell_index).unwrap_or(0)
-}
-
-/// Read raw cell data (skipping the 4-byte size header) from a cell vaddr.
-fn read_cell<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    cell_vaddr: u64,
-) -> Option<Vec<u8>> {
-    // Size field (i32); skip it, read up to 4096 bytes of cell payload.
-    reader.read_bytes(cell_vaddr + 4, 4096).ok()
-}
-
-/// Read the ASCII name from a key node cell buffer.
-fn key_node_name(data: &[u8]) -> String {
-    if data.len() < NK_NAME_DATA {
-        return String::new();
-    }
-    let len = u16::from_le_bytes(
-        data[NK_NAME_LEN..NK_NAME_LEN + 2]
-            .try_into()
-            .unwrap_or([0; 2]),
-    ) as usize;
-    let end = NK_NAME_DATA + len.min(data.len().saturating_sub(NK_NAME_DATA));
-    String::from_utf8_lossy(&data[NK_NAME_DATA..end]).into_owned()
-}
-
-/// Navigate a backslash-separated key path relative to the hive root.
-/// Returns the cell index of the target key, or `None` if not found.
-fn find_key_cell<P: PhysicalMemoryProvider>(
+/// Navigate a backslash-separated key path relative to the hive root, returning
+/// the target key's **cell index** (offset), or `None` if any component is
+/// absent or the hive root cannot be bootstrapped.
+///
+/// Navigation runs through winreg-core's shared `Key` decoder over
+/// [`MemfHiveReader`], so every subkey-list form — `lf`/`lh`/`li` **and `ri`
+/// (index-root)** — is handled. The returned cell offset feeds the existing
+/// [`crate::registry_keys::read_registry_values`] (which expects a cell index),
+/// keeping the typed `value_data` preview byte-for-byte identical.
+fn find_run_key_cell<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
     path: &str,
 ) -> Option<u32> {
-    // Resolve the root cell index via the HMAP-aware helper (regf RootCell, else
-    // the regf-format default 0x20) — the flat _HBASE_BLOCK read does not apply
-    // to HMAP-scattered in-memory hives.
-    let mut current_cell = crate::registry::root_cell_index(reader, hive_addr);
+    let hive = MemfHiveReader::new(reader, hive_addr);
+    let root = hive.root_key().ok()?;
+    let key = root.subkey_path(path).ok().flatten()?;
+    Some(key_cell_offset(&key))
+}
 
-    for component in path.split('\\').filter(|s| !s.is_empty()) {
-        let data = read_cell(reader, cell_vaddr(reader, hive_addr, current_cell))?;
-        if data.len() < 4 {
-            return None;
-        }
-        let sig = u16::from_le_bytes(data[0..2].try_into().ok()?);
-        if sig != NK_SIG {
-            return None;
-        }
-
-        let subkey_count =
-            u32::from_le_bytes(data[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].try_into().ok()?)
-                as usize;
-        if subkey_count == 0 {
-            return None;
-        }
-
-        let list_cell =
-            u32::from_le_bytes(data[NK_STABLE_LIST..NK_STABLE_LIST + 4].try_into().ok()?);
-        let list_data = read_cell(reader, cell_vaddr(reader, hive_addr, list_cell))?;
-        if list_data.len() < 4 {
-            return None;
-        }
-
-        let list_sig = u16::from_le_bytes(list_data[0..2].try_into().ok()?);
-        let list_count = u16::from_le_bytes(list_data[2..4].try_into().ok()?) as usize;
-
-        let (entry_size, offset_base) = match list_sig {
-            0x666C | 0x686C => (8usize, 4usize), // lf/lh: 4-byte cell + 4-byte hash
-            0x696C => (4usize, 4usize),          // li: 4-byte cell only
-            _ => return None,
-        };
-
-        let mut found = None;
-        for i in 0..list_count {
-            let off = offset_base + i * entry_size;
-            if off + 4 > list_data.len() {
-                break;
-            }
-            let child_cell = u32::from_le_bytes(list_data[off..off + 4].try_into().ok()?);
-            let child_data = read_cell(reader, cell_vaddr(reader, hive_addr, child_cell))?;
-            let name = key_node_name(&child_data);
-            if name.eq_ignore_ascii_case(component) {
-                found = Some(child_cell);
-                break;
-            }
-        }
-        current_cell = found?;
-    }
-
-    Some(current_cell)
+/// The hive-bins-relative cell offset (== memf cell index) of a winreg-core
+/// [`Key`], for handoff to cell-index-based readers.
+fn key_cell_offset<R: CellReader>(key: &Key<'_, R>) -> u32 {
+    key.offset().0
 }
 
 #[cfg(test)]
@@ -324,91 +242,39 @@ mod tests {
     use super::*;
     use crate::test_hive::CellHive;
 
-    /// Build an allocated cell: i32 size header (negative) + data, 8-aligned.
-    fn build_cell(data: &[u8]) -> Vec<u8> {
-        let total = ((4 + data.len() + 7) & !7) as i32;
-        let mut cell = Vec::with_capacity(total as usize);
-        cell.extend_from_slice(&(-total).to_le_bytes());
-        cell.extend_from_slice(data);
-        cell.resize(total as usize, 0);
-        cell
-    }
-
-    /// Build an nk cell-data buffer (stable count@0x14, list@0x1c,
-    /// NameLength@0x48, Name@0x4c).
-    fn nk_data(name: &[u8], stable_count: u32, stable_list: u32) -> Vec<u8> {
-        let mut d = vec![0u8; NK_NAME_DATA + name.len()];
-        d[0..2].copy_from_slice(&NK_SIG.to_le_bytes());
-        d[NK_STABLE_COUNT..NK_STABLE_COUNT + 4].copy_from_slice(&stable_count.to_le_bytes());
-        d[NK_STABLE_LIST..NK_STABLE_LIST + 4].copy_from_slice(&stable_list.to_le_bytes());
-        d[NK_NAME_LEN..NK_NAME_LEN + 2].copy_from_slice(&(name.len() as u16).to_le_bytes());
-        d[NK_NAME_DATA..NK_NAME_DATA + name.len()].copy_from_slice(name);
-        d
-    }
-
-    /// Build an lf list cell-data buffer (8-byte entries: cell index + hash).
-    fn lf_data(children: &[u32]) -> Vec<u8> {
-        let mut d = vec![0u8; 4 + children.len() * 8];
-        d[0..2].copy_from_slice(&0x666Cu16.to_le_bytes());
-        d[2..4].copy_from_slice(&(children.len() as u16).to_le_bytes());
-        for (i, &c) in children.iter().enumerate() {
-            d[4 + i * 8..4 + i * 8 + 4].copy_from_slice(&c.to_le_bytes());
-        }
-        d
-    }
-
     /// SOFTWARE-style hive reached via HMAP cell translation (root nk at the
     /// regf default 0x20), carrying `Microsoft\Windows\CurrentVersion\Run` with
-    /// one Run value. The flat `hive + 0x1000 + idx` navigation cannot resolve
-    /// the HMAP-scattered cells, so this fails until `find_key_cell` migrates.
+    /// one Run value, built with the shared `CellHive` harness (real on-disk
+    /// nk/lf/vk signatures winreg-core validates). Proves the migrated walker
+    /// resolves the value through the HMAP-scattered cell map.
     #[test]
     fn walk_run_keys_software_run_via_cell_map() {
-        let hive_vaddr: u64 = 0xFFFF_8000_0120_0000;
-        let mut bin = vec![0u8; 0x1000];
-        let place = |bin: &mut [u8], off: usize, cell: &[u8]| {
-            bin[off..off + cell.len()].copy_from_slice(cell);
+        let utf16 = |s: &str| -> Vec<u8> {
+            s.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .chain([0u8, 0u8])
+                .collect()
         };
-        // nk cells need 0x4c + name bytes (~96 bytes); space cells 0x100 apart so
-        // a key cell never overlaps the next one.
-        // root(0x20) → lf(0x100) → Microsoft(0x200)
-        place(&mut bin, 0x20, &build_cell(&nk_data(b"", 1, 0x100)));
-        place(&mut bin, 0x100, &build_cell(&lf_data(&[0x200])));
-        // Microsoft(0x200) → lf(0x300) → Windows(0x400)
-        place(
-            &mut bin,
-            0x200,
-            &build_cell(&nk_data(b"Microsoft", 1, 0x300)),
-        );
-        place(&mut bin, 0x300, &build_cell(&lf_data(&[0x400])));
-        // Windows(0x400) → lf(0x500) → CurrentVersion(0x600)
-        place(&mut bin, 0x400, &build_cell(&nk_data(b"Windows", 1, 0x500)));
-        place(&mut bin, 0x500, &build_cell(&lf_data(&[0x600])));
-        // CurrentVersion(0x600) → lf(0x700) → Run(0x800)
-        place(
-            &mut bin,
-            0x600,
-            &build_cell(&nk_data(b"CurrentVersion", 1, 0x700)),
-        );
-        place(&mut bin, 0x700, &build_cell(&lf_data(&[0x800])));
-        // Run(0x800): no subkeys, 1 value-list@0x900.
-        let mut run = nk_data(b"Run", 0, 0);
-        run[0x24..0x28].copy_from_slice(&1u32.to_le_bytes()); // ValueCount
-        run[0x28..0x2c].copy_from_slice(&0x900u32.to_le_bytes()); // ValueList
-        place(&mut bin, 0x800, &build_cell(&run));
-        // value-list(0x900) → vk(0x980)
-        place(&mut bin, 0x900, &build_cell(&0x980u32.to_le_bytes()));
-        // vk(0x980): "Updater" = REG_SZ inline UTF-16LE 'X' (2 inline bytes).
-        let mut vk = vec![0u8; 0x14 + 7];
-        vk[0..2].copy_from_slice(&0x6B76u16.to_le_bytes());
-        vk[0x02..0x04].copy_from_slice(&7u16.to_le_bytes()); // NameLength "Updater"
-        vk[0x04..0x08].copy_from_slice(&0x8000_0002u32.to_le_bytes()); // inline, 2 bytes
-        vk[0x08..0x0c].copy_from_slice(&0x0000_0058u32.to_le_bytes()); // 'X' UTF-16LE
-        vk[0x0c..0x10].copy_from_slice(&1u32.to_le_bytes()); // REG_SZ
-        vk[0x14..0x1b].copy_from_slice(b"Updater");
-        place(&mut bin, 0x980, &build_cell(&vk));
+        let mut h = CellHive::new(0x0050_0000);
+        // root → Microsoft → Windows → CurrentVersion → Run
+        h.nk(0x020, b"Root", 1, 0x0A0, 0);
+        h.lf(0x0A0, &[0x0E0]);
+        h.nk(0x0E0, b"Microsoft", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Windows", 1, 0x1E0, 0);
+        h.lf(0x1E0, &[0x220]);
+        h.nk(0x220, b"CurrentVersion", 1, 0x2A0, 0);
+        h.lf(0x2A0, &[0x300]);
+        // Run: no subkeys, one REG_SZ value "Updater" = "X".
+        h.nk(0x300, b"Run", 0, 0, 0);
+        h.values(0x300, 1, 0x380);
+        h.value_list(0x380, &[0x3C0]);
+        let data = utf16("X");
+        h.vk(0x3C0, b"Updater", 1, data.len() as u32, 0x440);
+        h.data(0x440, &data);
 
-        let reader = CellHive::with_bin(hive_vaddr, bin).reader();
-        let entries = walk_run_keys(&reader, hive_vaddr, 0).unwrap();
+        let reader = h.reader();
+        let entries = walk_run_keys(&reader, h.hhive_va, 0).unwrap();
         let entry = entries
             .iter()
             .find(|e| e.value_name == "Updater")
