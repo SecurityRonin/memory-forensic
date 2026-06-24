@@ -72,7 +72,8 @@ jobs:
         run: |
           BIN="target/${{ matrix.target }}/release/memf"
           file "$BIN"
-          file "$BIN" | grep -q 'statically linked' || { echo "::error::$BIN is NOT statically linked"; exit 1; }
+          # Accept classic static and static-PIE (self-contained + ASLR) — both have no external deps.
+          file "$BIN" | grep -qE 'statically linked|static-pie linked' || { echo "::error::$BIN is NOT statically linked"; exit 1; }
 
       - name: Package (Unix)
         if: runner.os != 'Windows'

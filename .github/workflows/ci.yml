@@ -80,5 +80,6 @@ jobs:
         run: |
           BIN=target/x86_64-unknown-linux-musl/release/memf
           file "$BIN"
-          file "$BIN" | grep -q 'statically linked' || { echo "::error::memf is NOT statically linked"; exit 1; }
+          # Accept both classic static and static-PIE (self-contained + ASLR) — both have no external deps.
+          file "$BIN" | grep -qE 'statically linked|static-pie linked' || { echo "::error::memf is NOT statically linked"; exit 1; }
           ldd "$BIN" 2>&1 | grep -qiE 'not a dynamic executable|statically linked' || { echo "::error::ldd reports dynamic linkage"; exit 1; }
