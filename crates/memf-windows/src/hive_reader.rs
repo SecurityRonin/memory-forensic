@@ -50,6 +50,16 @@ impl<'r, P: PhysicalMemoryProvider> MemfHiveReader<'r, P> {
         let root = root_cell_index(self.reader, self.hhive_addr);
         Key::from_cell_offset(self, CellOffset(root))
     }
+
+    /// Translate a winreg-core cell offset (== memf cell index) to the virtual
+    /// address of its `_HCELL` header, the form the legacy VA-based walkers
+    /// (e.g. [`crate::lsadump::derive_lsa_key`]) still consume. `None` when the
+    /// offset does not resolve through the HMAP cell map. This is the bridge a
+    /// caller uses when handing a navigated [`Key`] to a not-yet-migrated
+    /// VA-based reader.
+    pub fn cell_offset_to_va(&self, offset: CellOffset) -> Option<u64> {
+        cell_index_to_va(self.reader, self.hhive_addr, offset.0)
+    }
 }
 
 impl<P: PhysicalMemoryProvider> CellReader for MemfHiveReader<'_, P> {

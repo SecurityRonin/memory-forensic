@@ -16,10 +16,12 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
 use std::fmt::Write as _;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of cached credential entries to enumerate (safety limit).
 const MAX_CACHED_CREDS: usize = 64;
@@ -103,44 +105,54 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     if security_hive_addr == 0 {
         return Ok(Vec::new());
     }
-    let root = registry::resolve_root_cell(reader, security_hive_addr);
-    if root == 0 {
+    // Navigate the SECURITY hive through winreg-core's shared Key decoder over
+    // MemfHiveReader (canonical _CM_KEY_NODE/_CM_KEY_VALUE offsets).
+    let hive = MemfHiveReader::new(reader, security_hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    let policy = registry::find_subkey_by_name(reader, security_hive_addr, root, "Policy");
-    if policy == 0 {
+    };
+    let Some(policy) = find_policy_key(&root) else {
         return Ok(Vec::new());
-    }
+    };
 
     // Keys: boot key (SYSTEM) → LSA key → NL$KM. Any failure ⇒ refuse, never
-    // fabricate plaintext from ciphertext.
+    // fabricate plaintext from ciphertext. derive_lsa_key (lsadump owns its own
+    // navigation, kept intact) consumes the policy cell *VA*, so translate the
+    // navigated Key's offset through the HMAP cell map.
+    let Some(policy_va) = hive.cell_offset_to_va(policy.offset()) else {
+        return Ok(Vec::new());
+    };
     let lsa_key =
-        crate::lsadump::derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy);
+        crate::lsadump::derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy_va);
     if lsa_key.is_empty() {
         return Ok(Vec::new());
     }
-    let nlkm = get_nlkm(reader, security_hive_addr, policy, &lsa_key);
+    let nlkm = get_nlkm(&policy, &lsa_key);
     if nlkm.len() < 32 {
         return Ok(Vec::new());
     }
 
-    let cache = registry::find_subkey_by_name(reader, security_hive_addr, root, "Cache");
-    if cache == 0 {
+    let Some(cache) = root.subkey_path("Cache").ok().flatten() else {
         return Ok(Vec::new());
-    }
+    };
+
+    let Ok(cache_values) = cache.values() else {
+        return Ok(Vec::new());
+    };
 
     let mut results = Vec::new();
-    for value in registry::list_values(reader, security_hive_addr, cache)
-        .into_iter()
-        .take(MAX_CACHED_CREDS)
-    {
-        if value.name == "NL$Control" || !is_nl_entry(&value.name) {
+    for value in cache_values.into_iter().take(MAX_CACHED_CREDS) {
+        let value_name = value.name();
+        if value_name == "NL$Control" || !is_nl_entry(&value_name) {
             continue;
         }
-        if value.data.len() < 96 {
+        let Ok(value_data) = value.raw_data() else {
+            continue;
+        };
+        if value_data.len() < 96 {
             continue;
         }
-        let (uname_len, domain_len, domain_name_len, enc_data, ch) = parse_cache_entry(&value.data);
+        let (uname_len, domain_len, domain_name_len, enc_data, ch) = parse_cache_entry(&value_data);
         if uname_len == 0 || ch.len() != 16 {
             continue; // empty / unused cache slot
         }
@@ -167,27 +179,23 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     Ok(results)
 }
 
+/// Resolve the SECURITY hive's `Policy` key from the hive root, or `None`.
+fn find_policy_key<'h, R: CellReader>(root: &Key<'h, R>) -> Option<Key<'h, R>> {
+    root.subkey_path("Policy").ok().flatten()
+}
+
 /// Decrypt the `NL$KM` cached-domain key material: the `NL$KM` LSA secret
-/// (`Policy\\Secrets\\NL$KM\\CurrVal`), decrypted with the LSA key.
-fn get_nlkm<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    security_hive_addr: u64,
-    policy: u64,
-    lsa_key: &[u8],
-) -> Vec<u8> {
-    let secrets = registry::find_subkey_by_name(reader, security_hive_addr, policy, "Secrets");
-    if secrets == 0 {
+/// (`Policy\Secrets\NL$KM\CurrVal` default value), decrypted with the LSA key.
+/// Returns empty when the secret key/value is absent (the old empty-default
+/// contract) — the caller then refuses rather than fabricating.
+fn get_nlkm<R: CellReader>(policy: &Key<'_, R>, lsa_key: &[u8]) -> Vec<u8> {
+    let Some(currval) = policy.subkey_path(r"Secrets\NL$KM\CurrVal").ok().flatten() else {
         return Vec::new();
-    }
-    let nlkm_key = registry::find_subkey_by_name(reader, security_hive_addr, secrets, "NL$KM");
-    if nlkm_key == 0 {
-        return Vec::new();
-    }
-    let currval = registry::find_subkey_by_name(reader, security_hive_addr, nlkm_key, "CurrVal");
-    if currval == 0 {
-        return Vec::new();
-    }
-    let enc = registry::read_value_data(reader, security_hive_addr, currval, "");
+    };
+    let enc = match currval.value("") {
+        Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+        _ => Vec::new(),
+    };
     crate::lsadump::lsa_decrypt_aes(&enc, lsa_key)
 }
 
