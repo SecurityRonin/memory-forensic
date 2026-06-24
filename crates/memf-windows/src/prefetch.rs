@@ -431,4 +431,70 @@ mod tests {
         let reader = build_empty_reader();
         assert!(read_u64_at(&reader, 0xDEAD_BEEF_0000).is_none());
     }
+
+    /// Build a minimal valid SCCA v30 payload that exercises the
+    /// `prefetch-core` parsing contract: a `version == 30` header (not the
+    /// Win8.1 `0x1A` the hand-rolled subset matched), the executable name, and
+    /// the *shifted* run-count layout (`FileInfo+120` non-zero → count lives at
+    /// `FileInfo+116`, not `FileInfo+124`). The old hand-rolled parser, which
+    /// always read the run count at a fixed `0xD0` (== `FileInfo+124`), gets the
+    /// shifted count wrong — so this fixture only passes once the parsing is
+    /// delegated to `prefetch_core::parse_decompressed`.
+    fn build_v30_scca_shifted_run_count(exe: &str, run_count: u32, run_time: i64) -> Vec<u8> {
+        const FILE_INFO_OFFSET: usize = 84;
+        let mut p = vec![0u8; FILE_INFO_OFFSET + 224];
+        p[0..4].copy_from_slice(&30u32.to_le_bytes());
+        p[4..8].copy_from_slice(b"SCCA");
+        // Executable name: UTF-16LE, 60-byte field at offset 16.
+        for (i, u) in exe.encode_utf16().enumerate() {
+            p[16 + i * 2..16 + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+        }
+        let fi = FILE_INFO_OFFSET;
+        // First of the eight FILETIME slots at fi+44.
+        p[fi + 44..fi + 52].copy_from_slice(&run_time.to_le_bytes());
+        // Shifted layout: fi+120 non-zero selects the count at fi+116.
+        p[fi + 120..fi + 124].copy_from_slice(&1u32.to_le_bytes());
+        p[fi + 116..fi + 120].copy_from_slice(&run_count.to_le_bytes());
+        p
+    }
+
+    /// The heap scan carves the SCCA bytes and delegates field parsing to
+    /// `prefetch_core::parse_decompressed`, so a v30 header with the shifted
+    /// run-count layout is parsed correctly.
+    #[test]
+    fn scan_prefetch_delegates_to_prefetch_core() {
+        let isf = IsfBuilder::new().build_json();
+        let resolver = IsfResolver::from_value(&isf).unwrap();
+
+        const PF_VADDR: u64 = 0xFFFF_8000_0040_0000;
+        const PF_PADDR: u64 = 0x00B0_0000;
+        const REGION_SIZE: u64 = 0x4000;
+
+        let scca = build_v30_scca_shifted_run_count("EXPLORER.EXE", 9, 1000);
+
+        let mut builder = PageTableBuilder::new();
+        for i in 0..4u64 {
+            builder = builder.map_4k(
+                PF_VADDR + i * 0x1000,
+                PF_PADDR + i * 0x1000,
+                flags::PRESENT | flags::WRITABLE,
+            );
+        }
+        builder = builder.write_phys(PF_PADDR, &scca);
+
+        let (cr3, mem) = builder.build();
+        let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
+        let reader = ObjectReader::new(vas, Box::new(resolver));
+
+        let result = scan_prefetch(&reader, &[(PF_VADDR, REGION_SIZE)]).unwrap();
+        assert_eq!(result.len(), 1, "expected exactly one Prefetch entry");
+        let pf = &result[0];
+        assert_eq!(pf.offset, PF_VADDR);
+        assert_eq!(pf.executable_name, "EXPLORER.EXE");
+        assert_eq!(
+            pf.run_count, 9,
+            "shifted run-count must come from FileInfo+116"
+        );
+        assert_eq!(pf.last_run_time, 1000);
+    }
 }
