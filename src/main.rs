@@ -1144,28 +1144,16 @@ fn main() -> Result<()> {
                         ),
                         "net" => {
                             let (_ctx, reader) = setup_analysis(&file, symbols, None, true)?;
-                            let tcp_table_sym = reader.symbols().symbol_address("TcpBTable")
-                                .context("missing 'TcpBTable' symbol; Windows TCP listing requires tcpip.sys ISF")?;
-                            let ptr_bytes = reader
-                                .read_bytes(tcp_table_sym, 8)
-                                .context("failed to dereference TcpBTable")?;
-                            let table_vaddr =
-                                ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
-                            let tcp_size_sym = reader
-                                .symbols()
-                                .symbol_address("TcpBTableSize")
-                                .context("missing 'TcpBTableSize' symbol")?;
-                            let size_bytes = reader
-                                .read_bytes(tcp_size_sym, 4)
-                                .context("failed to read TcpBTableSize")?;
-                            let bucket_count =
-                                size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
-                            let mut conns = memf_windows::network::walk_tcp_endpoints(
-                                &reader,
-                                table_vaddr,
-                                bucket_count,
-                            )
-                            .context("failed to walk Windows TCP endpoints")?;
+                            let mut conns = memf_windows::network::scan_tcp_endpoints(&reader)
+                                .context("failed to scan Windows TCP endpoints")?;
+                            conns.extend(
+                                memf_windows::network::scan_tcp_listeners(&reader)
+                                    .context("failed to scan Windows TCP listeners")?,
+                            );
+                            conns.extend(
+                                memf_windows::network::scan_udp_endpoints(&reader)
+                                    .context("failed to scan Windows UDP endpoints")?,
+                            );
                             if let Some(pid) = pid_filter {
                                 conns.retain(|c| c.pid == pid);
                             }
@@ -1823,30 +1811,19 @@ fn cmd_net(
             print_connections(&conns, output);
         }
         OsProfile::Windows => {
-            // TCP hash table discovery requires tcpip.sys symbols.
-            // TcpBTable: global pointer to the hash table array.
-            // TcpBTableSize: global u32 holding the number of buckets.
-            let tcp_table_sym = reader.symbols().symbol_address("TcpBTable").context(
-                "missing 'TcpBTable' symbol; Windows TCP connection listing \
-                     requires tcpip.sys symbols in the ISF file",
-            )?;
-            let ptr_bytes = reader
-                .read_bytes(tcp_table_sym, 8)
-                .context("failed to dereference TcpBTable pointer")?;
-            let table_vaddr = ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
-
-            let tcp_size_sym = reader
-                .symbols()
-                .symbol_address("TcpBTableSize")
-                .context("missing 'TcpBTableSize' symbol")?;
-            let size_bytes = reader
-                .read_bytes(tcp_size_sym, 4)
-                .context("failed to read TcpBTableSize")?;
-            let bucket_count = size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
-
-            let mut conns =
-                memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
-                    .context("failed to walk Windows TCP endpoints")?;
+            // Symbol-free pool-tag scan (Volatility netscan parity): TCP
+            // connections, TCP listeners, and UDP endpoints — no tcpip.sys
+            // TcpBTable/TcpBTableSize symbols required (absent from most ISFs).
+            let mut conns = memf_windows::network::scan_tcp_endpoints(&reader)
+                .context("failed to scan Windows TCP endpoints")?;
+            conns.extend(
+                memf_windows::network::scan_tcp_listeners(&reader)
+                    .context("failed to scan Windows TCP listeners")?,
+            );
+            conns.extend(
+                memf_windows::network::scan_udp_endpoints(&reader)
+                    .context("failed to scan Windows UDP endpoints")?,
+            );
             if let Some(pid) = pid_filter {
                 conns.retain(|c| c.pid == pid);
                 if conns.is_empty() {
@@ -6134,26 +6111,18 @@ fn cmd_timeline(
 
             // Try to get network connections; non-fatal if symbols are missing.
             let conns = (|| -> Result<Vec<memf_windows::WinConnectionInfo>> {
-                let tcp_ptr_sym = reader
-                    .symbols()
-                    .symbol_address("TcpBTable")
-                    .context("missing 'TcpBTable' symbol")?;
-                let ptr_bytes = reader
-                    .read_bytes(tcp_ptr_sym, 8)
-                    .context("failed to read TcpBTable pointer")?;
-                let table_vaddr = ptr_bytes[..8].try_into().map_or(0, u64::from_le_bytes);
-
-                let tcp_size_sym = reader
-                    .symbols()
-                    .symbol_address("TcpBTableSize")
-                    .context("missing 'TcpBTableSize' symbol")?;
-                let size_bytes = reader
-                    .read_bytes(tcp_size_sym, 4)
-                    .context("failed to read TcpBTableSize")?;
-                let bucket_count = size_bytes[..4].try_into().map_or(0, u32::from_le_bytes);
-
-                memf_windows::network::walk_tcp_endpoints(&reader, table_vaddr, bucket_count)
-                    .context("failed to walk Windows TCP endpoints")
+                // Symbol-free pool scan: TCP connections + listeners + UDP.
+                let mut conns = memf_windows::network::scan_tcp_endpoints(&reader)
+                    .context("failed to scan Windows TCP endpoints")?;
+                conns.extend(
+                    memf_windows::network::scan_tcp_listeners(&reader)
+                        .context("failed to scan Windows TCP listeners")?,
+                );
+                conns.extend(
+                    memf_windows::network::scan_udp_endpoints(&reader)
+                        .context("failed to scan Windows UDP endpoints")?,
+                );
+                Ok(conns)
             })()
             .unwrap_or_else(|e| {
                 eprintln!("warning: could not walk network connections: {e}");
