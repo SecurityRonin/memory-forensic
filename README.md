@@ -19,7 +19,7 @@ Because the bar for an evidence tool is *correctness*, the process walker is cro
 | Missed (vol3 found, memf did not) | **0** |
 | False positives (memf found, vol3 did not) | **0** |
 
-memf matches Volatility 3 **exactly** — including recovering 11 processes orphaned by a live-acquisition smear via a bidirectional `ActiveProcessLinks` walk. A second independent oracle (MemProcFS) is [in progress](docs/validation.md#multi-oracle-in-progress). See [`docs/validation.md`](docs/validation.md) for the full differential and reproduction steps.
+memf matches Volatility 3 **exactly** — including recovering 11 processes orphaned by a live-acquisition smear via a bidirectional `ActiveProcessLinks` walk. A second independent oracle (MemProcFS) confirms a clean subset — its 77-process `process_list` is fully contained in memf's set, with zero MemProcFS-only processes ([details](docs/validation.md#multi-oracle-in-progress)). See [`docs/validation.md`](docs/validation.md) for the full differential and reproduction steps.
 
 ## Quick start
 
@@ -58,10 +58,10 @@ Symbol files are ISF JSON — the **same packs Volatility 3 uses**, so an existi
 | Windows self-profiling (scan → PDB GUID → symbols) | ✅ | ✅ | ✅ | n/a — Linux dumps |
 | Header-less DTB via the boot low stub + page-granular kernel base | ✅ | self-ref PML4 + image scan | ✅ low stub | n/a — Linux |
 | Offline / air-gapped symbol mode | ✅ `--offline` | ISF pack or network | symbols / network | ✅ BTF-from-dump |
-| Panic-free on untrusted dumps (`unsafe`-deny, no `unwrap`/`expect`) | ✅ | — | — | — (C++) |
+| Panic-free on untrusted dumps (`unsafe`-deny; `unwrap`/`expect` denied on parsing paths) | ✅ | — | — | — (C++) |
 | Cross-checked against Volatility 3 | ✅ ([`docs/validation.md`](docs/validation.md)) | — (the reference) | — | — |
 
-memf is, to our knowledge, the only **Rust** implementation of the full dump → kernel-scan → PDB-GUID → symbol-resolution → DTB chain. The technique lineage — WinDbg's symbol server, Brendan Dolan-Gavitt's `pdbparse`, Rekall, Volatility 3, and Ulf Frisk's MemProcFS — is well established; memf reimplements it clean-room and proves the result against the reference. [MemNixFS](https://github.com/MemNixFS/MemNixFS) brings that same *memory-as-a-filesystem* idea to **Linux** dumps — mount-and-browse, with symbols derived from the kernel's own BTF when no ISF exists; the `n/a` cells above mark a difference in scope (Linux images and a filesystem UX, vs memf's Windows-validated CLI walker), not a gap. The boot low-stub / `PROCESSOR_START_BLOCK` anchor follows [Alex Ionescu's REcon 2017 *Getting Physical*](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf).
+memf is, to our knowledge, the only **Rust** implementation of the full dump → kernel-scan → PDB-GUID → symbol-resolution → DTB chain. The technique lineage — WinDbg's symbol server, Brendan Dolan-Gavitt's `pdbparse`, Rekall, Volatility 3, and Ulf Frisk's MemProcFS — is well established; memf reimplements it clean-room and validates the result against the reference. [MemNixFS](https://github.com/MemNixFS/MemNixFS) brings that same *memory-as-a-filesystem* idea to **Linux** dumps — mount-and-browse, with symbols derived from the kernel's own BTF when no ISF exists; the `n/a` cells above mark a difference in scope (Linux images and a filesystem UX, vs memf's Windows-validated CLI walker), not a gap. The boot low-stub / `PROCESSOR_START_BLOCK` anchor follows [Alex Ionescu's REcon 2017 *Getting Physical*](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf).
 
 ---
 
@@ -345,7 +345,7 @@ Format is detected from file headers — no flags required.
 
 ## What's Different
 
-The nearest alternatives are **Volatility 3** (Python, plugin architecture), **MemProcFS** (Rust, primarily Windows), **Rekall** (Python, unmaintained), and **MemNixFS** (C++, Linux dumps mounted as a filesystem). The comparison below reflects each tool's official core and known plugin repository. MemNixFS targets *Linux* images with a filesystem UX, so it shares memf's page-cache file recovery but is `n/a` on the Windows self-profiling and EDR-bypass rows.
+The nearest alternatives are **Volatility 3** (Python, plugin architecture), **MemProcFS** (C with Rust bindings, primarily Windows), **Rekall** (Python, unmaintained), and **MemNixFS** (C++, Linux dumps mounted as a filesystem). The comparison below reflects each tool's official core and known plugin repository. MemNixFS targets *Linux* images with a filesystem UX, so it shares memf's page-cache file recovery but is `n/a` on the Windows self-profiling and EDR-bypass rows.
 
 ### Parity — capabilities shared with mature tools
 
@@ -364,20 +364,19 @@ The nearest alternatives are **Volatility 3** (Python, plugin architecture), **M
 | | memory-forensic | Volatility 3 | MemProcFS | MemNixFS | Rekall |
 |--|:-:|:-:|:-:|:-:|:-:|
 | Single static binary — no Python, no runtime | ✅ | — | — | partial | — |
-| Windows auto-profile (no symbol file needed) | ✅ | — | — | n/a | — |
 | Library API for embedding in Rust tools | ✅ | — | ✅ | — | — |
 | ELF behavioral rootkit fingerprinting | ✅ | — | — | — | — |
 | tmpfs / ramfs file recovery | ✅ | — | — | ✅ | — |
 | memfd fileless execution detection | ✅ | — | — | — | — |
 | Direct syscall / EDR bypass detection | ✅ | plugin? | — | n/a | — |
-| ETW / AMSI / DSE bypass detection | ✅ | plugin? | — | — |
-| io_uring / netfilter / perf\_event abuse | ✅ | — | — | — |
-| Container escape indicators | ✅ | — | — | — |
-| DPAPI keys + Chrome cookie extraction | ✅ | plugin? | — | — |
-| Shellbags folder-access evidence from memory ‡ | ✅ | — | — | — |
-| Framebuffer screenshot | ✅ | plugin? | — | — |
-| Cross-artifact ATT&CK correlation | ✅ | — | — | — |
-| Safe output — RFC 4180, formula-injection guard, bidi-strip | ✅ | — | — | — |
+| ETW / AMSI / DSE bypass detection | ✅ | plugin? | — | n/a | — |
+| io_uring / netfilter / perf\_event abuse | ✅ | — | — | — | — |
+| Container escape indicators | ✅ | — | — | — | — |
+| DPAPI keys + Chrome cookie extraction | ✅ | plugin? | — | n/a | — |
+| Shellbags folder-access evidence from memory ‡ | ✅ | — | — | n/a | — |
+| Framebuffer screenshot | ✅ | plugin? | — | — | — |
+| Cross-artifact ATT&CK correlation | ✅ | — | — | — | — |
+| Safe output — RFC 4180, formula-injection guard, bidi-strip | ✅ | — | — | — | — |
 
 > **`plugin?`** — Capability may exist in the Volatility 3 community ecosystem but is absent from the official core and plugin repository at time of writing. Verify before concluding.
 >
@@ -389,8 +388,8 @@ The nearest alternatives are **Volatility 3** (Python, plugin architecture), **M
 
 A tool that parses **untrusted, attacker-controllable** memory images has to refuse to lie and refuse to crash. memf is built to that bar:
 
-- **Panic-free on hostile input.** Production code denies `unwrap`/`expect`/`panic!` and unchecked indexing (`clippy::unwrap_used`/`expect_used` = deny); every length, offset, and pointer read is bounds-checked and degrades gracefully — a smeared process list returns what it found, it does not abort.
-- **Memory-safe by default.** `unsafe_code = "deny"` workspace-wide; the only `unsafe` is the bounded `memmap2` mapping of the dump, individually justified — hence the *bounded (mmap only)* badge rather than *forbidden*.
+- **Panic-free on hostile input.** Parsing paths deny `unwrap`/`expect`/`panic!` and unchecked indexing (`clippy::unwrap_used`/`expect_used` = deny); every length, offset, and pointer read is bounds-checked and degrades gracefully — a smeared process list returns what it found, it does not abort. (Builder APIs panic on programmer error — a missing required field — by construction, never on dump content.)
+- **Memory-safe by default.** `unsafe_code = "deny"` workspace-wide; the only `unsafe` is bounded `memmap2` file mappings (the dump, pagefile, and known-good hash DB), each individually justified — hence the *bounded (mmap only)* badge rather than *forbidden*.
 - **Validated against an independent oracle, not just our own fixtures.** The Windows process walker is diffed against Volatility 3 on a real 2 GB Win10 image — exact agreement on every shared process, zero false positives ([`docs/validation.md`](docs/validation.md)).
 - **Safe output.** Every channel (table/CSV/JSON) applies RFC 4180 quoting, a spreadsheet formula-injection guard, and bidi/control-character stripping before attacker-controlled strings reach your terminal or pipeline.
 
@@ -428,11 +427,9 @@ for proc in reader.eprocess_list()? {
 | Crate | Purpose |
 |---|---|
 | [`memf-format`](crates/memf-format/) | Format detection and physical memory providers. Parsers for LiME, AVML, ELF Core, Windows Crash Dump, hiberfil.sys, VMware state, kdump, and raw flat images. |
-| [`memf-core`](crates/memf-core/) | Page table walking (x86_64 4-level/5-level, AArch64, x86 PAE/non-PAE), high-level `ObjectReader` for kernel struct traversal, pagefile access, LZO decompression. |
+| [`memf-core`](crates/memf-core/) | Page table walking (x86_64 4-level/5-level, AArch64, x86 PAE/non-PAE), high-level `ObjectReader` for kernel struct traversal, pagefile access, LZO decompression, and framebuffer→PNG screenshot encoding (paired with the Linux EFI/VESA and Windows win32k framebuffer walkers). |
 | [`memf-linux`](crates/memf-linux/) | Linux kernel walkers: `task_struct` process list, network connections, kernel modules, open files, eBPF programs, ftrace/IDT/syscall hook detection, namespace and cgroup enumeration, DKOM-hidden process detection, container escape indicators, **ELF dynamic symbol analysis and LD_PRELOAD rootkit behavioral fingerprinting**, **library global prevalence detection**, and ~45 additional walkers. |
 | [`memf-windows`](crates/memf-windows/) | Windows NT kernel walkers: `EPROCESS`/`ETHREAD` enumeration, DLL and driver lists, handle tables, network sockets, pool tag scanning, callback tables, SSDT, ETW, clipboard, DNS cache, Kerberos tickets, **DPAPI master key extraction from LSASS `g_MasterKeyCache`**, **Chrome v10/v20 AES-GCM encrypted cookie detection**, BitLocker keys, SAM/NTLM hashes, injected memory detection, and ~55 additional walkers. |
-| [`memf-dpapi`](crates/memf-dpapi/) | Windows DPAPI decryption: master key blob parsing, Chrome `Local State` key decryption, v10/v20 AES-GCM cookie value decryption. |
-| [`memf-framebuffer`](crates/memf-framebuffer/) | Framebuffer screenshot extraction: Linux DRM/KMS `drm_framebuffer` walker and Windows session framebuffer scanner, output as PNG. |
 | [`memf-strings`](crates/memf-strings/) | String extraction (ASCII, UTF-8, UTF-16LE) with regex classification into IoC categories: URLs, IP addresses, domains, registry keys, crypto wallet addresses, private keys, shell commands. |
 | [`memf-symbols`](crates/memf-symbols/) | Symbol resolution from ISF JSON, BTF (Linux), and PDB files. Includes `AutoProfile` — zero-config Windows kernel struct resolution: scans the dump for ntoskrnl, fetches the exact PDB from `msdl.microsoft.com`, parses it, returns a `SymbolResolver`. No symbol file required. |
 | [`memf-correlate`](crates/memf-correlate/) | Cross-artifact correlation with MITRE ATT&CK technique tagging, process tree reconstruction, anomaly scoring, and timeline generation. |
