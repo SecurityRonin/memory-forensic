@@ -1894,7 +1894,7 @@ dependencies = [
 
 [[package]]
 name = "memf-windows"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1916,6 +1916,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "shellitem",
  "thiserror 2.0.18",
  "winevt-core",
  "yara-x",
@@ -2924,6 +2925,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shellitem"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b5c4e806a2d81305a77af2f443433552363b43cd68a8f21eba7ec629e5e5ecd"
+dependencies = [
+ "forensicnomicon",
 ]
 
 [[package]]
