@@ -104,6 +104,11 @@ impl CellHive {
     pub(crate) fn lf(&mut self, idx: u32, children: &[u32]) {
         self.list(idx, *b"lf", children, 8);
     }
+    // `li` (index-leaf) subkey-list builder — a complete sibling of `lf`/`ri`,
+    // kept for parity so a future test can exercise the `li` navigation path
+    // (its last caller, a registry.rs flat-walker test, was removed in the
+    // registry-dedup deletion pass). winreg-core handles `li`, so this stays.
+    #[allow(dead_code)]
     pub(crate) fn li(&mut self, idx: u32, children: &[u32]) {
         self.list(idx, *b"li", children, 4);
     }
