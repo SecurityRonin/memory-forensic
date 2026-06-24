@@ -15,7 +15,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of UserAssist entries to enumerate (safety limit).
 const MAX_USERASSIST_ENTRIES: usize = 4096;
@@ -23,15 +23,8 @@ const MAX_USERASSIST_ENTRIES: usize = 4096;
 /// Minimum binary data size for a UserAssist value (Vista+ format).
 const USERASSIST_DATA_SIZE: usize = 72;
 
-/// The path components from the hive root to the UserAssist key.
-const USERASSIST_PATH: &[&str] = &[
-    "Software",
-    "Microsoft",
-    "Windows",
-    "CurrentVersion",
-    "Explorer",
-    "UserAssist",
-];
+/// The backslash-delimited path from the hive root to the UserAssist key.
+const USERASSIST_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist";
 
 /// A single UserAssist entry recovered from the registry.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -162,34 +155,32 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
 ) -> crate::Result<Vec<UserAssistEntry>> {
-    let mut current = registry::resolve_root_cell(reader, hive_addr);
-    if current == 0 {
+    let hive = MemfHiveReader::new(reader, hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    for &component in USERASSIST_PATH {
-        if current == 0 {
-            return Ok(Vec::new());
-        }
-        current = registry::find_subkey_by_name(reader, hive_addr, current, component);
-    }
-    if current == 0 {
+    };
+    let Ok(Some(userassist)) = root.subkey_path(USERASSIST_PATH) else {
         return Ok(Vec::new());
-    }
+    };
+
+    let Ok(guid_keys) = userassist.subkeys() else {
+        return Ok(Vec::new());
+    };
 
     let mut entries = Vec::new();
-    for (_guid_name, guid_va) in registry::list_subkeys(reader, hive_addr, current)
-        .into_iter()
-        .take(MAX_USERASSIST_ENTRIES)
-    {
-        let count_va = registry::find_subkey_by_name(reader, hive_addr, guid_va, "Count");
-        if count_va == 0 {
+    for guid_key in guid_keys.into_iter().take(MAX_USERASSIST_ENTRIES) {
+        let Ok(Some(count_key)) = guid_key.subkey_path("Count") else {
             continue;
-        }
-        for value in registry::list_values(reader, hive_addr, count_va) {
+        };
+        let Ok(values) = count_key.values() else {
+            continue;
+        };
+        for value in values {
             if entries.len() >= MAX_USERASSIST_ENTRIES {
                 break;
             }
-            if let Some(entry) = parse_userassist_entry(&value.name, &value.data) {
+            let Ok(data) = value.raw_data() else { continue };
+            if let Some(entry) = parse_userassist_entry(&value.name(), &data) {
                 entries.push(entry);
             }
         }
@@ -540,12 +531,10 @@ mod tests {
 
     #[test]
     fn userassist_path_components() {
-        assert_eq!(USERASSIST_PATH[0], "Software");
-        assert_eq!(USERASSIST_PATH[1], "Microsoft");
-        assert_eq!(USERASSIST_PATH[2], "Windows");
-        assert_eq!(USERASSIST_PATH[3], "CurrentVersion");
-        assert_eq!(USERASSIST_PATH[4], "Explorer");
-        assert_eq!(USERASSIST_PATH[5], "UserAssist");
+        assert_eq!(
+            USERASSIST_PATH,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"
+        );
     }
 
     /// RED (flat→HMAP migration): a real cell-map NTUSER.DAT laid out as
@@ -607,5 +596,91 @@ mod tests {
         assert_eq!(e.focus_count, 3);
         assert_eq!(e.focus_time_ms, 1500);
         assert_eq!(e.last_run_time, 0x01D9_1234_5678_9ABC);
+    }
+
+    /// RED (registry-dedup migration): drive `walk_userassist` through the
+    /// shared winreg-core navigation seam. The UserAssist key must resolve via
+    /// `MemfHiveReader::root_key().subkey_path(USERASSIST_PATH)` — a single
+    /// backslash `&str`, not a `&[&str]` component slice fed to the dead
+    /// `registry::` flat walker. Two GUID subkeys (each with a `Count` holding
+    /// one ROT13-named 72-byte value) pin the per-GUID enumeration and value
+    /// decode the migrated `key.subkeys()` / `key.values()` / `Value::raw_data`
+    /// path must reproduce. Compile-fails until `USERASSIST_PATH` is a
+    /// backslash `&str` and navigation runs over winreg-core `Key`s.
+    #[test]
+    fn walk_userassist_winreg_core_navigation() {
+        use crate::hive_reader::MemfHiveReader;
+        use crate::test_hive::CellHive;
+
+        let decoded1 = r"C:\Temp\mimikatz.exe";
+        let decoded2 = r"C:\Windows\System32\notepad.exe";
+        let enc1 = rot13_decode(decoded1);
+        let enc2 = rot13_decode(decoded2);
+        let guid1 = "{CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}";
+        let guid2 = "{F4E57C4B-2036-45F0-A9AB-443BCFE33D9F}";
+
+        let blob = |run: u32| -> Vec<u8> {
+            let mut b = vec![0u8; 72];
+            b[4..8].copy_from_slice(&run.to_le_bytes());
+            b[8..12].copy_from_slice(&1u32.to_le_bytes());
+            b[12..16].copy_from_slice(&500u32.to_le_bytes());
+            b[60..68].copy_from_slice(&0x01D9_AAAA_BBBB_CCCCu64.to_le_bytes());
+            b
+        };
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x0A0, 0);
+        h.lf(0x0A0, &[0x0E0]);
+        h.nk(0x0E0, b"Software", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Microsoft", 1, 0x1E0, 0);
+        h.lf(0x1E0, &[0x220]);
+        h.nk(0x220, b"Windows", 1, 0x280, 0);
+        h.lf(0x280, &[0x2C0]);
+        h.nk(0x2C0, b"CurrentVersion", 1, 0x320, 0);
+        h.lf(0x320, &[0x360]);
+        h.nk(0x360, b"Explorer", 1, 0x3C0, 0);
+        h.lf(0x3C0, &[0x400]);
+        // UserAssist has two GUID subkeys.
+        h.nk(0x400, b"UserAssist", 2, 0x460, 0);
+        h.lf(0x460, &[0x4A0, 0x900]);
+        // GUID1 → Count → value (mimikatz, run=9, suspicious)
+        h.nk(0x4A0, guid1.as_bytes(), 1, 0x520, 0);
+        h.lf(0x520, &[0x560]);
+        h.nk(0x560, b"Count", 0, 0, 0);
+        h.values(0x560, 1, 0x600);
+        h.value_list(0x600, &[0x640]);
+        let b1 = blob(9);
+        h.vk(0x640, enc1.as_bytes(), 3, b1.len() as u32, 0x700);
+        h.data(0x700, &b1);
+        // GUID2 → Count → value (notepad, run=2, benign)
+        h.nk(0x900, guid2.as_bytes(), 1, 0x960, 0);
+        h.lf(0x960, &[0x9A0]);
+        h.nk(0x9A0, b"Count", 0, 0, 0);
+        h.values(0x9A0, 1, 0xA00);
+        h.value_list(0xA00, &[0xA40]);
+        let b2 = blob(2);
+        h.vk(0xA40, enc2.as_bytes(), 3, b2.len() as u32, 0xB00);
+        h.data(0xB00, &b2);
+
+        let reader = h.reader();
+
+        // Migration seam: UserAssist resolves via a winreg-core Key with a
+        // backslash path. (Compile-fails pre-migration: USERASSIST_PATH is
+        // a &[&str], subkey_path wants &str.)
+        let hive = MemfHiveReader::new(&reader, h.hhive_va);
+        let root = hive.root_key().unwrap();
+        let ua = root.subkey_path(USERASSIST_PATH).unwrap();
+        assert!(ua.is_some(), "UserAssist must resolve via winreg-core");
+
+        let mut entries = walk_userassist(&reader, h.hhive_va).unwrap();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(entries.len(), 2, "both GUID Count values recovered");
+        let mk = entries.iter().find(|e| e.name == decoded1).unwrap();
+        assert_eq!(mk.run_count, 9);
+        assert!(mk.is_suspicious, "mimikatz must flag suspicious");
+        let np = entries.iter().find(|e| e.name == decoded2).unwrap();
+        assert_eq!(np.run_count, 2);
+        assert!(!np.is_suspicious, "system32 notepad is benign");
     }
 }

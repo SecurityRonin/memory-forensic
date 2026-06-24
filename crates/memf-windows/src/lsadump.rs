@@ -19,8 +19,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of LSA secrets to enumerate (safety limit).
 const MAX_SECRETS: usize = 4096;
@@ -139,24 +141,32 @@ pub(crate) fn derive_lsa_key<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     system_hive_addr: u64,
     security_hive_addr: u64,
-    policy_key: u64,
 ) -> Vec<u8> {
     if system_hive_addr == 0 {
         return Vec::new();
     }
-    let sys_root = registry::resolve_root_cell(reader, system_hive_addr);
-    if sys_root == 0 {
+    // Boot key from the SYSTEM hive, navigated through winreg-core (extract_boot_key
+    // takes the SYSTEM MemfHiveReader + root Key).
+    let sys_hive = MemfHiveReader::new(reader, system_hive_addr);
+    let Ok(sys_root) = sys_hive.root_key() else {
         return Vec::new();
-    }
-    let boot_key = crate::hashdump::extract_boot_key(reader, system_hive_addr, sys_root);
+    };
+    let boot_key = crate::hashdump::extract_boot_key(&sys_hive, &sys_root);
     if boot_key.len() != 16 {
         return Vec::new();
     }
-    let polek = registry::find_subkey_by_name(reader, security_hive_addr, policy_key, "PolEKList");
-    if polek == 0 {
+    // PolEKList's default value lives at SECURITY\Policy\PolEKList.
+    let sec_hive = MemfHiveReader::new(reader, security_hive_addr);
+    let Ok(sec_root) = sec_hive.root_key() else {
         return Vec::new();
-    }
-    let enc = registry::read_value_data(reader, security_hive_addr, polek, "");
+    };
+    let Some(polek) = sec_root.subkey_path(r"Policy\PolEKList").ok().flatten() else {
+        return Vec::new();
+    };
+    let enc = match polek.value("") {
+        Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let dec = lsa_decrypt_aes(&enc, &boot_key);
     dec.get(68..100).map(<[u8]>::to_vec).unwrap_or_default()
 }
@@ -178,35 +188,37 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
     if security_hive_addr == 0 {
         return Ok(Vec::new());
     }
-    // Navigate SECURITY\\Policy\\Secrets via the shared HMAP walker.
-    let root = registry::resolve_root_cell(reader, security_hive_addr);
-    if root == 0 {
+    // Navigate SECURITY\Policy\Secrets through winreg-core's shared Key decoder
+    // over MemfHiveReader (canonical _CM_KEY_NODE/_CM_KEY_VALUE offsets).
+    let hive = MemfHiveReader::new(reader, security_hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    let policy = registry::find_subkey_by_name(reader, security_hive_addr, root, "Policy");
-    if policy == 0 {
+    };
+    let Some(policy) = find_policy_key(&root) else {
         return Ok(Vec::new());
-    }
-    let secrets = registry::find_subkey_by_name(reader, security_hive_addr, policy, "Secrets");
-    if secrets == 0 {
+    };
+    let Some(secrets) = policy.subkey_path("Secrets").ok().flatten() else {
         return Ok(Vec::new());
-    }
+    };
 
     // Vista+ LSA key (empty ⇒ decryption refused; we then surface raw bytes).
-    let lsa_key = derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy);
+    // derive_lsa_key navigates Policy\PolEKList from the SECURITY root itself.
+    let lsa_key = derive_lsa_key(reader, system_hive_addr, security_hive_addr);
+
+    let Ok(secret_keys) = secrets.subkeys() else {
+        return Ok(Vec::new());
+    };
 
     let mut out = Vec::new();
-    for (name, secret_key) in registry::list_subkeys(reader, security_hive_addr, secrets)
-        .into_iter()
-        .take(MAX_SECRETS)
-    {
-        // The secret's encrypted value lives in <name>\\CurrVal's default value.
-        let currval =
-            registry::find_subkey_by_name(reader, security_hive_addr, secret_key, "CurrVal");
-        let enc = if currval != 0 {
-            registry::read_value_data(reader, security_hive_addr, currval, "")
-        } else {
-            Vec::new()
+    for secret_key in secret_keys.into_iter().take(MAX_SECRETS) {
+        let name = secret_key.name();
+        // The secret's encrypted value lives in <name>\CurrVal's default value.
+        let enc = match secret_key.subkey_path("CurrVal").ok().flatten() {
+            Some(currval) => match currval.value("") {
+                Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
         };
         let length = enc.len() as u32;
         let (decrypted, data) = if !lsa_key.is_empty() && enc.len() >= 60 {
@@ -227,6 +239,11 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
         });
     }
     Ok(out)
+}
+
+/// Resolve the SECURITY hive's `Policy` key from the hive root, or `None`.
+fn find_policy_key<'h, R: CellReader>(root: &Key<'h, R>) -> Option<Key<'h, R>> {
+    root.subkey_path("Policy").ok().flatten()
 }
 
 #[cfg(test)]
@@ -647,5 +664,76 @@ mod tests {
             Some(&raw[..]),
             "refused → raw encrypted bytes surfaced"
         );
+    }
+
+    /// RED (registry-dedup migration): drive lsadump's SECURITY-hive navigation
+    /// through the shared winreg-core seam. `find_policy_key` must resolve
+    /// `Policy` from a [`MemfHiveReader`]-backed root [`Key`] (its cell offset
+    /// feeds derive_lsa_key via the cell_offset_to_va bridge), returning a `Key`
+    /// rather than a u64 cell VA from the dead `registry::` flat walker. The
+    /// CellHive fixture writes the correct on-disk layout with TWO secrets under
+    /// Policy\Secrets, each with a CurrVal, plus a missing-CurrVal secret. With
+    /// system=0 the LSA key is refused, so each secret surfaces its raw bytes
+    /// HONESTLY FLAGGED decrypted=false (never fabricated plaintext). Compile-
+    /// fails until find_policy_key navigates winreg-core `Key`s.
+    #[test]
+    fn walk_lsa_secrets_winreg_core_navigation() {
+        use crate::hive_reader::MemfHiveReader;
+        use crate::test_hive::CellHive;
+
+        let dpapi_raw = [0x11u8; 48];
+        let machine_raw = [0x22u8; 32];
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"Policy", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Secrets", 2, 0x200, 0);
+        h.lf(0x200, &[0x240, 0x600]);
+        // DPAPI_SYSTEM → CurrVal = dpapi_raw
+        h.nk(0x240, b"DPAPI_SYSTEM", 1, 0x300, 0);
+        h.lf(0x300, &[0x340]);
+        h.nk(0x340, b"CurrVal", 0, 0, 0);
+        h.values(0x340, 1, 0x3C0);
+        h.value_list(0x3C0, &[0x400]);
+        h.vk(0x400, b"", 3, dpapi_raw.len() as u32, 0x480);
+        h.data(0x480, &dpapi_raw);
+        // $MACHINE.ACC → CurrVal = machine_raw
+        h.nk(0x600, b"$MACHINE.ACC", 1, 0x680, 0);
+        h.lf(0x680, &[0x6C0]);
+        h.nk(0x6C0, b"CurrVal", 0, 0, 0);
+        h.values(0x6C0, 1, 0x740);
+        h.value_list(0x740, &[0x780]);
+        h.vk(0x780, b"", 3, machine_raw.len() as u32, 0x800);
+        h.data(0x800, &machine_raw);
+
+        let reader = h.reader();
+
+        // Migration seam: Policy resolves via a winreg-core Key.
+        // (Compile-fails pre-migration: no find_policy_key.)
+        let hive = MemfHiveReader::new(&reader, h.hhive_va);
+        let root = hive.root_key().unwrap();
+        let policy = find_policy_key(&root).expect("Policy resolves via winreg-core");
+        assert!(
+            policy.subkey_path("Secrets").unwrap().is_some(),
+            "Secrets reachable from Policy"
+        );
+
+        let mut secrets = walk_lsa_secrets(&reader, 0, h.hhive_va).unwrap();
+        secrets.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(secrets.len(), 2, "two secrets recovered via winreg-core");
+
+        let dpapi = secrets.iter().find(|s| s.name == "DPAPI_SYSTEM").unwrap();
+        assert_eq!(dpapi.secret_type, "dpapi_key");
+        assert_eq!(dpapi.length, 48);
+        assert!(!dpapi.decrypted, "system=0 → refused, honestly flagged");
+        assert_eq!(dpapi.data.as_deref(), Some(&dpapi_raw[..]));
+
+        let mach = secrets.iter().find(|s| s.name == "$MACHINE.ACC").unwrap();
+        assert_eq!(mach.secret_type, "machine_password");
+        assert_eq!(mach.length, 32);
+        assert!(!mach.decrypted);
+        assert_eq!(mach.data.as_deref(), Some(&machine_raw[..]));
     }
 }

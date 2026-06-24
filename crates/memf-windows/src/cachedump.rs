@@ -16,10 +16,12 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
 use std::fmt::Write as _;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of cached credential entries to enumerate (safety limit).
 const MAX_CACHED_CREDS: usize = 64;
@@ -103,44 +105,49 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     if security_hive_addr == 0 {
         return Ok(Vec::new());
     }
-    let root = registry::resolve_root_cell(reader, security_hive_addr);
-    if root == 0 {
+    // Navigate the SECURITY hive through winreg-core's shared Key decoder over
+    // MemfHiveReader (canonical _CM_KEY_NODE/_CM_KEY_VALUE offsets).
+    let hive = MemfHiveReader::new(reader, security_hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    let policy = registry::find_subkey_by_name(reader, security_hive_addr, root, "Policy");
-    if policy == 0 {
+    };
+    let Some(policy) = find_policy_key(&root) else {
         return Ok(Vec::new());
-    }
+    };
 
     // Keys: boot key (SYSTEM) → LSA key → NL$KM. Any failure ⇒ refuse, never
-    // fabricate plaintext from ciphertext.
-    let lsa_key =
-        crate::lsadump::derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy);
+    // fabricate plaintext from ciphertext. derive_lsa_key navigates
+    // SECURITY\Policy\PolEKList itself (winreg-core), so no policy VA is passed.
+    let lsa_key = crate::lsadump::derive_lsa_key(reader, system_hive_addr, security_hive_addr);
     if lsa_key.is_empty() {
         return Ok(Vec::new());
     }
-    let nlkm = get_nlkm(reader, security_hive_addr, policy, &lsa_key);
+    let nlkm = get_nlkm(&policy, &lsa_key);
     if nlkm.len() < 32 {
         return Ok(Vec::new());
     }
 
-    let cache = registry::find_subkey_by_name(reader, security_hive_addr, root, "Cache");
-    if cache == 0 {
+    let Some(cache) = root.subkey_path("Cache").ok().flatten() else {
         return Ok(Vec::new());
-    }
+    };
+
+    let Ok(cache_values) = cache.values() else {
+        return Ok(Vec::new());
+    };
 
     let mut results = Vec::new();
-    for value in registry::list_values(reader, security_hive_addr, cache)
-        .into_iter()
-        .take(MAX_CACHED_CREDS)
-    {
-        if value.name == "NL$Control" || !is_nl_entry(&value.name) {
+    for value in cache_values.into_iter().take(MAX_CACHED_CREDS) {
+        let value_name = value.name();
+        if value_name == "NL$Control" || !is_nl_entry(&value_name) {
             continue;
         }
-        if value.data.len() < 96 {
+        let Ok(value_data) = value.raw_data() else {
+            continue;
+        };
+        if value_data.len() < 96 {
             continue;
         }
-        let (uname_len, domain_len, domain_name_len, enc_data, ch) = parse_cache_entry(&value.data);
+        let (uname_len, domain_len, domain_name_len, enc_data, ch) = parse_cache_entry(&value_data);
         if uname_len == 0 || ch.len() != 16 {
             continue; // empty / unused cache slot
         }
@@ -167,27 +174,23 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     Ok(results)
 }
 
+/// Resolve the SECURITY hive's `Policy` key from the hive root, or `None`.
+fn find_policy_key<'h, R: CellReader>(root: &Key<'h, R>) -> Option<Key<'h, R>> {
+    root.subkey_path("Policy").ok().flatten()
+}
+
 /// Decrypt the `NL$KM` cached-domain key material: the `NL$KM` LSA secret
-/// (`Policy\\Secrets\\NL$KM\\CurrVal`), decrypted with the LSA key.
-fn get_nlkm<P: PhysicalMemoryProvider>(
-    reader: &ObjectReader<P>,
-    security_hive_addr: u64,
-    policy: u64,
-    lsa_key: &[u8],
-) -> Vec<u8> {
-    let secrets = registry::find_subkey_by_name(reader, security_hive_addr, policy, "Secrets");
-    if secrets == 0 {
+/// (`Policy\Secrets\NL$KM\CurrVal` default value), decrypted with the LSA key.
+/// Returns empty when the secret key/value is absent (the old empty-default
+/// contract) — the caller then refuses rather than fabricating.
+fn get_nlkm<R: CellReader>(policy: &Key<'_, R>, lsa_key: &[u8]) -> Vec<u8> {
+    let Some(currval) = policy.subkey_path(r"Secrets\NL$KM\CurrVal").ok().flatten() else {
         return Vec::new();
-    }
-    let nlkm_key = registry::find_subkey_by_name(reader, security_hive_addr, secrets, "NL$KM");
-    if nlkm_key == 0 {
-        return Vec::new();
-    }
-    let currval = registry::find_subkey_by_name(reader, security_hive_addr, nlkm_key, "CurrVal");
-    if currval == 0 {
-        return Vec::new();
-    }
-    let enc = registry::read_value_data(reader, security_hive_addr, currval, "");
+    };
+    let enc = match currval.value("") {
+        Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+        _ => Vec::new(),
+    };
     crate::lsadump::lsa_decrypt_aes(&enc, lsa_key)
 }
 
@@ -495,6 +498,87 @@ mod tests {
         let result = decode_utf16le(&bytes);
         // All null chars: should produce 4 null chars, but as a string.
         assert_eq!(result.len(), 4);
+    }
+
+    /// RED (registry-dedup migration): drive cachedump's SECURITY-hive
+    /// navigation through the shared winreg-core seam. `find_policy_key` must
+    /// resolve `Policy` from a [`MemfHiveReader`]-backed root [`Key`], returning
+    /// a `Key` (whose cell offset feeds lsadump::derive_lsa_key), not a raw
+    /// `u64` cell VA from the dead `registry::` flat walker. The CellHive fixture
+    /// builds the correct on-disk layout — `Policy\Secrets\NL$KM\CurrVal` and
+    /// `Cache\NL$1` — and asserts winreg-core reaches both: the `Secrets\NL$KM\
+    /// CurrVal` default value and the `Cache\NL$1` value. (Navigation only —
+    /// the DCC2 decrypt path REFUSES without a real SYSTEM bootkey, which a flat
+    /// SECURITY-only CellHive cannot supply; the dedup adds no decryption.)
+    /// Compile-fails until `find_policy_key` navigates winreg-core `Key`s.
+    #[test]
+    fn cachedump_winreg_core_navigation() {
+        use crate::hive_reader::MemfHiveReader;
+        use crate::test_hive::CellHive;
+
+        let mut h = CellHive::new(0x0050_0000);
+        // root → Policy → {Secrets → NL$KM → CurrVal, } ; root → Cache → NL$1
+        h.nk(0x020, b"Root", 2, 0x0A0, 0);
+        h.lf(0x0A0, &[0x0E0, 0x600]);
+        // Policy → Secrets → NL$KM → CurrVal (default value = some ciphertext)
+        h.nk(0x0E0, b"Policy", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Secrets", 1, 0x1E0, 0);
+        h.lf(0x1E0, &[0x220]);
+        h.nk(0x220, b"NL$KM", 1, 0x2A0, 0);
+        h.lf(0x2A0, &[0x300]);
+        h.nk(0x300, b"CurrVal", 0, 0, 0);
+        h.values(0x300, 1, 0x380);
+        h.value_list(0x380, &[0x3C0]);
+        let nlkm_enc = vec![0xABu8; 64];
+        h.vk(0x3C0, b"", 3, nlkm_enc.len() as u32, 0x440);
+        h.data(0x440, &nlkm_enc);
+        // Cache → NL$1 (a >=96-byte DCC2 record header)
+        h.nk(0x600, b"Cache", 0, 0, 0);
+        h.values(0x600, 1, 0x680);
+        h.value_list(0x680, &[0x6C0]);
+        let mut rec = vec![0u8; 96 + 16];
+        rec[0..2].copy_from_slice(&8u16.to_le_bytes()); // uname_len
+        rec[2..4].copy_from_slice(&8u16.to_le_bytes()); // domain_len
+        rec[64..80].copy_from_slice(&[0xCDu8; 16]); // ch (IV)
+        h.vk(0x6C0, b"NL$1", 3, rec.len() as u32, 0x740);
+        h.data(0x740, &rec);
+
+        let reader = h.reader();
+
+        // Migration seam: Policy resolves via a winreg-core Key.
+        // (Compile-fails pre-migration: no find_policy_key.)
+        let hive = MemfHiveReader::new(&reader, h.hhive_va);
+        let root = hive.root_key().unwrap();
+        let policy = find_policy_key(&root).expect("Policy key resolves via winreg-core");
+
+        // Secrets\NL$KM\CurrVal default value is reachable from policy.
+        let currval = policy
+            .subkey_path(r"Secrets\NL$KM\CurrVal")
+            .unwrap()
+            .expect("NL$KM\\CurrVal reachable");
+        let enc = currval
+            .value("")
+            .unwrap()
+            .expect("default value")
+            .raw_data()
+            .unwrap();
+        assert_eq!(enc, nlkm_enc, "winreg-core reads the NL$KM ciphertext");
+
+        // Cache\NL$1 value is reachable from root and is a NL$ entry.
+        let cache = root.subkey_path("Cache").unwrap().expect("Cache key");
+        let vals = cache.values().unwrap();
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0].name(), "NL$1");
+        assert!(is_nl_entry(&vals[0].name()));
+        assert_eq!(vals[0].raw_data().unwrap().len(), 96 + 16);
+
+        // End-to-end walker REFUSES (no SYSTEM bootkey) → empty, never fabricated.
+        let creds = walk_cached_credentials(&reader, 0, h.hhive_va).unwrap();
+        assert!(
+            creds.is_empty(),
+            "no bootkey → refuse (no ciphertext-as-plaintext fabrication)"
+        );
     }
 
     /// RED — DCC2 record parsers (pure, synthetically testable). Stubs return
