@@ -445,4 +445,75 @@ mod tests {
         );
         assert_eq!(e.username, "rick");
     }
+
+    /// RED (registry-dedup migration): drive `walk_typed_urls` through the
+    /// shared winreg-core navigation seam. `navigate_key` must hand back a
+    /// `Key` (`Option`) bootstrapped from [`MemfHiveReader`], not a raw `u64`
+    /// cell VA from the dead `registry::` flat walker. A multi-URL TypedURLs
+    /// node — one value correlated with TypedURLsTime, one without — pins the
+    /// per-name timestamp correlation that winreg-core's `Value::raw_data`
+    /// path must reproduce. Compile-fails until `navigate_key` returns
+    /// `Option<Key<…>>`, and value enumeration runs through `key.values()`.
+    #[test]
+    fn walk_typed_urls_winreg_core_navigation() {
+        use crate::hive_reader::MemfHiveReader;
+        use crate::test_hive::CellHive;
+
+        let url1 = "http://evil.com/";
+        let url2 = "https://pastebin.com/abc";
+        let ts1 = 0x01D9_AAAA_BBBB_CCCCu64;
+        let utf16 = |s: &str| -> Vec<u8> {
+            s.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .chain([0u8, 0u8])
+                .collect()
+        };
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"Software", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Microsoft", 1, 0x200, 0);
+        h.lf(0x200, &[0x240]);
+        h.nk(0x240, b"Internet Explorer", 2, 0x300, 0);
+        h.lf(0x300, &[0x340, 0x400]);
+        // TypedURLs has two values: url1 (correlated) + url2 (no time sibling).
+        h.nk(0x340, b"TypedURLs", 0, 0, 0);
+        h.values(0x340, 2, 0x600);
+        h.value_list(0x600, &[0x700, 0x740]);
+        let d1 = utf16(url1);
+        let d2 = utf16(url2);
+        h.vk(0x700, b"url1", 1, d1.len() as u32, 0x880);
+        h.data(0x880, &d1);
+        h.vk(0x740, b"url2", 1, d2.len() as u32, 0x8C0);
+        h.data(0x8C0, &d2);
+        // TypedURLsTime carries only url1.
+        h.nk(0x400, b"TypedURLsTime", 0, 0, 0);
+        h.values(0x400, 1, 0x680);
+        h.value_list(0x680, &[0x780]);
+        h.vk(0x780, b"url1", 3, 8, 0x900);
+        h.data(0x900, &ts1.to_le_bytes());
+
+        let reader = h.reader();
+
+        // Migration seam: `navigate_key` returns an `Option<Key>` over the
+        // winreg-core backend, not a `u64`. (Compile-fails pre-migration.)
+        let hive = MemfHiveReader::new(&reader, h.hhive_va);
+        let root = hive.root_key().unwrap();
+        let urls_key = navigate_key(&root, TYPED_URLS_PATH);
+        assert!(urls_key.is_some(), "TypedURLs must resolve via winreg-core");
+
+        let mut entries = walk_typed_urls(&reader, h.hhive_va, "rick").unwrap();
+        entries.sort_by(|a, b| a.url.cmp(&b.url));
+        assert_eq!(entries.len(), 2, "expected both typed-url values");
+        // url1 correlates with its TypedURLsTime sibling.
+        let e1 = entries.iter().find(|e| e.url == url1).unwrap();
+        assert_eq!(e1.timestamp, ts1, "url1 must correlate with TypedURLsTime");
+        assert!(!e1.is_suspicious);
+        // url2 has no time sibling → 0, and is flagged suspicious (pastebin).
+        let e2 = entries.iter().find(|e| e.url == url2).unwrap();
+        assert_eq!(e2.timestamp, 0, "url2 has no matching TypedURLsTime");
+        assert!(e2.is_suspicious);
+    }
 }
