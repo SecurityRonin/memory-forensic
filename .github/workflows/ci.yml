@@ -57,3 +57,24 @@ jobs:
           toolchain: "1.75"
       - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
       - run: cargo check --workspace
+
+  # Proves the README "single static binary" claim continuously: build the memf
+  # binary for musl and fail if it is not actually statically linked. The release
+  # workflow ships these musl artifacts (release.yml).
+  musl-static:
+    name: Static musl binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl --bin memf
+      - name: Assert statically linked
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/memf
+          file "$BIN"
+          file "$BIN" | grep -q 'statically linked' || { echo "::error::memf is NOT statically linked"; exit 1; }
+          ldd "$BIN" 2>&1 | grep -qiE 'not a dynamic executable|statically linked' || { echo "::error::ldd reports dynamic linkage"; exit 1; }

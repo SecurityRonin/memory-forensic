@@ -1,0 +1,116 @@
+name: Release
+
+# Tag-driven release: pushing a `vX.Y.Z` tag cross-builds the `memf` binary for
+# all platforms and attaches the artifacts (+ SHA-256 checksums) to a GitHub
+# Release. The Linux targets are **musl** so the binary is a genuinely static,
+# self-contained executable — the README's "single static binary" claim made
+# literally true (a CI job verifies this on every push; see ci.yml `musl-static`).
+#
+# Scope: build + GitHub Release only. The fleet distribution fan-out
+# (Homebrew tap / apt-Cloudsmith / winget / crates.io) is intentionally NOT wired
+# here yet — each needs external bootstrapping (a created Cloudsmith repo, a tap
+# handler, winget registration) that would 404/fail until set up. Add per channel
+# when memf is ready to publish, modelled on `~/src/blazehash/.github/workflows/release.yml`.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-15
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Pin to the repo toolchain (rust-toolchain.toml = 1.96.0). MUST match that
+      # pin: a floating `stable` here adds the target to the wrong toolchain, so
+      # rust-toolchain.toml's 1.96.0 builds without the cross-target → E0463.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools (Linux)
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin memf
+
+      # Make the "static binary" claim self-enforcing: fail the release build if
+      # the musl artifact is not actually statically linked.
+      - name: Verify static linking (musl)
+        if: contains(matrix.target, 'musl')
+        run: |
+          BIN="target/${{ matrix.target }}/release/memf"
+          file "$BIN"
+          file "$BIN" | grep -q 'statically linked' || { echo "::error::$BIN is NOT statically linked"; exit 1; }
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd "target/${{ matrix.target }}/release"
+          tar czf "../../../memf-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz" memf
+          cd ../../..
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/memf.exe" -DestinationPath "memf-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: memf-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: memf-${{ steps.version.outputs.version }}-${{ matrix.target }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+          pattern: "memf-*-*"
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          files: |
+            artifacts/memf-*
+            artifacts/checksums.txt
+          generate_release_notes: true
