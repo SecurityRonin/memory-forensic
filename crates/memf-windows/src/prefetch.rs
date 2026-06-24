@@ -1,31 +1,16 @@
 //! Windows Prefetch file metadata extraction from process memory.
 //!
 //! Prefetch files (.pf) record application execution history and are
-//! critical forensic artifacts. This module scans memory regions for
-//! Prefetch file signatures to extract execution evidence.
+//! critical forensic artifacts. This module performs the **memory-specific**
+//! work: scanning physical/virtual regions for a decompressed prefetch payload
+//! at page boundaries by its `SCCA` signature (`53 43 43 41` at byte offset 4
+//! of the SCCA header, version-independent).
 //!
-//! # Prefetch v30 header layout (Windows 10+)
-//!
-//! | Offset | Size | Field                          |
-//! |--------|------|--------------------------------|
-//! | 0x00   | 4    | Version (0x1A = 26 for v30)    |
-//! | 0x04   | 4    | Signature "SCCA"               |
-//! | 0x08   | 4    | Unknown                        |
-//! | 0x0C   | 4    | File size                      |
-//! | 0x10   | 60   | Executable name (UTF-16LE, 30 wchars) |
-//! | 0x4C   | 4    | Prefetch path hash             |
-//! | 0x50   | 4    | Unknown (flags)                |
-//!
-//! For v30 (compressed MAM format), the outer header contains:
-//! | 0x00   | 4    | MAM signature (0x044D414D)     |
-//! | 0x04   | 4    | Uncompressed size              |
-//! | 0x08   | ...  | Compressed data (SCCA inside)  |
-//!
-//! We scan for the raw SCCA signature which appears either at offset 0
-//! of uncompressed prefetch files or within decompressed regions in memory.
-//!
-//! The 8-byte magic we scan for: `1A 00 00 00 53 43 43 41`
-//! (version u32 LE = 0x1A, then ASCII "SCCA").
+//! Once a candidate is located, the surrounding bytes are carved and the SCCA
+//! field parsing is delegated to the [`prefetch_core`] crate
+//! ([`prefetch_core::parse_decompressed`]), which handles SCCA v30/v31, the
+//! shifted Win10 run-count layout, and the MAM/Xpress-Huffman container —
+//! coverage memf's former hand-rolled subset lacked.
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
@@ -47,45 +32,38 @@ pub struct PrefetchInfo {
     pub last_run_time: u64,
 }
 
-/// Prefetch v30 magic: version 0x1A (26) as u32 LE, followed by "SCCA".
-const PREFETCH_MAGIC: [u8; 8] = [0x1A, 0x00, 0x00, 0x00, 0x53, 0x43, 0x43, 0x41];
-
 /// Scan on 4 KiB page boundaries.
 const SCAN_ALIGNMENT: u64 = 0x1000;
-
-/// Minimum size needed to parse a Prefetch v30 header.
-/// We need at least through the run count and last-run-time fields.
-#[allow(dead_code)]
-const MIN_HEADER_SIZE: usize = 0xA0;
 
 /// Maximum number of Prefetch entries to recover (safety limit).
 const MAX_ENTRIES: usize = 4096;
 
-/// Offset of the executable name field (UTF-16LE, 30 wchars = 60 bytes).
-const EXE_NAME_OFFSET: usize = 0x10;
-/// Length of the executable name field in bytes (30 wchars * 2).
-const EXE_NAME_LEN: usize = 60;
-
-/// Offset of the path hash field.
+/// Offset of the path hash field within the SCCA header. `prefetch-core` does
+/// not surface this value, so memf carves it directly to keep its public
+/// [`PrefetchInfo::hash`] field populated.
 const HASH_OFFSET: usize = 0x4C;
 
-/// Offset of the run count field in v30 (Windows 10).
-const RUN_COUNT_OFFSET: usize = 0xD0;
+/// Smallest in-memory window worth handing to the parser: the SCCA signature
+/// sits at byte 4 and `parse_decompressed` needs at least the 84-byte header
+/// plus the `FileInformation` block. We carve more than this so volume and
+/// filename blocks resolve, but never less.
+const MIN_CARVE: usize = 0x100;
 
-/// Offset of the last run time field (FILETIME) in v30 (Windows 10).
-const LAST_RUN_TIME_OFFSET: usize = 0x80;
+/// Largest in-memory window carved per candidate before handing it to the
+/// parser. A decompressed SCCA payload with its volume/filename blocks fits
+/// comfortably below this; the cap bounds the read against a runaway region.
+const MAX_CARVE: usize = 0x4_0000;
 
-/// Minimum Prefetch header + execution data size for v30.
-const MIN_PARSE_SIZE: usize = 0xD4;
-
-/// Scan memory regions for Windows Prefetch file headers (version 30).
+/// Scan memory regions for in-memory Windows Prefetch (SCCA) structures.
 ///
-/// Takes a list of `(start_vaddr, length)` regions to scan. Scans each
-/// region for the Prefetch v30 magic bytes (`1A 00 00 00 53 43 43 41`)
-/// at page-aligned boundaries and parses headers to extract execution
-/// metadata.
+/// Takes a list of `(start_vaddr, length)` regions to scan. At each page
+/// boundary it checks for the `SCCA` signature (the structural invariant of a
+/// decompressed prefetch payload, version-independent), carves the surrounding
+/// bytes, and delegates field parsing to [`prefetch_core::parse_decompressed`]
+/// — which handles SCCA v30/v31 (and the shifted run-count layout) that memf's
+/// former hand-rolled subset could not.
 ///
-/// Returns a `Vec<PrefetchInfo>` with one entry per recovered Prefetch header.
+/// Returns a `Vec<PrefetchInfo>` with one entry per recovered prefetch payload.
 pub fn scan_prefetch<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     search_regions: &[(u64, u64)],
@@ -98,15 +76,16 @@ pub fn scan_prefetch<P: PhysicalMemoryProvider>(
         let region_end = region_start.saturating_add(region_len);
 
         let mut addr = aligned_start;
-        while addr + MIN_PARSE_SIZE as u64 <= region_end {
+        while addr + MIN_CARVE as u64 <= region_end {
             if entries.len() >= MAX_ENTRIES {
                 return Ok(entries);
             }
 
-            // Read the first 8 bytes to check for the Prefetch v30 magic.
-            if let Ok(magic_bytes) = reader.read_bytes(addr, 8) {
-                if magic_bytes.len() == 8 && magic_bytes[..8] == PREFETCH_MAGIC {
-                    if let Some(info) = parse_prefetch_header(reader, addr) {
+            // The SCCA signature lives at byte 4: `[u32 version][b"SCCA"]`.
+            let sig_addr = addr + prefetch_core::SCCA_SIGNATURE_OFFSET as u64;
+            if let Ok(sig) = reader.read_bytes(sig_addr, prefetch_core::SCCA_SIGNATURE.len()) {
+                if sig == prefetch_core::SCCA_SIGNATURE {
+                    if let Some(info) = parse_prefetch_at(reader, addr, region_end) {
                         entries.push(info);
                     }
                 }
@@ -119,71 +98,64 @@ pub fn scan_prefetch<P: PhysicalMemoryProvider>(
     Ok(entries)
 }
 
-/// Parse a single Prefetch v30 header at the given virtual address.
+/// Carve a candidate SCCA payload at `addr` and parse it via `prefetch-core`.
 ///
-/// Reads the executable name (UTF-16LE at offset 0x10), path hash
-/// (u32 at offset 0x4C), last run time (FILETIME at offset 0x80),
-/// and run count (u32 at offset 0xD0).
-fn parse_prefetch_header<P: PhysicalMemoryProvider>(
+/// The carve window grows up to [`MAX_CARVE`] (bounded by `region_end`) so the
+/// volume/filename blocks resolve; if those trailing pages are unmapped the
+/// read shrinks to the header so a valid header still parses. Returns `None`
+/// when nothing maps, the version is unsupported, or the payload is malformed —
+/// a per-candidate miss, not a hard error.
+fn parse_prefetch_at<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     addr: u64,
+    region_end: u64,
 ) -> Option<PrefetchInfo> {
-    // Read the executable name (UTF-16LE, 30 wchars = 60 bytes).
-    let name_bytes = reader
-        .read_bytes(addr + EXE_NAME_OFFSET as u64, EXE_NAME_LEN)
-        .ok()?;
-    if name_bytes.len() < EXE_NAME_LEN {
-        return None;
-    }
-    let executable_name = utf16le_to_string(&name_bytes);
-    if executable_name.is_empty() {
+    let available = region_end.saturating_sub(addr).min(MAX_CARVE as u64) as usize;
+    if available < MIN_CARVE {
         return None;
     }
 
-    // Read the path hash.
-    let hash = read_u32_at(reader, addr + HASH_OFFSET as u64)?;
+    // Prefer the widest mapped window; fall back to the header if the trailing
+    // pages of the candidate are not present.
+    let bytes = read_widest(reader, addr, available)?;
 
-    // Read the last run time (FILETIME).
-    let last_run_time = read_u64_at(reader, addr + LAST_RUN_TIME_OFFSET as u64).unwrap_or(0);
+    let info = prefetch_core::parse_decompressed(&bytes).ok()?;
+    if info.executable.is_empty() {
+        return None;
+    }
 
-    // Read the run count.
-    let run_count = read_u32_at(reader, addr + RUN_COUNT_OFFSET as u64).unwrap_or(0);
+    // `prefetch-core` does not expose the path hash; carve it from the header.
+    let hash = bytes
+        .get(HASH_OFFSET..HASH_OFFSET + 4)
+        .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
 
     Some(PrefetchInfo {
         offset: addr,
-        executable_name,
+        executable_name: info.executable,
         hash,
-        run_count,
-        last_run_time,
+        run_count: info.run_count,
+        last_run_time: info.last_run_times.first().copied().unwrap_or(0) as u64,
     })
 }
 
-/// Read a little-endian u32 from virtual memory, returning `None` on failure.
-fn read_u32_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<u32> {
-    let bytes = reader.read_bytes(vaddr, 4).ok()?;
-    if bytes.len() < 4 {
-        return None;
+/// Read the widest mapped window at `addr`, shrinking from `available` toward
+/// [`MIN_CARVE`] when trailing pages are unmapped. Returns `None` only if even
+/// the minimum window cannot be read.
+fn read_widest<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    addr: u64,
+    available: usize,
+) -> Option<Vec<u8>> {
+    let mut len = available;
+    loop {
+        if let Ok(bytes) = reader.read_bytes(addr, len) {
+            return Some(bytes);
+        }
+        if len <= MIN_CARVE {
+            return None;
+        }
+        len = (len / 2).max(MIN_CARVE);
     }
-    Some(bytes[..4].try_into().map_or(0, u32::from_le_bytes))
-}
-
-/// Read a little-endian u64 from virtual memory, returning `None` on failure.
-fn read_u64_at<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>, vaddr: u64) -> Option<u64> {
-    let bytes = reader.read_bytes(vaddr, 8).ok()?;
-    if bytes.len() < 8 {
-        return None;
-    }
-    Some(bytes[..8].try_into().map_or(0, u64::from_le_bytes))
-}
-
-/// Extract a UTF-16LE string from raw bytes, trimming null terminators.
-fn utf16le_to_string(bytes: &[u8]) -> String {
-    let u16s: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .take_while(|&ch| ch != 0)
-        .collect();
-    String::from_utf16_lossy(&u16s)
 }
 
 #[cfg(test)]
@@ -205,6 +177,29 @@ mod tests {
         let (cr3, mem) = PageTableBuilder::new().build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
         ObjectReader::new(vas, Box::new(resolver))
+    }
+
+    /// SCCA `FileInformation` block starts right after the 84-byte header
+    /// (mirrors `prefetch_core`'s constant; redeclared here for the fixtures).
+    const FILE_INFO_OFFSET: usize = 84;
+
+    /// Build a minimal valid SCCA **v30** payload that `prefetch_core` parses:
+    /// the version/signature header, the executable name, the path hash at
+    /// `0x4C` (which memf carves itself), one run time, and the run count in the
+    /// pre-shift Win10 slot (`FileInfo+124`).
+    fn build_v30_scca(exe: &str, hash: u32, run_count: u32, run_time: i64) -> Vec<u8> {
+        let mut p = vec![0u8; FILE_INFO_OFFSET + 224];
+        p[0..4].copy_from_slice(&30u32.to_le_bytes());
+        p[4..8].copy_from_slice(b"SCCA");
+        for (i, u) in exe.encode_utf16().enumerate() {
+            p[16 + i * 2..16 + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+        }
+        p[0x4C..0x50].copy_from_slice(&hash.to_le_bytes());
+        let fi = FILE_INFO_OFFSET;
+        p[fi + 44..fi + 52].copy_from_slice(&run_time.to_le_bytes());
+        // fi+120 stays zero → count read from fi+124 (pre-shift layout).
+        p[fi + 124..fi + 128].copy_from_slice(&run_count.to_le_bytes());
+        p
     }
 
     /// Empty regions list produces an empty result — not an error.
@@ -241,14 +236,13 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// A synthetic Prefetch v30 header produces the correct PrefetchInfo.
+    /// A synthetic SCCA v30 payload produces the correct PrefetchInfo via the
+    /// delegated `prefetch_core` parse.
     #[test]
     fn scan_prefetch_single_entry() {
         let isf = IsfBuilder::new().build_json();
         let resolver = IsfResolver::from_value(&isf).unwrap();
 
-        // We need enough pages for the Prefetch header (1 page is enough
-        // since MIN_PARSE_SIZE < 0x1000, but map a few for the region).
         const PF_VADDR: u64 = 0xFFFF_8000_0010_0000;
         const PF_PADDR: u64 = 0x0080_0000;
         const REGION_SIZE: u64 = 0x4000; // 16 KiB = 4 pages
@@ -262,31 +256,16 @@ mod tests {
             );
         }
 
-        // Write the Prefetch v30 magic at offset 0: version=0x1A, "SCCA"
-        builder = builder.write_phys(PF_PADDR, &PREFETCH_MAGIC);
-
-        // Write executable name at offset 0x10 as UTF-16LE: "NOTEPAD.EXE"
-        let exe_name = "NOTEPAD.EXE";
-        let exe_utf16: Vec<u8> = exe_name.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        builder = builder.write_phys(PF_PADDR + EXE_NAME_OFFSET as u64, &exe_utf16);
-
-        // Write path hash at offset 0x4C
         let expected_hash: u32 = 0xDEAD_BEEF;
-        builder = builder.write_phys(PF_PADDR + HASH_OFFSET as u64, &expected_hash.to_le_bytes());
-
-        // Write last run time (FILETIME) at offset 0x80: 2024-01-15 12:00:00 UTC
-        let expected_last_run: u64 = 133_500_672_000_000_000;
-        builder = builder.write_phys(
-            PF_PADDR + LAST_RUN_TIME_OFFSET as u64,
-            &expected_last_run.to_le_bytes(),
-        );
-
-        // Write run count at offset 0xD0
+        let expected_last_run: i64 = 133_500_672_000_000_000;
         let expected_run_count: u32 = 42;
-        builder = builder.write_phys(
-            PF_PADDR + RUN_COUNT_OFFSET as u64,
-            &expected_run_count.to_le_bytes(),
+        let scca = build_v30_scca(
+            "NOTEPAD.EXE",
+            expected_hash,
+            expected_run_count,
+            expected_last_run,
         );
+        builder = builder.write_phys(PF_PADDR, &scca);
 
         let (cr3, mem) = builder.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -300,33 +279,20 @@ mod tests {
         assert_eq!(pf.executable_name, "NOTEPAD.EXE");
         assert_eq!(pf.hash, expected_hash);
         assert_eq!(pf.run_count, expected_run_count);
-        assert_eq!(pf.last_run_time, expected_last_run);
+        assert_eq!(pf.last_run_time, expected_last_run as u64);
     }
 
-    /// utf16le_to_string with empty bytes returns empty string.
-    #[test]
-    fn utf16le_to_string_empty_bytes() {
-        assert_eq!(utf16le_to_string(&[]), "");
-    }
-
-    /// utf16le_to_string stops at null terminator.
-    #[test]
-    fn utf16le_to_string_stops_at_null() {
-        // "AB\0C" in UTF-16LE → stops after 'B'
-        let bytes: &[u8] = &[0x41, 0x00, 0x42, 0x00, 0x00, 0x00, 0x43, 0x00];
-        assert_eq!(utf16le_to_string(bytes), "AB");
-    }
-
-    /// scan_prefetch with a region too small (< MIN_PARSE_SIZE) skips it entirely.
+    /// scan_prefetch with a region too small (< MIN_CARVE) skips it entirely.
     #[test]
     fn scan_prefetch_region_too_small() {
         let reader = build_empty_reader();
-        // MIN_PARSE_SIZE is 0xD4 = 212 bytes; region of 100 bytes is too small.
+        // MIN_CARVE is 0x100 = 256 bytes; a region of 100 bytes is too small.
         let result = scan_prefetch(&reader, &[(0xFFFF_8000_0000_0000, 100)]).unwrap();
         assert!(result.is_empty());
     }
 
-    /// scan_prefetch: magic present but executable name is all-null → parse returns None, no entry.
+    /// scan_prefetch: a valid v30 SCCA whose executable name is all-null →
+    /// parse yields an empty executable, which is dropped (no entry).
     #[test]
     fn scan_prefetch_empty_exe_name_skipped() {
         let isf = IsfBuilder::new().build_json();
@@ -345,9 +311,10 @@ mod tests {
             );
         }
 
-        // Write magic but leave exe name at offset 0x10 as all-zeros (empty UTF-16LE).
-        builder = builder.write_phys(PF_PADDR, &PREFETCH_MAGIC);
-        // Exe name area stays zero → utf16le_to_string returns "" → parse_prefetch_header returns None.
+        // Valid v30 header (version + SCCA signature) but the exe-name field
+        // stays all-zero → empty executable → dropped.
+        let scca = build_v30_scca("", 0, 0, 0);
+        builder = builder.write_phys(PF_PADDR, &scca);
 
         let (cr3, mem) = builder.build();
         let vas = VirtualAddressSpace::new(mem, cr3, TranslationMode::X86_64FourLevel);
@@ -380,13 +347,10 @@ mod tests {
             );
         }
 
-        // Helper: write a prefetch entry at a given physical offset.
-        let write_pf = |mut b: PageTableBuilder, base_paddr: u64, exe: &str, hash: u32| {
-            b = b.write_phys(base_paddr, &PREFETCH_MAGIC);
-            let exe_utf16: Vec<u8> = exe.encode_utf16().flat_map(u16::to_le_bytes).collect();
-            b = b.write_phys(base_paddr + EXE_NAME_OFFSET as u64, &exe_utf16);
-            b = b.write_phys(base_paddr + HASH_OFFSET as u64, &hash.to_le_bytes());
-            b
+        // Helper: write a full v30 SCCA payload at a given physical offset.
+        let write_pf = |b: PageTableBuilder, base_paddr: u64, exe: &str, hash: u32| {
+            let scca = build_v30_scca(exe, hash, 1, 0);
+            b.write_phys(base_paddr, &scca)
         };
 
         builder = write_pf(builder, REGION_PADDR, "CMD.EXE", 0xAAAA_AAAA);
@@ -418,30 +382,14 @@ mod tests {
         assert!(json.contains("\"hash\":3735928559")); // 0xDEAD_BEEF decimal
     }
 
-    /// read_u32_at returns None when address is unmapped.
-    #[test]
-    fn read_u32_at_unmapped_returns_none() {
-        let reader = build_empty_reader();
-        assert!(read_u32_at(&reader, 0xDEAD_BEEF_0000).is_none());
-    }
-
-    /// read_u64_at returns None when address is unmapped.
-    #[test]
-    fn read_u64_at_unmapped_returns_none() {
-        let reader = build_empty_reader();
-        assert!(read_u64_at(&reader, 0xDEAD_BEEF_0000).is_none());
-    }
-
     /// Build a minimal valid SCCA v30 payload that exercises the
-    /// `prefetch-core` parsing contract: a `version == 30` header (not the
-    /// Win8.1 `0x1A` the hand-rolled subset matched), the executable name, and
-    /// the *shifted* run-count layout (`FileInfo+120` non-zero → count lives at
-    /// `FileInfo+116`, not `FileInfo+124`). The old hand-rolled parser, which
-    /// always read the run count at a fixed `0xD0` (== `FileInfo+124`), gets the
-    /// shifted count wrong — so this fixture only passes once the parsing is
-    /// delegated to `prefetch_core::parse_decompressed`.
+    /// `prefetch-core` parsing contract's *shifted* run-count layout
+    /// (`FileInfo+120` non-zero → count lives at `FileInfo+116`, not
+    /// `FileInfo+124`). The old hand-rolled parser, which always read the run
+    /// count at a fixed `0xD0` (== `FileInfo+124`), gets the shifted count
+    /// wrong — so this fixture only passes once the parsing is delegated to
+    /// `prefetch_core::parse_decompressed`.
     fn build_v30_scca_shifted_run_count(exe: &str, run_count: u32, run_time: i64) -> Vec<u8> {
-        const FILE_INFO_OFFSET: usize = 84;
         let mut p = vec![0u8; FILE_INFO_OFFSET + 224];
         p[0..4].copy_from_slice(&30u32.to_le_bytes());
         p[4..8].copy_from_slice(b"SCCA");

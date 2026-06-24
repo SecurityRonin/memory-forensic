@@ -25,6 +25,7 @@ memf-core.workspace = true
 memf-correlate.workspace = true
 forensicnomicon.workspace = true
 shellitem.workspace = true
+prefetch-core.workspace = true
 winevt-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true

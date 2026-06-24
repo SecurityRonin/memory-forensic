@@ -1958,6 +1958,7 @@ dependencies = [
  "memf-format",
  "memf-symbols",
  "pbkdf2",
+ "prefetch-core",
  "rc4",
  "regex",
  "serde",
@@ -2424,6 +2425,15 @@ checksum = "d0de1b847b39c8131db0467e9df1ff60e6d0562ab8e9a16e568ad0fdb372e2f2"
 dependencies = [
  "predicates-core",
  "termtree",
+]
+
+[[package]]
+name = "prefetch-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce0e0c1336e28565047c7b519ed4ae8d6b97d2f075995dc541e0ff12b3e8d63c"
+dependencies = [
+ "xpress-huffman",
 ]
 
 [[package]]
@@ -4238,6 +4248,12 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
 ]
+
+[[package]]
+name = "xpress-huffman"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7db36564308ced066dfa8972d844e85647f9c3588c57a1cecda89f76e8700907"
 
 [[package]]
 name = "yansi"
