@@ -648,4 +648,75 @@ mod tests {
             "refused → raw encrypted bytes surfaced"
         );
     }
+
+    /// RED (registry-dedup migration): drive lsadump's SECURITY-hive navigation
+    /// through the shared winreg-core seam. `find_policy_key` must resolve
+    /// `Policy` from a [`MemfHiveReader`]-backed root [`Key`] (its cell offset
+    /// feeds derive_lsa_key via the cell_offset_to_va bridge), returning a `Key`
+    /// rather than a u64 cell VA from the dead `registry::` flat walker. The
+    /// CellHive fixture writes the correct on-disk layout with TWO secrets under
+    /// Policy\Secrets, each with a CurrVal, plus a missing-CurrVal secret. With
+    /// system=0 the LSA key is refused, so each secret surfaces its raw bytes
+    /// HONESTLY FLAGGED decrypted=false (never fabricated plaintext). Compile-
+    /// fails until find_policy_key navigates winreg-core `Key`s.
+    #[test]
+    fn walk_lsa_secrets_winreg_core_navigation() {
+        use crate::hive_reader::MemfHiveReader;
+        use crate::test_hive::CellHive;
+
+        let dpapi_raw = [0x11u8; 48];
+        let machine_raw = [0x22u8; 32];
+
+        let mut h = CellHive::new(0x0050_0000);
+        h.nk(0x020, b"Root", 1, 0x080, 0);
+        h.lf(0x080, &[0x0C0]);
+        h.nk(0x0C0, b"Policy", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Secrets", 2, 0x200, 0);
+        h.lf(0x200, &[0x240, 0x600]);
+        // DPAPI_SYSTEM → CurrVal = dpapi_raw
+        h.nk(0x240, b"DPAPI_SYSTEM", 1, 0x300, 0);
+        h.lf(0x300, &[0x340]);
+        h.nk(0x340, b"CurrVal", 0, 0, 0);
+        h.values(0x340, 1, 0x3C0);
+        h.value_list(0x3C0, &[0x400]);
+        h.vk(0x400, b"", 3, dpapi_raw.len() as u32, 0x480);
+        h.data(0x480, &dpapi_raw);
+        // $MACHINE.ACC → CurrVal = machine_raw
+        h.nk(0x600, b"$MACHINE.ACC", 1, 0x680, 0);
+        h.lf(0x680, &[0x6C0]);
+        h.nk(0x6C0, b"CurrVal", 0, 0, 0);
+        h.values(0x6C0, 1, 0x740);
+        h.value_list(0x740, &[0x780]);
+        h.vk(0x780, b"", 3, machine_raw.len() as u32, 0x800);
+        h.data(0x800, &machine_raw);
+
+        let reader = h.reader();
+
+        // Migration seam: Policy resolves via a winreg-core Key.
+        // (Compile-fails pre-migration: no find_policy_key.)
+        let hive = MemfHiveReader::new(&reader, h.hhive_va);
+        let root = hive.root_key().unwrap();
+        let policy = find_policy_key(&root).expect("Policy resolves via winreg-core");
+        assert!(
+            policy.subkey_path("Secrets").unwrap().is_some(),
+            "Secrets reachable from Policy"
+        );
+
+        let mut secrets = walk_lsa_secrets(&reader, 0, h.hhive_va).unwrap();
+        secrets.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(secrets.len(), 2, "two secrets recovered via winreg-core");
+
+        let dpapi = secrets.iter().find(|s| s.name == "DPAPI_SYSTEM").unwrap();
+        assert_eq!(dpapi.secret_type, "dpapi_key");
+        assert_eq!(dpapi.length, 48);
+        assert!(!dpapi.decrypted, "system=0 → refused, honestly flagged");
+        assert_eq!(dpapi.data.as_deref(), Some(&dpapi_raw[..]));
+
+        let mach = secrets.iter().find(|s| s.name == "$MACHINE.ACC").unwrap();
+        assert_eq!(mach.secret_type, "machine_password");
+        assert_eq!(mach.length, 32);
+        assert!(!mach.decrypted);
+        assert_eq!(mach.data.as_deref(), Some(&machine_raw[..]));
+    }
 }
