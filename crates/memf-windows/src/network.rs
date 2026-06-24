@@ -536,7 +536,8 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                         continue;
                     }
                     // Address family must be AF_INET (this walker emits IPv4).
-                    let Some(af) = read_phys_u_via(reader, inetaf + t.inetaf_af, 2) else {
+                    let Some(af) = read_phys_u_via(reader, inetaf.wrapping_add(t.inetaf_af), 2)
+                    else {
                         continue;
                     };
                     let af = af as u16;
@@ -552,14 +553,14 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                     let (pid, process_name) = if owner == 0 {
                         (0, String::new())
                     } else if is_kernel_va(owner) {
-                        let Some(p) = read_virt_u64(owner + pid_off) else {
+                        let Some(p) = read_virt_u64(owner.wrapping_add(pid_off)) else {
                             continue;
                         };
                         if p > 0xFFFF {
                             continue;
                         }
                         let name = reader
-                            .read_bytes(owner + name_off, 15)
+                            .read_bytes(owner.wrapping_add(name_off), 15)
                             .map(|b| {
                                 String::from_utf8_lossy(&b)
                                     .trim_end_matches('\0')
@@ -573,14 +574,14 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
 
                     let any_addr = if v6 { "::" } else { "0.0.0.0" };
                     // Remote: _ADDRINFO.Remote (ptr) -> _IN_ADDR (addr4/addr6 by family).
-                    let remote_addr = read_virt_u64(ai + t.ai_remote)
+                    let remote_addr = read_virt_u64(ai.wrapping_add(t.ai_remote))
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|va| read_inaddr(reader, va, af))
                         .unwrap_or_else(|| any_addr.to_string());
                     // Local: _ADDRINFO.Local -> _LOCAL_ADDRESS.pData -> ptr -> _IN_ADDR.
-                    let local_addr = read_virt_u64(ai + t.ai_local)
+                    let local_addr = read_virt_u64(ai.wrapping_add(t.ai_local))
                         .filter(|&p| is_kernel_va(p))
-                        .and_then(|la| read_virt_u64(la + t.la_pdata))
+                        .and_then(|la| read_virt_u64(la.wrapping_add(t.la_pdata)))
                         .and_then(&read_virt_u64)
                         .and_then(|va| read_inaddr(reader, va, af))
                         .unwrap_or_else(|| any_addr.to_string());
@@ -803,7 +804,8 @@ fn scan_listener_objects<P: PhysicalMemoryProvider>(
                     if !is_kernel_va(inetaf) {
                         continue;
                     }
-                    let Some(af) = read_phys_u_via(reader, inetaf + l.inetaf_af, 2) else {
+                    let Some(af) = read_phys_u_via(reader, inetaf.wrapping_add(l.inetaf_af), 2)
+                    else {
                         continue;
                     };
                     let af = af as u16;
@@ -814,14 +816,14 @@ fn scan_listener_objects<P: PhysicalMemoryProvider>(
                     let (pid, process_name) = if owner == 0 {
                         (0, String::new())
                     } else if is_kernel_va(owner) {
-                        let Some(p) = read_virt_u64(owner + pid_off) else {
+                        let Some(p) = read_virt_u64(owner.wrapping_add(pid_off)) else {
                             continue;
                         };
                         if p > 0xFFFF {
                             continue;
                         }
                         let name = reader
-                            .read_bytes(owner + name_off, 15)
+                            .read_bytes(owner.wrapping_add(name_off), 15)
                             .map(|b| {
                                 String::from_utf8_lossy(&b)
                                     .trim_end_matches('\0')
@@ -836,7 +838,7 @@ fn scan_listener_objects<P: PhysicalMemoryProvider>(
                     // Bound local _IN_ADDR (None = unbound → listens on all addrs).
                     let bound = read_phys_u(ep + l.local_addr, 8)
                         .filter(|&p| is_kernel_va(p))
-                        .and_then(|la| read_virt_u64(la + l.la_pdata))
+                        .and_then(|la| read_virt_u64(la.wrapping_add(l.la_pdata)))
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|va| read_inaddr(reader, va, af));
                     let local_port =
