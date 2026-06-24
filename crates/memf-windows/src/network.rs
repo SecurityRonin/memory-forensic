@@ -591,14 +591,9 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                         0
                     };
 
-                    let key = (
-                        local_addr.clone(),
-                        local_port,
-                        remote_addr.clone(),
-                        remote_port,
-                        pid,
-                    );
-                    if !seen.insert(key) {
+                    // Dedup per object offset (vol3 one-row-per-tag): removes only
+                    // scan-overlap re-finds, keeping distinct live+freed chunks.
+                    if !seen.insert(ep) {
                         continue;
                     }
                     out.push(WinConnectionInfo {
