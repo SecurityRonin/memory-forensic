@@ -70,6 +70,7 @@ pub mod mutant;
 pub mod network;
 pub mod ntlm_ssp;
 pub mod object_directory;
+pub(crate) mod pe;
 pub mod pe_version_info;
 pub mod peb_masquerade;
 pub mod pipes;
