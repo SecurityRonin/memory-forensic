@@ -15,7 +15,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::registry;
+use crate::hive_reader::MemfHiveReader;
 
 /// Maximum number of UserAssist entries to enumerate (safety limit).
 const MAX_USERASSIST_ENTRIES: usize = 4096;
@@ -23,15 +23,8 @@ const MAX_USERASSIST_ENTRIES: usize = 4096;
 /// Minimum binary data size for a UserAssist value (Vista+ format).
 const USERASSIST_DATA_SIZE: usize = 72;
 
-/// The path components from the hive root to the UserAssist key.
-const USERASSIST_PATH: &[&str] = &[
-    "Software",
-    "Microsoft",
-    "Windows",
-    "CurrentVersion",
-    "Explorer",
-    "UserAssist",
-];
+/// The backslash-delimited path from the hive root to the UserAssist key.
+const USERASSIST_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist";
 
 /// A single UserAssist entry recovered from the registry.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -162,34 +155,32 @@ pub fn walk_userassist<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hive_addr: u64,
 ) -> crate::Result<Vec<UserAssistEntry>> {
-    let mut current = registry::resolve_root_cell(reader, hive_addr);
-    if current == 0 {
+    let hive = MemfHiveReader::new(reader, hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    for &component in USERASSIST_PATH {
-        if current == 0 {
-            return Ok(Vec::new());
-        }
-        current = registry::find_subkey_by_name(reader, hive_addr, current, component);
-    }
-    if current == 0 {
+    };
+    let Ok(Some(userassist)) = root.subkey_path(USERASSIST_PATH) else {
         return Ok(Vec::new());
-    }
+    };
+
+    let Ok(guid_keys) = userassist.subkeys() else {
+        return Ok(Vec::new());
+    };
 
     let mut entries = Vec::new();
-    for (_guid_name, guid_va) in registry::list_subkeys(reader, hive_addr, current)
-        .into_iter()
-        .take(MAX_USERASSIST_ENTRIES)
-    {
-        let count_va = registry::find_subkey_by_name(reader, hive_addr, guid_va, "Count");
-        if count_va == 0 {
+    for guid_key in guid_keys.into_iter().take(MAX_USERASSIST_ENTRIES) {
+        let Ok(Some(count_key)) = guid_key.subkey_path("Count") else {
             continue;
-        }
-        for value in registry::list_values(reader, hive_addr, count_va) {
+        };
+        let Ok(values) = count_key.values() else {
+            continue;
+        };
+        for value in values {
             if entries.len() >= MAX_USERASSIST_ENTRIES {
                 break;
             }
-            if let Some(entry) = parse_userassist_entry(&value.name, &value.data) {
+            let Ok(data) = value.raw_data() else { continue };
+            if let Some(entry) = parse_userassist_entry(&value.name(), &data) {
                 entries.push(entry);
             }
         }
@@ -540,12 +531,10 @@ mod tests {
 
     #[test]
     fn userassist_path_components() {
-        assert_eq!(USERASSIST_PATH[0], "Software");
-        assert_eq!(USERASSIST_PATH[1], "Microsoft");
-        assert_eq!(USERASSIST_PATH[2], "Windows");
-        assert_eq!(USERASSIST_PATH[3], "CurrentVersion");
-        assert_eq!(USERASSIST_PATH[4], "Explorer");
-        assert_eq!(USERASSIST_PATH[5], "UserAssist");
+        assert_eq!(
+            USERASSIST_PATH,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"
+        );
     }
 
     /// RED (flat→HMAP migration): a real cell-map NTUSER.DAT laid out as
