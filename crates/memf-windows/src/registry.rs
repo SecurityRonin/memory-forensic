@@ -555,6 +555,11 @@ pub(crate) fn read_value_data<P: PhysicalMemoryProvider>(
 /// Returns an empty vec if the key has no stable subkeys or any read fails.
 /// Handles `lf`/`lh`/`li`/`ri` (index-root) list formats with bounded `ri` recursion —
 /// the same traversal as [`find_subkey_by_name`] but collecting every entry.
+//
+// Orphaned in lib builds by the registry-dedup migration (its last caller,
+// lsadump, moved onto winreg-core); kept with its unit tests until the whole
+// flat walker is removed in the final registry.rs-deletion pass.
+#[allow(dead_code)]
 pub(crate) fn list_subkeys<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,
@@ -578,6 +583,10 @@ pub(crate) fn list_subkeys<P: PhysicalMemoryProvider>(
 
 /// Walk a subkey-list cell (`lf`/`lh`/`li`/`ri`) and push every `(name, key_va)` into `out`.
 /// `ri` entries recurse into nested sub-lists bounded by `depth`.
+//
+// Reachable only from the now-orphaned `list_subkeys`; see its note. Removed in
+// the final registry.rs-deletion pass.
+#[allow(dead_code)]
 fn collect_subkey_list<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     hhive_addr: u64,

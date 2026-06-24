@@ -19,7 +19,10 @@
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use winreg_core::cell_reader::CellReader;
+use winreg_core::key::Key;
 
+use crate::hive_reader::MemfHiveReader;
 use crate::registry;
 
 /// Maximum number of LSA secrets to enumerate (safety limit).
@@ -178,35 +181,42 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
     if security_hive_addr == 0 {
         return Ok(Vec::new());
     }
-    // Navigate SECURITY\\Policy\\Secrets via the shared HMAP walker.
-    let root = registry::resolve_root_cell(reader, security_hive_addr);
-    if root == 0 {
+    // Navigate SECURITY\Policy\Secrets through winreg-core's shared Key decoder
+    // over MemfHiveReader (canonical _CM_KEY_NODE/_CM_KEY_VALUE offsets).
+    let hive = MemfHiveReader::new(reader, security_hive_addr);
+    let Ok(root) = hive.root_key() else {
         return Ok(Vec::new());
-    }
-    let policy = registry::find_subkey_by_name(reader, security_hive_addr, root, "Policy");
-    if policy == 0 {
+    };
+    let Some(policy) = find_policy_key(&root) else {
         return Ok(Vec::new());
-    }
-    let secrets = registry::find_subkey_by_name(reader, security_hive_addr, policy, "Secrets");
-    if secrets == 0 {
+    };
+    let Some(secrets) = policy.subkey_path("Secrets").ok().flatten() else {
         return Ok(Vec::new());
-    }
+    };
 
     // Vista+ LSA key (empty ⇒ decryption refused; we then surface raw bytes).
-    let lsa_key = derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy);
+    // derive_lsa_key (kept byte-for-byte, used by lsadump + cachedump) consumes
+    // the policy cell *VA*, so translate the navigated Key's offset through the
+    // HMAP cell map; if it does not resolve, no key can be derived.
+    let lsa_key = match hive.cell_offset_to_va(policy.offset()) {
+        Some(policy_va) => derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy_va),
+        None => Vec::new(),
+    };
+
+    let Ok(secret_keys) = secrets.subkeys() else {
+        return Ok(Vec::new());
+    };
 
     let mut out = Vec::new();
-    for (name, secret_key) in registry::list_subkeys(reader, security_hive_addr, secrets)
-        .into_iter()
-        .take(MAX_SECRETS)
-    {
-        // The secret's encrypted value lives in <name>\\CurrVal's default value.
-        let currval =
-            registry::find_subkey_by_name(reader, security_hive_addr, secret_key, "CurrVal");
-        let enc = if currval != 0 {
-            registry::read_value_data(reader, security_hive_addr, currval, "")
-        } else {
-            Vec::new()
+    for secret_key in secret_keys.into_iter().take(MAX_SECRETS) {
+        let name = secret_key.name();
+        // The secret's encrypted value lives in <name>\CurrVal's default value.
+        let enc = match secret_key.subkey_path("CurrVal").ok().flatten() {
+            Some(currval) => match currval.value("") {
+                Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
         };
         let length = enc.len() as u32;
         let (decrypted, data) = if !lsa_key.is_empty() && enc.len() >= 60 {
@@ -227,6 +237,11 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
         });
     }
     Ok(out)
+}
+
+/// Resolve the SECURITY hive's `Policy` key from the hive root, or `None`.
+fn find_policy_key<'h, R: CellReader>(root: &Key<'h, R>) -> Option<Key<'h, R>> {
+    root.subkey_path("Policy").ok().flatten()
 }
 
 #[cfg(test)]
