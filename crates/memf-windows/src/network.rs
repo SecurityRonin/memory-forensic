@@ -204,6 +204,11 @@ const TCPE_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
 const UDPA_TAG: &[u8; 4] = b"UdpA";
 /// Candidate `_UDP_ENDPOINT` start offsets relative to the pool block base.
 const UDPA_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
+
+/// `_TCP_LISTENER` pool tag (Volatility netscan `TcpL`).
+const TCPL_TAG: &[u8; 4] = b"TcpL";
+/// Candidate `_TCP_LISTENER` start offsets relative to the pool block base.
+const TCPL_DELTAS: &[u64] = &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x80];
 /// Physical scan chunk.
 const SCAN_CHUNK: usize = 1 << 20;
 
@@ -666,16 +671,19 @@ fn read_phys_u_via<P: PhysicalMemoryProvider>(
 /// across the supported builds; only `LocalAddr`/`Port` move. `_INETAF.AddressFamily`
 /// (0x18) and `_LOCAL_ADDRESS.pData` (0x10) are constant. Source: Volatility3
 /// netscan ISFs (`netscan-*-x64.json`).
-pub struct UdpEndpointLayout {
-    /// Offset of `InetAF` (pointer to `_INETAF`) in `_UDP_ENDPOINT`.
+/// x64 field offsets for the `_TCP_LISTENER`-shaped pool objects (`_UDP_ENDPOINT`
+/// and `_TCP_LISTENER` share this layout). `_INETAF.AddressFamily` (0x18) and
+/// `_LOCAL_ADDRESS.pData` (0x10) are constant. Source: Volatility3 netscan ISFs.
+pub struct ListenerLayout {
+    /// Offset of `InetAF` (pointer to `_INETAF`).
     pub inet_af: u64,
-    /// Offset of the owning-process pointer in `_UDP_ENDPOINT`.
+    /// Offset of the owning-process pointer.
     pub owner: u64,
-    /// Offset of `CreateTime` in `_UDP_ENDPOINT`.
+    /// Offset of `CreateTime`.
     pub create_time: u64,
-    /// Offset of `LocalAddr` (pointer to `_LOCAL_ADDRESS`) in `_UDP_ENDPOINT`.
+    /// Offset of `LocalAddr` (pointer to `_LOCAL_ADDRESS`).
     pub local_addr: u64,
-    /// Offset of the local port (big-endian u16) in `_UDP_ENDPOINT`.
+    /// Offset of the local port (big-endian u16).
     pub port: u64,
     /// Offset of the address family in `_INETAF`.
     pub inetaf_af: u64,
@@ -683,13 +691,12 @@ pub struct UdpEndpointLayout {
     pub la_pdata: u64,
 }
 
-impl UdpEndpointLayout {
-    /// Only `LocalAddr`/`Port` vary between supported builds.
-    const fn at(local_addr: u64, port: u64) -> Self {
+impl ListenerLayout {
+    const fn new(inet_af: u64, owner: u64, create_time: u64, local_addr: u64, port: u64) -> Self {
         Self {
-            inet_af: 0x20,
-            owner: 0x28,
-            create_time: 0x58,
+            inet_af,
+            owner,
+            create_time,
             local_addr,
             port,
             inetaf_af: 0x18,
@@ -698,44 +705,50 @@ impl UdpEndpointLayout {
     }
 }
 
-/// Select the `_UDP_ENDPOINT` layout for an NT `build` number (x64), from the
-/// Volatility3 netscan ISFs. Early Win10 x64 builds (10240/10586/14393) have no
-/// dedicated x64 netscan ISF and are intentionally omitted (None) rather than
-/// guessed — extend per build validated against a real image.
-fn udp_endpoint_layout_x64(build: u32) -> Option<UdpEndpointLayout> {
+/// Select the `_UDP_ENDPOINT` layout for an NT `build` (x64) from the vol3 netscan
+/// ISFs. Early Win10 x64 builds (10240/10586/14393) have no dedicated ISF and are
+/// omitted (None) rather than guessed.
+fn udp_layout_x64(build: u32) -> Option<ListenerLayout> {
     Some(match build {
-        7600 | 7601 | 8400 | 9200 => UdpEndpointLayout::at(0x60, 0x80), // Win7 / Win8
-        9600 => UdpEndpointLayout::at(0x60, 0x78),                      // Win8.1 / Server 2012 R2
-        15063 | 16299 | 17134 | 17763 | 18362 => UdpEndpointLayout::at(0x80, 0x78),
-        18363 => UdpEndpointLayout::at(0x88, 0x80),
-        19041 | 20348 => UdpEndpointLayout::at(0xA8, 0xA0),
+        7600 | 7601 | 8400 | 9200 => ListenerLayout::new(0x20, 0x28, 0x58, 0x60, 0x80), // Win7/8
+        9600 => ListenerLayout::new(0x20, 0x28, 0x58, 0x60, 0x78), // Win8.1 / Server 2012 R2
+        15063 | 16299 | 17134 | 17763 | 18362 => ListenerLayout::new(0x20, 0x28, 0x58, 0x80, 0x78),
+        18363 => ListenerLayout::new(0x20, 0x28, 0x58, 0x88, 0x80),
+        19041 | 20348 => ListenerLayout::new(0x20, 0x28, 0x58, 0xA8, 0xA0),
         _ => return None,
     })
 }
 
-/// Enumerate UDP endpoints by **physically pool-tag scanning** for `_UDP_ENDPOINT`
-/// objects (`UdpA`), mirroring Volatility3 netscan. Each object's `InetAF`/`Owner`/
-/// `LocalAddr` pointers are followed through the address space; the `_UDP_ENDPOINT`
-/// overlay is selected from the dump's `NtBuildNumber`. IPv4 only for now (the
-/// IPv6 increment lifts the `AF_INET` gate). Unrecognized build ⇒ empty.
-///
-/// Address chain (vol3 `_TCP_LISTENER.get_in_addr`): `LocalAddr` → `_LOCAL_ADDRESS`
-/// → `pData` → `_IN_ADDR` (a *single* `pData` deref, unlike the `_ADDRINFO` chain
-/// `scan_tcp_endpoints` uses — confirm against the citadel oracle when wiring the
-/// issen tier-2 test).
-///
-/// # Errors
-/// Propagates address-space read failures encountered while following pointers.
-pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
+/// Select the `_TCP_LISTENER` layout for an NT `build` (x64) from the vol3 netscan
+/// ISFs. Same omission policy as [`udp_layout_x64`].
+fn tcp_listener_layout_x64(build: u32) -> Option<ListenerLayout> {
+    Some(match build {
+        7600 | 7601 | 8400 => ListenerLayout::new(0x60, 0x28, 0x20, 0x58, 0x6a), // Win7
+        9200 | 9600 => ListenerLayout::new(0x60, 0x28, 0x40, 0x58, 0x6a),        // Win8 / Win8.1
+        15063 | 16299 | 17134 | 17763 | 18362 | 18363 | 19041 | 20348 => {
+            ListenerLayout::new(0x28, 0x30, 0x40, 0x60, 0x72)
+        }
+        _ => return None,
+    })
+}
+
+/// Shared pool-tag scan for the `_TCP_LISTENER`-shaped objects (`_UDP_ENDPOINT` /
+/// `_TCP_LISTENER`): `InetAF` → address family, `Owner` → `_EPROCESS`, `LocalAddr`
+/// → `_LOCAL_ADDRESS.pData` → `_IN_ADDR` (single deref, vol3 `get_in_addr`),
+/// big-endian `Port`. Emits vol3 `dual_stack_sockets` rows. `state == Listen`
+/// marks a listener (remote = the family `INADDR_ANY`:0); otherwise UDP (remote
+/// `*`:0). Dedup per object offset (vol3 one-row-per-tag) keeps live + freed chunks.
+fn scan_listener_objects<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
-) -> Result<Vec<WinConnectionInfo>> {
-    let Some(build) = nt_build_number(reader) else {
-        return Ok(Vec::new());
-    };
-    let Some(u) = udp_endpoint_layout_x64(build) else {
-        return Ok(Vec::new());
-    };
-    let (pid_off, name_off) = eprocess_offsets(reader, build);
+    tag: [u8; 4],
+    deltas: &[u64],
+    l: &ListenerLayout,
+    eproc: (u64, u64),
+    proto_prefix: &str,
+    state: WinTcpState,
+) -> Vec<WinConnectionInfo> {
+    let (pid_off, name_off) = eproc;
+    let is_listener = matches!(state, WinTcpState::Listen);
     let prov = reader.vas().physical();
 
     let ranges: Vec<(u64, u64)> = {
@@ -774,30 +787,30 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
             }
             let mut i = 0usize;
             while i + 4 <= n {
-                if &buf[i..i + 4] != UDPA_TAG {
+                if buf[i..i + 4] != tag {
                     i += 1;
                     continue;
                 }
                 let pool_base = (addr + i as u64).saturating_sub(4);
                 i += 1;
-                for &delta in UDPA_DELTAS {
+                for &delta in deltas {
                     let ep = pool_base + delta;
                     let (Some(inetaf), Some(owner)) =
-                        (read_phys_u(ep + u.inet_af, 8), read_phys_u(ep + u.owner, 8))
+                        (read_phys_u(ep + l.inet_af, 8), read_phys_u(ep + l.owner, 8))
                     else {
                         continue;
                     };
                     if !is_kernel_va(inetaf) {
                         continue;
                     }
-                    let Some(af) = read_phys_u_via(reader, inetaf + u.inetaf_af, 2) else {
+                    let Some(af) = read_phys_u_via(reader, inetaf + l.inetaf_af, 2) else {
                         continue;
                     };
                     let af = af as u16;
                     if af != AF_INET && af != AF_INET6 {
                         continue;
                     }
-                    // Owner is OPTIONAL (ownerless system/transient endpoints carry 0).
+                    // Owner is OPTIONAL (ownerless system/transient objects carry 0).
                     let (pid, process_name) = if owner == 0 {
                         (0, String::new())
                     } else if is_kernel_va(owner) {
@@ -821,24 +834,24 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
                     };
 
                     // Bound local _IN_ADDR (None = unbound → listens on all addrs).
-                    // Single pData deref (vol3 _TCP_LISTENER.get_in_addr).
-                    let bound = read_phys_u(ep + u.local_addr, 8)
+                    let bound = read_phys_u(ep + l.local_addr, 8)
                         .filter(|&p| is_kernel_va(p))
-                        .and_then(|la| read_virt_u64(la + u.la_pdata))
+                        .and_then(|la| read_virt_u64(la + l.la_pdata))
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|va| read_inaddr(reader, va, af));
                     let local_port =
-                        read_phys_u(ep + u.port, 2).map_or(0, |v| u16::from_be(v as u16));
-                    let create_time = read_phys_u(ep + u.create_time, 8).unwrap_or(0);
+                        read_phys_u(ep + l.port, 2).map_or(0, |v| u16::from_be(v as u16));
+                    let create_time = read_phys_u(ep + l.create_time, 8).unwrap_or(0);
 
-                    // vol3 dual_stack_sockets: an unbound AF_INET6 endpoint yields
-                    // both a v4 (0.0.0.0) and a v6 (::) row.
                     for (suffix, local_addr) in dual_stack_rows(af, bound) {
-                        let protocol = format!("UDP{suffix}");
-                        // Dedup per object offset (+ protocol for the dual-stack
-                        // pair), matching vol3's one-row-per-tag — this removes only
-                        // scan-overlap re-finds, keeping distinct (live + freed)
-                        // pool chunks rather than collapsing freed copies.
+                        let protocol = format!("{proto_prefix}{suffix}");
+                        // Listeners render the family INADDR_ANY as the remote;
+                        // UDP endpoints have no remote (`*`).
+                        let remote_addr = if is_listener {
+                            if suffix == "v6" { "::" } else { "0.0.0.0" }.to_string()
+                        } else {
+                            "*".to_string()
+                        };
                         if !seen.insert((ep, protocol.clone())) {
                             continue;
                         }
@@ -846,9 +859,9 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
                             protocol,
                             local_addr,
                             local_port,
-                            remote_addr: "*".to_string(),
+                            remote_addr,
                             remote_port: 0,
-                            state: WinTcpState::None,
+                            state,
                             pid,
                             process_name: process_name.clone(),
                             create_time,
@@ -861,19 +874,60 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
             addr = addr.saturating_add(SCAN_CHUNK as u64 - 4);
         }
     }
-    Ok(out)
+    out
 }
 
-/// Enumerate TCP listeners by pool-tag scanning for `_TCP_LISTENER` objects
-/// (`TcpL`), mirroring vol3 netscan. Same parse shape as `_UDP_ENDPOINT`; rows
-/// carry state `LISTENING`, remote = the family `INADDR_ANY`, remote port 0.
+/// Enumerate UDP endpoints by pool-tag scanning for `_UDP_ENDPOINT` (`UdpA`),
+/// mirroring Volatility3 netscan. Unrecognized build ⇒ empty.
+///
+/// # Errors
+/// Propagates address-space read failures encountered while following pointers.
+pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+) -> Result<Vec<WinConnectionInfo>> {
+    let Some(build) = nt_build_number(reader) else {
+        return Ok(Vec::new());
+    };
+    let Some(layout) = udp_layout_x64(build) else {
+        return Ok(Vec::new());
+    };
+    let (pid_off, name_off) = eprocess_offsets(reader, build);
+    Ok(scan_listener_objects(
+        reader,
+        *UDPA_TAG,
+        UDPA_DELTAS,
+        &layout,
+        (pid_off, name_off),
+        "UDP",
+        WinTcpState::None,
+    ))
+}
+
+/// Enumerate TCP listeners by pool-tag scanning for `_TCP_LISTENER` (`TcpL`),
+/// mirroring Volatility3 netscan. Rows carry state `LISTENING`, remote = the
+/// family `INADDR_ANY`, remote port 0. Unrecognized build ⇒ empty.
 ///
 /// # Errors
 /// Propagates address-space read failures encountered while following pointers.
 pub fn scan_tcp_listeners<P: PhysicalMemoryProvider>(
-    _reader: &ObjectReader<P>,
+    reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
-    Ok(Vec::new())
+    let Some(build) = nt_build_number(reader) else {
+        return Ok(Vec::new());
+    };
+    let Some(layout) = tcp_listener_layout_x64(build) else {
+        return Ok(Vec::new());
+    };
+    let (pid_off, name_off) = eprocess_offsets(reader, build);
+    Ok(scan_listener_objects(
+        reader,
+        *TCPL_TAG,
+        TCPL_DELTAS,
+        &layout,
+        (pid_off, name_off),
+        "TCP",
+        WinTcpState::Listen,
+    ))
 }
 
 #[cfg(test)]
