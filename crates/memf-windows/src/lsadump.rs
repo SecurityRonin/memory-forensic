@@ -23,7 +23,6 @@ use winreg_core::cell_reader::CellReader;
 use winreg_core::key::Key;
 
 use crate::hive_reader::MemfHiveReader;
-use crate::registry;
 
 /// Maximum number of LSA secrets to enumerate (safety limit).
 const MAX_SECRETS: usize = 4096;
@@ -142,24 +141,36 @@ pub(crate) fn derive_lsa_key<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     system_hive_addr: u64,
     security_hive_addr: u64,
-    policy_key: u64,
 ) -> Vec<u8> {
     if system_hive_addr == 0 {
         return Vec::new();
     }
-    let sys_root = registry::resolve_root_cell(reader, system_hive_addr);
-    if sys_root == 0 {
+    // SYSTEM root VA for extract_boot_key (hashdump owns its own VA-based
+    // navigation, kept intact), resolved through winreg-core then bridged to a
+    // VA via cell_offset_to_va.
+    let sys_hive = MemfHiveReader::new(reader, system_hive_addr);
+    let Ok(sys_root) = sys_hive.root_key() else {
         return Vec::new();
-    }
-    let boot_key = crate::hashdump::extract_boot_key(reader, system_hive_addr, sys_root);
+    };
+    let Some(sys_root_va) = sys_hive.cell_offset_to_va(sys_root.offset()) else {
+        return Vec::new();
+    };
+    let boot_key = crate::hashdump::extract_boot_key(reader, system_hive_addr, sys_root_va);
     if boot_key.len() != 16 {
         return Vec::new();
     }
-    let polek = registry::find_subkey_by_name(reader, security_hive_addr, policy_key, "PolEKList");
-    if polek == 0 {
+    // PolEKList's default value lives at SECURITY\Policy\PolEKList.
+    let sec_hive = MemfHiveReader::new(reader, security_hive_addr);
+    let Ok(sec_root) = sec_hive.root_key() else {
         return Vec::new();
-    }
-    let enc = registry::read_value_data(reader, security_hive_addr, polek, "");
+    };
+    let Some(polek) = sec_root.subkey_path(r"Policy\PolEKList").ok().flatten() else {
+        return Vec::new();
+    };
+    let enc = match polek.value("") {
+        Ok(Some(v)) => v.raw_data().unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let dec = lsa_decrypt_aes(&enc, &boot_key);
     dec.get(68..100).map(<[u8]>::to_vec).unwrap_or_default()
 }
@@ -195,13 +206,8 @@ pub fn walk_lsa_secrets<P: PhysicalMemoryProvider>(
     };
 
     // Vista+ LSA key (empty ⇒ decryption refused; we then surface raw bytes).
-    // derive_lsa_key (kept byte-for-byte, used by lsadump + cachedump) consumes
-    // the policy cell *VA*, so translate the navigated Key's offset through the
-    // HMAP cell map; if it does not resolve, no key can be derived.
-    let lsa_key = match hive.cell_offset_to_va(policy.offset()) {
-        Some(policy_va) => derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy_va),
-        None => Vec::new(),
-    };
+    // derive_lsa_key navigates Policy\PolEKList from the SECURITY root itself.
+    let lsa_key = derive_lsa_key(reader, system_hive_addr, security_hive_addr);
 
     let Ok(secret_keys) = secrets.subkeys() else {
         return Ok(Vec::new());

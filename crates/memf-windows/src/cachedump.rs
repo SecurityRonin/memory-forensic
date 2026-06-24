@@ -116,14 +116,9 @@ pub fn walk_cached_credentials<P: PhysicalMemoryProvider>(
     };
 
     // Keys: boot key (SYSTEM) → LSA key → NL$KM. Any failure ⇒ refuse, never
-    // fabricate plaintext from ciphertext. derive_lsa_key (lsadump owns its own
-    // navigation, kept intact) consumes the policy cell *VA*, so translate the
-    // navigated Key's offset through the HMAP cell map.
-    let Some(policy_va) = hive.cell_offset_to_va(policy.offset()) else {
-        return Ok(Vec::new());
-    };
-    let lsa_key =
-        crate::lsadump::derive_lsa_key(reader, system_hive_addr, security_hive_addr, policy_va);
+    // fabricate plaintext from ciphertext. derive_lsa_key navigates
+    // SECURITY\Policy\PolEKList itself (winreg-core), so no policy VA is passed.
+    let lsa_key = crate::lsadump::derive_lsa_key(reader, system_hive_addr, security_hive_addr);
     if lsa_key.is_empty() {
         return Ok(Vec::new());
     }
