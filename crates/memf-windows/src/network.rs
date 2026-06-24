@@ -1897,4 +1897,69 @@ mod tests {
             "missing UDPv6 :: row: {conns:?}"
         );
     }
+
+    #[test]
+    fn scan_udp_endpoints_keeps_distinct_pool_chunks_with_same_identity() {
+        // Two separate UdpA pool allocations (different pool_base) with identical
+        // socket identity — the freed-copy case Volatility keeps (FREE page_type).
+        // Dedup must be per-object-offset, not per (proto,addr,port,pid), so both
+        // are reported. Build-9600 _UDP_ENDPOINT offsets.
+        const U_INETAF: usize = 0x20;
+        const U_OWNER: usize = 0x28;
+        const U_PORT: usize = 0x78;
+        const INETAF_AF: usize = 0x18;
+
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let ep_va = 0xFFFF_C000_0001_6000u64;
+        let (pa_inetaf, pa_ep) = (0x70_000u64, 0x76_000);
+
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
+        let mut ep_page = vec![0u8; 0x1000];
+        ep_page[EPROC_PID..EPROC_PID + 8].copy_from_slice(&1368u64.to_le_bytes());
+        ep_page[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 7].copy_from_slice(b"dns.exe");
+
+        // Two identical objects at two pool bases (0x50000, 0x60000).
+        let mut obj = vec![0u8; 0x200];
+        obj[U_INETAF..U_INETAF + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[U_OWNER..U_OWNER + 8].copy_from_slice(&ep_va.to_le_bytes());
+        obj[U_PORT..U_PORT + 2].copy_from_slice(&53u16.to_be_bytes());
+
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_2580u32.to_le_bytes());
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
+            .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
+            .write_phys(pa_inetaf, &inetaf)
+            .write_phys(pa_ep, &ep_page)
+            .write_phys(0x50_004u64, b"UdpA")
+            .write_phys(0x50_010u64, &obj)
+            .write_phys(0x60_004u64, b"UdpA")
+            .write_phys(0x60_010u64, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_udp_endpoints(&reader).expect("scan ok");
+        assert_eq!(
+            conns.len(),
+            2,
+            "two distinct pool chunks (freed copy) must both appear, got {conns:?}"
+        );
+    }
 }
