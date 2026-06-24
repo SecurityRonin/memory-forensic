@@ -567,6 +567,67 @@ mod tests {
         assert!(result.is_empty(), "both zero hives should return empty");
     }
 
+    /// RED (registry-dedup migration): a SOFTWARE hive where `CurrentVersion`'s
+    /// subkey list is an **`ri` (index-root)** pointing at two `lf` sub-lists,
+    /// with `Run` living in the second sub-list. The OLD custom `find_key_cell`
+    /// only decodes `lf`/`lh`/`li` and returns `None` on an `ri` signature, so it
+    /// cannot reach `Run` → no entry (the `ri`-blind bug on large keys).
+    /// winreg-core's `CellReader` recurses `ri` sub-indices, so after the
+    /// migration the value is recovered. Asserts the entry IS found — fails
+    /// against the `ri`-blind walker. Uses the shared `CellHive` harness (whose
+    /// nk/lf/ri/vk builders write real on-disk signatures winreg-core validates).
+    #[test]
+    fn walk_run_keys_ri_index_root_large_key() {
+        use crate::test_hive::CellHive;
+        let cmd = "powershell.exe -enc QQBBAEEAQQA=";
+        let utf16 = |s: &str| -> Vec<u8> {
+            s.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .chain([0u8, 0u8])
+                .collect()
+        };
+
+        let mut h = CellHive::new(0x0050_0000);
+        // root → Microsoft → Windows → CurrentVersion
+        h.nk(0x020, b"Root", 1, 0x0A0, 0);
+        h.lf(0x0A0, &[0x0E0]);
+        h.nk(0x0E0, b"Microsoft", 1, 0x140, 0);
+        h.lf(0x140, &[0x180]);
+        h.nk(0x180, b"Windows", 1, 0x1E0, 0);
+        h.lf(0x1E0, &[0x220]);
+        // CurrentVersion's subkey list is an `ri` index-root → two lf sublists.
+        // First sublist holds a decoy ("Foo"); second holds "Run". A walker that
+        // cannot parse `ri` never reaches either.
+        h.nk(0x220, b"CurrentVersion", 2, 0x2A0, 0);
+        h.ri(0x2A0, &[0x2E0, 0x320]);
+        h.lf(0x2E0, &[0x380]); // sublist 1 → Foo
+        h.lf(0x320, &[0x460]); // sublist 2 → Run
+        h.nk(0x380, b"Foo", 0, 0, 0);
+        // Run key: 0 subkeys, 1 value.
+        h.nk(0x460, b"Run", 0, 0, 0);
+        h.values(0x460, 1, 0x500);
+        h.value_list(0x500, &[0x540]);
+        let data = utf16(cmd);
+        // REG_SZ (type 1), non-inline → data cell at 0x5C0.
+        h.vk(0x540, b"Updater", 1, data.len() as u32, 0x5C0);
+        h.data(0x5C0, &data);
+
+        let reader = h.reader();
+        let entries = walk_run_keys(&reader, h.hhive_va, 0).unwrap();
+
+        let entry = entries
+            .iter()
+            .find(|e| e.value_name == "Updater")
+            .expect("Run value reached through an ri index-root must be recovered");
+        assert_eq!(entry.hive, "SOFTWARE");
+        assert_eq!(entry.key_path, "Microsoft\\Windows\\CurrentVersion\\Run");
+        assert_eq!(entry.value_data, cmd);
+        assert!(
+            entry.is_suspicious,
+            "powershell -enc autorun must classify suspicious"
+        );
+    }
+
     /// SOFTWARE hive address zero, NTUSER non-zero → only NTUSER entries.
     #[test]
     fn walk_run_keys_software_zero_skipped() {
