@@ -16,6 +16,9 @@ use memf_session::{build_analysis_context, OsProfile};
 
 /// A synthetic Windows dump: a low stub (signature, LmTarget at +0x70, CR3 at
 /// +0xA0) at physical 0x3000, so a header-less raw Windows dump still bootstraps.
+// Test scaffolding: unwrap is the intended fail-loud here, but this helper is not
+// a `#[test]` fn so `allow-unwrap-in-tests` does not cover it.
+#[allow(clippy::unwrap_used)]
 fn windows_low_stub_dump() -> LimeProvider {
     let mut page = vec![0u8; 0xB0];
     page[0..8].copy_from_slice(&0x0000_0001_0006_42E9u64.to_le_bytes());

@@ -1872,6 +1872,7 @@ dependencies = [
  "memf-core",
  "memf-format",
  "memf-linux",
+ "memf-session",
  "memf-strings",
  "memf-symbols",
  "memf-windows",
@@ -1947,6 +1948,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "memf-session"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "memf-format",
+ "memf-linux",
+ "memf-symbols",
 ]
 
 [[package]]
