@@ -297,6 +297,9 @@ fn tcp_endpoint_layout_x64(build: u32) -> Option<TcpEndpointLayout> {
 
 /// `AF_INET`.
 const AF_INET: u16 = 2;
+/// `_INETAF.AddressFamily` value for IPv6 — Microsoft's `AF_INET6` (0x17), not
+/// libc's 10.
+const AF_INET6: u16 = 0x17;
 
 /// Read the OS build number from the `NtBuildNumber` kernel global (its low 16
 /// bits hold the build; the high bits are checked/free-build flags). Validated
@@ -487,12 +490,6 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
             .ok()
             .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])))
     };
-    let read_ipv4 = |va: u64| -> Option<String> {
-        reader
-            .read_bytes(va, 4)
-            .ok()
-            .map(|b| format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]))
-    };
 
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -537,9 +534,11 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                     let Some(af) = read_phys_u_via(reader, inetaf + t.inetaf_af, 2) else {
                         continue;
                     };
-                    if af as u16 != AF_INET {
+                    let af = af as u16;
+                    if af != AF_INET && af != AF_INET6 {
                         continue;
                     }
+                    let v6 = af == AF_INET6;
                     // Owner is OPTIONAL: ownerless endpoints (system / transient,
                     // e.g. an established socket with no live owning process) carry
                     // Owner == 0 and are valid connections. A non-zero Owner that
@@ -567,18 +566,19 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                         continue;
                     };
 
-                    // Remote: _ADDRINFO.Remote (ptr) -> _IN_ADDR(addr4).
+                    let any_addr = if v6 { "::" } else { "0.0.0.0" };
+                    // Remote: _ADDRINFO.Remote (ptr) -> _IN_ADDR (addr4/addr6 by family).
                     let remote_addr = read_virt_u64(ai + t.ai_remote)
                         .filter(|&p| is_kernel_va(p))
-                        .and_then(read_ipv4)
-                        .unwrap_or_else(|| "0.0.0.0".to_string());
+                        .and_then(|va| read_inaddr(reader, va, af))
+                        .unwrap_or_else(|| any_addr.to_string());
                     // Local: _ADDRINFO.Local -> _LOCAL_ADDRESS.pData -> ptr -> _IN_ADDR.
                     let local_addr = read_virt_u64(ai + t.ai_local)
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|la| read_virt_u64(la + t.la_pdata))
                         .and_then(&read_virt_u64)
-                        .and_then(read_ipv4)
-                        .unwrap_or_else(|| "0.0.0.0".to_string());
+                        .and_then(|va| read_inaddr(reader, va, af))
+                        .unwrap_or_else(|| any_addr.to_string());
 
                     let local_port =
                         read_phys_u(ep + t.local_port, 2).map_or(0, |v| u16::from_be(v as u16));
@@ -602,7 +602,7 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
                         continue;
                     }
                     out.push(WinConnectionInfo {
-                        protocol: "TCPv4".to_string(),
+                        protocol: if v6 { "TCPv6" } else { "TCPv4" }.to_string(),
                         local_addr,
                         local_port,
                         remote_addr,
@@ -623,6 +623,39 @@ pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
 }
 
 /// Read `n` bytes (<= 8) at virtual address `va` as a little-endian integer.
+/// Read an `_IN_ADDR` at `va` as a canonical address string, by family:
+/// 4 bytes → dotted IPv4, 16 bytes → compressed IPv6 (matching vol3 `inet_ntop`).
+fn read_inaddr<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    va: u64,
+    af: u16,
+) -> Option<String> {
+    if af == AF_INET6 {
+        let b = reader.read_bytes(va, 16).ok()?;
+        let arr: [u8; 16] = b[..16].try_into().ok()?;
+        Some(std::net::Ipv6Addr::from(arr).to_string())
+    } else {
+        let b = reader.read_bytes(va, 4).ok()?;
+        Some(format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]))
+    }
+}
+
+/// Volatility3 `dual_stack_sockets`: map an endpoint's family + bound local
+/// address into the rows to emit. A bound address yields one row (v4 or v6 by
+/// family); an unbound endpoint (`None`) listens on all addresses → a v4
+/// `0.0.0.0` row, plus a v6 `::` row when the family is AF_INET6.
+fn dual_stack_rows(af: u16, bound: Option<String>) -> Vec<(&'static str, String)> {
+    if let Some(addr) = bound {
+        vec![(if af == AF_INET6 { "v6" } else { "v4" }, addr)]
+    } else {
+        let mut rows = vec![("v4", "0.0.0.0".to_string())];
+        if af == AF_INET6 {
+            rows.push(("v6", "::".to_string()));
+        }
+        rows
+    }
+}
+
 fn read_phys_u_via<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
     va: u64,
@@ -732,12 +765,6 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
             .ok()
             .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])))
     };
-    let read_ipv4 = |va: u64| -> Option<String> {
-        reader
-            .read_bytes(va, 4)
-            .ok()
-            .map(|b| format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]))
-    };
 
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -768,11 +795,11 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
                     if !is_kernel_va(inetaf) {
                         continue;
                     }
-                    // Address family must be AF_INET (this path emits IPv4).
                     let Some(af) = read_phys_u_via(reader, inetaf + u.inetaf_af, 2) else {
                         continue;
                     };
-                    if af as u16 != AF_INET {
+                    let af = af as u16;
+                    if af != AF_INET && af != AF_INET6 {
                         continue;
                     }
                     // Owner is OPTIONAL (ownerless system/transient endpoints carry 0).
@@ -798,33 +825,38 @@ pub fn scan_udp_endpoints<P: PhysicalMemoryProvider>(
                         continue;
                     };
 
-                    // Local: LocalAddr -> _LOCAL_ADDRESS.pData -> _IN_ADDR (single deref).
-                    let local_addr = read_phys_u(ep + u.local_addr, 8)
+                    // Bound local _IN_ADDR (None = unbound → listens on all addrs).
+                    // Single pData deref (vol3 _TCP_LISTENER.get_in_addr).
+                    let bound = read_phys_u(ep + u.local_addr, 8)
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|la| read_virt_u64(la + u.la_pdata))
                         .filter(|&p| is_kernel_va(p))
-                        .and_then(read_ipv4)
-                        .unwrap_or_else(|| "0.0.0.0".to_string());
+                        .and_then(|va| read_inaddr(reader, va, af));
                     let local_port =
                         read_phys_u(ep + u.port, 2).map_or(0, |v| u16::from_be(v as u16));
                     let create_time = read_phys_u(ep + u.create_time, 8).unwrap_or(0);
 
-                    let key = (local_addr.clone(), local_port, pid);
-                    if !seen.insert(key) {
-                        continue;
+                    // vol3 dual_stack_sockets: an unbound AF_INET6 endpoint yields
+                    // both a v4 (0.0.0.0) and a v6 (::) row.
+                    for (suffix, local_addr) in dual_stack_rows(af, bound) {
+                        let protocol = format!("UDP{suffix}");
+                        let key = (protocol.clone(), local_addr.clone(), local_port, pid);
+                        if !seen.insert(key) {
+                            continue;
+                        }
+                        out.push(WinConnectionInfo {
+                            protocol,
+                            local_addr,
+                            local_port,
+                            remote_addr: "*".to_string(),
+                            remote_port: 0,
+                            state: WinTcpState::None,
+                            pid,
+                            process_name: process_name.clone(),
+                            create_time,
+                            offset: ep,
+                        });
                     }
-                    out.push(WinConnectionInfo {
-                        protocol: "UDPv4".to_string(),
-                        local_addr,
-                        local_port,
-                        remote_addr: "*".to_string(),
-                        remote_port: 0,
-                        state: WinTcpState::None,
-                        pid,
-                        process_name,
-                        create_time,
-                        offset: ep,
-                    });
                     break;
                 }
             }
@@ -1797,7 +1829,6 @@ mod tests {
         // (::) row. Build-9600 _UDP_ENDPOINT offsets.
         const U_INETAF: usize = 0x20;
         const U_OWNER: usize = 0x28;
-        const U_LOCALADDR: usize = 0x60;
         const U_PORT: usize = 0x78;
         const INETAF_AF: usize = 0x18;
 
