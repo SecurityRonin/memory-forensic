@@ -22,6 +22,7 @@ forensicnomicon = { version = "0.5", features = ["std", "serde"] }
 jsonguard = { version = "0.2.3", features = ["std", "serde"] }
 # winevt-core is now published — use the registry (drops the cross-repo path).
 winevt-core = "0.2"
+shellitem = "0.1"
 # Internal (version + path: path drives local dev, version is used on publish).
 forensic-hashdb = { version = "0.1.0", path = "crates/forensic-hashdb" }
 memf-format  = { version = "0.2.1", path = "crates/memf-format" }

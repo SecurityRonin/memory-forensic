@@ -191,97 +191,49 @@ fn walk_bagmru_node<P: PhysicalMemoryProvider>(
     }
 }
 
-/// Parse a BagMRU value's shell-item bytes → (folder name, access, creation).
-/// The value data is a SHITEMID: `cb`(2) size then the item body; the folder name
-/// and the BEEF extension-block timestamps live within.
+/// Parse a BagMRU value's shell-item bytes → (folder name, access FILETIME,
+/// creation FILETIME). Each value holds a single SHITEMID; delegate decoding to
+/// the `shellitem` crate (volume / directory / GUID classes + the `0xbeef0004`
+/// long-name + timestamp extension), which handles the real on-disk layout the
+/// previous hand-rolled scanner mis-read.
 fn parse_shell_item(data: &[u8]) -> (String, u64, u64) {
-    if data.len() < 4 {
+    let Some(item) = shellitem::parse_idlist(data).into_iter().next() else {
         return (String::new(), 0, 0);
-    }
-    let cb = u16::from_le_bytes([data[0], data[1]]) as usize;
-    if !(4..=0x800).contains(&cb) {
-        return (String::new(), 0, 0);
-    }
-    let blob = &data[..cb.min(data.len())];
-    let name = extract_folder_name(&blob[2..]);
-    let (access_time, creation_time) = find_extension_timestamps(blob);
-    (name, access_time, creation_time)
+    };
+    let name = item.display_name().unwrap_or_default().to_owned();
+    (
+        name,
+        unix_to_filetime(item.accessed),
+        unix_to_filetime(item.created),
+    )
 }
 
-fn extract_folder_name(data: &[u8]) -> String {
-    if data.is_empty() {
-        return String::new();
-    }
-
-    let start = 1.min(data.len());
-    let mut name_bytes = Vec::new();
-
-    for &b in &data[start..] {
-        if b == 0 {
-            break;
-        }
-        if b.is_ascii_graphic() || b == b' ' {
-            name_bytes.push(b);
-        } else {
-            break;
-        }
-    }
-
-    if name_bytes.len() >= 2 {
-        return String::from_utf8_lossy(&name_bytes).into_owned();
-    }
-
-    if data.len() >= 4 {
-        let mut utf16_units = Vec::new();
-        let scan_start = start;
-        let mut i = scan_start;
-        while i + 1 < data.len() {
-            let unit = u16::from_le_bytes([data[i], data[i + 1]]);
-            if unit == 0 {
-                break;
-            }
-            utf16_units.push(unit);
-            i += 2;
-        }
-        if !utf16_units.is_empty() {
-            let decoded = String::from_utf16_lossy(&utf16_units);
-            if decoded.len() >= 2 {
-                return decoded;
-            }
-        }
-    }
-
-    String::new()
-}
-
-fn find_extension_timestamps(blob: &[u8]) -> (u64, u64) {
-    if blob.len() < 24 {
-        return (0, 0);
-    }
-
-    let sig: [u8; 4] = [0x04, 0x00, 0xEF, 0xBE];
-    for i in 0..blob.len().saturating_sub(24) {
-        if blob[i..i + 4] == sig {
-            let creation = if i + 12 <= blob.len() {
-                u64::from_le_bytes(blob[i + 4..i + 12].try_into().unwrap_or([0; 8]))
-            } else {
-                0
-            };
-            let access = if i + 20 <= blob.len() {
-                u64::from_le_bytes(blob[i + 12..i + 20].try_into().unwrap_or([0; 8]))
-            } else {
-                0
-            };
-            return (access, creation);
-        }
-    }
-
-    (0, 0)
+/// Convert a Unix-epoch-seconds timestamp (as `shellitem` yields) to a Windows
+/// FILETIME (100 ns ticks since 1601), matching `ShellbagEntry`'s FILETIME fields.
+/// `None` (no extension block / absent timestamp) and out-of-range values → 0.
+fn unix_to_filetime(secs: Option<i64>) -> u64 {
+    secs.and_then(|s| u64::try_from(s + 11_644_473_600).ok())
+        .map_or(0, |t| t.saturating_mul(10_000_000))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a real 0x31 directory shell item — the on-disk SHITEMID layout
+    /// `shellitem` decodes: cb, class 0x31, unknown, size, modified, attrs
+    /// (DIRECTORY), then the ASCII NUL-terminated name (no extension block).
+    fn dir_item(name: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x31u8, 0x00];
+        body.extend_from_slice(&0u32.to_le_bytes()); // file size
+        body.extend_from_slice(&0u32.to_le_bytes()); // modified (FAT date/time)
+        body.extend_from_slice(&0x10u16.to_le_bytes()); // FILE_ATTRIBUTE_DIRECTORY
+        body.extend_from_slice(name);
+        let cb = (2 + body.len()) as u16;
+        let mut item = cb.to_le_bytes().to_vec();
+        item.extend_from_slice(&body);
+        item
+    }
     use memf_core::object_reader::ObjectReader;
     #[allow(unused_imports)]
     use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
@@ -364,63 +316,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_folder_name_empty() {
-        let result = extract_folder_name(&[]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn extract_folder_name_ascii() {
-        let mut data = vec![0x31u8];
-        data.extend_from_slice(b"Documents\0more");
-        let result = extract_folder_name(&data);
-        assert_eq!(result, "Documents");
-    }
-
-    #[test]
-    fn extract_folder_name_single_char_falls_back() {
-        let data = [0x31u8, b'X'];
-        let result = extract_folder_name(&data);
-        let _ = result;
-    }
-
-    #[test]
-    fn extract_folder_name_utf16le() {
-        let data = [0x31u8, 0x41, 0x00, 0x42, 0x00, 0x00, 0x00];
-        let result = extract_folder_name(&data);
-        assert_eq!(result, "AB");
-    }
-
-    #[test]
-    fn find_extension_timestamps_too_short() {
-        let (access, creation) = find_extension_timestamps(&[0u8; 10]);
-        assert_eq!(access, 0);
-        assert_eq!(creation, 0);
-    }
-
-    #[test]
-    fn find_extension_timestamps_no_signature() {
-        let blob = [0xABu8; 64];
-        let (access, creation) = find_extension_timestamps(&blob);
-        assert_eq!(access, 0);
-        assert_eq!(creation, 0);
-    }
-
-    #[test]
-    fn find_extension_timestamps_with_signature() {
-        let mut blob = [0u8; 48];
-        blob[4] = 0x04;
-        blob[5] = 0x00;
-        blob[6] = 0xEF;
-        blob[7] = 0xBE;
-        blob[8..16].copy_from_slice(&0x0000_0001_0000_0002u64.to_le_bytes());
-        blob[16..24].copy_from_slice(&0x0000_0003_0000_0004u64.to_le_bytes());
-        let (access, creation) = find_extension_timestamps(&blob);
-        assert_eq!(access, 0x0000_0003_0000_0004);
-        assert_eq!(creation, 0x0000_0001_0000_0002);
-    }
-
-    #[test]
     fn shellbag_entry_serializes() {
         let entry = ShellbagEntry {
             path: "C:\\Users\\Public".to_string(),
@@ -485,62 +380,6 @@ mod tests {
     #[test]
     fn classify_shellbag_single_backslash_benign() {
         assert!(!classify_shellbag("\\local_path\\folder"));
-    }
-
-    #[test]
-    fn extract_folder_name_only_type_byte() {
-        let data = [0x31u8];
-        let result = extract_folder_name(&data);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn extract_folder_name_non_ascii_stops() {
-        let data = [0x31u8, 0x80, 0x41, 0x00, 0x42, 0x00];
-        let result = extract_folder_name(&data);
-        let _ = result;
-    }
-
-    #[test]
-    fn extract_folder_name_utf16_single_char_empty() {
-        let data = [0x31u8, 0x41, 0x00, 0x00, 0x00];
-        let result = extract_folder_name(&data);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn extract_folder_name_non_graphic_non_null() {
-        let data = [0x31u8, 0x01];
-        let result = extract_folder_name(&data);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn find_extension_timestamps_sig_at_start() {
-        let mut blob = [0u8; 48];
-        blob[0] = 0x04;
-        blob[1] = 0x00;
-        blob[2] = 0xEF;
-        blob[3] = 0xBE;
-        blob[4..12].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
-        blob[12..20].copy_from_slice(&0xFEDC_BA98_7654_3210u64.to_le_bytes());
-        let (access, creation) = find_extension_timestamps(&blob);
-        assert_eq!(access, 0xFEDC_BA98_7654_3210);
-        assert_eq!(creation, 0x1234_5678_9ABC_DEF0);
-    }
-
-    #[test]
-    fn find_extension_timestamps_truncated_after_sig() {
-        let mut blob = [0u8; 32];
-        blob[4] = 0x04;
-        blob[5] = 0x00;
-        blob[6] = 0xEF;
-        blob[7] = 0xBE;
-        blob[8..16].copy_from_slice(&0xAAAA_BBBB_CCCC_DDDDu64.to_le_bytes());
-        blob[16..24].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
-        let (access, creation) = find_extension_timestamps(&blob);
-        assert_eq!(creation, 0xAAAA_BBBB_CCCC_DDDD);
-        assert_eq!(access, 0x1111_2222_3333_4444);
     }
 
     #[test]
@@ -634,9 +473,8 @@ mod tests {
     #[test]
     fn walk_shellbags_hmap_recovers_bagmru_path() {
         use crate::test_hive::CellHive;
-        // Shell item value data: cb(2)=11, type(1)=0x31, "Desktop\0".
-        let mut item = vec![0x0Bu8, 0x00, 0x31];
-        item.extend_from_slice(b"Desktop\0");
+        // Real 0x31 directory shell item (the layout shellitem decodes).
+        let item = dir_item(b"Desktop\0");
 
         let mut h = CellHive::new(0x0050_0000);
         h.nk(0x020, b"Root", 1, 0x0A0, 0);
@@ -676,10 +514,8 @@ mod tests {
     #[test]
     fn walk_shellbags_hmap_recurses_nested_path() {
         use crate::test_hive::CellHive;
-        let mut desktop = vec![0x0Bu8, 0x00, 0x31];
-        desktop.extend_from_slice(b"Desktop\0");
-        let mut downloads = vec![0x0Du8, 0x00, 0x31];
-        downloads.extend_from_slice(b"Downloads\0");
+        let desktop = dir_item(b"Desktop\0");
+        let downloads = dir_item(b"Downloads\0");
 
         let mut h = CellHive::new(0x0050_0000);
         h.nk(0x020, b"Root", 1, 0x0A0, 0);
