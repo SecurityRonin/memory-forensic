@@ -23,6 +23,7 @@ use des::Des;
 use md5::{Digest, Md5};
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
+use rc4::{KeyInit as Rc4KeyInit, Rc4, StreamCipher};
 
 // Registry hive navigation is the shared, validated walker (correct stable-list
 // offsets + lf/lh/li/ri handling) so this module no longer carries its own copy.
@@ -611,27 +612,15 @@ fn rc4_crypt(key: &[u8], data: &[u8]) -> Vec<u8> {
         return data.to_vec();
     }
 
-    // KSA
-    let mut s: Vec<u8> = (0..=255).collect();
-    let mut j: u8 = 0;
-    for i in 0..=255usize {
-        j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
-        s.swap(i, j as usize);
-    }
-
-    // PRGA
-    let mut result = Vec::with_capacity(data.len());
-    let mut i: u8 = 0;
-    let mut j: u8 = 0;
-    for &byte in data {
-        i = i.wrapping_add(1);
-        j = j.wrapping_add(s[i as usize]);
-        s.swap(i as usize, j as usize);
-        let k = s[(s[i as usize].wrapping_add(s[j as usize])) as usize];
-        result.push(byte ^ k);
-    }
-
-    result
+    // RustCrypto `rc4` (audited) — RC4 keys are 1..=256 bytes; the SAM rev-2
+    // key is always a 16-byte MD5 digest, so `new_from_slice` never fails here.
+    let mut rc4 = match <Rc4 as Rc4KeyInit>::new_from_slice(key) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(), // cov:unreachable: key is non-empty and <=256 bytes
+    };
+    let mut buf = data.to_vec();
+    rc4.apply_keystream(&mut buf);
+    buf
 }
 
 // ---------------------------------------------------------------------------
