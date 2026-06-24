@@ -103,6 +103,32 @@ and additionally handles v31 (Win11) + MAM/Xpress-Huffman decompression memf lac
 (memory-specific), then `prefetch_core::parse_decompressed(&bytes)`. One workspace
 dep. *(Confidence: high.)*
 
+## Finding 3b — [CLEAN, audit correction] extract DPAPI blob/decrypt to `dpapi-core`
+
+**Correction to the first-pass audit, which wrongly called DPAPI "memory-only / not a
+standalone disk artifact."** DPAPI is one of the *largest* Windows **disk** artifact
+classes — Chrome/Edge saved passwords (`Login Data`) and the cookie key in
+`Local State`, Credential Manager (`%APPDATA%\Microsoft\Credentials\`), Vault, Wi-Fi
+keys, scheduled-task/RDP creds, and the master-key files themselves
+(`%APPDATA%\Microsoft\Protect\<SID>\<GUID>`). The `DPAPI_BLOB` wire format and the
+decrypt-given-key crypto are identical on disk and in memory.
+
+memf's `dpapi/` module is already cleanly split, and 3 of its 4 pieces are
+**byte-oriented** (no I/O, no VA reads) — so this is a *move*, not a refactor:
+- `dpapi/dpapi_blob.rs` `parse_dpapi_blob(&[u8])`, `dpapi/decrypt.rs` (decrypt given a
+  key), `dpapi/chrome.rs` (`detect_chrome_cookie_encoding(&[u8])`,
+  `decrypt_v10_cookie(key, ciphertext)`) → extract verbatim into a shared no-I/O
+  `dpapi-core`, consumed by memf **and** future disk tools (Chrome/Edge, Credential
+  Manager, master-key files).
+- `dpapi_keys.rs` (master-key extraction from LSASS `g_MasterKeyCache`) stays
+  memory-specific — it's the *source* of keys. A disk tool supplies keys differently
+  (parse master-key files + derive from the user password SHA1→PBKDF2, or the domain
+  backup key) — code memf doesn't have and shouldn't grow.
+
+So memf is the **donor** (its blob/decrypt/chrome code seeds `dpapi-core`); only the
+key *source* differs by medium. *(Confidence: confirmed — `parse_dpapi_blob(data: &[u8])`,
+`decrypt_v10_cookie(key, ciphertext)`, and the LSASS-only `dpapi_keys.rs` all read.)*
+
 ## Finding 4 — [LOW-RISK] PE header offset decoders → forensicnomicon
 
 memf hand-rolls the DOS→COFF→optional-header→section/data-directory offset math
@@ -142,9 +168,6 @@ inferred.)*
   `std::io::Read+Seek` (`EwfReader`/`VmdkReader`/`Qcow2Reader`/`VhdxReader`). Their
   common ground is already `std::io`; a shared "byte provider" trait would be a
   forced abstraction. Leave separate.
-- **DPAPI** (`dpapi/`) — the fleet's *only* DPAPI blob parser + AES-256-CBC/HMAC-SHA1
-  decryptor (correct RustCrypto). No `dpapi-core` to delegate to; if one is ever
-  extracted, memf is the **donor**, not the consumer.
 - **browser_cookies/sessions** — heap string/regex carving, not format parsing; no
   disk-SQLite dup (a lateral dup with `browser-forensic-memory`'s URL scanner exists,
   low priority).
