@@ -129,6 +129,45 @@ So memf is the **donor** (its blob/decrypt/chrome code seeds `dpapi-core`); only
 key *source* differs by medium. *(Confidence: confirmed — `parse_dpapi_blob(data: &[u8])`,
 `decrypt_v10_cookie(key, ciphertext)`, and the LSASS-only `dpapi_keys.rs` all read.)*
 
+### Split into `~/src/dpapi-forensic` (template: `ntfs-forensic`)
+
+New two-crate workspace at `~/src/dpapi-forensic` (SecurityRonin/dpapi-forensic),
+mirroring `ntfs-forensic`: `members = ["core", "forensic"]` (dirs at the repo root),
+`[workspace.lints.rust] unsafe_code = "forbid"` + the fleet clippy set
+(pedantic/correctness/suspicious/unwrap_used/expect_used …), edition 2021, Apache-2.0,
+SecurityRonin README/LICENSE/CHANGELOG/SECURITY/CONTRIBUTING + `.github` CI & tag-driven
+release. Structure knowledge (DPAPI provider GUIDs, alg-ids) → **`forensicnomicon`**;
+crypto → audited RustCrypto crates; never hand-rolled (cf. the RC4 finding).
+
+**`core/` → `dpapi-core`** — pure-Rust, byte-oriented (`&[u8]`-in), `no_std`-friendly
+DPAPI library (the role `ntfs-core` plays: "parse the structure over any source"):
+- `blob.rs` — `parse_dpapi_blob(&[u8])` (seed verbatim from memf `dpapi/dpapi_blob.rs`).
+- `decrypt.rs` — decrypt a blob **given the master key** (seed from memf `dpapi/decrypt.rs`);
+  RustCrypto `aes`/`cbc`/`des`/`hmac`/`sha1`/`sha2`.
+- `chrome.rs` — Chrome/Edge cookie `v10`/`v20` AES-GCM unwrap (seed from memf `dpapi/chrome.rs`).
+- `masterkey.rs` — **NEW (disk side, not in memf)**: parse master-key files
+  (`%APPDATA%\Microsoft\Protect\<SID>\<GUID>`), derive the key-protection key from the
+  user password (SHA1 → PBKDF2-HMAC) or the domain backup key (`pbkdf2` crate). This is
+  the disk counterpart of memf's LSASS `dpapi_keys.rs` — same *consumer* (dpapi-core
+  decrypt), different *source* of keys.
+- `error.rs` (the existing `DpapiError`).
+
+**`forensic/` → `dpapi-forensic`** — higher-level auditor built on dpapi-core (the role
+`ntfs-forensic` plays: "graded `report::Finding`s"): given an acquired filesystem (or
+extracted artifacts), enumerate + decrypt DPAPI-protected stores — Chrome/Edge
+`Login Data` passwords + the `Local State` cookie key, Credential Manager
+(`…\Credentials\`), Vault, Wi-Fi (`Wlansvc`) — and emit graded findings (recovered
+credentials/domains) using the `forensicnomicon` report model. Ship a `dpapi4n6` CLI
+per the fleet `*4n6` pattern.
+
+**memf-windows migration (the dedup):** add `dpapi-core = { workspace=true }`; delete the
+local `dpapi/{dpapi_blob,decrypt,chrome}.rs` (their unit tests move to dpapi-core); keep
+`dpapi_keys.rs` (LSASS `g_MasterKeyCache` extraction — memory-specific) but have it call
+`dpapi_core::{parse_dpapi_blob, decrypt, detect_chrome_cookie_encoding, …}`. Net: memf
+keeps the memory-specific key *source*, the shared blob/decrypt/chrome live once in
+`dpapi-core`, and the new `dpapi-forensic` gives the fleet on-disk DPAPI for the first
+time.
+
 ## Finding 4 — [LOW-RISK] PE header offset decoders → forensicnomicon
 
 memf hand-rolls the DOS→COFF→optional-header→section/data-directory offset math
