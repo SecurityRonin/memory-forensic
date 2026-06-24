@@ -688,12 +688,23 @@ pub struct ListenerLayout {
     pub port: u64,
     /// Offset of the address family in `_INETAF`.
     pub inetaf_af: u64,
-    /// Offset of `pData` (pointer to `_IN_ADDR`) in `_LOCAL_ADDRESS`.
+    /// Offset of `pData` in the `_LOCAL_ADDRESS` variant.
     pub la_pdata: u64,
+    /// `true` for `_LOCAL_ADDRESS` (`pData` -> ptr -> `_IN_ADDR`, a double deref);
+    /// `false` for `_LOCAL_ADDRESS_WIN10_UDP` (`pData` -> `_IN_ADDR`, single deref).
+    pub la_double: bool,
 }
 
 impl ListenerLayout {
-    const fn new(inet_af: u64, owner: u64, create_time: u64, local_addr: u64, port: u64) -> Self {
+    /// `_LOCAL_ADDRESS` variant: `pData` @ 0x10, double deref. Used by
+    /// `_TCP_LISTENER` (all builds) and `_UDP_ENDPOINT` pre-Win10.
+    const fn local_address(
+        inet_af: u64,
+        owner: u64,
+        create_time: u64,
+        local_addr: u64,
+        port: u64,
+    ) -> Self {
         Self {
             inet_af,
             owner,
@@ -702,6 +713,27 @@ impl ListenerLayout {
             port,
             inetaf_af: 0x18,
             la_pdata: 0x10,
+            la_double: true,
+        }
+    }
+    /// `_LOCAL_ADDRESS_WIN10_UDP` variant: `pData` @ 0x0, single deref. Used by
+    /// `_UDP_ENDPOINT` on Win10+.
+    const fn win10_udp(
+        inet_af: u64,
+        owner: u64,
+        create_time: u64,
+        local_addr: u64,
+        port: u64,
+    ) -> Self {
+        Self {
+            inet_af,
+            owner,
+            create_time,
+            local_addr,
+            port,
+            inetaf_af: 0x18,
+            la_pdata: 0x0,
+            la_double: false,
         }
     }
 }
@@ -711,11 +743,13 @@ impl ListenerLayout {
 /// omitted (None) rather than guessed.
 fn udp_layout_x64(build: u32) -> Option<ListenerLayout> {
     Some(match build {
-        7600 | 7601 | 8400 | 9200 => ListenerLayout::new(0x20, 0x28, 0x58, 0x60, 0x80), // Win7/8
-        9600 => ListenerLayout::new(0x20, 0x28, 0x58, 0x60, 0x78), // Win8.1 / Server 2012 R2
-        15063 | 16299 | 17134 | 17763 | 18362 => ListenerLayout::new(0x20, 0x28, 0x58, 0x80, 0x78),
-        18363 => ListenerLayout::new(0x20, 0x28, 0x58, 0x88, 0x80),
-        19041 | 20348 => ListenerLayout::new(0x20, 0x28, 0x58, 0xA8, 0xA0),
+        7600 | 7601 | 8400 | 9200 => ListenerLayout::local_address(0x20, 0x28, 0x58, 0x60, 0x80),
+        9600 => ListenerLayout::local_address(0x20, 0x28, 0x58, 0x60, 0x78), // Win8.1
+        15063 | 16299 | 17134 | 17763 | 18362 => {
+            ListenerLayout::win10_udp(0x20, 0x28, 0x58, 0x80, 0x78)
+        }
+        18363 => ListenerLayout::win10_udp(0x20, 0x28, 0x58, 0x88, 0x80),
+        19041 | 20348 => ListenerLayout::win10_udp(0x20, 0x28, 0x58, 0xA8, 0xA0),
         _ => return None,
     })
 }
@@ -724,10 +758,10 @@ fn udp_layout_x64(build: u32) -> Option<ListenerLayout> {
 /// ISFs. Same omission policy as [`udp_layout_x64`].
 fn tcp_listener_layout_x64(build: u32) -> Option<ListenerLayout> {
     Some(match build {
-        7600 | 7601 | 8400 => ListenerLayout::new(0x60, 0x28, 0x20, 0x58, 0x6a), // Win7
-        9200 | 9600 => ListenerLayout::new(0x60, 0x28, 0x40, 0x58, 0x6a),        // Win8 / Win8.1
+        7600 | 7601 | 8400 => ListenerLayout::local_address(0x60, 0x28, 0x20, 0x58, 0x6a), // Win7
+        9200 | 9600 => ListenerLayout::local_address(0x60, 0x28, 0x40, 0x58, 0x6a), // Win8 / Win8.1
         15063 | 16299 | 17134 | 17763 | 18362 | 18363 | 19041 | 20348 => {
-            ListenerLayout::new(0x28, 0x30, 0x40, 0x60, 0x72)
+            ListenerLayout::local_address(0x28, 0x30, 0x40, 0x60, 0x72)
         }
         _ => return None,
     })
@@ -836,9 +870,19 @@ fn scan_listener_objects<P: PhysicalMemoryProvider>(
                     };
 
                     // Bound local _IN_ADDR (None = unbound → listens on all addrs).
+                    // _LOCAL_ADDRESS: pData -> ptr -> _IN_ADDR (double deref);
+                    // _LOCAL_ADDRESS_WIN10_UDP: pData -> _IN_ADDR (single).
                     let bound = read_phys_u(ep + l.local_addr, 8)
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|la| read_virt_u64(la.wrapping_add(l.la_pdata)))
+                        .filter(|&p| is_kernel_va(p))
+                        .and_then(|p| {
+                            if l.la_double {
+                                read_virt_u64(p)
+                            } else {
+                                Some(p)
+                            }
+                        })
                         .filter(|&p| is_kernel_va(p))
                         .and_then(|va| read_inaddr(reader, va, af));
                     let local_port =
@@ -1722,15 +1766,20 @@ mod tests {
 
         let inetaf_va = 0xFFFF_C000_0001_0000u64;
         let la_va = 0xFFFF_C000_0001_3000u64;
+        let mid_va = 0xFFFF_C000_0001_4000u64;
         let in_addr_va = 0xFFFF_C000_0001_5000u64;
         let ep_va = 0xFFFF_C000_0001_6000u64;
-        let (pa_inetaf, pa_la, pa_in, pa_ep) = (0x70_000u64, 0x73_000, 0x75_000, 0x76_000);
+        let (pa_inetaf, pa_la, pa_mid, pa_in, pa_ep) =
+            (0x70_000u64, 0x73_000, 0x74_000, 0x75_000, 0x76_000);
 
         let mut inetaf = vec![0u8; 0x1000];
         inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
                                                                                // Local: LocalAddr -> _LOCAL_ADDRESS.pData -> _IN_ADDR (vol3 single deref).
         let mut la = vec![0u8; 0x1000];
-        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&in_addr_va.to_le_bytes());
+        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&mid_va.to_le_bytes());
+        // _LOCAL_ADDRESS: pData -> ptr -> _IN_ADDR (double deref).
+        let mut mid = vec![0u8; 0x1000];
+        mid[0..8].copy_from_slice(&in_addr_va.to_le_bytes());
         let mut inb = vec![0u8; 0x1000];
         inb[0..4].copy_from_slice(&[10, 42, 85, 10]); // local 10.42.85.10
         let mut ep = vec![0u8; 0x1000];
@@ -1755,11 +1804,13 @@ mod tests {
             .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
             .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
             .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(mid_va, pa_mid, flags::WRITABLE)
             .map_4k(in_addr_va, pa_in, flags::WRITABLE)
             .map_4k(ep_va, pa_ep, flags::WRITABLE)
             .write_phys(pa_build, &build_page)
             .write_phys(pa_inetaf, &inetaf)
             .write_phys(pa_la, &la)
+            .write_phys(pa_mid, &mid)
             .write_phys(pa_in, &inb)
             .write_phys(pa_ep, &ep)
             .write_phys(tag_phys, b"UdpA")
@@ -2144,14 +2195,19 @@ mod tests {
 
         let inetaf_va = 0xFFFF_C000_0001_0000u64;
         let la_va = 0xFFFF_C000_0001_3000u64;
+        let mid_va = 0xFFFF_C000_0001_4000u64;
         let in_addr_va = 0xFFFF_C000_0001_5000u64;
         let ep_va = 0xFFFF_C000_0001_6000u64;
-        let (pa_inetaf, pa_la, pa_in, pa_ep) = (0x70_000u64, 0x73_000, 0x75_000, 0x76_000);
+        let (pa_inetaf, pa_la, pa_mid, pa_in, pa_ep) =
+            (0x70_000u64, 0x73_000, 0x74_000, 0x75_000, 0x76_000);
 
         let mut inetaf = vec![0u8; 0x1000];
         inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
         let mut la = vec![0u8; 0x1000];
-        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&in_addr_va.to_le_bytes());
+        la[LA_PDATA..LA_PDATA + 8].copy_from_slice(&mid_va.to_le_bytes());
+        // _LOCAL_ADDRESS: pData -> ptr -> _IN_ADDR (double deref).
+        let mut mid = vec![0u8; 0x1000];
+        mid[0..8].copy_from_slice(&in_addr_va.to_le_bytes());
         let mut inb = vec![0u8; 0x1000];
         inb[0..4].copy_from_slice(&[127, 0, 0, 1]); // 127.0.0.1
         let mut ep = vec![0u8; 0x1000];
@@ -2174,11 +2230,13 @@ mod tests {
             .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
             .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
             .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(mid_va, pa_mid, flags::WRITABLE)
             .map_4k(in_addr_va, pa_in, flags::WRITABLE)
             .map_4k(ep_va, pa_ep, flags::WRITABLE)
             .write_phys(pa_build, &build_page)
             .write_phys(pa_inetaf, &inetaf)
             .write_phys(pa_la, &la)
+            .write_phys(pa_mid, &mid)
             .write_phys(pa_in, &inb)
             .write_phys(pa_ep, &ep)
             .write_phys(pool_base + 4, b"TcpL")
@@ -2209,5 +2267,78 @@ mod tests {
         assert_eq!(c.state, WinTcpState::Listen);
         assert_eq!(c.pid, 1368);
         assert_eq!(c.process_name, "dns.exe");
+    }
+
+    #[test]
+    fn scan_udp_endpoints_win10_single_deref_local_address() {
+        // Build 19041 UDP uses _LOCAL_ADDRESS_WIN10_UDP: pData @ 0x0, SINGLE deref
+        // (pData -> _IN_ADDR), unlike the pre-Win10 _LOCAL_ADDRESS double deref.
+        // Layout: InetAF 0x20, Owner 0x28, LocalAddr 0xA8, Port 0xA0.
+        const U_INETAF: usize = 0x20;
+        const U_OWNER: usize = 0x28;
+        const U_LOCALADDR: usize = 0xA8;
+        const U_PORT: usize = 0xA0;
+        const INETAF_AF: usize = 0x18;
+
+        let inetaf_va = 0xFFFF_C000_0001_0000u64;
+        let la_va = 0xFFFF_C000_0001_3000u64;
+        let in_addr_va = 0xFFFF_C000_0001_5000u64;
+        let ep_va = 0xFFFF_C000_0001_6000u64;
+        let (pa_inetaf, pa_la, pa_in, pa_ep) = (0x70_000u64, 0x73_000, 0x75_000, 0x76_000);
+
+        let mut inetaf = vec![0u8; 0x1000];
+        inetaf[INETAF_AF..INETAF_AF + 2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
+        let mut la = vec![0u8; 0x1000];
+        la[0..8].copy_from_slice(&in_addr_va.to_le_bytes()); // pData @ 0x0, single deref
+        let mut inb = vec![0u8; 0x1000];
+        inb[0..4].copy_from_slice(&[10, 0, 0, 5]);
+        let mut ep_page = vec![0u8; 0x1000];
+        ep_page[EPROC_PID..EPROC_PID + 8].copy_from_slice(&444u64.to_le_bytes());
+        ep_page[EPROC_IMAGE_NAME..EPROC_IMAGE_NAME + 5].copy_from_slice(b"svc.x");
+
+        let pool_base = 0x50_000u64;
+        let obj_off = pool_base + 0x10;
+        let mut obj = vec![0u8; 0x100];
+        obj[U_INETAF..U_INETAF + 8].copy_from_slice(&inetaf_va.to_le_bytes());
+        obj[U_OWNER..U_OWNER + 8].copy_from_slice(&ep_va.to_le_bytes());
+        obj[U_LOCALADDR..U_LOCALADDR + 8].copy_from_slice(&la_va.to_le_bytes());
+        obj[U_PORT..U_PORT + 2].copy_from_slice(&137u16.to_be_bytes());
+
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_4A61u32.to_le_bytes()); // build 19041
+
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .map_4k(inetaf_va, pa_inetaf, flags::WRITABLE)
+            .map_4k(la_va, pa_la, flags::WRITABLE)
+            .map_4k(in_addr_va, pa_in, flags::WRITABLE)
+            .map_4k(ep_va, pa_ep, flags::WRITABLE)
+            .write_phys(pa_build, &build_page)
+            .write_phys(pa_inetaf, &inetaf)
+            .write_phys(pa_la, &la)
+            .write_phys(pa_in, &inb)
+            .write_phys(pa_ep, &ep_page)
+            .write_phys(pool_base + 4, b"UdpA")
+            .write_phys(obj_off, &obj);
+
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let conns = scan_udp_endpoints(&reader).expect("scan ok");
+        assert_eq!(conns.len(), 1, "one udp endpoint, got {conns:?}");
+        assert_eq!(conns[0].local_addr, "10.0.0.5");
+        assert_eq!(conns[0].local_port, 137);
     }
 }
