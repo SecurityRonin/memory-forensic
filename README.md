@@ -52,16 +52,16 @@ Symbol files are ISF JSON — the **same packs Volatility 3 uses**, so an existi
 
 ## Why memf
 
-| | **memf** | Volatility 3 | MemProcFS |
-|---|---|---|---|
-| Deploy | Rust · **single static binary** | Python · interpreter + deps | C(+Rust) · libraries |
-| Windows self-profiling (scan → PDB GUID → symbols) | ✅ | ✅ | ✅ |
-| Header-less DTB via the boot low stub + page-granular kernel base | ✅ | self-ref PML4 + image scan | ✅ low stub |
-| Offline / air-gapped symbol mode | ✅ `--offline` | ISF pack or network | symbols / network |
-| Panic-free on untrusted dumps (`unsafe`-deny, no `unwrap`/`expect`) | ✅ | — | — |
-| Cross-checked against Volatility 3 | ✅ ([`docs/validation.md`](docs/validation.md)) | — (the reference) | — |
+| | **memf** | Volatility 3 | MemProcFS | MemNixFS |
+|---|---|---|---|---|
+| Deploy | Rust · **single static binary** | Python · interpreter + deps | C(+Rust) · libraries | C++ · filesystem mount |
+| Windows self-profiling (scan → PDB GUID → symbols) | ✅ | ✅ | ✅ | n/a — Linux dumps |
+| Header-less DTB via the boot low stub + page-granular kernel base | ✅ | self-ref PML4 + image scan | ✅ low stub | n/a — Linux |
+| Offline / air-gapped symbol mode | ✅ `--offline` | ISF pack or network | symbols / network | ✅ BTF-from-dump |
+| Panic-free on untrusted dumps (`unsafe`-deny, no `unwrap`/`expect`) | ✅ | — | — | — (C++) |
+| Cross-checked against Volatility 3 | ✅ ([`docs/validation.md`](docs/validation.md)) | — (the reference) | — | — |
 
-memf is, to our knowledge, the only **Rust** implementation of the full dump → kernel-scan → PDB-GUID → symbol-resolution → DTB chain. The technique lineage — WinDbg's symbol server, Brendan Dolan-Gavitt's `pdbparse`, Rekall, Volatility 3, and Ulf Frisk's MemProcFS — is well established; memf reimplements it clean-room and proves the result against the reference. The boot low-stub / `PROCESSOR_START_BLOCK` anchor follows [Alex Ionescu's REcon 2017 *Getting Physical*](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf).
+memf is, to our knowledge, the only **Rust** implementation of the full dump → kernel-scan → PDB-GUID → symbol-resolution → DTB chain. The technique lineage — WinDbg's symbol server, Brendan Dolan-Gavitt's `pdbparse`, Rekall, Volatility 3, and Ulf Frisk's MemProcFS — is well established; memf reimplements it clean-room and proves the result against the reference. [MemNixFS](https://github.com/MemNixFS/MemNixFS) brings that same *memory-as-a-filesystem* idea to **Linux** dumps — mount-and-browse, with symbols derived from the kernel's own BTF when no ISF exists; the `n/a` cells above mark a difference in scope (Linux images and a filesystem UX, vs memf's Windows-validated CLI walker), not a gap. The boot low-stub / `PROCESSOR_START_BLOCK` anchor follows [Alex Ionescu's REcon 2017 *Getting Physical*](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf).
 
 ---
 
