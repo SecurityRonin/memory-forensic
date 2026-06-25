@@ -1,6 +1,6 @@
 name: Release
 
-# Tag-driven release: pushing a `vX.Y.Z` tag cross-builds the `memf` binary for
+# Tag-driven release: pushing a `vX.Y.Z` tag cross-builds the `mem4n6` binary for
 # all platforms and attaches the artifacts (+ SHA-256 checksums) to a GitHub
 # Release. The Linux targets are **musl** so the binary is a genuinely static,
 # self-contained executable — the README's "single static binary" claim made
@@ -10,7 +10,7 @@ name: Release
 # (Homebrew tap / apt-Cloudsmith / winget / crates.io) is intentionally NOT wired
 # here yet — each needs external bootstrapping (a created Cloudsmith repo, a tap
 # handler, winget registration) that would 404/fail until set up. Add per channel
-# when memf is ready to publish, modelled on `~/src/blazehash/.github/workflows/release.yml`.
+# when mem4n6 is ready to publish, modelled on `~/src/blazehash/.github/workflows/release.yml`.
 
 on:
   push:
@@ -63,14 +63,14 @@ jobs:
           fi
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bin memf
+        run: cargo build --release --target ${{ matrix.target }} --bin mem4n6
 
       # Make the "static binary" claim self-enforcing: fail the release build if
       # the musl artifact is not actually statically linked.
       - name: Verify static linking (musl)
         if: contains(matrix.target, 'musl')
         run: |
-          BIN="target/${{ matrix.target }}/release/memf"
+          BIN="target/${{ matrix.target }}/release/mem4n6"
           file "$BIN"
           # Accept classic static and static-PIE (self-contained + ASLR) — both have no external deps.
           file "$BIN" | grep -qE 'statically linked|static-pie linked' || { echo "::error::$BIN is NOT statically linked"; exit 1; }
@@ -79,18 +79,18 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd "target/${{ matrix.target }}/release"
-          tar czf "../../../memf-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz" memf
+          tar czf "../../../mem4n6-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz" mem4n6
           cd ../../..
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "target/${{ matrix.target }}/release/memf.exe" -DestinationPath "memf-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/mem4n6.exe" -DestinationPath "mem4n6-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: memf-${{ steps.version.outputs.version }}-${{ matrix.target }}
-          path: memf-${{ steps.version.outputs.version }}-${{ matrix.target }}.*
+          name: mem4n6-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: mem4n6-${{ steps.version.outputs.version }}-${{ matrix.target }}.*
 
   release:
     needs: build
@@ -99,7 +99,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
-          pattern: "memf-*-*"
+          pattern: "mem4n6-*-*"
           merge-multiple: true
 
       - name: Generate checksums
@@ -112,6 +112,6 @@ jobs:
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           files: |
-            artifacts/memf-*
+            artifacts/mem4n6-*
             artifacts/checksums.txt
           generate_release_notes: true

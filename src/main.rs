@@ -29,7 +29,7 @@ use os_detect::{AnalysisContext, OsProfile};
 
 #[derive(Parser)]
 #[command(
-    name = "memf",
+    name = "mem4n6",
     version,
     about = "Memory forensics toolkit",
     long_about = "Memory forensics toolkit — analyze physical memory dumps from Windows, Linux, and VMware.\n\n\
@@ -657,7 +657,7 @@ fn main() -> Result<()> {
     let bin_stem = std::path::Path::new(&raw[0])
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("memf");
+        .unwrap_or("mem4n6");
     let effective: Vec<std::ffi::OsString> = if bin_stem == "vol" {
         let mut a = vec![raw[0].clone(), std::ffi::OsString::from("vol")];
         a.extend_from_slice(&raw[1..]);

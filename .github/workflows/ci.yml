@@ -58,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
       - run: cargo check --workspace
 
-  # Proves the README "single static binary" claim continuously: build the memf
+  # Proves the README "single static binary" claim continuously: build the mem4n6
   # binary for musl and fail if it is not actually statically linked. The release
   # workflow ships these musl artifacts (release.yml).
   musl-static:
@@ -75,11 +75,11 @@ jobs:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --target x86_64-unknown-linux-musl --bin memf
+      - run: cargo build --release --target x86_64-unknown-linux-musl --bin mem4n6
       - name: Assert statically linked
         run: |
-          BIN=target/x86_64-unknown-linux-musl/release/memf
+          BIN=target/x86_64-unknown-linux-musl/release/mem4n6
           file "$BIN"
           # Accept both classic static and static-PIE (self-contained + ASLR) — both have no external deps.
-          file "$BIN" | grep -qE 'statically linked|static-pie linked' || { echo "::error::memf is NOT statically linked"; exit 1; }
+          file "$BIN" | grep -qE 'statically linked|static-pie linked' || { echo "::error::mem4n6 is NOT statically linked"; exit 1; }
           ldd "$BIN" 2>&1 | grep -qiE 'not a dynamic executable|statically linked' || { echo "::error::ldd reports dynamic linkage"; exit 1; }

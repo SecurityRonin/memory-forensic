@@ -9,17 +9,17 @@
 
 **A memory forensics toolkit that profiles Windows kernels itself — and is cross-checked, process-for-process, against Volatility 3.**
 
-`memf` reads every common dump format (LiME, AVML, ELF core, Windows crash dumps, hibernation files, VMware save-states, kdump, raw…) and walks processes, threads, modules, network connections, and injected memory — from **one static binary** you compile once and copy anywhere, with **no Python, no runtime, no pre-staged symbol catalog**. On Windows it builds its own profile: locate `ntoskrnl` in physical memory, read its PDB GUID from the CodeView record, resolve the matching Volatility-3 ISF, recover the kernel base under modern KASLR, and reconstruct `PsActiveProcessHead` from the symbol table — the same self-profiling chain Volatility 3 and MemProcFS use, reimplemented in Rust.
+`mem4n6` reads every common dump format (LiME, AVML, ELF core, Windows crash dumps, hibernation files, VMware save-states, kdump, raw…) and walks processes, threads, modules, network connections, and injected memory — from **one static binary** you compile once and copy anywhere, with **no Python, no runtime, no pre-staged symbol catalog**. On Windows it builds its own profile: locate `ntoskrnl` in physical memory, read its PDB GUID from the CodeView record, resolve the matching Volatility-3 ISF, recover the kernel base under modern KASLR, and reconstruct `PsActiveProcessHead` from the symbol table — the same self-profiling chain Volatility 3 and MemProcFS use, reimplemented in Rust.
 
 Because the bar for an evidence tool is *correctness*, the process walker is cross-checked against an **independent reference implementation** — Volatility 3 — on a real 2 GB Windows 10 image (a reference agreeing is strong evidence, not proof; the raw bytes are the ground truth):
 
-| `windows.pslist` on DESKTOP-SDN1RPT.mem | memf vs Volatility 3 |
+| `windows.pslist` on DESKTOP-SDN1RPT.mem | mem4n6 vs Volatility 3 |
 |---|---|
 | Processes matched | **94 / 94 shared PIDs — exact PID, PPID, name, create-time** |
-| Missed (vol3 found, memf did not) | **0** |
-| False positives (memf found, vol3 did not) | **0** |
+| Missed (vol3 found, mem4n6 did not) | **0** |
+| False positives (mem4n6 found, vol3 did not) | **0** |
 
-memf matches Volatility 3 **exactly** — including recovering 11 processes orphaned by a live-acquisition smear via a bidirectional `ActiveProcessLinks` walk. A second independent oracle (MemProcFS) confirms a clean subset — its 77-process `process_list` is fully contained in memf's set, with zero MemProcFS-only processes ([details](docs/validation.md#multi-oracle-in-progress)). See [`docs/validation.md`](docs/validation.md) for the full differential and reproduction steps.
+mem4n6 matches Volatility 3 **exactly** — including recovering 11 processes orphaned by a live-acquisition smear via a bidirectional `ActiveProcessLinks` walk. A second independent oracle (MemProcFS) confirms a clean subset — its 77-process `process_list` is fully contained in mem4n6's set, with zero MemProcFS-only processes ([details](docs/validation.md#multi-oracle-in-progress)). See [`docs/validation.md`](docs/validation.md) for the full differential and reproduction steps.
 
 ## Quick start
 
@@ -30,33 +30,33 @@ Or build from source (~one command):
 ```bash
 git clone https://github.com/SecurityRonin/memory-forensic.git
 cd memory-forensic && cargo build --release
-./target/release/memf --help
+./target/release/mem4n6 --help
 ```
 
 That dev build links libc dynamically; to reproduce the release's fully static binary locally, add the musl target: `rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl`.
 
 ```bash
 # Inspect any dump — format, ranges, embedded metadata (no symbols needed)
-memf info win10.mem
+mem4n6 info win10.mem
 
 # Windows process tree. The ISF is resolved from the kernel's own PDB GUID;
 # raw .mem dumps take the page-table base via --cr3 (crash dumps carry their own).
-memf ps --symbols ntkrnlmp.json --cr3 0x1ad000 --tree win10.mem
+mem4n6 ps --symbols ntkrnlmp.json --cr3 0x1ad000 --tree win10.mem
 
 # Linux process tree from a LiME capture
-memf ps --symbols linux.json --tree memdump.lime
+mem4n6 ps --symbols linux.json --tree memdump.lime
 
 # Air-gapped lab? Never touch the network for symbols:
-memf ps --symbols ntkrnlmp.json --offline win10.mem
+mem4n6 ps --symbols ntkrnlmp.json --offline win10.mem
 ```
 
 Symbol files are ISF JSON — the **same packs Volatility 3 uses**, so an existing symbol cache works as-is.
 
 ---
 
-## Why memf
+## Why mem4n6
 
-| | **memf** | Volatility 3 | MemProcFS | MemNixFS |
+| | **mem4n6** | Volatility 3 | MemProcFS | MemNixFS |
 |---|---|---|---|---|
 | Deploy | Rust · **single static binary** | Python · interpreter + deps | C(+Rust) · libraries | C++ · filesystem mount |
 | Windows self-profiling (scan → PDB GUID → symbols) | ✅ | ✅ | ✅ | n/a — Linux dumps |
@@ -65,7 +65,7 @@ Symbol files are ISF JSON — the **same packs Volatility 3 uses**, so an existi
 | Panic-free on untrusted dumps (`unsafe`-deny; `unwrap`/`expect` denied on parsing paths) | ✅ | — | — | — (C++) |
 | Cross-checked against Volatility 3 | ✅ ([`docs/validation.md`](docs/validation.md)) | — (the reference) | — | — |
 
-memf is, to our knowledge, the only **Rust** implementation of the full dump → kernel-scan → PDB-GUID → symbol-resolution → DTB chain. The technique lineage — WinDbg's symbol server, Brendan Dolan-Gavitt's `pdbparse`, Rekall, Volatility 3, and Ulf Frisk's MemProcFS — is well established; memf reimplements it clean-room and validates the result against the reference. [MemNixFS](https://github.com/MemNixFS/MemNixFS) brings that same *memory-as-a-filesystem* idea to **Linux** dumps — mount-and-browse, with symbols derived from the kernel's own BTF when no ISF exists; the `n/a` cells above mark a difference in scope (Linux images and a filesystem UX, vs memf's Windows-validated CLI walker), not a gap. The boot low-stub / `PROCESSOR_START_BLOCK` anchor follows [Alex Ionescu's REcon 2017 *Getting Physical*](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf).
+mem4n6 is, to our knowledge, the only **Rust** implementation of the full dump → kernel-scan → PDB-GUID → symbol-resolution → DTB chain. The technique lineage — WinDbg's symbol server, Brendan Dolan-Gavitt's `pdbparse`, Rekall, Volatility 3, and Ulf Frisk's MemProcFS — is well established; mem4n6 reimplements it clean-room and validates the result against the reference. [MemNixFS](https://github.com/MemNixFS/MemNixFS) brings that same *memory-as-a-filesystem* idea to **Linux** dumps — mount-and-browse, with symbols derived from the kernel's own BTF when no ISF exists; the `n/a` cells above mark a difference in scope (Linux images and a filesystem UX, vs mem4n6's Windows-validated CLI walker), not a gap. The boot low-stub / `PROCESSOR_START_BLOCK` anchor follows [Alex Ionescu's REcon 2017 *Getting Physical*](http://publications.alex-ionescu.com/Recon/ReconBru%202017%20-%20Getting%20Physical%20with%20USB%20Type-C,%20Windows%2010%20RAM%20Forensics%20and%20UEFI%20Attacks.pdf).
 
 ---
 
@@ -75,7 +75,7 @@ memf is, to our knowledge, the only **Rust** implementation of the full dump →
 git clone https://github.com/SecurityRonin/memory-forensic.git
 cd memory-forensic
 cargo build --release
-./target/release/memf --help
+./target/release/mem4n6 --help
 ```
 
 ---
@@ -84,40 +84,40 @@ cargo build --release
 
 ```bash
 # Show dump format and physical memory ranges
-memf info memdump.dmp
+mem4n6 info memdump.dmp
 
 # Process tree with threads and DLLs
-memf ps --symbols ntkrnlmp.json --tree --threads --dlls memdump.dmp
+mem4n6 ps --symbols ntkrnlmp.json --tree --threads --dlls memdump.dmp
 
 # Network connections (json / csv / table)
-memf net --symbols ntkrnlmp.json --output json memdump.dmp
+mem4n6 net --symbols ntkrnlmp.json --output json memdump.dmp
 
 # Kernel integrity checks (SSDT, IDT, callbacks, hooks)
-memf check --symbols ntkrnlmp.json --ssdt --callbacks memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --ssdt --callbacks memdump.dmp
 
 # Linux syscall hook and malfind scan
-memf check --symbols linux.json --hooks --malfind memdump.lime
+mem4n6 check --symbols linux.json --hooks --malfind memdump.lime
 
 # String extraction with YARA rules
-memf strings --rules ./yara-rules/ --min-length 8 memdump.dmp
+mem4n6 strings --rules ./yara-rules/ --min-length 8 memdump.dmp
 
 # Hash lookup against NSRL (known-good) and MalwareBazaar (known-bad)
-memf hash --lookup memdump.dmp
+mem4n6 hash --lookup memdump.dmp
 
 # Extract framebuffer screenshot from live memory dump
-memf framebuf --symbols linux.json --png screen.png memdump.dmp
+mem4n6 framebuf --symbols linux.json --png screen.png memdump.dmp
 
 # Recover files from tmpfs mounts + detect memfd fileless ELF execution
-memf check --symbols linux.json --tmpfs-recovery --memfd memdump.lime
+mem4n6 check --symbols linux.json --tmpfs-recovery --memfd memdump.lime
 
 # Detect EDR bypass: direct syscalls, ETW patching, AMSI/DSE bypass
-memf check --symbols ntkrnlmp.json --direct-syscalls --etw-patch --amsi-bypass memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --direct-syscalls --etw-patch --amsi-bypass memdump.dmp
 
 # Novel kernel interface abuse: io_uring, netfilter hooks, perf_event
-memf check --symbols linux.json --io-uring --netfilter --perf-event memdump.lime
+mem4n6 check --symbols linux.json --io-uring --netfilter --perf-event memdump.lime
 
 # Cross-artifact ATT&CK correlation across all walkers
-memf correlate --symbols ntkrnlmp.json --output json memdump.dmp
+mem4n6 correlate --symbols ntkrnlmp.json --output json memdump.dmp
 ```
 
 Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
@@ -128,7 +128,7 @@ Symbol files are ISF JSON, compatible with Volatility 3 symbol packs.
 
 ```bash
 # SSDT, IDT, ftrace, LSM, and kernel callback checks in one pass
-memf check --symbols linux.json --hooks --idt --syscalls memdump.lime
+mem4n6 check --symbols linux.json --hooks --idt --syscalls memdump.lime
 ```
 
 ```
@@ -146,7 +146,7 @@ Three hook types — syscall table, ftrace, and LSM — all resolving into the s
 Name-pattern matching misses recompiled or renamed rootkit variants. ELF dynamic symbol analysis catches them regardless of name:
 
 ```bash
-memf check --symbols linux.json --elf-hooks memdump.lime
+mem4n6 check --symbols linux.json --elf-hooks memdump.lime
 ```
 
 ```
@@ -170,10 +170,10 @@ memf check --symbols linux.json --elf-hooks memdump.lime
 
 ```bash
 # Extract DPAPI master keys from LSASS g_MasterKeyCache linked list
-memf check --symbols ntkrnlmp.json --dpapi-keys memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --dpapi-keys memdump.dmp
 
 # Detect Chrome cookies (v10/v20 encrypted blobs) from heap memory
-memf check --symbols ntkrnlmp.json --browser-cookies memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --browser-cookies memdump.dmp
 ```
 
 ```
@@ -192,7 +192,7 @@ The Windows credential walkers cover:
 ## Framebuffer screenshot extraction
 
 ```bash
-memf framebuf --symbols ntkrnlmp.json --png screen.png memdump.dmp
+mem4n6 framebuf --symbols ntkrnlmp.json --png screen.png memdump.dmp
 ```
 
 Extracts the framebuffer from a live or hibernation memory dump and writes it as a PNG. Works on both Linux (DRM/KMS `drm_framebuffer` walker) and Windows (session framebuffer via `win32k` pool scan). Useful for capturing the screen state at the moment of acquisition without booting the image.
@@ -205,10 +205,10 @@ Attackers using tmpfs or `memfd_create(2)` leave no filesystem artifacts — the
 
 ```bash
 # Recover inodes and file content from Linux tmpfs/ramfs mounts
-memf check --symbols linux.json --tmpfs-recovery memdump.lime
+mem4n6 check --symbols linux.json --tmpfs-recovery memdump.lime
 
 # Detect ELF binaries running from anonymous memfd file descriptors
-memf check --symbols linux.json --memfd memdump.lime
+mem4n6 check --symbols linux.json --memfd memdump.lime
 ```
 
 ```
@@ -232,16 +232,16 @@ Modern offensive tooling patches Windows security instrumentation in memory to e
 
 ```bash
 # Direct syscalls — Syswhispers/Hell's Gate bypass Win32 API entirely
-memf check --symbols ntkrnlmp.json --direct-syscalls memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --direct-syscalls memdump.dmp
 
 # ETW patching — log suppression via ret/xor at ETW write functions
-memf check --symbols ntkrnlmp.json --etw-patch memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --etw-patch memdump.dmp
 
 # AMSI bypass — script-scanning suppression via amsi.dll patch
-memf check --symbols ntkrnlmp.json --amsi-bypass memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --amsi-bypass memdump.dmp
 
 # DSE bypass — Driver Signature Enforcement disabled for unsigned drivers
-memf check --symbols ntkrnlmp.json --dse-bypass memdump.dmp
+mem4n6 check --symbols ntkrnlmp.json --dse-bypass memdump.dmp
 ```
 
 ```
@@ -267,7 +267,7 @@ memf check --symbols ntkrnlmp.json --dse-bypass memdump.dmp
 Beyond classic syscall hooks, modern rootkits abuse newer kernel subsystems. `memory-forensic` covers all three:
 
 ```bash
-memf check --symbols linux.json --io-uring --netfilter --perf-event memdump.lime
+mem4n6 check --symbols linux.json --io-uring --netfilter --perf-event memdump.lime
 ```
 
 ```
@@ -289,7 +289,7 @@ memf check --symbols linux.json --io-uring --netfilter --perf-event memdump.lime
 ## Container escape indicators
 
 ```bash
-memf check --symbols linux.json --container-escape memdump.lime
+mem4n6 check --symbols linux.json --container-escape memdump.lime
 ```
 
 ```
@@ -309,7 +309,7 @@ Walks user, mount, PID, net, and cgroup namespaces for every process and flags p
 `memf-correlate` joins findings from all walkers into a timeline, scores anomalies by severity, and maps each to MITRE ATT&CK techniques without running walkers one at a time:
 
 ```bash
-memf correlate --symbols ntkrnlmp.json --output json memdump.dmp > findings.json
+mem4n6 correlate --symbols ntkrnlmp.json --output json memdump.dmp > findings.json
 ```
 
 ```json
@@ -349,7 +349,7 @@ Format is detected from file headers — no flags required.
 
 ## What's Different
 
-The nearest alternatives are **Volatility 3** (Python, plugin architecture), **MemProcFS** (C with Rust bindings, primarily Windows), **Rekall** (Python, unmaintained), and **MemNixFS** (C++, Linux dumps mounted as a filesystem). The comparison below reflects each tool's official core and known plugin repository. MemNixFS targets *Linux* images with a filesystem UX, so it shares memf's page-cache file recovery but is `n/a` on the Windows self-profiling and EDR-bypass rows.
+The nearest alternatives are **Volatility 3** (Python, plugin architecture), **MemProcFS** (C with Rust bindings, primarily Windows), **Rekall** (Python, unmaintained), and **MemNixFS** (C++, Linux dumps mounted as a filesystem). The comparison below reflects each tool's official core and known plugin repository. MemNixFS targets *Linux* images with a filesystem UX, so it shares mem4n6's page-cache file recovery but is `n/a` on the Windows self-profiling and EDR-bypass rows.
 
 ### Parity — capabilities shared with mature tools
 
@@ -384,13 +384,13 @@ The nearest alternatives are **Volatility 3** (Python, plugin architecture), **M
 
 > **`plugin?`** — Capability may exist in the Volatility 3 community ecosystem but is absent from the official core and plugin repository at time of writing. Verify before concluding.
 >
-> **‡ Shellbags from memory** — Volatility 2 recovered shellbags from RAM (the community `shellbags` plugin, Kovar then Lo); Volatility 3 never re-ported it, so memory-only shellbag recovery regressed across the vol2→vol3 transition. memf walks `Shell\BagMRU` directly in the in-memory `UsrClass.dat`/`NTUSER.DAT` hive — restoring the vol2-era capability for the RAM-only case (no disk acquired), or to corroborate the on-disk hive. The usual route when disk *is* available is to mount the image and run SBECmd / RegRipper on the hive file; the memory walk collapses the dump-the-hive-then-parse two-step into one. Validation is **tier-2**: ground truth derived with `regipy` on the hive extracted from `citadeldc01.mem` — no published third-party shellbag answer key exists for the Szechuan case, so this is a self-derived oracle (real tool + real image), not a third-party key.
+> **‡ Shellbags from memory** — Volatility 2 recovered shellbags from RAM (the community `shellbags` plugin, Kovar then Lo); Volatility 3 never re-ported it, so memory-only shellbag recovery regressed across the vol2→vol3 transition. mem4n6 walks `Shell\BagMRU` directly in the in-memory `UsrClass.dat`/`NTUSER.DAT` hive — restoring the vol2-era capability for the RAM-only case (no disk acquired), or to corroborate the on-disk hive. The usual route when disk *is* available is to mount the image and run SBECmd / RegRipper on the hive file; the memory walk collapses the dump-the-hive-then-parse two-step into one. Validation is **tier-2**: ground truth derived with `regipy` on the hive extracted from `citadeldc01.mem` — no published third-party shellbag answer key exists for the Szechuan case, so this is a self-derived oracle (real tool + real image), not a third-party key.
 
 ---
 
 ## Trust but verify
 
-A tool that parses **untrusted, attacker-controllable** memory images has to refuse to lie and refuse to crash. memf is built to that bar:
+A tool that parses **untrusted, attacker-controllable** memory images has to refuse to lie and refuse to crash. mem4n6 is built to that bar:
 
 - **Panic-free on hostile input.** Parsing paths deny `unwrap`/`expect`/`panic!` and unchecked indexing (`clippy::unwrap_used`/`expect_used` = deny); every length, offset, and pointer read is bounds-checked and degrades gracefully — a smeared process list returns what it found, it does not abort. (Builder APIs panic on programmer error — a missing required field — by construction, never on dump content.)
 - **Memory-safe by default.** `unsafe_code = "deny"` workspace-wide; the only `unsafe` is bounded `memmap2` file mappings (the dump, pagefile, and known-good hash DB), each individually justified — hence the *bounded (mmap only)* badge rather than *forbidden*.
@@ -402,10 +402,10 @@ A tool that parses **untrusted, attacker-controllable** memory images has to ref
 ## Library Usage
 
 ```rust
-use memf_format::open;
-use memf_core::vas::{TranslationMode, VirtualAddressSpace};
-use memf_core::object_reader::ObjectReader;
-use memf_symbols::isf::IsfResolver;
+use mem4n6_format::open;
+use mem4n6_core::vas::{TranslationMode, VirtualAddressSpace};
+use mem4n6_core::object_reader::ObjectReader;
+use mem4n6_symbols::isf::IsfResolver;
 
 // Open any supported format — detected from file headers
 let dump = open("memdump.dmp")?;
@@ -453,7 +453,7 @@ memf-windows = "0.1"
 
 ## Used By
 
-[issen](https://github.com/SecurityRonin/issen) — the `issen memf` subcommand drives memory acquisition and triage reporting directly from this workspace.
+[issen](https://github.com/SecurityRonin/issen) — the `issen mem4n6` subcommand drives memory acquisition and triage reporting directly from this workspace.
 
 ---
 

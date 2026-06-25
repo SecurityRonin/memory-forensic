@@ -119,14 +119,19 @@ type_complexity = { level = "allow", priority = 1 }
 similar_names = { level = "allow", priority = 1 }
 
 [package]
-name = "memf"
+name = "mem4n6"
 version = "0.1.0"
+description = "Memory forensics CLI — self-profiling Windows/Linux kernel walking from any dump format, cross-checked against Volatility 3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["forensics", "memory", "dfir", "volatility", "incident-response"]
+categories = ["command-line-utilities", "parser-implementations"]
 
 [[bin]]
-name = "memf"
+name = "mem4n6"
 path = "src/main.rs"
 
 [dependencies]
