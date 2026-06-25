@@ -1,6 +1,6 @@
 [package]
 name = "memf-session"
-version = "0.2.1"
+version = "0.2.2"
 description = "Memory-dump analysis bootstrap: OS detection, CR3/DTB recovery, and kernel list-head resolution from a physical memory provider"
 edition.workspace = true
 rust-version.workspace = true
