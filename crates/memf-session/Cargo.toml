@@ -1,0 +1,17 @@
+[package]
+name = "memf-session"
+version = "0.2.1"
+description = "Memory-dump analysis bootstrap: OS detection, CR3/DTB recovery, and kernel list-head resolution from a physical memory provider"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+memf-format.workspace = true
+memf-symbols.workspace = true
+memf-linux.workspace = true
+
+[lints]
+workspace = true
