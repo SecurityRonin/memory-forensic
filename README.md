@@ -23,7 +23,7 @@ mem4n6 matches Volatility 3 **exactly** — including recovering 11 processes or
 
 ## Quick start
 
-Grab a prebuilt **static binary** from the [latest release](https://github.com/SecurityRonin/memory-forensic/releases/latest) — the Linux builds are static-PIE (musl: copy-anywhere, no glibc), with macOS, Windows, and a SHA-256 `checksums.txt` alongside. Not yet on crates.io.
+Install with `cargo install mem4n6`, or grab a prebuilt **static binary** from the [latest release](https://github.com/SecurityRonin/memory-forensic/releases/latest) — the Linux builds are static-PIE (musl: copy-anywhere, no glibc), with macOS, Windows, and a SHA-256 `checksums.txt` alongside.
 
 Or build from source (~one command):
 
