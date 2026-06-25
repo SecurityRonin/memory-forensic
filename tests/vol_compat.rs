@@ -8,7 +8,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn memf() -> Command {
-    Command::cargo_bin("memf").unwrap()
+    Command::cargo_bin("mem4n6").unwrap()
 }
 
 // ── Subcommand availability ───────────────────────────────────────────────────
