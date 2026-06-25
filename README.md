@@ -23,7 +23,9 @@ memf matches Volatility 3 **exactly** — including recovering 11 processes orph
 
 ## Quick start
 
-Not yet on crates.io — build from source (~one command):
+Grab a prebuilt **static binary** from the [latest release](https://github.com/SecurityRonin/memory-forensic/releases/latest) — the Linux builds are static-PIE (musl: copy-anywhere, no glibc), with macOS, Windows, and a SHA-256 `checksums.txt` alongside. Not yet on crates.io.
+
+Or build from source (~one command):
 
 ```bash
 git clone https://github.com/SecurityRonin/memory-forensic.git
@@ -31,7 +33,7 @@ cd memory-forensic && cargo build --release
 ./target/release/memf --help
 ```
 
-That dev build links libc dynamically. For the **fully static** binary that releases ship — static-PIE, musl, copy-anywhere, no glibc needed — add the musl target: `rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl`.
+That dev build links libc dynamically; to reproduce the release's fully static binary locally, add the musl target: `rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl`.
 
 ```bash
 # Inspect any dump — format, ranges, embedded metadata (no symbols needed)
