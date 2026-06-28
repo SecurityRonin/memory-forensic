@@ -1,6 +1,6 @@
 [package]
 name = "memf-linux"
-version = "0.2.3"
+version = "0.3.0"
 description = "Linux kernel memory forensic walkers (processes, connections, modules)"
 edition.workspace = true
 rust-version.workspace = true

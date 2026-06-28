@@ -19,13 +19,13 @@ license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 
 [workspace.dependencies]
-forensicnomicon = { version = "0.11", features = ["std", "serde"] }
+forensicnomicon = { version = "1", features = ["std", "serde"] }
 winreg-core = "0.1.1"
 winreg-format = "0.1"
 jsonguard = { version = "0.2.3", features = ["std", "serde"] }
 # winevt-core is now published — use the registry (drops the cross-repo path).
-winevt-core = "0.2"
-shellitem = "0.1"
+winevt-core = "0.3"
+shellitem = "0.2"
 # SCCA prefetch (.pf) reader — MAM/Xpress-Huffman + SCCA v30/31; memf delegates
 # its in-memory prefetch carve to this fleet crate.
 prefetch-core = "0.1"
@@ -35,10 +35,10 @@ memf-format  = { version = "0.2.1", path = "crates/memf-format" }
 memf-strings = { version = "0.2.1", path = "crates/memf-strings" }
 memf-symbols = { version = "0.2.1", path = "crates/memf-symbols" }
 memf-core    = { version = "0.2.1", path = "crates/memf-core" }
-memf-linux   = { version = "0.2.3", path = "crates/memf-linux" }
-memf-session = { version = "0.2.3", path = "crates/memf-session" }
-memf-windows = { version = "0.2.6", path = "crates/memf-windows" }
-memf-correlate    = { version = "0.2.3", path = "crates/memf-correlate" }
+memf-linux   = { version = "0.3.0", path = "crates/memf-linux" }
+memf-session = { version = "0.3.0", path = "crates/memf-session" }
+memf-windows = { version = "0.3.0", path = "crates/memf-windows" }
+memf-correlate    = { version = "0.3.0", path = "crates/memf-correlate" }
 assert_cmd = "2"
 aes            = "0.8"
 aes-gcm        = "0.10"
@@ -120,7 +120,7 @@ similar_names = { level = "allow", priority = 1 }
 
 [package]
 name = "mem4n6"
-version = "0.1.0"
+version = "0.2.0"
 description = "Memory forensics CLI — self-profiling Windows/Linux kernel walking from any dump format, cross-checked against Volatility 3"
 edition.workspace = true
 rust-version.workspace = true

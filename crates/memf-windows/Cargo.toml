@@ -1,6 +1,6 @@
 [package]
 name = "memf-windows"
-version = "0.2.6"
+version = "0.3.0"
 description = "Windows kernel memory forensic walkers (processes, threads, drivers, DLLs)"
 edition.workspace = true
 rust-version.workspace = true

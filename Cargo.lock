@@ -1196,10 +1196,31 @@ dependencies = [
 
 [[package]]
 name = "forensicnomicon"
-version = "0.11.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ac93239ea6e37ff6f00c54bd204a0a4d9c6ca5f7b0aaeb852f02a899e183830"
+checksum = "8ed4548e40fc4f7f22f769ba68afbb426c379c168ea4ab019421f10d91fa3b4e"
 dependencies = [
+ "forensicnomicon-core",
+ "forensicnomicon-data",
+ "serde",
+]
+
+[[package]]
+name = "forensicnomicon-core"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5d5b96ffd37d1e758a1657839de8b4d5e7bfc024a5500509d07ff7acd7b9461"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "forensicnomicon-data"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "664814f07d95790e9c38a9c2c3a0a5539ba4e1ef8e4de72cf32424fc397364ba"
+dependencies = [
+ "forensicnomicon-core",
  "serde",
 ]
 
@@ -1849,7 +1870,7 @@ dependencies = [
 
 [[package]]
 name = "mem4n6"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1908,7 +1929,7 @@ dependencies = [
 
 [[package]]
 name = "memf-correlate"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "forensicnomicon",
@@ -1934,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "memf-linux"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "forensicnomicon",
  "goblin",
@@ -1950,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "memf-session"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "memf-format",
@@ -1986,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "memf-windows"
-version = "0.2.6"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3046,9 +3067,9 @@ dependencies = [
 
 [[package]]
 name = "shellitem"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1866e49cc8b818e4f337304d966f41908ac815128d915015f163e987d2f8abad"
+checksum = "aacc05cb220ac9c618b6d6026e29dc4776e0dc0b874d5c5dffc44fa30078a233"
 dependencies = [
  "forensicnomicon",
 ]
@@ -4127,9 +4148,9 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "winevt-core"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dbc62a52c8c869e6559399ed31f1e9b9f7b96c8c50d8cfbf65b612f1ff177a4"
+checksum = "57793cbb9aaf36bccc5572e399e1dc5b5c46cd709a1917dee84497c63f9ac935"
 dependencies = [
  "crc32fast",
  "forensicnomicon",

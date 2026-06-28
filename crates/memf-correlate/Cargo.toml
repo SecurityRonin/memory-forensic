@@ -1,6 +1,6 @@
 [package]
 name = "memf-correlate"
-version = "0.2.3"
+version = "0.3.0"
 description = "Forensic event correlation model for the memf forensics framework"
 edition.workspace = true
 rust-version.workspace = true
