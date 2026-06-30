@@ -75,7 +75,7 @@ pub fn resolve_dump(path: &Path) -> Result<ResolvedDump> {
 /// Returns `(readable_entries, errors)` where each readable entry is `(name, size)`
 /// and each error is a human-readable description of why `by_index()` failed.
 fn enumerate_zip_entries(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+    archive: &mut zip_core::ZipArchive<std::fs::File>,
 ) -> (Vec<(String, u64)>, Vec<String>) {
     let mut entries = Vec::new();
     let mut errors = Vec::new();
@@ -94,7 +94,7 @@ fn enumerate_zip_entries(
 
 fn extract_from_zip(path: &Path) -> Result<NamedTempFile> {
     let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
+    let mut archive = zip_core::ZipArchive::new(file)?;
 
     let total = archive.len();
     let (entries, errors) = enumerate_zip_entries(&mut archive);
@@ -456,7 +456,7 @@ mod tests {
         // from extraction so we can verify the (entries, errors) split.
         let zip_file = create_test_zip(&[("dump.dmp", &[0xAB; 64])]);
         let file = std::fs::File::open(zip_file.path()).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut archive = zip_core::ZipArchive::new(file).unwrap();
 
         let (entries, errors) = enumerate_zip_entries(&mut archive);
         // Normal zip: all entries readable, no errors.

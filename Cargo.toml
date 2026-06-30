@@ -87,7 +87,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lzma-rs = "0.3"
 ureq = "3"
 yara-x = "0.12"
-zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
+# Pure-Rust ZIP reader (decodes deflate/deflate64/bzip2/zstd/lzma without C FFI).
+zip-forensic-core = "0.1"
+# zip-rs kept only for the test-fixture WRITER (zip-forensic-core is read-only),
+# slimmed to deflate-only so it pulls no bzip2-sys/zstd-sys/lzma-sys C libraries.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # unsafe is denied workspace-wide, not forbidden: a handful of crates legitimately
 # need one bounded mmap site (memf-core::pagefile, forensic-hashdb::known_good).
@@ -147,6 +151,7 @@ clap.workspace = true
 comfy-table.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+zip-forensic-core.workspace = true
 zip.workspace = true
 sevenz-rust.workspace = true
 indicatif.workspace = true
