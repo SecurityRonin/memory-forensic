@@ -7,7 +7,6 @@ members = [
     "crates/memf-core",
     "crates/memf-linux",
     "crates/memf-windows",
-    "crates/forensic-hashdb",
     "crates/memf-correlate",
     "crates/memf-session",
 ]
@@ -30,7 +29,6 @@ shellitem = "0.2"
 # its in-memory prefetch carve to this fleet crate.
 prefetch-core = "0.1"
 # Internal (version + path: path drives local dev, version is used on publish).
-forensic-hashdb = { version = "0.1.0", path = "crates/forensic-hashdb" }
 memf-format  = { version = "0.2.1", path = "crates/memf-format" }
 memf-strings = { version = "0.2.1", path = "crates/memf-strings" }
 memf-symbols = { version = "0.2.1", path = "crates/memf-symbols" }
@@ -94,7 +92,7 @@ zip-forensic-core = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # unsafe is denied workspace-wide, not forbidden: a handful of crates legitimately
-# need one bounded mmap site (memf-core::pagefile, forensic-hashdb::known_good).
+# need one bounded mmap site (memf-core::pagefile).
 # Those sites carry a justified `#[allow(unsafe_code)]`; every other `unsafe` stays
 # a hard error. `deny` (not `forbid`) is what makes the local override possible.
 [workspace.lints.rust]
