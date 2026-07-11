@@ -92,6 +92,26 @@ jobs:
           name: mem4n6-${{ steps.version.outputs.version }}-${{ matrix.target }}
           path: mem4n6-${{ steps.version.outputs.version }}-${{ matrix.target }}.*
 
+  # Publish the crate to crates.io on the release tag (was hand-published before).
+  # Gated on build; idempotent (skip if this version is already on crates.io) so a
+  # re-tag never wedges on "already exists". Uses the org CARGO_REGISTRY_TOKEN.
+  publish-crate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: cargo publish (skip if already published)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if curl -sf "https://index.crates.io/me/m4/mem4n6" | grep -q "\"vers\":\"$VER\""; then
+            echo "mem4n6 $VER already on crates.io — skipping publish"
+          else
+            cargo publish --locked
+          fi
+
   release:
     needs: build
     runs-on: ubuntu-latest
