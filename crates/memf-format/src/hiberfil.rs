@@ -285,7 +285,11 @@ impl FormatPlugin for HiberfilPlugin {
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        Ok(Box::new(HiberfilProvider::from_path(path)?))
+        self.open_bytes(&std::fs::read(path)?)
+    }
+
+    fn open_bytes(&self, bytes: &[u8]) -> Result<Box<dyn PhysicalMemoryProvider>> {
+        Ok(Box::new(HiberfilProvider::from_bytes(bytes)?))
     }
 }
 

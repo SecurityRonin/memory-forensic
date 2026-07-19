@@ -177,9 +177,27 @@ pub trait FormatPlugin: Send + Sync {
 
     /// Open the file and return a `PhysicalMemoryProvider`.
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>>;
+
+    /// Open an already-read in-memory byte image — the reader-based counterpart
+    /// to [`FormatPlugin::open`]. Used when the dump bytes arrive from a generic
+    /// byte source (e.g. a resolver-peeled archive/compression stream) rather than
+    /// a file path. The providers are in-memory by construction, so [`open`](Self::open)
+    /// is itself the file-reading wrapper around this.
+    fn open_bytes(&self, bytes: &[u8]) -> Result<Box<dyn PhysicalMemoryProvider>>;
 }
 
 inventory::collect!(&'static dyn FormatPlugin);
+
+/// A seekable, thread-safe byte reader — the input edge for [`open_source`].
+///
+/// `Read + Seek` are two non-auto traits and cannot together form a `dyn` object,
+/// so this single trait combines them (plus `Send` for cross-thread use). It is
+/// blanket-implemented for every `Read + Seek + Send`, so a [`std::io::Cursor`],
+/// a [`std::fs::File`], or a `forensic-vfs` `DynSource` adapted to positioned
+/// reads all qualify without extra glue — and `memf` stays decoupled from
+/// `forensic-vfs`.
+pub trait DumpReader: std::io::Read + std::io::Seek + Send {}
+impl<R: std::io::Read + std::io::Seek + Send> DumpReader for R {}
 
 /// Open a dump file by probing all registered format plugins.
 ///
@@ -200,20 +218,81 @@ pub fn open_dump_with_raw_fallback(path: &Path) -> Result<Box<dyn PhysicalMemory
     open_dump_inner(path, 1)
 }
 
+/// Open a memory dump from a generic seekable byte source instead of a file path
+/// (ADR 0011) — the reader-based twin of [`open_dump`].
+///
+/// The bytes may come from anywhere: a file, a network stream, or — the motivating
+/// case — a `forensic-vfs` resolver that has peeled a `memory.raw.gz` /
+/// `memory.zip` / `dump.7z` down to its raw physical-page stream. The whole source
+/// is read into memory (the format providers are in-memory by construction, exactly
+/// as the path-based path already reads the file), then the same format detection
+/// runs and the winning provider is built from the bytes. `memf` stays decoupled
+/// from `forensic-vfs`: the caller adapts a `DynSource` to `Read + Seek + Send` at
+/// the call site.
+///
+/// # Errors
+/// Propagates a read error from `src`, or returns [`Error::UnknownFormat`] /
+/// [`Error::AmbiguousFormat`] / a provider-construction error, exactly as
+/// [`open_dump`].
+pub fn open_source(src: Box<dyn DumpReader>) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    open_source_inner(src, 20)
+}
+
+/// Like [`open_source`], but accepts the raw format as a last resort — the
+/// reader-based twin of [`open_dump_with_raw_fallback`].
+///
+/// This is the ADR-0011 case: a `forensic-vfs` resolver has already peeled a
+/// `memory.dd.gz` / `memory.zip` down to a headerless raw physical-page stream,
+/// so the caller has confirmed the bytes are a memory dump. Without the fallback
+/// a raw dump fails detection (the raw plugin scores 5, below [`open_source`]'s
+/// minimum threshold of 20); a real format (LiME/AVML/crash dump) still wins on
+/// its higher score, so the fallback never shadows a recognized dump.
+///
+/// # Errors
+/// Propagates a read error from `src`, or a provider-construction error, exactly
+/// as [`open_source`].
+pub fn open_source_with_raw_fallback(
+    src: Box<dyn DumpReader>,
+) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    open_source_inner(src, 1)
+}
+
 fn open_dump_inner(path: &Path, min_fallback_score: u8) -> Result<Box<dyn PhysicalMemoryProvider>> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
     let mut header = [0u8; 4096];
     let n = file.read(&mut header)?;
-    let header = &header[..n];
+    let plugin = pick_plugin(&header[..n], min_fallback_score)?;
+    plugin.open(path)
+}
 
-    let mut best: Option<(&dyn FormatPlugin, u8)> = None;
+fn open_source_inner(
+    mut src: Box<dyn DumpReader>,
+    min_fallback_score: u8,
+) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    src.read_to_end(&mut bytes)?;
+    let header_len = bytes.len().min(4096);
+    let plugin = pick_plugin(&bytes[..header_len], min_fallback_score)?;
+    plugin.open_bytes(&bytes)
+}
+
+/// Pick the winning format plugin for a dump `header`, shared by the path-based
+/// [`open_dump`] and the reader-based [`open_source`] so detection lives once.
+///
+/// A plugin scoring >= 80 wins immediately; otherwise the highest score >= 50
+/// wins, and a tie at the top is [`Error::AmbiguousFormat`]. When nothing reaches
+/// 50, the best score >= `min_fallback_score` is accepted (20 for the normal path,
+/// 1 for the raw-fallback path); if nothing qualifies, [`Error::UnknownFormat`].
+fn pick_plugin(header: &[u8], min_fallback_score: u8) -> Result<&'static dyn FormatPlugin> {
+    let mut best: Option<(&'static dyn FormatPlugin, u8)> = None;
     let mut ambiguous = false;
 
     for plugin in inventory::iter::<&dyn FormatPlugin> {
         let score = plugin.probe(header);
         if score >= 80 {
-            return plugin.open(path);
+            return Ok(*plugin);
         }
         if score >= 50 {
             if let Some((_, prev_score)) = best {
@@ -237,10 +316,7 @@ fn open_dump_inner(path: &Path, min_fallback_score: u8) -> Result<Box<dyn Physic
         return Err(Error::AmbiguousFormat);
     }
 
-    match best {
-        Some((plugin, _)) => plugin.open(path),
-        None => Err(Error::UnknownFormat),
-    }
+    best.map(|(plugin, _)| plugin).ok_or(Error::UnknownFormat)
 }
 
 pub mod avml;
@@ -561,6 +637,34 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// The reader-based twin of `raw_fallback_accepts_plain_bytes`: a headerless
+    /// raw dump (score 5, below the normal threshold of 20) arriving as a
+    /// `Read + Seek` source — the ADR-0011 case where a `forensic-vfs` resolver
+    /// peeled `memory.dd` out of an archive — is accepted by
+    /// `open_source_with_raw_fallback` and read back as the Raw format.
+    #[test]
+    fn open_source_with_raw_fallback_accepts_plain_bytes() {
+        use std::io::Cursor;
+        let data = vec![0x00u8; 1024];
+        let provider =
+            open_source_with_raw_fallback(Box::new(Cursor::new(data))).expect("raw fallback");
+        assert_eq!(provider.format_name(), "Raw");
+        assert_eq!(provider.total_size(), 1024);
+    }
+
+    /// Raw fallback must not shadow a real format: LiME bytes on a reader still
+    /// win over the raw fallback (higher score), same as the path-based twin.
+    #[test]
+    fn open_source_with_raw_fallback_still_detects_lime() {
+        use crate::test_builders::LimeBuilder;
+        use std::io::Cursor;
+        let dump = LimeBuilder::new().add_range(0, &[0xAA; 128]).build();
+        let provider =
+            open_source_with_raw_fallback(Box::new(Cursor::new(dump))).expect("lime via reader");
+        assert_eq!(provider.format_name(), "LiME");
+        assert_eq!(provider.total_size(), 128);
+    }
+
     // -------------------------------------------------------------------------
     // Additional gap coverage (TDD audit 2026-03-31)
     // -------------------------------------------------------------------------
@@ -618,6 +722,54 @@ mod tests {
     /// `Error::AmbiguousFormat` variant is therefore covered at the unit level
     /// (display test above) and its construction path is covered by the
     /// `open_dump_inner` code reading, with the display form verified here.
+    #[test]
+    fn open_source_reads_same_pages_as_open_dump_crashdump() {
+        // The reader-based seam (ADR 0011): opening a crash dump from an in-memory
+        // seekable byte source must detect the same format and expose byte-identical
+        // physical pages, ranges, and metadata as the path-based open_dump.
+        use crate::test_builders::CrashDumpBuilder;
+        use std::io::Cursor;
+        let page = vec![0xABu8; 4096];
+        let dump = CrashDumpBuilder::new()
+            .cr3(0x1ab000)
+            .add_run(0, &page)
+            .build();
+
+        let path = std::env::temp_dir().join("memf_test_open_source_crash.dmp");
+        std::fs::write(&path, &dump).unwrap();
+        let via_path = open_dump(&path).unwrap();
+
+        let via_source = open_source(Box::new(Cursor::new(dump.clone()))).unwrap();
+
+        assert_eq!(via_source.format_name(), via_path.format_name());
+        assert_eq!(via_source.total_size(), via_path.total_size());
+        assert_eq!(via_source.ranges(), via_path.ranges());
+        assert_eq!(
+            via_source.metadata().and_then(|m| m.cr3),
+            via_path.metadata().and_then(|m| m.cr3)
+        );
+
+        let mut a = vec![0u8; 4096];
+        let mut b = vec![0u8; 4096];
+        let na = via_source.read_phys(0, &mut a).unwrap();
+        let nb = via_path.read_phys(0, &mut b).unwrap();
+        assert_eq!(na, nb);
+        assert_eq!(a, b);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_source_detects_lime_from_a_reader() {
+        // Format detection over the byte source picks LiME (a high-confidence magic),
+        // exactly as it would over a file path.
+        use crate::test_builders::LimeBuilder;
+        use std::io::Cursor;
+        let dump = LimeBuilder::new().add_range(0, &[0xAAu8; 128]).build();
+        let provider = open_source(Box::new(Cursor::new(dump))).unwrap();
+        assert_eq!(provider.format_name(), "LiME");
+        assert_eq!(provider.total_size(), 128);
+    }
+
     #[test]
     fn ambiguous_format_error_is_correct_variant_and_display() {
         let err = Error::AmbiguousFormat;
