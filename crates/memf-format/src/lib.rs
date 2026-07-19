@@ -619,6 +619,54 @@ mod tests {
     /// (display test above) and its construction path is covered by the
     /// `open_dump_inner` code reading, with the display form verified here.
     #[test]
+    fn open_source_reads_same_pages_as_open_dump_crashdump() {
+        // The reader-based seam (ADR 0011): opening a crash dump from an in-memory
+        // seekable byte source must detect the same format and expose byte-identical
+        // physical pages, ranges, and metadata as the path-based open_dump.
+        use crate::test_builders::CrashDumpBuilder;
+        use std::io::Cursor;
+        let page = vec![0xABu8; 4096];
+        let dump = CrashDumpBuilder::new()
+            .cr3(0x1ab000)
+            .add_run(0, &page)
+            .build();
+
+        let path = std::env::temp_dir().join("memf_test_open_source_crash.dmp");
+        std::fs::write(&path, &dump).unwrap();
+        let via_path = open_dump(&path).unwrap();
+
+        let via_source = open_source(Box::new(Cursor::new(dump.clone()))).unwrap();
+
+        assert_eq!(via_source.format_name(), via_path.format_name());
+        assert_eq!(via_source.total_size(), via_path.total_size());
+        assert_eq!(via_source.ranges(), via_path.ranges());
+        assert_eq!(
+            via_source.metadata().and_then(|m| m.cr3),
+            via_path.metadata().and_then(|m| m.cr3)
+        );
+
+        let mut a = vec![0u8; 4096];
+        let mut b = vec![0u8; 4096];
+        let na = via_source.read_phys(0, &mut a).unwrap();
+        let nb = via_path.read_phys(0, &mut b).unwrap();
+        assert_eq!(na, nb);
+        assert_eq!(a, b);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_source_detects_lime_from_a_reader() {
+        // Format detection over the byte source picks LiME (a high-confidence magic),
+        // exactly as it would over a file path.
+        use crate::test_builders::LimeBuilder;
+        use std::io::Cursor;
+        let dump = LimeBuilder::new().add_range(0, &[0xAAu8; 128]).build();
+        let provider = open_source(Box::new(Cursor::new(dump))).unwrap();
+        assert_eq!(provider.format_name(), "LiME");
+        assert_eq!(provider.total_size(), 128);
+    }
+
+    #[test]
     fn ambiguous_format_error_is_correct_variant_and_display() {
         let err = Error::AmbiguousFormat;
         assert!(
