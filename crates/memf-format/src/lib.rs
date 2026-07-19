@@ -238,6 +238,25 @@ pub fn open_source(src: Box<dyn DumpReader>) -> Result<Box<dyn PhysicalMemoryPro
     open_source_inner(src, 20)
 }
 
+/// Like [`open_source`], but accepts the raw format as a last resort — the
+/// reader-based twin of [`open_dump_with_raw_fallback`].
+///
+/// This is the ADR-0011 case: a `forensic-vfs` resolver has already peeled a
+/// `memory.dd.gz` / `memory.zip` down to a headerless raw physical-page stream,
+/// so the caller has confirmed the bytes are a memory dump. Without the fallback
+/// a raw dump fails detection (the raw plugin scores 5, below [`open_source`]'s
+/// minimum threshold of 20); a real format (LiME/AVML/crash dump) still wins on
+/// its higher score, so the fallback never shadows a recognized dump.
+///
+/// # Errors
+/// Propagates a read error from `src`, or a provider-construction error, exactly
+/// as [`open_source`].
+pub fn open_source_with_raw_fallback(
+    src: Box<dyn DumpReader>,
+) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    open_source_inner(src, 1)
+}
+
 fn open_dump_inner(path: &Path, min_fallback_score: u8) -> Result<Box<dyn PhysicalMemoryProvider>> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
