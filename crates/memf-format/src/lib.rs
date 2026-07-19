@@ -618,6 +618,34 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// The reader-based twin of `raw_fallback_accepts_plain_bytes`: a headerless
+    /// raw dump (score 5, below the normal threshold of 20) arriving as a
+    /// `Read + Seek` source — the ADR-0011 case where a `forensic-vfs` resolver
+    /// peeled `memory.dd` out of an archive — is accepted by
+    /// `open_source_with_raw_fallback` and read back as the Raw format.
+    #[test]
+    fn open_source_with_raw_fallback_accepts_plain_bytes() {
+        use std::io::Cursor;
+        let data = vec![0x00u8; 1024];
+        let provider =
+            open_source_with_raw_fallback(Box::new(Cursor::new(data))).expect("raw fallback");
+        assert_eq!(provider.format_name(), "Raw");
+        assert_eq!(provider.total_size(), 1024);
+    }
+
+    /// Raw fallback must not shadow a real format: LiME bytes on a reader still
+    /// win over the raw fallback (higher score), same as the path-based twin.
+    #[test]
+    fn open_source_with_raw_fallback_still_detects_lime() {
+        use crate::test_builders::LimeBuilder;
+        use std::io::Cursor;
+        let dump = LimeBuilder::new().add_range(0, &[0xAA; 128]).build();
+        let provider =
+            open_source_with_raw_fallback(Box::new(Cursor::new(dump))).expect("lime via reader");
+        assert_eq!(provider.format_name(), "LiME");
+        assert_eq!(provider.total_size(), 128);
+    }
+
     // -------------------------------------------------------------------------
     // Additional gap coverage (TDD audit 2026-03-31)
     // -------------------------------------------------------------------------
