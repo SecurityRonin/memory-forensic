@@ -122,8 +122,11 @@ impl FormatPlugin for ElfCorePlugin {
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        let data = std::fs::read(path)?;
-        let provider = ElfCoreProvider::from_bytes(data)?;
+        self.open_bytes(&std::fs::read(path)?)
+    }
+
+    fn open_bytes(&self, bytes: &[u8]) -> Result<Box<dyn PhysicalMemoryProvider>> {
+        let provider = ElfCoreProvider::from_bytes(bytes.to_vec())?;
         Ok(Box::new(provider))
     }
 }

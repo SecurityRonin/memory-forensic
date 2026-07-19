@@ -177,9 +177,27 @@ pub trait FormatPlugin: Send + Sync {
 
     /// Open the file and return a `PhysicalMemoryProvider`.
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>>;
+
+    /// Open an already-read in-memory byte image — the reader-based counterpart
+    /// to [`FormatPlugin::open`]. Used when the dump bytes arrive from a generic
+    /// byte source (e.g. a resolver-peeled archive/compression stream) rather than
+    /// a file path. The providers are in-memory by construction, so [`open`](Self::open)
+    /// is itself the file-reading wrapper around this.
+    fn open_bytes(&self, bytes: &[u8]) -> Result<Box<dyn PhysicalMemoryProvider>>;
 }
 
 inventory::collect!(&'static dyn FormatPlugin);
+
+/// A seekable, thread-safe byte reader — the input edge for [`open_source`].
+///
+/// `Read + Seek` are two non-auto traits and cannot together form a `dyn` object,
+/// so this single trait combines them (plus `Send` for cross-thread use). It is
+/// blanket-implemented for every `Read + Seek + Send`, so a [`std::io::Cursor`],
+/// a [`std::fs::File`], or a `forensic-vfs` `DynSource` adapted to positioned
+/// reads all qualify without extra glue — and `memf` stays decoupled from
+/// `forensic-vfs`.
+pub trait DumpReader: std::io::Read + std::io::Seek + Send {}
+impl<R: std::io::Read + std::io::Seek + Send> DumpReader for R {}
 
 /// Open a dump file by probing all registered format plugins.
 ///
@@ -200,20 +218,62 @@ pub fn open_dump_with_raw_fallback(path: &Path) -> Result<Box<dyn PhysicalMemory
     open_dump_inner(path, 1)
 }
 
+/// Open a memory dump from a generic seekable byte source instead of a file path
+/// (ADR 0011) — the reader-based twin of [`open_dump`].
+///
+/// The bytes may come from anywhere: a file, a network stream, or — the motivating
+/// case — a `forensic-vfs` resolver that has peeled a `memory.raw.gz` /
+/// `memory.zip` / `dump.7z` down to its raw physical-page stream. The whole source
+/// is read into memory (the format providers are in-memory by construction, exactly
+/// as the path-based path already reads the file), then the same format detection
+/// runs and the winning provider is built from the bytes. `memf` stays decoupled
+/// from `forensic-vfs`: the caller adapts a `DynSource` to `Read + Seek + Send` at
+/// the call site.
+///
+/// # Errors
+/// Propagates a read error from `src`, or returns [`Error::UnknownFormat`] /
+/// [`Error::AmbiguousFormat`] / a provider-construction error, exactly as
+/// [`open_dump`].
+pub fn open_source(src: Box<dyn DumpReader>) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    open_source_inner(src, 20)
+}
+
 fn open_dump_inner(path: &Path, min_fallback_score: u8) -> Result<Box<dyn PhysicalMemoryProvider>> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
     let mut header = [0u8; 4096];
     let n = file.read(&mut header)?;
-    let header = &header[..n];
+    let plugin = pick_plugin(&header[..n], min_fallback_score)?;
+    plugin.open(path)
+}
 
-    let mut best: Option<(&dyn FormatPlugin, u8)> = None;
+fn open_source_inner(
+    mut src: Box<dyn DumpReader>,
+    min_fallback_score: u8,
+) -> Result<Box<dyn PhysicalMemoryProvider>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    src.read_to_end(&mut bytes)?;
+    let header_len = bytes.len().min(4096);
+    let plugin = pick_plugin(&bytes[..header_len], min_fallback_score)?;
+    plugin.open_bytes(&bytes)
+}
+
+/// Pick the winning format plugin for a dump `header`, shared by the path-based
+/// [`open_dump`] and the reader-based [`open_source`] so detection lives once.
+///
+/// A plugin scoring >= 80 wins immediately; otherwise the highest score >= 50
+/// wins, and a tie at the top is [`Error::AmbiguousFormat`]. When nothing reaches
+/// 50, the best score >= `min_fallback_score` is accepted (20 for the normal path,
+/// 1 for the raw-fallback path); if nothing qualifies, [`Error::UnknownFormat`].
+fn pick_plugin(header: &[u8], min_fallback_score: u8) -> Result<&'static dyn FormatPlugin> {
+    let mut best: Option<(&'static dyn FormatPlugin, u8)> = None;
     let mut ambiguous = false;
 
     for plugin in inventory::iter::<&dyn FormatPlugin> {
         let score = plugin.probe(header);
         if score >= 80 {
-            return plugin.open(path);
+            return Ok(*plugin);
         }
         if score >= 50 {
             if let Some((_, prev_score)) = best {
@@ -237,10 +297,7 @@ fn open_dump_inner(path: &Path, min_fallback_score: u8) -> Result<Box<dyn Physic
         return Err(Error::AmbiguousFormat);
     }
 
-    match best {
-        Some((plugin, _)) => plugin.open(path),
-        None => Err(Error::UnknownFormat),
-    }
+    best.map(|(plugin, _)| plugin).ok_or(Error::UnknownFormat)
 }
 
 pub mod avml;

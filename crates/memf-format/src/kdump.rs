@@ -414,7 +414,11 @@ impl FormatPlugin for KdumpPlugin {
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        Ok(Box::new(KdumpProvider::from_path(path)?))
+        self.open_bytes(&std::fs::read(path)?)
+    }
+
+    fn open_bytes(&self, bytes: &[u8]) -> Result<Box<dyn PhysicalMemoryProvider>> {
+        Ok(Box::new(KdumpProvider::from_bytes(bytes)?))
     }
 }
 

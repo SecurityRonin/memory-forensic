@@ -199,7 +199,11 @@ impl FormatPlugin for AvmlPlugin {
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn PhysicalMemoryProvider>> {
-        Ok(Box::new(AvmlProvider::from_path(path)?))
+        self.open_bytes(&std::fs::read(path)?)
+    }
+
+    fn open_bytes(&self, bytes: &[u8]) -> Result<Box<dyn PhysicalMemoryProvider>> {
+        Ok(Box::new(AvmlProvider::from_bytes(bytes)?))
     }
 }
 
