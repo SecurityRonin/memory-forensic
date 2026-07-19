@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: volatility3-memf
-Version: 0.1.0
-Summary: Volatility 3 memory layer adapter backed by the memf CLI
-Requires-Python: >=3.10
-Provides-Extra: dev
-Requires-Dist: pytest>=8; extra == "dev"
