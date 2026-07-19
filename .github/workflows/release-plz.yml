@@ -1,0 +1,67 @@
+name: release-plz
+
+# Owns crates.io publishing + changelogs + version bumps for the memf-* workspace
+# LIBRARIES (memf-format, memf-core, memf-session, memf-symbols, memf-windows,
+# memf-linux, memf-correlate, memf-strings). Configuration lives in release-plz.toml.
+#
+# On every push to main:
+#   - release-plz-pr:      opens/updates a human-reviewed version-bump PR
+#   - release-plz-release: publishes any library whose version is ahead of crates.io
+#                          (release-plz resolves dependency order) and tags it
+#
+# The mem4n6 BINARY distribution (MSI/deb/Homebrew/winget) stays in release.yml,
+# triggered by a manual `vX.Y.Z` tag. The two pipelines do not overlap: release-plz
+# uses package-prefixed tags (memf-format-v*, …) which never match `v[0-9]*`.
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: release-plz release
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release-plz-pr:
+    name: release-plz PR
+    runs-on: ubuntu-latest
+    # Serialize PR updates so concurrent pushes don't fight over the release PR.
+    concurrency:
+      group: release-plz-pr
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: release-plz release-pr
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
+        with:
+          command: release-pr
+        env:
+          # PRs created with the built-in GITHUB_TOKEN do NOT trigger other workflows
+          # (CI won't run on the release PR). Set a RELEASE_PLZ_TOKEN secret (a
+          # fine-grained PAT or a GitHub App token) to get CI on the release PR; until
+          # then this falls back to GITHUB_TOKEN and works without checks.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

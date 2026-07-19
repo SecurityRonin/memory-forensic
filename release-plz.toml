@@ -1,0 +1,53 @@
+# release-plz owns crates.io publishing + changelogs + per-crate version bumps for
+# the memf-* workspace LIBRARIES. It runs on pushes to main (see
+# .github/workflows/release-plz.yml):
+#   - `release-pr`  opens a human-reviewed version-bump PR (conventional commits)
+#   - `release`     publishes any library whose Cargo.toml version is ahead of
+#                   crates.io, in dependency order, and creates its git tag
+#
+# The `mem4n6` BINARY is NOT released here — it ships via release.yml, triggered by
+# a manual `vX.Y.Z` tag (cross-built MSI/deb/Homebrew/winget). The two pipelines do
+# not overlap: release-plz uses package-prefixed tags (memf-format-v*, …) which
+# never match release.yml's `v[0-9]*` trigger.
+
+[workspace]
+# Per-package git tags, e.g. `memf-format-v0.3.0`. They start with the package
+# name (a letter), so they can never match release.yml's `v[0-9]*` binary trigger.
+git_tag_enable = true
+# GitHub Releases (with assets) are owned by release.yml; library crates get a git
+# tag + CHANGELOG entry, not a separate GitHub Release.
+git_release_enable = false
+changelog_update = true
+# Each library versions independently.
+dependencies_update = false
+# Only prepare a release when a real change exists since the last one. This
+# allowlist makes feat/fix/perf/refactor/doc/revert the only release triggers;
+# chore/ci/test/style/build (incl. release-plz's own release commits) never
+# prepare a release, which kills the changelog-churn release loop.
+release_commits = "^(feat|fix|perf|refactor|doc|revert)"
+
+# Skip release-plz's own release commits so merging a release PR does not trigger
+# yet another release. Library releases still fire on feat/fix/perf/refactor/doc.
+[changelog]
+commit_parsers = [
+    { message = "^chore\\(release\\):", skip = true },
+    { message = "^chore: release", skip = true },
+    { message = "^feat", group = "added" },
+    { message = "^fix", group = "fixed" },
+    { message = "^perf", group = "performance" },
+    { message = "^refactor", group = "other" },
+    { message = "^doc", group = "documentation" },
+    { message = "^revert", group = "other" },
+    { message = "^style", skip = true },
+    { message = "^test", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^build", skip = true },
+    { message = "^chore", skip = true },
+    { message = "^.*", group = "other" },
+]
+
+# mem4n6 is the end-user BINARY, published by release.yml on a manual `vX.Y.Z` tag
+# (not crates.io library publishing). release-plz must not tag/publish/release it.
+[[package]]
+name = "mem4n6"
+release = false
