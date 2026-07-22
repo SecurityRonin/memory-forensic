@@ -40,7 +40,9 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod attribution;
+mod driver;
 mod region_source;
 
 pub use attribution::{process_regions, MemAttribution};
+pub use driver::carve_process;
 pub use region_source::VaRegionSource;
