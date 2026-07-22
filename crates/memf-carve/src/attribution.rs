@@ -37,9 +37,25 @@ pub fn process_regions(
     pid: u64,
     process: &str,
 ) -> Vec<Region<MemAttribution>> {
-    // stub — replaced in GREEN
-    let _ = (vads, pid, process);
-    Vec::new()
+    vads.iter()
+        .map(|v| {
+            // end_vaddr is the last addressable byte (`... | 0xFFF`), so the length is
+            // inclusive-corrected. saturating_* keeps a corrupt end < start from
+            // underflowing into a huge span.
+            let len = v.end_vaddr.saturating_sub(v.start_vaddr).saturating_add(1);
+            Region {
+                start: v.start_vaddr,
+                len,
+                tag: MemAttribution {
+                    pid,
+                    process: process.to_string(),
+                    va_start: v.start_vaddr,
+                    protection: v.protection,
+                    is_private: v.is_private,
+                },
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
