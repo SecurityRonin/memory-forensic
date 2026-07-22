@@ -7,6 +7,7 @@ members = [
     "crates/memf-core",
     "crates/memf-linux",
     "crates/memf-windows",
+    "crates/memf-carve",
     "crates/memf-correlate",
     "crates/memf-session",
 ]
@@ -37,6 +38,9 @@ memf-linux   = { version = "0.3.0", path = "crates/memf-linux" }
 memf-session = { version = "0.3.0", path = "crates/memf-session" }
 memf-windows = { version = "0.3.0", path = "crates/memf-windows" }
 memf-correlate    = { version = "0.3.0", path = "crates/memf-correlate" }
+memf-carve   = { version = "0.1.0", path = "crates/memf-carve" }
+# Fleet carving contract + single-pass sweep engine (unpublished — path dep).
+forensic-carve = { path = "../forensic-carve" }
 assert_cmd = "2"
 aes            = "0.8"
 aes-gcm        = "0.10"

@@ -1,0 +1,20 @@
+[package]
+name = "memf-carve"
+version = "0.1.0"
+description = "Plane-V memory artifact carving: per-process virtual-address-space carving over the forensic-carve sweep engine (memory medium of the fleet carving contract)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+memf-core.workspace = true
+memf-windows.workspace = true
+memf-format.workspace = true
+forensic-carve.workspace = true
+
+[dev-dependencies]
+memf-symbols.workspace = true
+
+[lints]
+workspace = true
