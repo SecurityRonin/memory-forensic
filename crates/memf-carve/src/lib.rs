@@ -41,6 +41,7 @@
 
 mod attribution;
 mod driver;
+mod dump;
 mod region_source;
 
 pub use attribution::{process_regions, MemAttribution};
