@@ -27,9 +27,15 @@ pub fn carve_process<P: PhysicalMemoryProvider>(
     carvers: &[&dyn Carver],
     opts: &CarveOptions,
 ) -> Vec<SweptItem<MemAttribution>> {
-    // stub — replaced in GREEN
-    let _ = (vas, vads, pid, process, carvers, opts);
-    Vec::new()
+    let source = VaRegionSource::new(vas);
+    let regions = process_regions(vads, pid, process);
+    // The memory medium owns its recovery method — force it regardless of what the
+    // caller set, so the medium-agnostic carvers stamp MemoryCarve.
+    let opts = CarveOptions {
+        recovery_method: RecoveryMethod::MemoryCarve,
+        ..opts.clone()
+    };
+    sweep(&source, regions, carvers, &opts)
 }
 
 #[cfg(test)]
