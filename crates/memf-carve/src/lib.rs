@@ -22,6 +22,11 @@
 //!   [`forensic_carve::RecoveryMethod::MemoryCarve`]. Carvers arrive via injection or
 //!   [`forensic_carve::registered_carvers`]; `memf-carve` never depends on a parser
 //!   crate.
+//! - [`carve_dump`] / [`carve_dump_from_processes`] — the multi-process Plane-V
+//!   driver: [`carve_dump`] carves every [`ProcessView`] in a resolved set;
+//!   [`carve_dump_from_processes`] is the thin resolver that walks each Windows
+//!   process's `_EPROCESS.VadRoot` and builds its user VAS from `cr3` before
+//!   carving. Attribution rides each item back out on its owning pid / name.
 //!
 //! # Scope: Plane-V ONLY (fleet ADR 0001 §5)
 //!
@@ -46,4 +51,5 @@ mod region_source;
 
 pub use attribution::{process_regions, MemAttribution};
 pub use driver::carve_process;
+pub use dump::{carve_dump, carve_dump_from_processes, ProcessView};
 pub use region_source::VaRegionSource;
