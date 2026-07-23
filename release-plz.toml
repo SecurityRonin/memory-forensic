@@ -13,6 +13,7 @@
 [workspace]
 # Per-package git tags, e.g. `memf-format-v0.3.0`. They start with the package
 # name (a letter), so they can never match release.yml's `v[0-9]*` binary trigger.
+git_tag_name = "{{ package }}-v{{ version }}"
 git_tag_enable = true
 # GitHub Releases (with assets) are owned by release.yml; library crates get a git
 # tag + CHANGELOG entry, not a separate GitHub Release.
