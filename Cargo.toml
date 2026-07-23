@@ -39,8 +39,8 @@ memf-session = { version = "0.3.0", path = "crates/memf-session" }
 memf-windows = { version = "0.3.0", path = "crates/memf-windows" }
 memf-correlate    = { version = "0.3.0", path = "crates/memf-correlate" }
 memf-carve   = { version = "0.1.0", path = "crates/memf-carve" }
-# Fleet carving contract + single-pass sweep engine (unpublished — path dep).
-forensic-carve = { path = "../forensic-carve" }
+# Fleet carving contract + single-pass sweep engine.
+forensic-carve = "0.1"
 assert_cmd = "2"
 aes            = "0.8"
 aes-gcm        = "0.10"

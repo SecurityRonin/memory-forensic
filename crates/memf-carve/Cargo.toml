@@ -6,10 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Cannot publish until `forensic-carve` is on crates.io: it is currently an
-# unpublished path dependency. Flip to publishable (and switch the dep to the
-# registry version) once forensic-carve publishes.
-publish = false
 
 [dependencies]
 memf-core.workspace = true
