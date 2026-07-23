@@ -51,10 +51,3 @@ commit_parsers = [
 [[package]]
 name = "mem4n6"
 release = false
-
-# memf-carve depends on the unpublished `forensic-carve` path crate, so it cannot be
-# published yet (mirrors its Cargo.toml `publish = false`). Re-enable once
-# forensic-carve is on crates.io and the dep is switched to the registry version.
-[[package]]
-name = "memf-carve"
-release = false
