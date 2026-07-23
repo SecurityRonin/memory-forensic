@@ -1,0 +1,49 @@
+# pre-commit hooks for memory-forensic
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+# https://pre-commit.com/
+
+repos:
+  # ── Rust ────────────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        description: Enforce Rust code formatting
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        description: Run Clippy lints (deny warnings)
+        entry: cargo clippy --workspace --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-deny
+        name: cargo deny
+        description: Check licenses, advisories, and banned crates
+        entry: cargo deny check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        # Only run when Cargo.toml or Cargo.lock changes
+        files: (Cargo\.toml|Cargo\.lock|deny\.toml)$
+
+  # ── General ─────────────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.snap$
+      - id: end-of-file-fixer
+        exclude: \.snap$
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
