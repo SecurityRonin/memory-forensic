@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "memf-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bytemuck",
  "lru",
@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "memf-symbols"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "goblin",
  "memf-format",
@@ -1994,7 +1994,7 @@ dependencies = [
 
 [[package]]
 name = "memf-windows"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes",
  "aes-gcm",
