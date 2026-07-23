@@ -51,15 +51,3 @@ commit_parsers = [
 [[package]]
 name = "mem4n6"
 release = false
-
-# memf-carve is gated until its sibling crates are republished. It uses API
-# (memf_format::PhysicalMemoryProvider bound, ObjectReader::symbols,
-# VirtualAddressSpace::read_virt) that exists in the LOCAL path siblings but not
-# in the currently-published memf-core 0.2.2 / memf-format 0.3.0 / memf-symbols
-# 0.2.2 / memf-windows 0.3.0 — so `cargo publish`'s isolated verify build fails
-# against the registry siblings. Re-enable after a coordinated memf-* workspace
-# release bumps those siblings to versions carrying the API memf-carve needs (and
-# memf-carve's dep reqs are raised to match).
-[[package]]
-name = "memf-carve"
-release = false
