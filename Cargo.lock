@@ -1942,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "memf-linux"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "forensicnomicon",
  "goblin",
@@ -1958,7 +1958,7 @@ dependencies = [
 
 [[package]]
 name = "memf-session"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "memf-format",
