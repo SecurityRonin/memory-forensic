@@ -480,6 +480,47 @@ enum Commands {
         #[arg(long)]
         pid: Option<u64>,
     },
+    /// Locate registry hives symbol-free by scanning for the `_CMHIVE`/`_HHIVE`
+    /// signature (no `CmpHiveListHead`, no kernel base).
+    ///
+    /// Prints each located `_CMHIVE` virtual address — the same hives vol3
+    /// `windows.registry.hivelist` / `hivescan` enumerate. Works on images where
+    /// kernel-base / KASLR resolution fails but ISF struct offsets resolve.
+    #[command(name = "hivescan")]
+    Hivescan {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+        /// Output format: table, json, csv, ndjson.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
+    /// Dump SAM NTLM password hashes from the SYSTEM+SAM registry hives in a
+    /// Windows memory dump.
+    ///
+    /// Locates both hives symbol-free (a `_CMHIVE` signature scan — no
+    /// `CmpHiveListHead`, no kernel base), then decrypts the boot key and each
+    /// account's LM/NT hash. Byte-for-byte parity with vol3
+    /// `windows.hashdump.Hashdump`.
+    #[command(name = "hashdump")]
+    Hashdump {
+        /// Path to the memory dump file.
+        dump: PathBuf,
+        /// Path to ISF JSON symbol file or directory.
+        #[arg(long)]
+        symbols: Option<PathBuf>,
+        /// Output format: table, json, csv, ndjson.
+        #[arg(long, default_value = "table")]
+        output: OutputFormat,
+        /// Optional kernel page table root (CR3) physical address (hex).
+        #[arg(long, value_parser = parse_cr3)]
+        cr3: Option<u64>,
+    },
     /// Read raw bytes from a physical address in a memory dump.
     ///
     /// Writes raw bytes to stdout. Primary interface for `volatility3-memf`.
@@ -924,6 +965,24 @@ fn main() -> Result<()> {
             let resolved = archive::resolve_dump(&dump)?;
             cmd_browser_creds(resolved.path(), symbols.as_deref(), output, cr3, pid, true)
         }
+        Commands::Hivescan {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_hivescan(resolved.path(), symbols.as_deref(), output, cr3, true)
+        }
+        Commands::Hashdump {
+            dump,
+            symbols,
+            output,
+            cr3,
+        } => {
+            let resolved = archive::resolve_dump(&dump)?;
+            cmd_hashdump(resolved.path(), symbols.as_deref(), output, cr3, true)
+        }
         Commands::ReadPhys { dump, addr, len } => {
             cmd_read_phys(&dump, addr, len, &mut std::io::stdout())
         }
@@ -1246,6 +1305,43 @@ fn main() -> Result<()> {
                             pid_filter,
                             true,
                         ),
+                        "hashdump" => {
+                            let (ctx, reader) = setup_analysis(&file, symbols, None, true)?;
+                            if !matches!(ctx.os, OsProfile::Windows) {
+                                anyhow::bail!("windows.hashdump.Hashdump requires a Windows dump");
+                            }
+                            let report = memf_windows::hashdump::run_hashdump(&reader)
+                                .context("failed to run SAM hashdump")?;
+                            // vol3 TSV parity: `User\trid\tlmhash\tnthash`.
+                            println!("User\trid\tlmhash\tnthash");
+                            println!();
+                            for e in &report.entries {
+                                println!(
+                                    "{}\t{}\t{}\t{}",
+                                    jsonguard::tsv_safe(&e.username),
+                                    e.rid,
+                                    e.lm_hash,
+                                    e.nt_hash
+                                );
+                            }
+                            emit_hashdump_diagnostics(&report, ctx.cr3);
+                            Ok(())
+                        }
+                        "hivescan" => {
+                            let (ctx, reader) = setup_analysis(&file, symbols, None, true)?;
+                            if !matches!(ctx.os, OsProfile::Windows) {
+                                anyhow::bail!(
+                                    "windows.registry.hivescan.HiveScan requires a Windows dump"
+                                );
+                            }
+                            let bases = memf_windows::registry::scan_cmhive_bases(&reader);
+                            println!("Virtual");
+                            println!();
+                            for b in &bases {
+                                println!("{b:#018x}");
+                            }
+                            Ok(())
+                        }
                         "info" => cmd_info(&file, true),
                         "strings" => cmd_strings(Some(&file), None, 4, fmt, None, true),
                         "procdump" => {
@@ -6643,6 +6739,186 @@ fn render_browser_creds(
                     csv_field(&c.url).value,
                     csv_field(&c.username).value,
                     csv_field(&c.password).value,
+                );
+            }
+            out
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cmd_hivescan — symbol-free registry hive locator
+// ---------------------------------------------------------------------------
+
+fn cmd_hivescan(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if !matches!(ctx.os, OsProfile::Windows) {
+        anyhow::bail!("hivescan requires a Windows memory dump");
+    }
+    let bases = memf_windows::registry::scan_cmhive_bases(&reader);
+    if bases.is_empty() {
+        eprintln!(
+            "hivescan: no _CMHIVE located — check that the ISF provides _CMHIVE.Hive / \
+             _CMHIVE.HiveList offsets and that CR3 {:#x} is correct",
+            ctx.cr3
+        );
+    }
+    print!("{}", render_hivescan(&bases, output));
+    Ok(())
+}
+
+fn render_hivescan(bases: &[u64], output: OutputFormat) -> String {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            table.set_content_arrangement(comfy_table::ContentArrangement::Disabled);
+            table.set_header(vec!["_CMHIVE VA"]);
+            for &b in bases {
+                table.add_row(vec![format!("{b:#018x}")]);
+            }
+            format!("{table}\n\nTotal: {} hives", bases.len())
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
+            for &b in bases {
+                let _ = writeln!(out, "{{\"cmhive_va\":\"{b:#018x}\"}}");
+            }
+            out
+        }
+        OutputFormat::Csv => {
+            let mut out = String::from("cmhive_va\n");
+            for &b in bases {
+                let _ = writeln!(out, "{b:#018x}");
+            }
+            out
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cmd_hashdump — native SAM NTLM hashdump
+// ---------------------------------------------------------------------------
+
+fn cmd_hashdump(
+    dump: &Path,
+    symbols_path: Option<&Path>,
+    output: OutputFormat,
+    cr3_override: Option<u64>,
+    raw_fallback: bool,
+) -> Result<()> {
+    let (ctx, reader) = setup_analysis(dump, symbols_path, cr3_override, raw_fallback)?;
+    if !matches!(ctx.os, OsProfile::Windows) {
+        anyhow::bail!("hashdump requires a Windows memory dump");
+    }
+    let report =
+        memf_windows::hashdump::run_hashdump(&reader).context("failed to run SAM hashdump")?;
+    emit_hashdump_diagnostics(&report, ctx.cr3);
+    print_hashdump(&report.entries, output);
+    Ok(())
+}
+
+/// Fail-loud: report to stderr *why* a hashdump produced no rows, distinguishing
+/// a locator failure (no hives / unidentified) from a genuine per-dump data
+/// limitation (hives located but the relevant cells are paged out).
+fn emit_hashdump_diagnostics(report: &memf_windows::hashdump::HashdumpReport, cr3: u64) {
+    use memf_windows::hashdump::HashdumpStatus;
+    match &report.status {
+        HashdumpStatus::NoHivesFound => {
+            eprintln!(
+                "hashdump: no registry hives found — the symbol-free _CMHIVE scan located none \
+                 (check that the ISF provides _CMHIVE.Hive / _CMHIVE.HiveList offsets and that \
+                 CR3 {cr3:#x} is correct)"
+            );
+        }
+        HashdumpStatus::HivesUnidentified {
+            system_found,
+            sam_found,
+        } => {
+            eprintln!(
+                "hashdump: {} _CMHIVE located by signature scan, but the required hives could \
+                 not be navigated (SYSTEM identified: {system_found}, SAM identified: {sam_found}) \
+                 — their hive bins are likely paged out (not resident in this dump)",
+                report.hives_located
+            );
+        }
+        HashdumpStatus::Located {
+            system_hive_va,
+            sam_hive_va,
+        } => {
+            eprintln!(
+                "hashdump: located SYSTEM hive @ {system_hive_va:#x} and SAM hive @ {sam_hive_va:#x}"
+            );
+            if report.entries.is_empty() {
+                if let Some(reason) = &report.empty_reason {
+                    eprintln!("hashdump: no hashes recovered — {reason}");
+                }
+            }
+        }
+    }
+}
+
+fn print_hashdump(entries: &[memf_windows::hashdump::HashdumpEntry], output: OutputFormat) {
+    print!("{}", render_hashdump(entries, output));
+}
+
+/// Humble Object: render SAM hashdump entries. `username` is attacker-controlled
+/// (it comes from the SAM V value), so JSON is built with `JsonSafe`, CSV runs
+/// it through `csv_field`, and the table through `table_cell`. The LM/NT hashes
+/// are lowercase hex the parser produced, so they render verbatim in full.
+fn render_hashdump(
+    entries: &[memf_windows::hashdump::HashdumpEntry],
+    output: OutputFormat,
+) -> String {
+    match output {
+        OutputFormat::Table => {
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL_CONDENSED);
+            // Disable content-based wrapping so a 32-char hash is never split.
+            table.set_content_arrangement(comfy_table::ContentArrangement::Disabled);
+            table.set_header(vec!["User", "RID", "LM Hash", "NT Hash", "Suspicious"]);
+            for e in entries {
+                table.add_row(vec![
+                    table_cell(&e.username),
+                    e.rid.to_string(),
+                    e.lm_hash.clone(),
+                    e.nt_hash.clone(),
+                    if e.is_suspicious { "yes" } else { "" }.to_string(),
+                ]);
+            }
+            format!("{table}\n\nTotal: {} accounts", entries.len())
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            let mut out = String::new();
+            for e in entries {
+                let json = serde_json::json!({
+                    "username": jsonguard::JsonSafe(&e.username),
+                    "rid": e.rid,
+                    "lm_hash": e.lm_hash,
+                    "nt_hash": e.nt_hash,
+                    "is_suspicious": e.is_suspicious,
+                });
+                let _ = writeln!(out, "{}", serde_json::to_string(&json).unwrap_or_default());
+            }
+            out
+        }
+        OutputFormat::Csv => {
+            let mut out = String::from("username,rid,lm_hash,nt_hash,is_suspicious\n");
+            for e in entries {
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{},{}",
+                    csv_field(&e.username).value,
+                    e.rid,
+                    e.lm_hash,
+                    e.nt_hash,
+                    e.is_suspicious
                 );
             }
             out

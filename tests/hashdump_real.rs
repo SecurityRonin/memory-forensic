@@ -1,10 +1,10 @@
 //! Native SAM hashdump integration tests against the real DFIR-Madness
 //! "Szechuan Sauce" memory images (env-gated; skip cleanly when absent).
 //!
-//! Oracle: Volatility 3 `windows.hashdump.Hashdump` on the same images
-//! (tier-1 independent validator). The decrypt path is canonical /
-//! build-independent, so parity with vol3 — never self-authored offsets —
-//! is the correctness bar.
+//! Oracle: Volatility 3 `windows.hashdump.Hashdump` / `windows.registry.hivelist`
+//! on the same images (tier-1 independent validator). The decrypt path is
+//! canonical / build-independent, so parity with vol3 — never self-authored
+//! offsets — is the correctness bar.
 //!
 //! Environment (point at the extracted `/tmp` copies, never `~/src`):
 //!   SZECHUAN_DC_MEM  -> citadeldc01.mem            (Server 2012 R2, build 9600)
@@ -69,21 +69,52 @@ fn dc01_native_hashdump_matches_vol3() {
     );
 }
 
-/// Workstation (build 19041): the symbol-free `_CMHIVE` locator must find the
-/// SYSTEM and SAM hives on 19041 too (parity with `vol windows.registry.
-/// hivelist`, which lists both). NOTE — vol3 `windows.hashdump.Hashdump` on
-/// THIS memory image returns ZERO rows because the SAM
-/// `\Domains\Account\Users` child-list cell is paged out (confirmed with
-/// `vol ... windows.registry.printkey ... --key "SAM\Domains\Account\Users"`,
-/// which lists no RID subkeys). So the recoverable-from-memory ground truth on
-/// the workstation is EMPTY, and native parity means: locate both hives, then
-/// report the paged-out cause loudly rather than fabricate a row that is not in
-/// the dump. We therefore assert the locator succeeds and the fail-loud
-/// diagnostic names the cause — not a `ricksanchez` hash the image does not
-/// contain.
+/// Workstation (build 19041) — symbol-free locator parity on the build that was
+/// broken. The symbol-free `_CMHIVE` scan must find the SYSTEM and SAM hive VAs
+/// on 19041, matching `vol windows.registry.hivelist`:
+///   SYSTEM  0xcf0476a73000
+///   SAM     0xcf047a411000
+/// (memf reports the full canonical form `0xffffcf04...`; the low-48-bit hex vol
+/// prints is the shared substring asserted here.)
 #[test]
 #[ignore = "requires real dump: set SZECHUAN_WS_MEM + SZECHUAN_WS_ISF"]
-fn ws_native_hashdump_locates_hives_and_reports_paged_out() {
+fn ws_symbol_free_hivescan_matches_vol3_hivelist() {
+    let (Some(mem), Some(isf)) = (env_path("SZECHUAN_WS_MEM"), env_path("SZECHUAN_WS_ISF")) else {
+        eprintln!("skipping: SZECHUAN_WS_MEM / SZECHUAN_WS_ISF not set");
+        return;
+    };
+
+    let out = mem4n6()
+        .args(["hivescan"])
+        .arg(&mem)
+        .args(["--symbols"])
+        .arg(&isf)
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+
+    assert!(
+        stdout.contains("cf0476a73000"),
+        "WS hivescan missing SYSTEM hive VA (vol hivelist 0xcf0476a73000):\n{stdout}"
+    );
+    assert!(
+        stdout.contains("cf047a411000"),
+        "WS hivescan missing SAM hive VA (vol hivelist 0xcf047a411000):\n{stdout}"
+    );
+}
+
+/// Workstation (build 19041) — fail-loud, never silent-empty. vol3
+/// `windows.hashdump.Hashdump` on THIS image also returns ZERO rows: the SAM
+/// hive bins are paged out (its `_HMAP_TABLE` at 0xffffcf047a3fb000 does not
+/// translate — confirmed with `translate-va`; vol's own `printkey` on
+/// `SAM\Domains\Account\Users` shows no timestamp and no RID children). So the
+/// recoverable-from-memory ground truth on the workstation is EMPTY, and the
+/// native path must say so loudly — locate the hives by signature, then name the
+/// paged-out cause — rather than fabricate a `ricksanchez` row the dump does not
+/// contain or silently print nothing.
+#[test]
+#[ignore = "requires real dump: set SZECHUAN_WS_MEM + SZECHUAN_WS_ISF"]
+fn ws_native_hashdump_fails_loud_on_paged_out_sam() {
     let (Some(mem), Some(isf)) = (env_path("SZECHUAN_WS_MEM"), env_path("SZECHUAN_WS_ISF")) else {
         eprintln!("skipping: SZECHUAN_WS_MEM / SZECHUAN_WS_ISF not set");
         return;
@@ -96,20 +127,25 @@ fn ws_native_hashdump_locates_hives_and_reports_paged_out() {
         .arg(&isf)
         .assert()
         .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
 
-    // The symbol-free locator ran and found both hives on 19041 (cross-build),
-    // and fail-loud named the empty cause (paged-out Users child-list) — the
-    // signal that separates "genuinely none" from "locator/decryptor failed".
+    // No fabricated rows (parity with vol3's empty result on this image): no line
+    // carries a 32-hex-digit NT/LM hash.
     assert!(
-        stderr.to_lowercase().contains("located")
-            && stderr.to_lowercase().contains("sam")
-            && stderr.to_lowercase().contains("system"),
-        "WS hashdump should report locating SAM+SYSTEM hives:\n{stderr}"
+        !stdout
+            .lines()
+            .any(|l| l.chars().filter(char::is_ascii_hexdigit).count() >= 32),
+        "WS hashdump must not fabricate hash rows for a paged-out SAM:\n{stdout}"
+    );
+    // Fail-loud: the scan located hives, and the cause of the empty result is named.
+    assert!(
+        stderr.to_lowercase().contains("located"),
+        "WS hashdump should report that hives were located by the scan:\n{stderr}"
     );
     assert!(
         stderr.to_lowercase().contains("paged out")
             || stderr.to_lowercase().contains("not resident"),
-        "WS hashdump should name the paged-out cause of the empty result:\n{stderr}"
+        "WS hashdump should name the paged-out cause, not fail silently:\n{stderr}"
     );
 }
