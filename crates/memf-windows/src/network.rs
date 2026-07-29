@@ -13,7 +13,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, WinConnectionInfo, WinTcpState};
+use crate::{Error, Result, WinConnectionInfo, WinTcpState};
 
 /// Maximum entries per bucket chain to prevent infinite loops.
 const MAX_CHAIN_LENGTH: usize = 4096;
@@ -460,19 +460,30 @@ fn tcp_state_from_enum(v: u32) -> WinTcpState {
 /// table layout (which is version-specific). Each object's own fields are read
 /// from its physical location; `AddrInfo`/`Owner`/`InetAF` pointers are followed
 /// through the address space. The `_TCP_ENDPOINT` overlay is selected from the
-/// dump's `NtBuildNumber`; an unrecognized build yields an empty result (no
-/// guessed offsets).
+/// dump's `NtBuildNumber`.
 ///
 /// # Errors
-/// Propagates address-space read failures encountered while following pointers.
+/// Fails loud (never silently empty) when the bootstrap cannot proceed:
+/// [`Error::UnsupportedBuild`] when the detected build has no maintained overlay
+/// (reading at guessed offsets is refused), and [`Error::WalkFailed`] when the
+/// build number cannot be determined at all. Also propagates address-space read
+/// failures encountered while following pointers.
 pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
+    // Fail loud on a failed bootstrap: an undetectable build or a build with no
+    // overlay must surface, never masquerade as an empty ("0 connections")
+    // result. Only a genuine per-object miss degrades to empty (below).
     let Some(build) = nt_build_number(reader) else {
-        return Ok(Vec::new());
+        return Err(Error::WalkFailed {
+            walker: "netscan",
+            reason: "could not determine NtBuildNumber (kernel symbol and NtBuildLab \
+                     scan both failed); cannot select a _TCP_ENDPOINT overlay"
+                .to_string(),
+        });
     };
     let Some(t) = tcp_endpoint_layout_x64(build) else {
-        return Ok(Vec::new());
+        return Err(Error::UnsupportedBuild { build });
     };
     // `_EPROCESS` offsets: typed ISF when present, else a per-build fallback.
     let (pid_off, name_off) = eprocess_offsets(reader, build);

@@ -181,6 +181,20 @@ pub enum Error {
         /// Human-readable description of the failure.
         reason: String,
     },
+
+    /// The dump's OS build has no maintained network-struct overlay, so the
+    /// version-specific offsets needed to walk `_TCP_ENDPOINT` objects are
+    /// unknown. Distinct from an empty result: an unsupported build is a
+    /// bootstrap failure that must be surfaced, never silently reported as
+    /// "0 connections".
+    #[error(
+        "unsupported Windows build {build} for network scan: no _TCP_ENDPOINT overlay \
+         (this is a missing-overlay bootstrap failure, not an empty result)"
+    )]
+    UnsupportedBuild {
+        /// The NT build number for which no overlay exists.
+        build: u32,
+    },
 }
 
 /// A Result alias for memf-windows.
