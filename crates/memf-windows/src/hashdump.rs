@@ -33,6 +33,7 @@ use winreg_core::key::Key;
 use winreg_format::cells::CellOffset;
 
 use crate::hive_reader::MemfHiveReader;
+use crate::registry::scan_cmhive_bases;
 
 /// Maximum number of user entries to enumerate (safety limit).
 const MAX_USERS: usize = 4096;
@@ -234,6 +235,176 @@ pub fn walk_hashdump<P: PhysicalMemoryProvider>(
     }
 
     Ok(entries)
+}
+
+/// Outcome of the hive-location step, so the caller can distinguish a genuine
+/// "no hashes present" from a locator failure (fail-loud, never conflated).
+#[derive(Debug, Clone)]
+pub enum HashdumpStatus {
+    /// Both required hives were located at these `_CMHIVE` VAs.
+    Located {
+        /// SYSTEM hive `_CMHIVE` virtual address.
+        system_hive_va: u64,
+        /// SAM hive `_CMHIVE` virtual address.
+        sam_hive_va: u64,
+    },
+    /// The symbol-free `_CMHIVE` scan found no registry hives at all — the ISF
+    /// is missing the `_CMHIVE` offsets, or CR3 / translation is wrong.
+    NoHivesFound,
+    /// Registry hives were found, but SYSTEM and/or SAM could not be identified.
+    HivesUnidentified {
+        /// Whether a SYSTEM hive was identified.
+        system_found: bool,
+        /// Whether a SAM hive was identified.
+        sam_found: bool,
+    },
+}
+
+/// End-to-end native hashdump result: located hives, decrypted entries, and —
+/// when entries is empty *despite* locating both hives — the specific named
+/// cause (so a paged-out data limitation is never reported as success-with-none
+/// or as a code failure).
+#[derive(Debug, Clone)]
+pub struct HashdumpReport {
+    /// Decrypted account hashes (empty when nothing is recoverable).
+    pub entries: Vec<HashdumpEntry>,
+    /// How many `_CMHIVE` structures the symbol-free scan located, regardless of
+    /// whether SYSTEM/SAM could then be navigated (fail-loud context).
+    pub hives_located: usize,
+    /// How hive location resolved.
+    pub status: HashdumpStatus,
+    /// When `entries` is empty under [`HashdumpStatus::Located`], the reason.
+    pub empty_reason: Option<String>,
+}
+
+/// Locate the SYSTEM and SAM hives symbol-free, then run [`walk_hashdump`].
+///
+/// This is the wired native credential path: it drives the previously-orphaned
+/// [`walk_hashdump`] by discovering the two hive VAs it needs via
+/// [`scan_cmhive_bases`] (no `CmpHiveListHead`, no kernel base) and identifying
+/// them by *content* — the SYSTEM hive uniquely carries a `Select` key, the SAM
+/// hive a `SAM\Domains\Account` path — which is robust to a paged-out name
+/// string that `FileFullPath` cannot supply from memory.
+///
+/// Returns a [`HashdumpReport`] whose `status`/`empty_reason` name the cause of
+/// any empty result so the caller can fail loud.
+pub fn run_hashdump<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+) -> crate::Result<HashdumpReport> {
+    let bases = scan_cmhive_bases(reader);
+    if bases.is_empty() {
+        return Ok(HashdumpReport {
+            entries: Vec::new(),
+            hives_located: 0,
+            status: HashdumpStatus::NoHivesFound,
+            empty_reason: None,
+        });
+    }
+
+    let hives_located = bases.len();
+    let mut system_va = None;
+    let mut sam_va = None;
+    for &base in &bases {
+        let hive = MemfHiveReader::new(reader, base);
+        let Ok(root) = hive.root_key() else {
+            continue;
+        };
+        if system_va.is_none() && is_system_hive(&root) {
+            system_va = Some(base);
+        }
+        if sam_va.is_none() && is_sam_hive(&root) {
+            sam_va = Some(base);
+        }
+        if system_va.is_some() && sam_va.is_some() {
+            break;
+        }
+    }
+
+    let (Some(sys), Some(sam)) = (system_va, sam_va) else {
+        return Ok(HashdumpReport {
+            entries: Vec::new(),
+            hives_located,
+            status: HashdumpStatus::HivesUnidentified {
+                system_found: system_va.is_some(),
+                sam_found: sam_va.is_some(),
+            },
+            empty_reason: None,
+        });
+    };
+
+    let entries = walk_hashdump(reader, sam, sys)?;
+    let empty_reason = if entries.is_empty() {
+        Some(diagnose_empty_hashdump(reader, sam, sys))
+    } else {
+        None
+    };
+    Ok(HashdumpReport {
+        entries,
+        hives_located,
+        status: HashdumpStatus::Located {
+            system_hive_va: sys,
+            sam_hive_va: sam,
+        },
+        empty_reason,
+    })
+}
+
+/// Only the SYSTEM hive carries a `Select` key (the `CurrentControlSet`
+/// chooser); `ControlSet001` is accepted as a fallback for a paged-out `Select`.
+fn is_system_hive<P: PhysicalMemoryProvider>(root: &Key<'_, MemfHiveReader<'_, P>>) -> bool {
+    root.subkey_path("Select").ok().flatten().is_some()
+        || root.subkey_path("ControlSet001").ok().flatten().is_some()
+}
+
+/// The SAM hive is the one whose root reaches `SAM\Domains\Account`.
+fn is_sam_hive<P: PhysicalMemoryProvider>(root: &Key<'_, MemfHiveReader<'_, P>>) -> bool {
+    root.subkey_path(r"SAM\Domains\Account")
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Name the specific cause of an empty hashdump when both hives were located,
+/// so a paged-out data limitation is never reported as a code failure. Mirrors
+/// the order [`walk_hashdump`] itself fails in: boot key first, then the SAM
+/// `Users` child-list, then undecryptable V-value blobs.
+fn diagnose_empty_hashdump<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    sam_hive_addr: u64,
+    system_hive_addr: u64,
+) -> String {
+    let system_hive = MemfHiveReader::new(reader, system_hive_addr);
+    let boot_key_ok = system_hive
+        .root_key()
+        .ok()
+        .is_some_and(|root| !extract_boot_key(&system_hive, &root).is_empty());
+    if !boot_key_ok {
+        return "SYSTEM hive located but boot key extraction failed \
+                (SYSTEM\\CurrentControlSet\\Control\\Lsa class-name subkeys not resident)"
+            .to_string();
+    }
+
+    let sam_hive = MemfHiveReader::new(reader, sam_hive_addr);
+    let users_children = sam_hive
+        .root_key()
+        .ok()
+        .and_then(|root| {
+            root.subkey_path(r"SAM\Domains\Account\Users")
+                .ok()
+                .flatten()
+        })
+        .and_then(|users| users.subkeys().ok())
+        .map_or(0, |ks| ks.len());
+    if users_children == 0 {
+        return "SAM+SYSTEM hives located and boot key extracted, but no user RID \
+                subkeys are resident (SAM\\Domains\\Account\\Users child-list paged out \
+                in this dump)"
+            .to_string();
+    }
+
+    "SAM+SYSTEM hives located; user RID subkeys enumerated, but no NT hashes were \
+     decryptable (V-value hash blobs not resident)"
+        .to_string()
 }
 
 /// Read a key's named value (case-insensitive) as raw bytes, or empty on an
@@ -570,11 +741,15 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
     key: &Key<'_, MemfHiveReader<'_, P>>,
 ) -> Vec<u8> {
     let reader = hive.object_reader();
-    let Some(key_addr) = hive.cell_offset_to_va(key.offset()) else {
+    let Some(cell_va) = hive.cell_offset_to_va(key.offset()) else {
         return Vec::new();
     };
+    // `cell_offset_to_va` yields the `_HCELL` size-header VA; the `_CM_KEY_NODE`
+    // body (like winreg-core's own `read_cell_raw`) begins 4 bytes later, past
+    // the u32 size field. Node-internal offsets are relative to that body.
+    let node_addr = cell_va.wrapping_add(4);
     // _CM_KEY_NODE: ClassLength at 0x4A (u16), Class cell index at 0x30 (u32).
-    let class_len: u16 = match reader.read_bytes(key_addr + 0x4A, 2) {
+    let class_len: u16 = match reader.read_bytes(node_addr + 0x4A, 2) {
         Ok(bytes) if bytes.len() == 2 => bytes[..2].try_into().map_or(0, u16::from_le_bytes),
         _ => return Vec::new(),
     };
@@ -583,17 +758,17 @@ fn read_key_class_name<P: PhysicalMemoryProvider>(
         return Vec::new();
     }
 
-    let class_off: u32 = match reader.read_bytes(key_addr + 0x30, 4) {
+    let class_off: u32 = match reader.read_bytes(node_addr + 0x30, 4) {
         Ok(bytes) if bytes.len() == 4 => bytes[..4].try_into().map_or(0, u32::from_le_bytes),
         _ => return Vec::new(),
     };
 
-    let Some(class_addr) = hive.cell_offset_to_va(CellOffset(class_off)) else {
+    let Some(class_cell_va) = hive.cell_offset_to_va(CellOffset(class_off)) else {
         return Vec::new();
     };
-
+    // Same +4: the class-name bytes are the cell body, past its size header.
     reader
-        .read_bytes(class_addr, class_len as usize)
+        .read_bytes(class_cell_va.wrapping_add(4), class_len as usize)
         .unwrap_or_default()
 }
 
@@ -1178,6 +1353,13 @@ mod tests {
     /// Build a minimal SYSTEM hive into a `CellHive`:
     /// root → CurrentControlSet → Control → Lsa → {JD,Skew1,GBG,Data}, class "00000000".
     fn build_system_hive(base: u64) -> CellHive {
+        build_system_hive_with_classes(base, ["00000000"; 4])
+    }
+
+    /// Like [`build_system_hive`] but with a caller-chosen 8-hex-char class name
+    /// per LSA subkey (JD, Skew1, GBG, Data), so a test can assert the exact
+    /// boot key the class-name read + scramble produce.
+    fn build_system_hive_with_classes(base: u64, classes: [&str; 4]) -> CellHive {
         let root: u32 = 0x020;
         let root_list: u32 = 0x080;
         let ccs: u32 = 0x0A0;
@@ -1190,15 +1372,15 @@ mod tests {
         let skew1: u32 = 0x2B0;
         let gbg: u32 = 0x310;
         let data: u32 = 0x370;
+        // Class-data cells must be spaced >= 0x14 (4-byte _HCELL header + 16-byte
+        // UTF-16 class name); 0x20 apart leaves headroom so one class cell's data
+        // never overruns the next cell's header.
         let jd_cl: u32 = 0x3D0;
-        let skew1_cl: u32 = 0x3E0;
-        let gbg_cl: u32 = 0x3F0;
-        let data_cl: u32 = 0x400;
+        let skew1_cl: u32 = 0x3F0;
+        let gbg_cl: u32 = 0x410;
+        let data_cl: u32 = 0x430;
 
-        let class_utf16: Vec<u8> = "00000000"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let cl = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
 
         let mut h = CellHive::new(base);
         h.nk(root, b"root", 1, root_list, 0);
@@ -1209,11 +1391,36 @@ mod tests {
         h.lf(ctrl_list, &[lsa]);
         h.nk(lsa, b"Lsa", 4, lsa_list, 0);
         h.lf(lsa_list, &[jd, skew1, gbg, data]);
-        nk_with_class(&mut h, jd, b"JD", jd_cl, &class_utf16);
-        nk_with_class(&mut h, skew1, b"Skew1", skew1_cl, &class_utf16);
-        nk_with_class(&mut h, gbg, b"GBG", gbg_cl, &class_utf16);
-        nk_with_class(&mut h, data, b"Data", data_cl, &class_utf16);
+        nk_with_class(&mut h, jd, b"JD", jd_cl, &cl(classes[0]));
+        nk_with_class(&mut h, skew1, b"Skew1", skew1_cl, &cl(classes[1]));
+        nk_with_class(&mut h, gbg, b"GBG", gbg_cl, &cl(classes[2]));
+        nk_with_class(&mut h, data, b"Data", data_cl, &cl(classes[3]));
         h
+    }
+
+    /// Regression guard for the `_CM_KEY_NODE` cell-data (+4) offset in
+    /// `read_key_class_name`: the class-name bytes live in the cell *body*, past
+    /// the 4-byte `_HCELL` size header. With distinctive class names the boot key
+    /// is the scramble of the concatenated 16 raw bytes; the pre-fix code read 4
+    /// bytes early and returned an empty boot key. Expected value computed from
+    /// the documented `BOOT_KEY_SCRAMBLE` (independent of the reader).
+    #[test]
+    fn extract_boot_key_reads_class_from_cell_body() {
+        let sys = build_system_hive_with_classes(
+            0x00C0_0000,
+            ["01234567", "89abcdef", "fedcba98", "76543210"],
+        );
+        let reader = two_hive_reader(&sys, &sys);
+        let hive = MemfHiveReader::new(&reader, sys.hhive_va);
+        let root = hive.root_key().unwrap();
+        let boot_key = extract_boot_key(&hive, &root);
+        // raw = 0123456789abcdeffedcba9876543210; scrambled per BOOT_KEY_SCRAMBLE.
+        assert_eq!(
+            hex_encode(&boot_key),
+            "feab894598dc546701cd237632ba10ef",
+            "class-name read must use the cell body (+4); got {}",
+            hex_encode(&boot_key)
+        );
     }
 
     /// Build a minimal SAM hive into a `CellHive`:
@@ -1266,9 +1473,12 @@ mod tests {
 
         let reader = two_hive_reader(&sys, &sam);
         let result = walk_hashdump(&reader, sam.hhive_va, sys.hhive_va).unwrap();
-        assert!(
-            result.len() <= 1,
-            "unexpected entry count: {}",
+        // Exactly one RID enumerated — which requires boot-key extraction to have
+        // succeeded (the pre-+4-fix class read failed → empty boot key → 0 rows).
+        assert_eq!(
+            result.len(),
+            1,
+            "expected exactly one RID entry (boot key must extract): got {}",
             result.len()
         );
     }

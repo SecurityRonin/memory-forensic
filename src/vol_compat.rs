@@ -201,14 +201,20 @@ pub static DISPATCH: &[(&str, PluginRoute)] = &[
         PluginRoute::Proxy,
     ),
     // ── credentials / hashes ────────────────────────────────────────────
-    ("windows.hashdump.Hashdump", PluginRoute::Proxy),
+    ("windows.hashdump.Hashdump", PluginRoute::Native("hashdump")),
     ("windows.cachedump.Cachedump", PluginRoute::Proxy),
     ("windows.lsadump.Lsadump", PluginRoute::Proxy),
     // ── registry ────────────────────────────────────────────────────────
     ("windows.registry.hivelist.HiveList", PluginRoute::Proxy),
-    ("windows.registry.hivescan.HiveScan", PluginRoute::Proxy),
+    (
+        "windows.registry.hivescan.HiveScan",
+        PluginRoute::Native("hivescan"),
+    ),
     ("windows.registry.printkey.PrintKey", PluginRoute::Proxy),
-    ("windows.registry.hashdump.Hashdump", PluginRoute::Proxy),
+    (
+        "windows.registry.hashdump.Hashdump",
+        PluginRoute::Native("hashdump"),
+    ),
     ("windows.registry.cachedump.Cachedump", PluginRoute::Proxy),
     ("windows.registry.lsadump.Lsadump", PluginRoute::Proxy),
     ("windows.registry.amcache.Amcache", PluginRoute::Proxy),

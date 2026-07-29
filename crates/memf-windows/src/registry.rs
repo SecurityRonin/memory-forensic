@@ -4,6 +4,8 @@
 //! a `_LIST_ENTRY` chain of `_CMHIVE` structures maintained by
 //! the Windows Configuration Manager.
 
+use std::collections::HashSet;
+
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
@@ -269,6 +271,143 @@ fn regf_root_cell_index<P: PhysicalMemoryProvider>(
         .ok()?;
     let idx = u32::from_le_bytes(raw.get(..4)?.try_into().ok()?);
     (idx != 0 && idx != u32::MAX).then_some(idx)
+}
+
+// ---------------------------------------------------------------------------
+// Symbol-free _CMHIVE locator (pool-signature scan + HiveList back-pointer)
+// ---------------------------------------------------------------------------
+
+/// `_HHIVE.Signature` (`0xBEE0BEE0`) in little-endian byte order. Every
+/// `_CMHIVE` begins with its embedded `_HHIVE`, whose first field is this
+/// magic, so it is the anchor for a symbol-free hive scan.
+const HHIVE_SIGNATURE_LE: [u8; 4] = [0xE0, 0xBE, 0xE0, 0xBE];
+
+/// Safety cap on the number of hive bases [`scan_cmhive_bases`] returns.
+const MAX_SCANNED_HIVES: usize = 512;
+
+/// A kernel-half canonical x86-64 pointer has bits 63:47 all set.
+fn is_canonical_kernel_ptr(v: u64) -> bool {
+    v >> 47 == 0x1_FFFF
+}
+
+/// Read a little-endian `u64` from **physical** memory (`None` on a short or
+/// failed read).
+fn phys_u64<P: PhysicalMemoryProvider + ?Sized>(prov: &P, paddr: u64) -> Option<u64> {
+    let mut b = [0u8; 8];
+    let n = prov.read_phys(paddr, &mut b).ok()?;
+    (n == 8).then(|| u64::from_le_bytes(b))
+}
+
+/// Symbol-free `_CMHIVE` locator: physically scan for the `_HHIVE` signature
+/// (`0xBEE0BEE0`) at every `_CMHIVE.Hive`, then recover each hive's kernel
+/// virtual address from its `HiveList` back-pointer.
+///
+/// Unlike [`walk_hive_list`], this needs **no global-symbol address** — no
+/// `CmpHiveListHead`, no resolved kernel base — only the `_CMHIVE.Hive` and
+/// `_CMHIVE.HiveList` struct field offsets from the ISF. On images where
+/// KASLR / kernel-base resolution fails (so symbol *addresses* are wrong) but
+/// struct *offsets* still resolve, this is the only path that reaches the
+/// SYSTEM and SAM hives the SAM hashdump needs.
+///
+/// Each physical hit is confirmed by round-tripping the doubly-linked
+/// `HiveList` (the hit's `Flink` → the next node, whose `Blink` points back at
+/// the hit's own `HiveList`) and re-reading the signature at the derived VA, so
+/// a stray `0xBEE0BEE0` elsewhere in memory is rejected. Deduplicated;
+/// build-independent (all offsets come from the dump's own ISF).
+#[must_use]
+pub fn scan_cmhive_bases<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Vec<u64> {
+    let syms = reader.symbols();
+    // `_CMHIVE.Hive` is the embedded `_HHIVE`; on Win8+/9600 it is at offset 0,
+    // but read it from the ISF rather than assume — build-independent.
+    let hive_off = syms.field_offset("_CMHIVE", "Hive").unwrap_or(0);
+    let Some(hive_list_off) = syms.field_offset("_CMHIVE", "HiveList") else {
+        return Vec::new();
+    };
+
+    let prov = reader.vas().physical();
+    let mut bases = Vec::new();
+    let mut seen: HashSet<u64> = HashSet::new();
+
+    for sig_pa in scan_phys_for_signature(prov) {
+        // The signature sits at `_CMHIVE + hive_off`; step back to the base.
+        let Some(cmhive_pa) = sig_pa.checked_sub(hive_off) else {
+            continue;
+        };
+        if let Some(base) = derive_hive_va(reader, cmhive_pa, hive_off, hive_list_off) {
+            if seen.insert(base) {
+                bases.push(base);
+                if bases.len() >= MAX_SCANNED_HIVES {
+                    break;
+                }
+            }
+        }
+    }
+    bases
+}
+
+/// Scan every provider range for the little-endian `_HHIVE` signature and
+/// return the physical addresses where it occurs. `_CMHIVE` bases are at least
+/// 8-byte aligned, so an 8-byte-stepped scan anchored to an 8-aligned base
+/// cannot miss one while quartering the work of a byte scan.
+fn scan_phys_for_signature<P: PhysicalMemoryProvider + ?Sized>(prov: &P) -> Vec<u64> {
+    const CHUNK: usize = 1 << 20;
+    let mut hits = Vec::new();
+    let ranges: Vec<(u64, u64)> = {
+        let r = prov.ranges();
+        if r.is_empty() {
+            vec![(0, prov.total_size())]
+        } else {
+            r.iter().map(|x| (x.start, x.end)).collect()
+        }
+    };
+    // Read CHUNK+4 so a signature straddling a chunk boundary is still whole.
+    let mut buf = vec![0u8; CHUNK + 4];
+    for (start, end) in ranges {
+        let mut addr = start & !0x7; // anchor 8-byte alignment
+        while addr < end {
+            let n = prov.read_phys(addr, &mut buf).unwrap_or(0);
+            if n < 4 {
+                addr = addr.saturating_add(CHUNK as u64);
+                continue;
+            }
+            let mut i = 0usize;
+            while i + 4 <= n {
+                if buf[i..i + 4] == HHIVE_SIGNATURE_LE {
+                    hits.push(addr + i as u64);
+                }
+                i += 8;
+            }
+            // CHUNK is 8-aligned, so `addr` stays 8-aligned across iterations.
+            addr = addr.saturating_add(CHUNK as u64);
+        }
+    }
+    hits
+}
+
+/// Recover a hive's kernel VA from a physical `_CMHIVE` hit via its `HiveList`
+/// back-pointer, validating the signature at the derived VA. `None` if the hit
+/// is a false positive or its list links are paged out.
+fn derive_hive_va<P: PhysicalMemoryProvider>(
+    reader: &ObjectReader<P>,
+    cmhive_pa: u64,
+    hive_off: u64,
+    hive_list_off: u64,
+) -> Option<u64> {
+    let prov = reader.vas().physical();
+    // `_LIST_ENTRY.Flink` is the first field of `HiveList`; read it physically.
+    let flink = phys_u64(prov, cmhive_pa.checked_add(hive_list_off)?)?;
+    if !is_canonical_kernel_ptr(flink) {
+        return None;
+    }
+    // The next node's `Blink` (at +8) points back at THIS hive's `HiveList` VA.
+    let this_hive_list_va = le_u64(reader, flink.checked_add(8)?)?;
+    if !is_canonical_kernel_ptr(this_hive_list_va) {
+        return None;
+    }
+    let base = this_hive_list_va.checked_sub(hive_list_off)?;
+    // Confirm the signature at the derived VA (rejects a stray 0xBEE0BEE0).
+    let sig = reader.read_bytes(base.checked_add(hive_off)?, 4).ok()?;
+    (sig.get(..4)? == HHIVE_SIGNATURE_LE).then_some(base)
 }
 
 #[cfg(test)]
