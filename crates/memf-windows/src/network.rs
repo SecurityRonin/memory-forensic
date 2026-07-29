@@ -13,7 +13,7 @@
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
 
-use crate::{Result, WinConnectionInfo, WinTcpState};
+use crate::{Error, Result, WinConnectionInfo, WinTcpState};
 
 /// Maximum entries per bucket chain to prevent infinite loops.
 const MAX_CHAIN_LENGTH: usize = 4096;
@@ -294,7 +294,13 @@ fn tcp_endpoint_layout_x64(build: u32) -> Option<TcpEndpointLayout> {
         17134 => TcpEndpointLayout::modern(0x278, 0x288),
         17763 => TcpEndpointLayout::modern(0x2C8, 0x2D8),
         18362 | 18363 => TcpEndpointLayout::modern(0x290, 0x2A0),
-        19041 => TcpEndpointLayout::modern(0x2D8, 0x2E8),
+        // Owner 0x2D0 / CreateTime 0x2E0 — validated against the Szechuan
+        // workstation dump (DESKTOP-SDN1RPT, 2004): at +0x2D0 the C2 endpoints'
+        // Owner points to the pslist-confirmed coreupdater.exe (PID 8324) and
+        // powershell.exe (PID 3316) _EPROCESSes, and +0x2E0 holds coreupdater's
+        // pslist CreateTime (2020-09-19 03:40:49). The prior 0x2D8/0x2E8 read the
+        // adjacent zero qwords, so every established connection came back PID 0.
+        19041 => TcpEndpointLayout::modern(0x2D0, 0x2E0),
         20348 => TcpEndpointLayout::modern(0x2F0, 0x308), // Server 2022
         _ => return None,
     })
@@ -454,19 +460,30 @@ fn tcp_state_from_enum(v: u32) -> WinTcpState {
 /// table layout (which is version-specific). Each object's own fields are read
 /// from its physical location; `AddrInfo`/`Owner`/`InetAF` pointers are followed
 /// through the address space. The `_TCP_ENDPOINT` overlay is selected from the
-/// dump's `NtBuildNumber`; an unrecognized build yields an empty result (no
-/// guessed offsets).
+/// dump's `NtBuildNumber`.
 ///
 /// # Errors
-/// Propagates address-space read failures encountered while following pointers.
+/// Fails loud (never silently empty) when the bootstrap cannot proceed:
+/// [`Error::UnsupportedBuild`] when the detected build has no maintained overlay
+/// (reading at guessed offsets is refused), and [`Error::WalkFailed`] when the
+/// build number cannot be determined at all. Also propagates address-space read
+/// failures encountered while following pointers.
 pub fn scan_tcp_endpoints<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<WinConnectionInfo>> {
+    // Fail loud on a failed bootstrap: an undetectable build or a build with no
+    // overlay must surface, never masquerade as an empty ("0 connections")
+    // result. Only a genuine per-object miss degrades to empty (below).
     let Some(build) = nt_build_number(reader) else {
-        return Ok(Vec::new());
+        return Err(Error::WalkFailed {
+            walker: "netscan",
+            reason: "could not determine NtBuildNumber (kernel symbol and NtBuildLab \
+                     scan both failed); cannot select a _TCP_ENDPOINT overlay"
+                .to_string(),
+        });
     };
     let Some(t) = tcp_endpoint_layout_x64(build) else {
-        return Ok(Vec::new());
+        return Err(Error::UnsupportedBuild { build });
     };
     // `_EPROCESS` offsets: typed ISF when present, else a per-build fallback.
     let (pid_off, name_off) = eprocess_offsets(reader, build);
@@ -1453,11 +1470,48 @@ mod tests {
         // Win10 1607 (Server 2016) and 2004 differ only in Owner/CreateTime.
         assert_eq!(tcp_endpoint_layout_x64(14393).unwrap().owner, 0x258);
         assert_eq!(tcp_endpoint_layout_x64(14393).unwrap().create_time, 0x268);
-        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().owner, 0x2D8);
-        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().create_time, 0x2E8);
+        // 2004 owner/create_time validated against the real Szechuan WS dump.
+        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().owner, 0x2D0);
+        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().create_time, 0x2E0);
 
         // Unknown build: no overlay (caller must not read at guessed offsets).
         assert!(tcp_endpoint_layout_x64(12345).is_none());
+    }
+
+    /// Fail-loud: a build with no maintained `_TCP_ENDPOINT` overlay (e.g. Win11
+    /// 22H2, build 22621) must return an error that NAMES the build — never
+    /// `Ok(empty)`, which is indistinguishable from "0 connections" and hides an
+    /// unsupported-build bootstrap failure from the analyst.
+    #[test]
+    fn scan_tcp_endpoints_fails_loud_on_untabled_build() {
+        // NtBuildNumber low 16 bits = 22621 (0x585D); high bits are free-build flags.
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_585Du32.to_le_bytes());
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .write_phys(pa_build, &build_page);
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let err = scan_tcp_endpoints(&reader)
+            .expect_err("un-tabled build must be an error, not Ok(empty)");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("22621"),
+            "error must name the unsupported build 22621: {msg}"
+        );
     }
 
     #[test]
