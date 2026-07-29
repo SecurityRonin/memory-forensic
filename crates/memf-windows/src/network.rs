@@ -1467,6 +1467,42 @@ mod tests {
         assert!(tcp_endpoint_layout_x64(12345).is_none());
     }
 
+    /// Fail-loud: a build with no maintained `_TCP_ENDPOINT` overlay (e.g. Win11
+    /// 22H2, build 22621) must return an error that NAMES the build — never
+    /// `Ok(empty)`, which is indistinguishable from "0 connections" and hides an
+    /// unsupported-build bootstrap failure from the analyst.
+    #[test]
+    fn scan_tcp_endpoints_fails_loud_on_untabled_build() {
+        // NtBuildNumber low 16 bits = 22621 (0x585D); high bits are free-build flags.
+        let pa_build = 0x77_000u64;
+        let mut build_page = vec![0u8; 0x1000];
+        build_page[0..4].copy_from_slice(&0xF000_585Du32.to_le_bytes());
+        let ptb = PageTableBuilder::new()
+            .map_4k(NT_BUILD_NUMBER_VA, pa_build, flags::WRITABLE)
+            .write_phys(pa_build, &build_page);
+        let resolver = IsfResolver::from_value(&net_isf()).unwrap();
+        let (cr3, mem) = ptb.build();
+        let ranged = RangedMem {
+            inner: mem,
+            ranges: vec![memf_format::PhysicalRange {
+                start: 0,
+                end: 16 * 1024 * 1024,
+            }],
+        };
+        let reader = ObjectReader::new(
+            VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
+            Box::new(resolver),
+        );
+
+        let err = scan_tcp_endpoints(&reader)
+            .expect_err("un-tabled build must be an error, not Ok(empty)");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("22621"),
+            "error must name the unsupported build 22621: {msg}"
+        );
+    }
+
     #[test]
     fn scan_tcp_endpoints_recovers_a_connection_from_a_tcpe_pool_object() {
         // Build 9600 (Server 2012 R2 — the real CITADEL-DC01 build); the scan
