@@ -294,7 +294,13 @@ fn tcp_endpoint_layout_x64(build: u32) -> Option<TcpEndpointLayout> {
         17134 => TcpEndpointLayout::modern(0x278, 0x288),
         17763 => TcpEndpointLayout::modern(0x2C8, 0x2D8),
         18362 | 18363 => TcpEndpointLayout::modern(0x290, 0x2A0),
-        19041 => TcpEndpointLayout::modern(0x2D8, 0x2E8),
+        // Owner 0x2D0 / CreateTime 0x2E0 — validated against the Szechuan
+        // workstation dump (DESKTOP-SDN1RPT, 2004): at +0x2D0 the C2 endpoints'
+        // Owner points to the pslist-confirmed coreupdater.exe (PID 8324) and
+        // powershell.exe (PID 3316) _EPROCESSes, and +0x2E0 holds coreupdater's
+        // pslist CreateTime (2020-09-19 03:40:49). The prior 0x2D8/0x2E8 read the
+        // adjacent zero qwords, so every established connection came back PID 0.
+        19041 => TcpEndpointLayout::modern(0x2D0, 0x2E0),
         20348 => TcpEndpointLayout::modern(0x2F0, 0x308), // Server 2022
         _ => return None,
     })
@@ -1453,8 +1459,9 @@ mod tests {
         // Win10 1607 (Server 2016) and 2004 differ only in Owner/CreateTime.
         assert_eq!(tcp_endpoint_layout_x64(14393).unwrap().owner, 0x258);
         assert_eq!(tcp_endpoint_layout_x64(14393).unwrap().create_time, 0x268);
-        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().owner, 0x2D8);
-        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().create_time, 0x2E8);
+        // 2004 owner/create_time validated against the real Szechuan WS dump.
+        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().owner, 0x2D0);
+        assert_eq!(tcp_endpoint_layout_x64(19041).unwrap().create_time, 0x2E0);
 
         // Unknown build: no overlay (caller must not read at guessed offsets).
         assert!(tcp_endpoint_layout_x64(12345).is_none());
