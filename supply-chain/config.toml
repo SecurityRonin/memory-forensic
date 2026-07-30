@@ -43,6 +43,9 @@ audit-as-crates-io = false
 [policy.memf-windows]
 audit-as-crates-io = false
 
+[policy.memf-carve]
+audit-as-crates-io = false
+
 [[exemptions.aead]]
 version = "0.5.2"
 criteria = "safe-to-deploy"
