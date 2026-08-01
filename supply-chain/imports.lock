@@ -76,6 +76,55 @@ user-id = 696
 user-login = "fitzgen"
 user-name = "Nick Fitzgerald"
 
+[[publisher.forensic-carve]]
+version = "0.1.0"
+when = "2026-07-23"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.forensicnomicon]]
+version = "1.8.1"
+when = "2026-07-19"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.forensicnomicon-core]]
+version = "1.4.0"
+when = "2026-07-19"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.forensicnomicon-data]]
+version = "1.3.2"
+when = "2026-07-19"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.jsonguard]]
+version = "0.2.3"
+when = "2026-06-14"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.lzo]]
+version = "0.1.1"
+when = "2026-06-07"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.prefetch-core]]
+version = "0.1.0"
+when = "2026-06-12"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
 [[publisher.pulley-interpreter]]
 version = "26.0.1"
 when = "2024-11-05"
@@ -88,6 +137,13 @@ when = "2024-09-11"
 user-id = 187138
 user-login = "elliottt"
 user-name = "Trevor Elliott"
+
+[[publisher.shellitem]]
+version = "0.2.0"
+when = "2026-06-28"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
 
 [[publisher.unicode-segmentation]]
 version = "1.13.3"
@@ -201,11 +257,46 @@ when = "2024-11-05"
 user-id = 73222
 user-login = "wasmtime-publish"
 
+[[publisher.winevt-core]]
+version = "0.3.0"
+when = "2026-06-28"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.winreg-core]]
+version = "0.1.1"
+when = "2026-06-24"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.winreg-format]]
+version = "0.1.0"
+when = "2026-06-13"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
 [[publisher.wit-parser]]
 version = "0.218.1"
 when = "2025-02-05"
 user-id = 73222
 user-login = "wasmtime-publish"
+
+[[publisher.xpress-huffman]]
+version = "0.1.0"
+when = "2026-06-12"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.zip-forensic-core]]
+version = "0.1.0"
+when = "2026-06-29"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
 
 [[audits.bytecode-alliance.wildcard-audits.arbitrary]]
 who = "Nick Fitzgerald <fitzgen@gmail.com>"

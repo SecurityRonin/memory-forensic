@@ -2,3 +2,81 @@
 # cargo-vet audits file
 
 [audits]
+
+[[trusted.forensic-carve]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-07-23"
+end = "2027-08-01"
+
+[[trusted.forensicnomicon]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-05"
+end = "2027-08-01"
+
+[[trusted.forensicnomicon-core]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-28"
+end = "2027-08-01"
+
+[[trusted.forensicnomicon-data]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-28"
+end = "2027-08-01"
+
+[[trusted.jsonguard]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-05-21"
+end = "2027-08-01"
+
+[[trusted.lzo]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-07"
+end = "2027-08-01"
+
+[[trusted.prefetch-core]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-12"
+end = "2027-08-01"
+
+[[trusted.shellitem]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-13"
+end = "2027-08-01"
+
+[[trusted.winevt-core]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-15"
+end = "2027-08-01"
+
+[[trusted.winreg-core]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-13"
+end = "2027-08-01"
+
+[[trusted.winreg-format]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-13"
+end = "2027-08-01"
+
+[[trusted.xpress-huffman]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-12"
+end = "2027-08-01"
+
+[[trusted.zip-forensic-core]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-06-29"
+end = "2027-08-01"
