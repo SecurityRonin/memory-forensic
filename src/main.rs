@@ -10075,4 +10075,72 @@ mod tests {
     fn print_yara_hits_empty_does_not_panic() {
         print_yara_hits(&[], OutputFormat::Table);
     }
+
+    // ── Fleet output-format vocabulary (one concept, one name) ────────────────
+    //
+    // `jsonl` is the fleet-canonical spelling for newline-delimited JSON (1381
+    // occurrences fleet-wide vs 338 for `ndjson`; the constitution's machine-view
+    // list reads "JSON, JSONL, CSV, bodyfile"). `ndjson` was this CLI's original
+    // spelling, so it must keep parsing as a hidden alias — every existing
+    // `memf ... --output ndjson` invocation, script and runbook depends on it.
+
+    /// Canonical spelling: `--output jsonl` must resolve to the JSONL variant.
+    #[test]
+    fn output_format_jsonl_is_canonical_spelling() {
+        use clap::ValueEnum as _;
+        let parsed = <OutputFormat as clap::ValueEnum>::from_str("jsonl", false);
+        let v = parsed.expect("--output jsonl must parse (fleet-canonical spelling)");
+        assert_eq!(
+            v.to_possible_value().expect("variant is selectable").get_name(),
+            "jsonl",
+            "the canonical name of the newline-delimited-JSON variant must be `jsonl`"
+        );
+    }
+
+    /// Backwards compatibility: the legacy `ndjson` spelling must still parse,
+    /// and must resolve to the SAME variant the canonical `jsonl` selects.
+    #[test]
+    fn output_format_ndjson_legacy_alias_maps_to_jsonl() {
+        use clap::ValueEnum as _;
+        let parsed = <OutputFormat as clap::ValueEnum>::from_str("ndjson", false);
+        let v = parsed.expect("legacy --output ndjson must keep parsing");
+        assert_eq!(
+            v.to_possible_value().expect("variant is selectable").get_name(),
+            "jsonl",
+            "`ndjson` must be an alias of `jsonl`, not a second name for the same concept"
+        );
+    }
+
+    /// The alias is hidden: `--help` advertises only the canonical spelling, so
+    /// new users learn one name per concept.
+    #[test]
+    fn output_format_help_advertises_jsonl_only() {
+        use clap::ValueEnum as _;
+        let names: Vec<String> = <OutputFormat as clap::ValueEnum>::value_variants()
+            .iter()
+            .filter_map(|v| v.to_possible_value())
+            .map(|p| p.get_name().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "jsonl"),
+            "help must list `jsonl`, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "ndjson"),
+            "help must NOT list `ndjson` (it is a hidden compatibility alias), got {names:?}"
+        );
+    }
+
+    /// End-to-end through clap: both spellings are accepted on a real subcommand.
+    #[test]
+    fn cli_accepts_both_jsonl_and_ndjson_output() {
+        for spelling in ["jsonl", "ndjson"] {
+            let cli = Cli::try_parse_from(["memf", "framebuf", "test.dmp", "--output", spelling]);
+            assert!(
+                cli.is_ok(),
+                "`memf framebuf test.dmp --output {spelling}` must parse: {:?}",
+                cli.err()
+            );
+        }
+    }
 }
