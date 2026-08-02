@@ -31,6 +31,8 @@ prefetch-core.workspace = true
 winevt-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+# Char-safe display truncation for attacker-controlled value previews.
+jsonguard.workspace = true
 regex.workspace = true
 goblin = { workspace = true }
 yara-x.workspace = true
