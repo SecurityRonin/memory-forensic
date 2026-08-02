@@ -1280,6 +1280,21 @@ mod tests {
 
     // ── format_data_preview: truncated REG_SZ (> 80 chars) ──────────
 
+    /// The preview is cut at a *byte* offset. A registry value is decoded from
+    /// the image and is attacker-controlled, so a multi-byte character
+    /// straddling the cut point aborts the walk instead of previewing a value.
+    /// 79 ASCII plus U+4E16 puts byte 80 inside a 3-byte character.
+    #[test]
+    fn format_data_preview_reg_sz_multibyte_at_cut_point_does_not_panic() {
+        let long_str = format!("{}\u{4e16}\u{754c}", "A".repeat(79));
+        let s: Vec<u8> = long_str.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let preview = format_data_preview(1, &s);
+        assert!(
+            preview.starts_with("AAAA"),
+            "preview should carry the leading run: {preview}"
+        );
+    }
+
     #[test]
     fn format_data_preview_reg_sz_long_string_truncated() {
         // Build a UTF-16LE string longer than 80 chars
