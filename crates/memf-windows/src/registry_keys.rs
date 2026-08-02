@@ -572,11 +572,10 @@ fn format_data_preview(value_type: u32, data: &[u8]) -> String {
                 .take_while(|&w| w != 0)
                 .collect();
             let s = String::from_utf16_lossy(&words);
-            if s.len() > 80 {
-                format!("{}...", &s[..80])
-            } else {
-                s
-            }
+            // Char-safe: a byte slice here panics when a multi-byte character
+            // straddles the cut point. `cap_display` also drops control and
+            // bidi-override characters, which a preview must never carry.
+            jsonguard::cap_display(s.as_str(), 80).value
         }
         // REG_DWORD
         4 => {
@@ -1301,13 +1300,15 @@ mod tests {
         let long_str: String = "A".repeat(100);
         let s: Vec<u8> = long_str.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let preview = format_data_preview(1, &s);
+        // jsonguard::cap_display marks truncation with U+2026, not three dots.
         assert!(
-            preview.ends_with("..."),
-            "long string should end with ...: {preview}"
+            preview.ends_with('\u{2026}'),
+            "long string should end with an ellipsis: {preview}"
         );
-        assert!(
-            preview.len() <= 83,
-            "preview should be at most 83 chars: {preview}"
+        assert_eq!(
+            preview.chars().count(),
+            81,
+            "80 kept characters plus the ellipsis: {preview}"
         );
     }
 
