@@ -391,6 +391,64 @@ pub fn make_reader(
 mod tests {
     use super::*;
 
+    /// The trap this module's ranged provider exists to close, asserted rather
+    /// than merely described: `SyntheticPhysMem` advertises no ranges, and
+    /// `PhysicalMemoryProvider::total_size` is derived by summing them, so a
+    /// 16 MiB image reports a size of zero. Every physical scan bounds itself by
+    /// that extent, so scanning code under test traverses `(0, 0)` and sees
+    /// nothing — passing for the wrong reason.
+    #[test]
+    fn plain_synthetic_mem_advertises_no_extent() {
+        let mem = SyntheticPhysMem::new(16 * 1024 * 1024);
+        assert!(mem.ranges().is_empty());
+        assert_eq!(
+            mem.total_size(),
+            0,
+            "if this ever becomes non-zero the ranged wrapper is redundant"
+        );
+    }
+
+    /// A ranged provider must report the extent it actually holds, so that a
+    /// scan bounded by `total_size()` covers the bytes a test wrote.
+    #[test]
+    fn ranged_provider_advertises_the_whole_image() {
+        let mut mem = SyntheticPhysMem::new(1024 * 1024);
+        mem.write_bytes(0x40_000, b"19041.1.amd64fre.vb_release.191206-1406\0");
+        let ranged = RangedPhysMem::whole(mem);
+
+        assert_eq!(ranged.ranges().len(), 1);
+        assert_eq!(ranged.total_size(), 1024 * 1024);
+
+        // The bytes are reachable through the extent the provider advertises.
+        let (start, end) = (ranged.ranges()[0].start, ranged.ranges()[0].end);
+        assert!(start == 0 && end == 1024 * 1024);
+        let mut buf = [0u8; 8];
+        assert_eq!(ranged.read_phys(0x40_000, &mut buf).unwrap(), 8);
+        assert_eq!(&buf, b"19041.1.");
+    }
+
+    /// Sparse images are the realistic case — a dump is rarely one contiguous
+    /// span — so explicit ranges must be expressible too.
+    #[test]
+    fn ranged_provider_accepts_explicit_sparse_ranges() {
+        let mem = SyntheticPhysMem::new(1024 * 1024);
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![
+                PhysicalRange {
+                    start: 0,
+                    end: 0x1000,
+                },
+                PhysicalRange {
+                    start: 0x10_000,
+                    end: 0x11_000,
+                },
+            ],
+        );
+        assert_eq!(ranged.ranges().len(), 2);
+        assert_eq!(ranged.total_size(), 0x2000, "sum of the declared ranges");
+    }
+
     #[test]
     fn synthetic_mem_read_write() {
         let mut mem = SyntheticPhysMem::new(4096);
