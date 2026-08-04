@@ -67,6 +67,72 @@ impl PhysicalMemoryProvider for SyntheticPhysMem {
     }
 }
 
+/// A [`SyntheticPhysMem`] that advertises a physical extent.
+///
+/// [`SyntheticPhysMem`] deliberately reports no ranges, which models a provider
+/// that cannot enumerate its own layout. But
+/// [`PhysicalMemoryProvider::total_size`] is derived by summing those ranges, so
+/// it is zero — and a physical scan bounded by that extent traverses `(0, 0)`
+/// and sees nothing, however many bytes the image really holds.
+///
+/// Anything under test that *scans* physical memory therefore needs a provider
+/// that says how big it is. Wrap the image:
+///
+/// ```
+/// use memf_core::test_builders::{PageTableBuilder, RangedPhysMem};
+/// use memf_format::PhysicalMemoryProvider;
+///
+/// let (_cr3, mem) = PageTableBuilder::new().build();
+/// let scannable = RangedPhysMem::whole(mem);
+/// assert!(scannable.total_size() > 0);
+/// ```
+///
+/// Use [`RangedPhysMem::with_ranges`] when the shape matters — a real dump is
+/// rarely one contiguous span, and a scanner that mishandles a gap is exactly
+/// the kind of defect a contiguous fixture hides.
+#[derive(Debug, Clone)]
+pub struct RangedPhysMem {
+    inner: SyntheticPhysMem,
+    ranges: Vec<PhysicalRange>,
+}
+
+impl RangedPhysMem {
+    /// Advertise the whole image as one contiguous range.
+    #[must_use]
+    pub fn whole(inner: SyntheticPhysMem) -> Self {
+        let end = inner.data().len() as u64;
+        Self {
+            inner,
+            ranges: vec![PhysicalRange { start: 0, end }],
+        }
+    }
+
+    /// Advertise explicit ranges, for images with gaps.
+    ///
+    /// The ranges describe what the provider *claims*; they are not checked
+    /// against the backing image, so a test can deliberately advertise an extent
+    /// that does not match — which is how you exercise a consumer's handling of
+    /// a truncated or over-declared dump.
+    #[must_use]
+    pub fn with_ranges(inner: SyntheticPhysMem, ranges: Vec<PhysicalRange>) -> Self {
+        Self { inner, ranges }
+    }
+}
+
+impl PhysicalMemoryProvider for RangedPhysMem {
+    fn read_phys(&self, addr: u64, buf: &mut [u8]) -> memf_format::Result<usize> {
+        self.inner.read_phys(addr, buf)
+    }
+
+    fn ranges(&self) -> &[PhysicalRange] {
+        &self.ranges
+    }
+
+    fn format_name(&self) -> &str {
+        "Synthetic(ranged)"
+    }
+}
+
 /// Page table entry flags for x86_64.
 pub mod flags {
     /// Page is present in physical memory.

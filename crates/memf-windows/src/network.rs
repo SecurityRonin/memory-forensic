@@ -997,7 +997,7 @@ pub fn scan_tcp_listeners<P: PhysicalMemoryProvider>(
 mod tests {
     use super::*;
     use memf_core::object_reader::ObjectReader;
-    use memf_core::test_builders::{flags, PageTableBuilder, SyntheticPhysMem};
+    use memf_core::test_builders::{flags, PageTableBuilder, RangedPhysMem, SyntheticPhysMem};
     use memf_core::vas::{TranslationMode, VirtualAddressSpace};
     use memf_symbols::isf::IsfResolver;
     use memf_symbols::test_builders::IsfBuilder;
@@ -1435,22 +1435,6 @@ mod tests {
 
     /// Wrap `SyntheticPhysMem` so it advertises a physical range (needed for the
     /// physical pool-tag scan; the builder's mem reports none).
-    struct RangedMem {
-        inner: SyntheticPhysMem,
-        ranges: Vec<memf_format::PhysicalRange>,
-    }
-    impl PhysicalMemoryProvider for RangedMem {
-        fn read_phys(&self, addr: u64, buf: &mut [u8]) -> memf_format::Result<usize> {
-            self.inner.read_phys(addr, buf)
-        }
-        fn ranges(&self) -> &[memf_format::PhysicalRange] {
-            &self.ranges
-        }
-        fn format_name(&self) -> &str {
-            "RangedSynthetic"
-        }
-    }
-
     #[test]
     fn tcp_endpoint_layout_selected_per_build() {
         // Win7: distinct layout throughout.
@@ -1493,13 +1477,13 @@ mod tests {
             .write_phys(pa_build, &build_page);
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -1599,13 +1583,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -1696,13 +1680,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -1744,18 +1728,18 @@ mod tests {
         assert_eq!(build_from_buildlab("12.1.amd64fre"), None);
     }
 
-    /// Build a `RangedMem` whose physical memory contains `bytes` at `pa`.
-    fn ranged_mem_with(pa: u64, bytes: &[u8]) -> (u64, RangedMem) {
+    /// Build a `RangedPhysMem` whose physical memory contains `bytes` at `pa`.
+    fn ranged_mem_with(pa: u64, bytes: &[u8]) -> (u64, RangedPhysMem) {
         let mut page = vec![0u8; 0x1000];
         page[..bytes.len()].copy_from_slice(bytes);
         let (cr3, mem) = PageTableBuilder::new().write_phys(pa, &page).build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 1024 * 1024,
             }],
-        };
+        );
         (cr3, ranged)
     }
 
@@ -1872,13 +1856,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -1972,13 +1956,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -2037,13 +2021,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -2114,13 +2098,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -2214,13 +2198,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -2298,13 +2282,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
@@ -2378,13 +2362,13 @@ mod tests {
 
         let resolver = IsfResolver::from_value(&net_isf()).unwrap();
         let (cr3, mem) = ptb.build();
-        let ranged = RangedMem {
-            inner: mem,
-            ranges: vec![memf_format::PhysicalRange {
+        let ranged = RangedPhysMem::with_ranges(
+            mem,
+            vec![memf_format::PhysicalRange {
                 start: 0,
                 end: 16 * 1024 * 1024,
             }],
-        };
+        );
         let reader = ObjectReader::new(
             VirtualAddressSpace::new(ranged, cr3, TranslationMode::X86_64FourLevel),
             Box::new(resolver),
