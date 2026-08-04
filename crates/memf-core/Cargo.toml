@@ -1,6 +1,6 @@
 [package]
 name = "memf-core"
-version = "0.2.3"
+version = "0.2.4"
 description = "Virtual address translation and kernel object reading for memory forensics"
 edition.workspace = true
 rust-version.workspace = true

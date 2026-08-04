@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/SecurityRonin/memory-forensic/compare/memf-windows-v0.4.0...memf-windows-v0.4.1) - 2026-08-04
+
+### Added
+
+- *(core)* GREEN - export RangedPhysMem, and drop memf-windows' private copy
+
 ## [0.4.0](https://github.com/SecurityRonin/memory-forensic/compare/memf-windows-v0.3.1...memf-windows-v0.4.0) - 2026-07-29
 
 ### Added
