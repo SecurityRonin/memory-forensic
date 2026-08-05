@@ -36,9 +36,9 @@ memf-symbols = { version = "0.2.3", path = "crates/memf-symbols" }
 memf-core    = { version = "0.2.4", path = "crates/memf-core" }
 memf-linux   = { version = "0.3.2", path = "crates/memf-linux" }
 memf-session = { version = "0.3.2", path = "crates/memf-session" }
-memf-windows = { version = "0.4.1", path = "crates/memf-windows" }
+memf-windows = { version = "0.4.2", path = "crates/memf-windows" }
 memf-correlate    = { version = "0.3.0", path = "crates/memf-correlate" }
-memf-carve   = { version = "0.1.2", path = "crates/memf-carve" }
+memf-carve   = { version = "0.1.3", path = "crates/memf-carve" }
 # Fleet carving contract + single-pass sweep engine.
 forensic-carve = "0.1"
 assert_cmd = "2"
