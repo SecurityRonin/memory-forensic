@@ -14,7 +14,30 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "MPL-2.0",
+    # libbz2-rs-sys (pure-Rust bzip2 port) carries the permissive BSD-style
+    # bzip2/libbzip2 licence, reached via the 7z/tar.bz2 decode path.
+    # Non-copyleft, same class as the entries above; archive-forensic and
+    # usb-forensic allow it on the same reasoning.
+    "bzip2-1.0.6",
+    # webpki-roots ships Mozilla's CA bundle under CDLA-Permissive-2.0 — a
+    # permissive data licence with no copyleft or attribution burden.
+    "CDLA-Permissive-2.0",
 ]
+
+# array-bytes declares `Apache-2.0/GPL-3.0`. The `/` is the deprecated spelling
+# of OR, so this is a DUAL licence, not a GPL-only crate — we elect the
+# Apache-2.0 arm, already allowed above. cargo-deny rejects it only because
+# `GPL-3.0` is a deprecated identifier (`GPL-3.0-only` / `GPL-3.0-or-later` are
+# current), so the election must be stated rather than inferred.
+#
+# Deliberately a per-crate clarification and NOT "GPL-3.0" in the allow-list:
+# that would admit genuinely GPL-only crates, which for a distributed forensic
+# binary is an obligation we are not taking on. This admits exactly one crate,
+# on the arm we chose.
+[[licenses.clarify]]
+crate = "array-bytes"
+expression = "Apache-2.0"
+license-files = []
 
 [bans]
 multiple-versions = "warn"
