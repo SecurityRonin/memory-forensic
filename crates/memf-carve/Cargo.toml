@@ -1,6 +1,6 @@
 [package]
 name = "memf-carve"
-version = "0.1.3"
+version = "0.1.4"
 description = "Plane-V memory artifact carving: per-process virtual-address-space carving over the forensic-carve sweep engine (memory medium of the fleet carving contract)"
 edition.workspace = true
 rust-version = "1.88"

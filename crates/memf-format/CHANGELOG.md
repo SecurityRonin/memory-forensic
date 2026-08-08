@@ -3,6 +3,12 @@
 All notable changes to `memf-format` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.3.1](https://github.com/SecurityRonin/memory-forensic/compare/memf-format-v0.3.0...memf-format-v0.3.1) - 2026-08-08
+
+### Fixed
+
+- clippy lints from the raised MSRV, and repair the rustdoc links
+
 ## [0.3.0]
 
 ### Added

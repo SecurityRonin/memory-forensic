@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.3](https://github.com/SecurityRonin/memory-forensic/compare/memf-linux-v0.3.2...memf-linux-v0.3.3) - 2026-08-08
+## [0.2.4](https://github.com/SecurityRonin/memory-forensic/compare/memf-symbols-v0.2.3...memf-symbols-v0.2.4) - 2026-08-08
 
 ### Fixed
 
