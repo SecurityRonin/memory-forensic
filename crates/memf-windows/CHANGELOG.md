@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/SecurityRonin/memory-forensic/compare/memf-windows-v0.4.3...memf-windows-v0.4.4) - 2026-08-08
+
+### Documentation
+
+- the truncated name is a PREFIX, not an identity
+- record that ImageFileName is truncated by Windows, not by us
+
 ## [0.4.3](https://github.com/SecurityRonin/memory-forensic/compare/memf-windows-v0.4.2...memf-windows-v0.4.3) - 2026-08-08
 
 ### Fixed
