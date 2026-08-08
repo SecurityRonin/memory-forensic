@@ -75,6 +75,18 @@ fn plausible_pid(pid: u64) -> bool {
 
 /// Decode a 15-byte `ImageFileName` to a validated process name, or `None`.
 /// Requires printable ASCII, at least one letter, and NUL-or-end termination.
+///
+/// The field holds at most 14 CHARACTERS: it is `UCHAR[15]` and the kernel
+/// reserves the final byte for the NUL, so a longer executable name is
+/// truncated by Windows before any tool reads it (`coreupdater.exe` is stored
+/// as `coreupdater.ex\0`). A short name here is the evidence, not a decode
+/// defect.
+///
+/// Because truncation is lossy, this value is a PREFIX and not an identity:
+/// `MicrosoftEdgeUpdate.exe` and `MicrosoftEdgeUpdateCore.exe` — two real,
+/// separately signed binaries — both store as `MicrosoftEdgeU`. Callers must
+/// not treat a match here as identifying a specific executable. The `..=15` bound still admits an unterminated 15-byte field, which
+/// some kernels do write.
 fn decode_image_name(raw: &[u8]) -> Option<String> {
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
     // A real `ImageFileName` is an executable base name — never a single

@@ -51,6 +51,13 @@ fn read_process_info<P: PhysicalMemoryProvider>(
 ) -> Result<WinProcessInfo> {
     let pid: u64 = reader.read_field(eproc_addr, "_EPROCESS", "UniqueProcessId")?;
     let ppid: u64 = reader.read_field(eproc_addr, "_EPROCESS", "InheritedFromUniqueProcessId")?;
+    // `ImageFileName` is `UCHAR[15]` and the kernel NUL-terminates it, so it
+    // carries at most 14 CHARACTERS: `coreupdater.exe` is stored as
+    // `coreupdater.ex\0`. Verified in the raw bytes of the Case-001 dump, not
+    // inferred. Reading 15 and stopping at the NUL is therefore correct and the
+    // short name is the EVIDENCE -- do not "repair" it to an expected filename.
+    // The untruncated path lives in SeAuditProcessCreationInfo.ImageFileName or
+    // RTL_USER_PROCESS_PARAMETERS.ImagePathName; surface those as enrichment.
     let image_name = reader.read_field_string(eproc_addr, "_EPROCESS", "ImageFileName", 15)?;
     let create_time: u64 = reader.read_field(eproc_addr, "_EPROCESS", "CreateTime")?;
     let exit_time: u64 = reader.read_field(eproc_addr, "_EPROCESS", "ExitTime")?;
