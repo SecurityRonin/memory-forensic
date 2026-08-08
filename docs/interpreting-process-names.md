@@ -33,15 +33,46 @@ name does exist in the dump, but in a structure unrelated to that process object
 
 - **The short name is a faithful observation.** Cite it as what
   `_EPROCESS.ImageFileName` contained, not as the filename on disk.
-- **It is not a reliable identifier for names of 15+ characters.** Two different
-  executables whose first 14 characters match are indistinguishable in this
-  field.
+- **It is not a unique identifier.** Any two executables sharing their first 14
+  characters are indistinguishable here — see the collision table below.
 - **The full path is elsewhere.** `SeAuditProcessCreationInfo.ImageFileName`
   holds the NT path; `RTL_USER_PROCESS_PARAMETERS.ImagePathName` and
   `CommandLine` hold the launch path and arguments (both reachable through the
   PEB, so they need the process address space).
 - **Corroborate before naming a file.** A filesystem or registry artifact from
   the same host will give the untruncated name; the memory field alone will not.
+
+## Different executables collide in this field
+
+Truncation is lossy, so distinct filenames can share one stored value:
+
+| executable | length | stored in `ImageFileName` |
+|---|---|---|
+| `MicrosoftEdgeUpdate.exe` | 23 | `MicrosoftEdgeU` |
+| `MicrosoftEdgeUpdateCore.exe` | 27 | `MicrosoftEdgeU` |
+| `coreupdaterupdater.exe` | 22 | `coreupdaterupd` |
+| `coreupdaterupdater2.exe` | 23 | `coreupdaterupd` |
+
+The first pair is not contrived: those are two real, separately signed Microsoft
+binaries that this field cannot tell apart.
+
+Two consequences follow.
+
+**The stored value often is not recognisable as a filename.** `MicrosoftEdgeU`
+has lost its extension entirely. An examiner who does not know the 14-byte limit
+gets no cue that anything was cut — unlike `coreupdater.ex`, where the mangled
+`.ex` hints at it.
+
+**It is a masquerading vector.** An attacker who names a binary so that its first
+14 characters match a legitimate process produces an identical `ImageFileName`.
+A process list alone cannot separate them, and the collision needs no trickery
+beyond choosing a long enough name.
+
+So for any process whose stored name is exactly 14 characters — the tell that
+truncation may have occurred — treat the name as a **prefix**, not an identity,
+and resolve it against the full path (`SeAuditProcessCreationInfo.ImageFileName`,
+`RTL_USER_PROCESS_PARAMETERS.ImagePathName`) or against a filesystem artifact
+before attributing behaviour to a named program.
 
 ### Why we do not "fix" it
 
