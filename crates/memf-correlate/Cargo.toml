@@ -3,7 +3,7 @@ name = "memf-correlate"
 version = "0.3.0"
 description = "Forensic event correlation model for the memf forensics framework"
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.75"
 license.workspace = true
 
 [dependencies]

@@ -3,7 +3,7 @@ name = "memf-strings"
 version = "0.2.1"
 description = "String extraction, classification, and YARA-X scanning for memory forensics"
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.88"
 license.workspace = true
 
 [dependencies]

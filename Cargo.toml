@@ -14,7 +14,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.87"
 license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 
@@ -130,7 +130,9 @@ name = "mem4n6"
 version = "0.2.0"
 description = "Memory forensics CLI — self-profiling Windows/Linux kernel walking from any dump format, cross-checked against Volatility 3"
 edition.workspace = true
-rust-version.workspace = true
+# A binary, so its floor IS the pinned toolchain (rust-toolchain.toml):
+# nothing pins a library dependency against a *4n6 CLI.
+rust-version = "1.96.0"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
