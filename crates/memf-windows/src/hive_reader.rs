@@ -1,6 +1,6 @@
 //! winreg-core [`CellReader`] backend over an in-memory kernel hive.
 //!
-//! memf's HMAP cell-map translation ([`cell_index_to_va`]) resolves a registry
+//! memf's HMAP cell-map translation (`cell_index_to_va`) resolves a registry
 //! cell index to the virtual address of its `_HCELL` size header within a live,
 //! non-contiguous in-memory hive. winreg-core's [`CellReader`] trait wants the
 //! same thing expressed as offset → `(CellHeader, body)`. This adapter bridges
@@ -10,7 +10,7 @@
 //!
 //! A winreg-core [`CellOffset`] and a memf cell index are the *same* 32-bit
 //! value — both are hive-bins-relative — so no remapping is needed: the offset
-//! is fed directly to [`cell_index_to_va`].
+//! is fed directly to `cell_index_to_va`.
 
 use memf_core::object_reader::ObjectReader;
 use memf_format::PhysicalMemoryProvider;
@@ -24,7 +24,7 @@ use crate::registry::{cell_index_to_va, root_cell_index};
 /// A winreg-core [`CellReader`] that resolves cells through memf's HMAP cell map.
 ///
 /// Borrows the [`ObjectReader`] and the `_CMHIVE`/`_HHIVE` virtual address
-/// (`hhive_addr`) that [`cell_index_to_va`] requires — the same VA the existing
+/// (`hhive_addr`) that `cell_index_to_va` requires — the same VA the existing
 /// memf registry walkers pass, *not* the `_HBASE_BLOCK` pointer.
 pub struct MemfHiveReader<'r, P: PhysicalMemoryProvider> {
     reader: &'r ObjectReader<P>,
@@ -53,7 +53,7 @@ impl<'r, P: PhysicalMemoryProvider> MemfHiveReader<'r, P> {
 
     /// Translate a winreg-core cell offset (== memf cell index) to the virtual
     /// address of its `_HCELL` header, the form the legacy VA-based walkers
-    /// (e.g. [`crate::lsadump::derive_lsa_key`]) still consume. `None` when the
+    /// (e.g. `crate::lsadump::derive_lsa_key`) still consume. `None` when the
     /// offset does not resolve through the HMAP cell map. This is the bridge a
     /// caller uses when handing a navigated [`Key`] to a not-yet-migrated
     /// VA-based reader.

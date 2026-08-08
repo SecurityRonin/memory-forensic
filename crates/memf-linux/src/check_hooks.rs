@@ -30,8 +30,8 @@ const FUNCTIONS_TO_CHECK: &[&str] = &[
 
 /// Check key kernel functions for inline hooks.
 ///
-/// Reads the first [`PROLOGUE_SIZE`] bytes of each function in
-/// [`FUNCTIONS_TO_CHECK`] and looks for JMP/CALL trampoline patterns.
+/// Reads the first `PROLOGUE_SIZE` bytes of each function in
+/// `FUNCTIONS_TO_CHECK` and looks for JMP/CALL trampoline patterns.
 pub fn check_inline_hooks<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,
 ) -> Result<Vec<KernelHookInfo>> {
@@ -64,7 +64,7 @@ pub fn check_inline_hooks<P: PhysicalMemoryProvider>(
         let (hook_type, target) = analyze_prologue(&prologue, func_addr);
         // Suspicious only when a hook IS present AND the target is outside kernel text.
         // A jmp into a legitimate kernel function is not suspicious.
-        let suspicious = hook_type != "none" && target.map_or(true, |t| t < stext || t > etext);
+        let suspicious = hook_type != "none" && target.is_none_or(|t| t < stext || t > etext);
 
         results.push(KernelHookInfo {
             symbol: func_name.to_string(),

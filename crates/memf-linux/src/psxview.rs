@@ -43,7 +43,7 @@ pub fn walk_psxview<P: PhysicalMemoryProvider>(
     if let Ok(info) = read_task_info(reader, init_task_addr) {
         let in_pid_hash = pid_hash_pids
             .as_ref()
-            .map_or(true, |set| set.contains(&info.0));
+            .is_none_or(|set| set.contains(&info.0));
         results.push(PsxViewInfo {
             pid: info.0,
             comm: info.1,
@@ -56,7 +56,7 @@ pub fn walk_psxview<P: PhysicalMemoryProvider>(
         if let Ok(info) = read_task_info(reader, task_addr) {
             let in_pid_hash = pid_hash_pids
                 .as_ref()
-                .map_or(true, |set| set.contains(&info.0));
+                .is_none_or(|set| set.contains(&info.0));
             results.push(PsxViewInfo {
                 pid: info.0,
                 comm: info.1,

@@ -59,7 +59,7 @@ pub fn is_kernel_text_address(addr: u64, kernel_start: u64, kernel_end: u64) -> 
 
 /// Read function pointers from a `file_operations` struct and classify each.
 ///
-/// For each known field in [`FOP_FIELDS`], reads the pointer value. Non-null
+/// For each known field in `FOP_FIELDS`, reads the pointer value. Non-null
 /// pointers are checked against the kernel text range.
 pub fn check_fops_entry<P: PhysicalMemoryProvider>(
     reader: &ObjectReader<P>,

@@ -1,3 +1,41 @@
 title = "memory-forensic gitleaks config"
+
 [extend]
 useDefault = true
+
+# This crate HUNTS credentials in memory images, so it necessarily contains
+# examples of what credentials look like: the PEM header markers it searches
+# for, the vendor key prefixes it pattern-matches, and synthetic tokens in
+# `#[cfg(test)]` assertions that prove each detector fires. gitleaks reports the
+# detector's own machinery as the thing it detects.
+#
+# Everything below is a placeholder or a public constant. None opens anything,
+# none authenticates to anything, and no rotation is warranted:
+#
+#   -----BEGIN … PRIVATE KEY-----   PEM header markers in ssh_agent_keys.rs's
+#                                   PEM_SIGS table and regex_classifier.rs —
+#                                   the literal strings being searched FOR.
+#   sk_live_ABCDEF…                 placeholder Stripe key; the body is a
+#                                   letter sequence, not a issued key.
+#   xoxb-123456789012-…             placeholder Slack token; counted ramp.
+#   AIza…                           Google API-key PREFIX used as a matcher.
+#   eyJhbGciOiJSUz…                 JWT header, base64 of {"alg":"RS…} — the
+#                                   format marker, not a signed token.
+#   31d6cfe0d16ae931b73c59d7e0c089c0  the well-known NTLM hash of the EMPTY
+#                                   string; a published constant.
+#
+# Scoped to these literals, NOT to the rules and NOT to the files: a real
+# credential appearing in any of these files still fails the job.
+[allowlist]
+description = "Detector patterns and synthetic test tokens — not credentials"
+regexes = [
+  '''-----BEGIN (OPENSSH |RSA |EC |DSA )?PRIVATE KEY-----''',
+  '''sk_live_ABCDEF[A-Za-z0-9]*''',
+  '''xoxb-123456789012-[0-9A-Za-z-]*''',
+  '''AIza[A-Za-z0-9_\-]{35}''',
+  '''eyJhbGciOiJSUz[A-Za-z0-9_\-\.]*''',
+  '''31d6cfe0d16ae931b73c59d7e0c089c0''',
+  # Firefox logins.json fixtures in #[cfg(test)]: four repeated letters then
+  # the sequential filler 1234567890abcdef. Not a Firefox-encrypted blob.
+  '''^[A-Z]{4}1234567890abcdef==$''',
+]

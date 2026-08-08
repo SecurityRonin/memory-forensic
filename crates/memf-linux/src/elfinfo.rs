@@ -18,7 +18,7 @@ const ELF64_HEADER_SIZE: usize = 64;
 /// Walk all process VMAs and extract ELF headers.
 ///
 /// For each process, walks the VMA list and reads the first
-/// [`ELF64_HEADER_SIZE`] bytes from each region. Regions starting
+/// `ELF64_HEADER_SIZE` bytes from each region. Regions starting
 /// with the ELF magic are parsed and returned.
 pub fn walk_elfinfo<P: PhysicalMemoryProvider>(reader: &ObjectReader<P>) -> Result<Vec<ElfInfo>> {
     let init_task_addr = reader

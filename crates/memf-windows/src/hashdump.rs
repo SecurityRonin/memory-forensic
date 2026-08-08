@@ -694,7 +694,7 @@ pub(crate) fn username_from_v(v_data: &[u8]) -> Option<String> {
 /// revision-3 hbootkey and revision-2 per-user hash blobs. Returns an empty
 /// `Vec` on a key/IV/length mismatch rather than panicking.
 pub(crate) fn aes128_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
-    if key.len() != 16 || iv.len() < 16 || data.is_empty() || data.len() % 16 != 0 {
+    if key.len() != 16 || iv.len() < 16 || data.is_empty() || !data.len().is_multiple_of(16) {
         return Vec::new();
     }
     let Ok(dec) = CbcDecryptor::<Aes128>::new_from_slices(key, &iv[..16]) else {

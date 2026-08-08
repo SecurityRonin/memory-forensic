@@ -175,7 +175,7 @@ pub(crate) fn derive_lsa_key<P: PhysicalMemoryProvider>(
 ///
 /// Navigates `SECURITY\\Policy\\Secrets` via the shared HMAP walker and, for
 /// each secret's `CurrVal`, decrypts the value with the Vista+ LSA key derived
-/// from the SYSTEM hive's boot key ([`derive_lsa_key`]). Each result records
+/// from the SYSTEM hive's boot key (`derive_lsa_key`). Each result records
 /// whether decryption succeeded ([`LsaSecretInfo::decrypted`]); when it is
 /// refused (pre-Vista hive, or SYSTEM/boot key unavailable) the raw encrypted
 /// bytes are surfaced instead — never a fabricated plaintext. Returns an empty

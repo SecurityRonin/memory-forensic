@@ -281,7 +281,7 @@ fn is_kernel_pdb_name(name: &str) -> bool {
 /// candidate base through the page tables, until it finds an AMD64 PE whose
 /// CodeView RSDS record identifies it as an ntoskrnl variant.
 ///
-/// Returns [`Error::NotFound`] if no kernel PE is located within the search
+/// Returns [`Error::NotFound`](crate::Error::NotFound) if no kernel PE is located
 /// window.
 pub fn scan_for_kernel_via_dtb<P: PhysicalMemoryProvider + ?Sized>(
     mem: &P,
@@ -496,13 +496,13 @@ fn dtb_maps_kernel_space<P: PhysicalMemoryProvider + ?Sized>(mem: &P, cr3: u64) 
 /// descent on. This entry point recovers the kernel DTB directly from raw
 /// physical memory:
 ///
-/// 1. Enumerate self-referencing PML4 candidates ([`enumerate_self_ref_pml4s`]).
+/// 1. Enumerate self-referencing PML4 candidates (`enumerate_self_ref_pml4s`, private).
 ///    On a real dump this surfaces the kernel DTB *and* many process DTBs — all
 ///    self-reference at the same canonical index (220 on SecurityNik), so the
 ///    set is ambiguous.
 /// 2. Order candidates by ascending physical address and accept the first whose
 ///    page tables map an ntkrnlmp/ntoskrnl PE with a valid RSDS GUID
-///    ([`locate_kernel_via_dtb_only`]). Verification rejects self-referencing
+///    (`locate_kernel_via_dtb_only`). Verification rejects self-referencing
 ///    pages that are not page-table roots; the lowest-physical ordering selects
 ///    the kernel DTB among the process DTBs (whose shared kernel half also maps
 ///    the kernel, so verification alone would not distinguish them).

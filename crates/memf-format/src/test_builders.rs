@@ -160,7 +160,7 @@ impl CrashDumpBuilder {
     /// `data.len()` must be a multiple of 4096.
     pub fn add_run(mut self, base_page: u64, data: &[u8]) -> Self {
         assert!(
-            data.len() % 4096 == 0,
+            data.len().is_multiple_of(4096),
             "run data length must be a multiple of 4096"
         );
         self.runs.push((base_page, data.to_vec()));

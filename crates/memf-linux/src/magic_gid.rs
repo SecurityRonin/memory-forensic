@@ -1,7 +1,7 @@
 //! Magic GID detection — identifies processes controlled by LD_PRELOAD rootkits.
 //!
 //! Father rootkit (github.com/mav8557/Father) grants GID 7823 to processes
-//! it controls via its accept() hook. Scanning /proc/<pid>/status for
+//! it controls via its accept() hook. Scanning `/proc/<pid>/status` for
 //! supplementary GIDs that match known rootkit magic values is a reliable
 //! indicator even when the process is hidden from readdir.
 

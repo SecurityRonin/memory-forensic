@@ -9,58 +9,41 @@ on:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+  # fmt · clippy · test · MSRV · cargo-deny · cargo-vet · secret scan ·
+  # fuzz build-check · rustdoc · coverage · path-dep gate.
+  ci:
+    uses: SecurityRonin/fleet-ci/.github/workflows/rust-ci.yml@619094ad54edc586f5c2733358e00326b30790bd
+    with:
+      # CARRIED ACROSS. The replaced test job ran on [ubuntu-latest, macos-latest]
+      # — not windows, and not ubuntu alone. Until `test-os` existed this repo
+      # could not adopt at all: `os-matrix: true` adds a platform it does not
+      # support, `false` drops one it does. Either is a behaviour change smuggled
+      # into an adoption PR, so the platform set is named explicitly and is
+      # identical to before.
+      test-os: '["ubuntu-latest","macos-latest"]'
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
-      - run: cargo clippy --workspace --lib --bins -- -D warnings
+      # MIGRATION DEBT — and the first coverage this repo has ever measured, as
+      # the replaced workflow had no coverage job at all. There is no earlier
+      # number to regress from. Measured at the fleet scope
+      # (--workspace --all-features): 92.76% of 80,212 lines.
+      #
+      # The floor is 92, just under the measured value, so it holds the line
+      # rather than granting slack. It is NOT the fleet's per-line gate: a floor
+      # cannot honour a `// cov:unreachable` exemption and never names which
+      # lines are uncovered, so the shared workflow renders it as debt and warns
+      # on every run.
+      #
+      # REMOVE WHEN: the uncovered surface is tested (vol_compat.rs, at 76.81% of
+      # lines, is the largest single gap) and this repo can inherit
+      # `coverage-gate: strict`.
+      coverage-gate: floor
+      coverage-floor: 92
 
-  test:
-    name: Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
-      - run: cargo test --workspace
-
-  msrv:
-    name: MSRV (1.75)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.75"
-      - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
-      - run: cargo check --workspace
-
-  # Proves the README "single static binary" claim continuously: build the mem4n6
-  # binary for musl and fail if it is not actually statically linked. The release
-  # workflow ships these musl artifacts (release.yml).
+  # Repo-specific: mem4n6 ships as a static musl binary, and "it built" is not
+  # the same claim as "it has no external dependencies". Carried over verbatim,
+  # including the toolchain pin — a floating `stable` adds the musl target to the
+  # wrong toolchain and the pinned build then fails with E0463.
   musl-static:
     name: Static musl binary
     runs-on: ubuntu-latest

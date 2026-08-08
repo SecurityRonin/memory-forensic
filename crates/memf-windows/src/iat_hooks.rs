@@ -86,7 +86,7 @@ pub fn classify_iat_hook(
 /// target DLL's address range.
 ///
 /// Returns a vector of [`IatHookInfo`] for every detected hook.
-/// At most [`MAX_HOOKS`] entries are returned per process.
+/// At most `MAX_HOOKS` entries are returned per process.
 pub fn walk_iat_hooks<P: PhysicalMemoryProvider + Clone>(
     reader: &ObjectReader<P>,
     eprocess_addr: u64,

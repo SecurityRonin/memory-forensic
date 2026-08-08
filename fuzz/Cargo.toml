@@ -4,6 +4,11 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 
+# cargo-fuzz refuses a manifest without this marker:
+#   "does not look like a cargo-fuzz manifest"
+[package.metadata]
+cargo-fuzz = true
+
 [workspace]
 
 [dependencies]

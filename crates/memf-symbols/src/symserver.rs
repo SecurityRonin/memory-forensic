@@ -64,7 +64,7 @@ fn volatility_cache_path_from(
 /// Return the shared symbol cache directory — Volatility3's `CACHE_PATH`.
 ///
 /// memf deliberately shares Volatility's store (not a memf-private dir) so a
-/// single download serves both tools. See [`volatility_cache_path_from`].
+/// single download serves both tools. See `volatility_cache_path_from`.
 pub fn default_cache_dir() -> Option<PathBuf> {
     let xdg = std::env::var("XDG_CACHE_HOME").ok();
     let home = std::env::var("HOME").ok();
@@ -136,7 +136,7 @@ fn resolve_cache_dir_from(
 }
 
 /// Resolve the symbol cache dir from the environment, falling back to
-/// [`default_cache_dir`]. See [`resolve_cache_dir_from`] for the order.
+/// [`default_cache_dir`]. See `resolve_cache_dir_from` for the order.
 pub fn resolve_cache_dir() -> Option<PathBuf> {
     let memf = std::env::var("MEMF_SYMBOL_CACHE").ok();
     let ntsp = std::env::var("_NT_SYMBOL_PATH").ok();

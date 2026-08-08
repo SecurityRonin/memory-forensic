@@ -111,7 +111,7 @@ pub enum Error {
 
     /// Walker-specific error.
     ///
-    /// Prefer [`WalkFailed`] for new code.
+    /// Prefer `WalkFailed` for new code.
     #[error("walker error: {0}")]
     Walker(String),
 
