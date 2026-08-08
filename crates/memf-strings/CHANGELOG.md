@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.3](https://github.com/SecurityRonin/memory-forensic/compare/memf-linux-v0.3.2...memf-linux-v0.3.3) - 2026-08-08
+## [0.2.2](https://github.com/SecurityRonin/memory-forensic/compare/memf-strings-v0.2.1...memf-strings-v0.2.2) - 2026-08-08
 
 ### Fixed
 
-- clippy lints from the raised MSRV, and repair the rustdoc links
+- *(msrv)* declare each member's measured floor instead of an unsatisfiable 1.75

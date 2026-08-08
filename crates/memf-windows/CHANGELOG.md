@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/SecurityRonin/memory-forensic/compare/memf-windows-v0.4.2...memf-windows-v0.4.3) - 2026-08-08
+
+### Fixed
+
+- clippy lints from the raised MSRV, and repair the rustdoc links
+- *(msrv)* declare each member's measured floor instead of an unsatisfiable 1.75
+
 ## [0.4.2](https://github.com/SecurityRonin/memory-forensic/compare/memf-windows-v0.4.1...memf-windows-v0.4.2) - 2026-08-05
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/SecurityRonin/memory-forensic/compare/memf-carve-v0.1.3...memf-carve-v0.1.4) - 2026-08-08
+
+### Fixed
+
+- *(msrv)* declare each member's measured floor instead of an unsatisfiable 1.75
+
 ## [0.1.0](https://github.com/SecurityRonin/memory-forensic/releases/tag/memf-carve-v0.1.0) - 2026-07-23
 
 ### Added
