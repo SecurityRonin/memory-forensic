@@ -1,7 +1,7 @@
 //! ISF symbol auto-download from the community server.
 //!
 //! Cache directory: `~/.cache/memf/symbols/`
-//! Server: see [`forensicnomicon::toolchain::VOLATILITY3_VOLATILITY3_ISF_SERVER`]
+//! Server: see `forensicnomicon::toolchain::VOLATILITY3_VOLATILITY3_ISF_SERVER`
 //! URL pattern: `<server>/windows/<pdb_name>/<GUID><AGE>.json.xz`
 
 use std::path::{Path, PathBuf};

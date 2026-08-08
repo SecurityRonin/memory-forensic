@@ -70,7 +70,7 @@ fn read_phys_exact<P: PhysicalMemoryProvider + ?Sized>(
 /// True if `pid` looks like a real Windows process id: a small, non-zero
 /// multiple of four (the kernel allocates client ids in steps of four).
 fn plausible_pid(pid: u64) -> bool {
-    (4..=0x4_0000).contains(&pid) && pid % 4 == 0
+    (4..=0x4_0000).contains(&pid) && pid.is_multiple_of(4)
 }
 
 /// Decode a 15-byte `ImageFileName` to a validated process name, or `None`.

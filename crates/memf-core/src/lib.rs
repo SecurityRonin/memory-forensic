@@ -3,9 +3,9 @@
 //! Virtual address translation and kernel object reading.
 //!
 //! This crate provides:
-//! - [`VirtualAddressSpace`] — page table walking for x86_64 (4-level, 5-level),
+//! - `VirtualAddressSpace` — page table walking for x86_64 (4-level, 5-level),
 //!   AArch64, and x86 PAE/non-PAE modes
-//! - [`ObjectReader`] — high-level kernel struct traversal using symbol information
+//! - `ObjectReader` — high-level kernel struct traversal using symbol information
 
 pub mod lzo;
 // Folded in from the former memf-framebuffer crate (cross-OS framebuffer extraction).

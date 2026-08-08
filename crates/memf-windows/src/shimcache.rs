@@ -208,7 +208,7 @@ pub struct ShimcacheEntry {
 /// `ahcache.sys`, locates the `SHIM_CACHE_HANDLE` by scanning its `.data`
 /// section (validating each candidate's `_RTL_AVL_TABLE` against the `PAGE`
 /// section), then walks the `SHIM_CACHE_ENTRY` LRU list via
-/// [`parse_shimcache_list`].
+/// `parse_shimcache_list`.
 ///
 /// Returns an empty `Vec` when `ahcache.sys` or its sections are absent (e.g.
 /// an unsupported OS/arch — this targets Win8.1+/Win10 x64 only) or no valid

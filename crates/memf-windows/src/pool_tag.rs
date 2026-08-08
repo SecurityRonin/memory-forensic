@@ -23,7 +23,7 @@ const MAX_POOL_TAG_ENTRIES: u64 = 65536;
 ///
 /// Reads the `PoolTrackTable` symbol to locate the array of
 /// `_POOL_TRACKER_TABLE` entries, then iterates up to `PoolTrackTableSize`
-/// entries (capped at [`MAX_POOL_TAG_ENTRIES`]). Returns an empty `Vec` if
+/// entries (capped at `MAX_POOL_TAG_ENTRIES`). Returns an empty `Vec` if
 /// the required symbols are not present (graceful degradation).
 ///
 /// # Errors

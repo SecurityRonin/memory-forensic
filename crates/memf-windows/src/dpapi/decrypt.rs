@@ -257,7 +257,7 @@ mod tests {
         let mut buf = plaintext.to_vec();
         // pad to 16-byte boundary
         let pad_len = 16 - (buf.len() % 16);
-        buf.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        buf.extend(std::iter::repeat_n(pad_len as u8, pad_len));
         enc.encrypt_padded_mut::<Pkcs7>(&mut buf, plaintext.len())
             .unwrap()
             .to_vec()

@@ -83,11 +83,11 @@ pub fn find_loaded_module<P: PhysicalMemoryProvider>(
 const MODULE_IMAGE_SCAN_CAP: usize = 4 * 1024 * 1024;
 
 /// Read a loaded module's PE image (at its base VA) and extract its CodeView
-/// RSDS PDB identification ([`PdbId`]) — the input to resolving that module's own
+/// RSDS PDB identification (`PdbId`) — the input to resolving that module's own
 /// symbols (e.g. `tcpip.sys` for `netstat`).
 ///
 /// `image_size` is the PE `SizeOfImage` (from the `_KLDR_DATA_TABLE_ENTRY`); the
-/// read is capped at [`MODULE_IMAGE_SCAN_CAP`] and done page-by-page so a
+/// read is capped at `MODULE_IMAGE_SCAN_CAP` and done page-by-page so a
 /// partially paged-out image (unmapped pages → zero-filled) still yields the RSDS
 /// when its page is resident.
 pub fn module_pdb_id<P: PhysicalMemoryProvider>(
@@ -113,7 +113,7 @@ pub fn module_pdb_id<P: PhysicalMemoryProvider>(
 
 /// Build a ready-to-use [`SymbolResolver`](memf_symbols::SymbolResolver) for a
 /// loaded kernel module (e.g. `tcpip.sys`): locate it via `PsLoadedModuleList`,
-/// extract its RSDS [`PdbId`], resolve the matching PDB
+/// extract its RSDS `PdbId`, resolve the matching PDB
 /// ([`AutoProfile`](memf_symbols::AutoProfile), download/cache), and rebase its
 /// RVA symbols by the module's base.
 ///

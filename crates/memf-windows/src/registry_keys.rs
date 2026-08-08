@@ -10,8 +10,8 @@
 //!   `_CMHIVE.Hive` is at offset 0, the `_CMHIVE` VA serves directly).
 //! - In-memory hives are NOT flat: a cell index is translated to its cell VA
 //!   through the `_HHIVE.Storage[].Map` directory (see
-//!   [`super::registry::cell_index_to_va`]). The root cell index comes from
-//!   [`super::registry::root_cell_index`] (regf `RootCell`, else default 0x20).
+//!   `super::registry::cell_index_to_va`). The root cell index comes from
+//!   `super::registry::root_cell_index` (regf `RootCell`, else default 0x20).
 //! - Each cell: `i32` size (negative = allocated), followed by cell data.
 //! - Key node (`_CM_KEY_NODE`): Signature `0x6B6E` ("nk"), Flags, LastWriteTime,
 //!   SubKeyCount, SubKeys pointer, ValueCount, Values pointer, NameLength, Name.
@@ -995,7 +995,7 @@ mod tests {
         let data_utf16: Vec<u8> = data_str
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
-            .chain(std::iter::repeat(0).take(2)) // null terminator
+            .chain(std::iter::repeat_n(0, 2)) // null terminator
             .collect();
         let data_len = data_utf16.len() as u32;
 

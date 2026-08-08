@@ -140,7 +140,7 @@ fn read_unicode_string_raw<P: PhysicalMemoryProvider>(
 /// Decode raw bytes as UTF-16LE if every code unit is a valid Unicode scalar.
 /// Returns `Some(String)` for plaintext, `None` for encrypted/binary data.
 fn decode_utf16le_or_none(bytes: &[u8]) -> Option<String> {
-    if bytes.len() < 2 || bytes.len() % 2 != 0 {
+    if bytes.len() < 2 || !bytes.len().is_multiple_of(2) {
         return None;
     }
     let units: Vec<u16> = bytes

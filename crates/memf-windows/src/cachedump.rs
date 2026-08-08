@@ -202,7 +202,7 @@ fn decrypt_dcc2(enc_data: &[u8], nlkm: &[u8], ch: &[u8]) -> Vec<u8> {
         return Vec::new();
     }
     let mut padded = enc_data.to_vec();
-    while padded.len() % 16 != 0 {
+    while !padded.len().is_multiple_of(16) {
         padded.push(0);
     }
     crate::hashdump::aes128_cbc_decrypt(&nlkm[16..32], &ch[..16], &padded)

@@ -101,7 +101,7 @@ const MAX_PDB_NAME_LEN: usize = 256;
 /// follow. The first record with a non-empty, valid-UTF-8 filename wins.
 ///
 /// All reads are bounds-checked; malformed or truncated input yields
-/// [`Error::NotFound`] rather than a panic (Paranoid Gatekeeper).
+/// `Error::NotFound` rather than a panic (Paranoid Gatekeeper).
 pub fn extract_pdb_id_tolerant(bytes: &[u8]) -> crate::Result<PdbId> {
     extract_pdb_id_tolerant_where(bytes, |_| true)
 }
