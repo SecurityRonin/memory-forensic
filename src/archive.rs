@@ -122,7 +122,7 @@ fn extract_from_zip(path: &Path) -> Result<NamedTempFile> {
 }
 
 fn extract_from_7z(path: &Path) -> Result<NamedTempFile> {
-    let mut reader = sevenz_rust::SevenZReader::open(path, sevenz_rust::Password::empty())
+    let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
         .map_err(|e| anyhow::anyhow!("failed to open 7z archive: {e}"))?;
 
     let entries: Vec<(String, u64)> = reader
@@ -144,7 +144,7 @@ fn extract_from_7z(path: &Path) -> Result<NamedTempFile> {
         .for_each_entries(|entry, rd| {
             if entry.name == best {
                 copy_with_progress(rd, &mut tmp, &best, best_size)
-                    .map_err(sevenz_rust::Error::io)?;
+                    .map_err(|e| sevenz_rust2::Error::Io(e, "".into()))?;
                 found = true;
                 return Ok(false); // stop iteration
             }
@@ -635,9 +635,9 @@ mod tests {
 
     fn create_test_7z(files: &[(&str, &[u8])]) -> NamedTempFile {
         let tmp = tempfile::Builder::new().suffix(".7z").tempfile().unwrap();
-        let mut writer = sevenz_rust::SevenZWriter::create(tmp.path()).unwrap();
+        let mut writer = sevenz_rust2::ArchiveWriter::create(tmp.path()).unwrap();
         for (name, data) in files {
-            let mut entry = sevenz_rust::SevenZArchiveEntry::new();
+            let mut entry = sevenz_rust2::ArchiveEntry::new();
             entry.name = (*name).to_string();
             entry.has_stream = true;
             writer
