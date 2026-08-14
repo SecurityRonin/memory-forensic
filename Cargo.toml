@@ -59,7 +59,7 @@ digest         = "0.10"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 goblin = "0.9"
 hmac           = "0.12"
-indicatif = "0.17"
+indicatif = "0.18"
 inventory = "0.3"
 lru = "0.18"
 # Production decode path: our own decode-only LZO1X crate (Apache-2.0).
