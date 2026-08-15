@@ -1,6 +1,28 @@
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # Both of these reach us ONLY through yara-x, and both advisories carry
+    # `patched = []` — there is no version to upgrade to, so the first four
+    # remediation options (patched release, maintained replacement, code fix,
+    # restructure) are all unavailable. They are listed individually, with a
+    # removal condition each, rather than inherited wholesale: this repo keeps
+    # its own deny.toml precisely so a suppression has to be argued for.
+    #
+    # rsa 0.9.10 — Marvin Attack, key recovery through a timing sidechannel in
+    # private-key DECRYPTION. Not reachable here, and that was checked rather
+    # than assumed: yara-x's only rsa use is
+    # src/modules/utils/crypto.rs, which imports `DecodePublicKey`,
+    # `RsaPublicKey` and `Pkcs1v15Sign`, and calls `.verify(...)` for PE
+    # authenticode signatures. `RsaPrivateKey`, `.decrypt(` and Oaep appear
+    # nowhere in the crate's source. Unpatched upstream since 2023-11.
+    # REMOVE WHEN: rsa ships a constant-time fix, or yara-x drops the dependency.
+    # RE-CHECK the reachability claim above whenever yara-x is upgraded.
+    "RUSTSEC-2023-0071",
+    # bincode 2.0.1 — unmaintained. A maintenance-status advisory, not a
+    # vulnerability: no known defect, and yara-x pins it for rule serialisation.
+    # REMOVE WHEN: yara-x moves to a maintained serialiser.
+    "RUSTSEC-2025-0141",
+]
 
 [licenses]
 version = 2
@@ -22,6 +44,11 @@ allow = [
     # webpki-roots ships Mozilla's CA bundle under CDLA-Permissive-2.0 — a
     # permissive data licence with no copyleft or attribution burden.
     "CDLA-Permissive-2.0",
+    # ppmd-rust (PPMd decode, reached via sevenz-rust2 and via zip inside
+    # yara-x) is "CC0-1.0 OR MIT-0". MIT-0 is OSI-approved and permissive with
+    # no attribution burden, and satisfies the OR on its own — so CC0-1.0,
+    # whose patent position some organisations avoid, stays off this list.
+    "MIT-0",
 ]
 
 # array-bytes declares `Apache-2.0/GPL-3.0`. The `/` is the deprecated spelling

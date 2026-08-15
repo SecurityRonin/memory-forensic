@@ -13,7 +13,7 @@ jobs:
   # fmt · clippy · test · MSRV · cargo-deny · cargo-vet · secret scan ·
   # fuzz build-check · rustdoc · coverage · path-dep gate.
   ci:
-    uses: SecurityRonin/fleet-ci/.github/workflows/rust-ci.yml@619094ad54edc586f5c2733358e00326b30790bd
+    uses: SecurityRonin/fleet-ci/.github/workflows/rust-ci.yml@9234e1fa9f85b14a8d6fddc7a8f7378f7e30b183
     with:
       # CARRIED ACROSS. The replaced test job ran on [ubuntu-latest, macos-latest]
       # — not windows, and not ubuntu alone. Until `test-os` existed this repo
