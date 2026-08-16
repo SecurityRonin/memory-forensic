@@ -57,6 +57,8 @@ jobs:
           toolchain: "1.96.0"
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@9bdad043e88c75890e36ad3bbc8d27f0090dd609 # v2
+        with:
+          cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --target x86_64-unknown-linux-musl --bin mem4n6
       - name: Assert statically linked
