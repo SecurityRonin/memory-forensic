@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "memf-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "bytemuck",
  "lru",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "memf-format"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "flate2",
  "goblin",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "memf-strings"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aho-corasick",
  "inventory",
@@ -2077,7 +2077,7 @@ dependencies = [
 
 [[package]]
 name = "memf-windows"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
