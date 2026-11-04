@@ -14,7 +14,10 @@ snap.workspace = true
 goblin.workspace = true
 rust-lzxpress.workspace = true
 flate2.workspace = true
-ruzstd.workspace = true
+# zstd kdump pages. >= 0.9.1 for RUSTSEC-2026-0344 (a decompression bomb that
+# allocates gigabytes inside one block); stated here, not inherited, so this
+# crate's own published manifest carries the floor. memf-format is the only user.
+ruzstd = "0.9.1"
 lru.workspace = true
 
 [lints]
