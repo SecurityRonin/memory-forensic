@@ -1,6 +1,6 @@
 [package]
 name = "memf-strings"
-version = "0.2.3"
+version = "0.2.4"
 description = "String extraction, classification, and YARA-X scanning for memory forensics"
 edition.workspace = true
 rust-version = "1.95"
