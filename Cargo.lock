@@ -1988,7 +1988,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memf-carve"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "forensic-carve",
  "memf-core",
@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "memf-core"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "bytemuck",
  "lru",
@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "memf-correlate"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "forensicnomicon",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "memf-format"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "flate2",
  "goblin",
@@ -2044,7 +2044,7 @@ dependencies = [
 
 [[package]]
 name = "memf-linux"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forensicnomicon",
  "goblin",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "memf-session"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "memf-format",
@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "memf-strings"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aho-corasick",
  "inventory",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "memf-symbols"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "goblin",
  "memf-format",
@@ -2096,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "memf-windows"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",

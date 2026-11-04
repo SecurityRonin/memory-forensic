@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/SecurityRonin/memory-forensic/compare/memf-carve-v0.1.5...memf-carve-v0.1.6) - 2026-11-04
+
+### Fixed
+
+- *(msrv)* raise the memf-* floors to 1.89 (1.95 where yara-x reaches)
+
 ## [0.1.4](https://github.com/SecurityRonin/memory-forensic/compare/memf-carve-v0.1.3...memf-carve-v0.1.4) - 2026-08-08
 
 ### Fixed
