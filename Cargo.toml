@@ -74,7 +74,7 @@ png            = "0.17"
 rc4            = "0.2"
 regex = "1"
 rust-lzxpress = "0.7"
-ruzstd = "0.8"
+ruzstd = "0.9.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sevenz-rust2 = "0.21"
@@ -88,18 +88,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lzma-rs = "0.3"
 ureq = "3"
-# Tilde, not caret, and deliberately: yara-x 1.8+ moves to wasmtime 43.x, and
-# NO 43.x release is patched for GHSA-hgjw-h833-99q9 and five sibling
-# advisories (fixed ranges are 24.0.12, 36.0.13, 46.0.2+, 47.0.3+). The 1.7
-# line resolves wasmtime ^36.0.2 -> 36.0.13, which is patched. A caret here
-# lets any `cargo update` silently reintroduce all six -- as one already did.
-# Remove this pin once yara-x depends on a patched wasmtime range.
-yara-x = "~1.7"
+# Tilde, not caret, and deliberately: each yara-x minor moves to a new wasmtime
+# major, and wasmtime majors stop receiving fixes (the old ~1.7 pin sat on
+# wasmtime 36, which got no fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/
+# 0423). 1.22 resolves wasmtime ^48.0.6 and zip ^9 (zip < 9: RUSTSEC-2026-0367/
+# 0368/0369/0429). Needs Rust 1.95, so memf-strings and memf-windows declare it.
+# Re-check `cargo deny check advisories` before moving to a newer minor.
+yara-x = "~1.22.1"
 # Pure-Rust ZIP reader (decodes deflate/deflate64/bzip2/zstd/lzma without C FFI).
 zip-forensic-core = "0.1"
 # zip-rs kept only for the test-fixture WRITER (zip-forensic-core is read-only),
 # slimmed to deflate-only so it pulls no bzip2-sys/zstd-sys/lzma-sys C libraries.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # unsafe is denied workspace-wide, not forbidden: a handful of crates legitimately
 # need one bounded mmap site (memf-core::pagefile).

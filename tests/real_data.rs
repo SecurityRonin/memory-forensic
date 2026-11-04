@@ -186,7 +186,9 @@ fn deflate64_zip_entries_are_readable() {
         let entry = archive
             .by_index(i)
             .expect("entry should be readable with deflate64 support");
-        if Path::new(entry.name())
+        // zip 9: name() returns Result (it validates the stored name).
+        let name = entry.name().expect("entry name should decode");
+        if Path::new(name.as_ref())
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("dmp"))
         {

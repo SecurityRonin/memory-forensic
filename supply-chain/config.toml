@@ -55,15 +55,11 @@ version = "0.8.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.aes]]
-version = "0.9.2"
+version = "0.9.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.aes-gcm]]
 version = "0.10.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.ahash]]
-version = "0.8.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.android_system_properties]]
@@ -71,11 +67,11 @@ version = "0.1.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.annotate-snippets]]
-version = "0.12.16"
+version = "0.12.17"
 criteria = "safe-to-deploy"
 
-[[exemptions.array-bytes]]
-version = "9.3.0"
+[[exemptions.arbitrary]]
+version = "1.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ascii_tree]]
@@ -94,8 +90,13 @@ criteria = "safe-to-deploy"
 version = "0.2.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.async-trait]]
+version = "0.1.92"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.base16ct]]
-version = "0.2.0"
+version = "1.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.base64]]
@@ -123,7 +124,7 @@ version = "0.4.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitflags]]
-version = "2.13.1"
+version = "2.13.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitvec]]
@@ -151,7 +152,7 @@ version = "1.25.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.bytemuck_derive]]
-version = "1.12.0"
+version = "1.12.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.bytes]]
@@ -175,11 +176,11 @@ version = "0.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.cc]]
-version = "1.4.2"
+version = "1.11.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cfg-if]]
-version = "1.0.4"
+version = "1.0.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.chrono]]
@@ -191,19 +192,24 @@ version = "0.5.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.clap]]
-version = "4.6.6"
+version = "4.6.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.clap_derive]]
-version = "4.6.4"
+version = "4.6.7"
 criteria = "safe-to-deploy"
+
+[[exemptions.cmov]]
+version = "0.5.4"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
 
 [[exemptions.comfy-table]]
 version = "7.2.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.console]]
-version = "0.16.4"
+version = "0.16.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.const-oid]]
@@ -222,16 +228,17 @@ criteria = "safe-to-deploy"
 version = "3.0.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.cpp_demangle]]
+version = "0.3.5"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.cpubits]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.cpufeatures]]
 version = "0.2.17"
-criteria = "safe-to-deploy"
-
-[[exemptions.cpufeatures]]
-version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.crc]]
@@ -243,19 +250,19 @@ version = "2.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.crc32fast]]
-version = "1.5.0"
+version = "1.5.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-deque]]
-version = "0.8.7"
+version = "0.8.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-epoch]]
-version = "0.9.20"
+version = "0.9.21"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-utils]]
-version = "0.8.22"
+version = "0.8.23"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossterm]]
@@ -267,7 +274,7 @@ version = "0.9.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.crypto-bigint]]
-version = "0.5.5"
+version = "0.7.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.crypto-common]]
@@ -278,20 +285,35 @@ criteria = "safe-to-deploy"
 version = "0.2.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.crypto-primes]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.ctr]]
 version = "0.9.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.ctutils]]
+version = "0.4.8"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
+[[exemptions.daachorse]]
+version = "5.1.0"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.darling]]
-version = "0.20.11"
+version = "0.24.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.darling_core]]
-version = "0.20.11"
+version = "0.24.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.darling_macro]]
-version = "0.20.11"
+version = "0.24.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.data-encoding]]
@@ -302,8 +324,16 @@ criteria = "safe-to-deploy"
 version = "0.1.12"
 criteria = "safe-to-deploy"
 
+[[exemptions.der]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+
 [[exemptions.der-parser]]
 version = "10.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.deranged]]
+version = "0.5.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.des]]
@@ -327,23 +357,27 @@ version = "0.2.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.dsa]]
-version = "0.6.3"
+version = "0.7.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ecdsa]]
-version = "0.16.9"
+version = "0.17.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.either]]
-version = "1.17.0"
+version = "1.19.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.elliptic-curve]]
-version = "0.13.8"
+version = "0.14.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.encode_unicode]]
 version = "1.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.equivalent]]
+version = "1.0.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.errno]]
@@ -355,15 +389,20 @@ version = "2.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ff]]
-version = "0.13.1"
+version = "0.14.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.fiat-crypto]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.find-msvc-tools]]
-version = "0.1.10"
+version = "0.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.flate2]]
-version = "1.1.9"
+version = "1.1.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.float-cmp]]
@@ -374,9 +413,25 @@ criteria = "safe-to-run"
 version = "2.0.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.futures-core]]
+[[exemptions.futures]]
 version = "0.3.34"
 criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
+[[exemptions.futures-channel]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
+[[exemptions.futures-io]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
+[[exemptions.futures-sink]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
 
 [[exemptions.futures-task]]
 version = "0.3.34"
@@ -392,10 +447,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.getrandom]]
 version = "0.2.17"
-criteria = "safe-to-deploy"
-
-[[exemptions.getrandom]]
-version = "0.3.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.getrandom]]
@@ -415,19 +466,19 @@ version = "0.9.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.group]]
-version = "0.13.0"
+version = "0.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.hashbrown]]
 version = "0.14.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.hkdf]]
-version = "0.12.4"
+[[exemptions.hmac]]
+version = "0.12.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.hmac]]
-version = "0.12.1"
+version = "0.13.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.home]]
@@ -435,7 +486,7 @@ version = "0.5.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.hybrid-array]]
-version = "0.4.14"
+version = "0.4.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.iana-time-zone]]
@@ -443,7 +494,7 @@ version = "0.1.65"
 criteria = "safe-to-deploy"
 
 [[exemptions.indexmap]]
-version = "1.9.3"
+version = "2.14.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.indicatif]]
@@ -455,7 +506,7 @@ version = "0.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.inout]]
-version = "0.2.2"
+version = "0.2.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.intaglio]]
@@ -463,27 +514,27 @@ version = "1.15.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.ipnet]]
-version = "2.12.1"
+version = "2.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.itertools]]
 version = "0.12.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.jobserver]]
-version = "0.1.35"
+[[exemptions.js-sys]]
+version = "0.3.107"
 criteria = "safe-to-deploy"
 
-[[exemptions.js-sys]]
-version = "0.3.104"
+[[exemptions.lazy_static]]
+version = "1.5.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.libbz2-rs-sys]]
-version = "0.2.5"
+version = "0.2.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.libc]]
-version = "0.2.189"
+version = "0.2.191"
 criteria = "safe-to-deploy"
 
 [[exemptions.libm]]
@@ -491,7 +542,7 @@ version = "0.2.16"
 criteria = "safe-to-deploy"
 
 [[exemptions.litrs]]
-version = "1.0.0"
+version = "1.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.lock_api]]
@@ -499,23 +550,23 @@ version = "0.4.14"
 criteria = "safe-to-deploy"
 
 [[exemptions.log]]
-version = "0.4.33"
+version = "0.4.35"
 criteria = "safe-to-deploy"
 
 [[exemptions.logos]]
-version = "0.15.1"
+version = "0.16.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.logos-codegen]]
-version = "0.15.1"
+version = "0.16.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.logos-derive]]
-version = "0.15.1"
+version = "0.16.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.lru]]
-version = "0.18.2"
+version = "0.18.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.lzma-rs]]
@@ -523,11 +574,7 @@ version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.lzma-rust2]]
-version = "0.13.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.lzma-rust2]]
-version = "0.18.1"
+version = "0.19.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.lzo1x]]
@@ -535,24 +582,33 @@ version = "0.2.2"
 criteria = "safe-to-run"
 
 [[exemptions.mach2]]
-version = "0.4.3"
+version = "0.6.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.md-5]]
 version = "0.10.6"
 criteria = "safe-to-deploy"
 
+[[exemptions.md-5]]
+version = "0.11.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.md2]]
-version = "0.10.2"
+version = "0.11.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.memfd]]
+version = "0.6.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.memmap2]]
-version = "0.9.11"
+version = "0.9.12"
 criteria = "safe-to-deploy"
 
-[[exemptions.memx]]
-version = "0.1.32"
+[[exemptions.memoffset]]
+version = "0.9.1"
 criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
 
 [[exemptions.miette]]
 version = "7.6.0"
@@ -566,16 +622,25 @@ criteria = "safe-to-deploy"
 version = "0.2.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.miniz_oxide]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.nix]]
+version = "0.31.3"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.nom]]
 version = "8.0.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.num-bigint-dig]]
-version = "0.8.6"
-criteria = "safe-to-deploy"
-
 [[exemptions.num-conv]]
 version = "0.2.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-derive]]
+version = "0.5.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.oid-registry]]
@@ -591,11 +656,11 @@ version = "0.3.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.p256]]
-version = "0.13.2"
+version = "0.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.p384]]
-version = "0.13.1"
+version = "0.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.parking_lot]]
@@ -614,20 +679,20 @@ criteria = "safe-to-deploy"
 version = "0.8.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.pem-rfc7468]]
+version = "1.0.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.pin-project-lite]]
 version = "0.2.17"
 criteria = "safe-to-deploy"
 
 [[exemptions.pkcs1]]
-version = "0.7.5"
+version = "0.8.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.pkcs8]]
-version = "0.10.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.pkg-config]]
-version = "0.3.34"
+version = "0.11.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.plain]]
@@ -642,16 +707,21 @@ criteria = "safe-to-deploy"
 version = "1.15.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.ppmd-rust]]
-version = "1.4.0"
+[[exemptions.powerfmt]]
+version = "0.2.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.ppv-lite86]]
-version = "0.2.21"
+[[exemptions.ppmd-rust]]
+version = "1.5.2"
 criteria = "safe-to-deploy"
+
+[[exemptions.primefield]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
 
 [[exemptions.primeorder]]
-version = "0.13.6"
+version = "0.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.protobuf]]
@@ -671,15 +741,11 @@ version = "3.7.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.psl]]
-version = "2.1.223"
+version = "2.1.246"
 criteria = "safe-to-deploy"
 
 [[exemptions.psl-types]]
 version = "2.0.11"
-criteria = "safe-to-deploy"
-
-[[exemptions.r-efi]]
-version = "5.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.r-efi]]
@@ -690,8 +756,8 @@ criteria = "safe-to-deploy"
 version = "0.7.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.rand]]
-version = "0.8.7"
+[[exemptions.rand_core]]
+version = "0.10.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.rc4]]
@@ -703,7 +769,7 @@ version = "0.5.18"
 criteria = "safe-to-deploy"
 
 [[exemptions.rfc6979]]
-version = "0.4.0"
+version = "0.6.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ring]]
@@ -711,27 +777,28 @@ version = "0.17.14"
 criteria = "safe-to-deploy"
 
 [[exemptions.rowan]]
-version = "0.16.1"
+version = "0.17.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.roxmltree]]
-version = "0.20.0"
+version = "0.21.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.rsa]]
-version = "0.9.10"
+version = "0.10.0-rc.20"
 criteria = "safe-to-deploy"
 
 [[exemptions.rust-lzxpress]]
 version = "0.7.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.rustc-demangle]]
+version = "0.1.28"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.rustc-hash]]
 version = "2.1.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.rustc_version]]
-version = "0.4.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rusticata-macros]]
@@ -739,7 +806,7 @@ version = "4.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls]]
-version = "0.23.43"
+version = "0.23.37"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls-pki-types]]
@@ -747,11 +814,15 @@ version = "1.15.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls-webpki]]
-version = "0.103.14"
+version = "0.103.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.ruzstd]]
 version = "0.8.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.ruzstd]]
+version = "0.9.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.scroll]]
@@ -763,15 +834,24 @@ version = "0.12.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.sec1]]
-version = "0.7.3"
+version = "0.8.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.serdect]]
+version = "0.4.3"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.sevenz-rust2]]
-version = "0.21.4"
+version = "0.21.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.sha1]]
 version = "0.10.7"
+criteria = "safe-to-deploy"
+
+[[exemptions.sha1]]
+version = "0.11.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.sha2]]
@@ -779,31 +859,32 @@ version = "0.10.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.sha2]]
-version = "0.11.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.shlex]]
-version = "2.0.1"
+version = "0.11.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.signature]]
-version = "2.2.0"
+version = "3.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.simd-adler32]]
 version = "0.3.10"
 criteria = "safe-to-deploy"
 
+[[exemptions.simd_cesu8]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.slab]]
 version = "0.4.12"
 criteria = "safe-to-deploy"
 
-[[exemptions.spin]]
-version = "0.9.9"
+[[exemptions.smallvec]]
+version = "1.16.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.spki]]
-version = "0.7.3"
+version = "0.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.stable_deref_trait]]
@@ -811,7 +892,7 @@ version = "1.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.strum_macros]]
-version = "0.27.2"
+version = "0.28.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.subtle]]
@@ -846,13 +927,10 @@ criteria = "safe-to-deploy"
 version = "0.2.32"
 criteria = "safe-to-deploy"
 
-[[exemptions.tinyvec]]
-version = "1.12.0"
+[[exemptions.tinyzip]]
+version = "0.4.0"
 criteria = "safe-to-deploy"
-
-[[exemptions.tlsh-fixed]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
 
 [[exemptions.tracing]]
 version = "0.1.44"
@@ -862,20 +940,25 @@ criteria = "safe-to-deploy"
 version = "0.1.31"
 criteria = "safe-to-deploy"
 
-[[exemptions.tracing-core]]
-version = "0.1.36"
-criteria = "safe-to-deploy"
-
 [[exemptions.tracing-subscriber]]
 version = "0.3.23"
 criteria = "safe-to-deploy"
 
 [[exemptions.twox-hash]]
-version = "2.1.3"
+version = "2.1.5"
 criteria = "safe-to-deploy"
+
+[[exemptions.typed-path]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
 
 [[exemptions.typenum]]
 version = "1.20.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-width]]
+version = "0.2.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.unit-prefix]]
@@ -895,11 +978,11 @@ version = "0.0.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.ureq]]
-version = "3.4.0"
+version = "3.5.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.ureq-proto]]
-version = "0.6.1"
+version = "0.7.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.utf8-zero]]
@@ -907,7 +990,7 @@ version = "0.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.uuid]]
-version = "1.24.0"
+version = "1.29.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.valuable]]
@@ -923,11 +1006,11 @@ version = "0.0.18"
 criteria = "safe-to-deploy"
 
 [[exemptions.walrus]]
-version = "0.23.3"
+version = "0.27.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.walrus-macro]]
-version = "0.22.0"
+version = "0.26.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasi]]
@@ -935,31 +1018,23 @@ version = "0.11.1+wasi-snapshot-preview1"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen]]
-version = "0.2.127"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-macro]]
-version = "0.2.127"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-macro-support]]
-version = "0.2.127"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-shared]]
-version = "0.2.127"
-criteria = "safe-to-deploy"
-
-[[exemptions.wasmtime-internal-asm-macros]]
-version = "36.0.13"
-criteria = "safe-to-deploy"
-
-[[exemptions.web-time]]
-version = "1.1.0"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.webpki-roots]]
-version = "1.0.9"
+version = "0.26.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.which]]
@@ -991,10 +1066,6 @@ version = "0.59.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows-sys]]
-version = "0.60.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-sys]]
 version = "0.61.2"
 criteria = "safe-to-deploy"
 
@@ -1002,41 +1073,26 @@ criteria = "safe-to-deploy"
 version = "0.52.6"
 criteria = "safe-to-deploy"
 
-[[exemptions.windows_aarch64_msvc]]
-version = "0.53.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.windows_i686_gnu]]
 version = "0.52.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows_i686_gnu]]
-version = "0.53.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows_i686_msvc]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
 
-[[exemptions.windows_i686_msvc]]
-version = "0.53.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.windows_x86_64_gnu]]
 version = "0.52.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows_x86_64_gnu]]
-version = "0.53.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows_x86_64_msvc]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
 
-[[exemptions.windows_x86_64_msvc]]
-version = "0.53.1"
+[[exemptions.wnaf]]
+version = "0.14.1"
 criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
 
 [[exemptions.wyz]]
 version = "0.5.1"
@@ -1046,58 +1102,39 @@ criteria = "safe-to-deploy"
 version = "0.18.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.xattr]]
+version = "1.7.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.yansi]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "New with yara-x 1.22.1 (wasmtime 48), the security upgrade off yara-x 1.7 / wasmtime 36 (no 36.x fix for RUSTSEC-2026-0315/0325-0327/0353-0364/0422/0423) and zip 5 (RUSTSEC-2026-0367-0369/0429). Not reviewed; added 2026-11-04."
+
 [[exemptions.yara-x]]
-version = "1.7.1"
+version = "1.22.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.yara-x-macros]]
-version = "1.7.1"
+version = "1.22.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.yara-x-parser]]
-version = "1.7.1"
+version = "1.22.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.yara-x-proto]]
-version = "1.7.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.zerocopy]]
-version = "0.8.56"
-criteria = "safe-to-deploy"
-
-[[exemptions.zerocopy-derive]]
-version = "0.8.56"
-criteria = "safe-to-deploy"
-
-[[exemptions.zeroize]]
-version = "1.9.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.zeroize_derive]]
-version = "1.5.0"
+version = "1.22.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.zip]]
-version = "5.1.1"
+version = "9.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.zlib-rs]]
-version = "0.6.7"
+version = "0.6.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.zopfli]]
-version = "0.8.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.zstd]]
-version = "0.13.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.zstd-safe]]
-version = "7.2.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.zstd-sys]]
-version = "2.0.16+zstd.1.5.7"
+version = "0.8.4"
 criteria = "safe-to-deploy"
