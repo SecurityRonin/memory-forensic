@@ -14,7 +14,11 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.87"
+# 1.89 is inherited, not a property of our own source: yara-x 1.22 (memf-strings,
+# memf-windows; the security upgrade off wasmtime 36) requires uuid >= 1.28
+# (Rust 1.89) and thiserror >= 2.0.21 (1.77). This workspace has ONE lockfile,
+# so every member's MSRV check builds against those versions. See ADR 0010.
+rust-version = "1.89"
 license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/memory-forensic"
 

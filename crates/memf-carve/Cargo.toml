@@ -3,7 +3,9 @@ name = "memf-carve"
 version = "0.1.5"
 description = "Plane-V memory artifact carving: per-process virtual-address-space carving over the forensic-carve sweep engine (memory medium of the fleet carving contract)"
 edition.workspace = true
-rust-version = "1.88"
+# 1.95, not the workspace 1.89: memf-carve depends on memf-windows, whose yara-x
+# 1.22 (wasmtime/cranelift) requires Rust 1.95.
+rust-version = "1.95"
 license.workspace = true
 repository.workspace = true
 

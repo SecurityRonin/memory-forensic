@@ -123,6 +123,6 @@ bytes are the ground truth, and divergences are investigated against them.
 - **`unsafe` bounded** — denied workspace-wide with two justified mmap allow sites
   (ADR 0003); the README badge reads "unsafe: bounded (mmap only)", not
   "unsafe-forbidden".
-- **Low library MSRV (1.75)** for the publishable `memf-*` crates, dev toolchain
+- **Library MSRV 1.89** (1.95 for `memf-strings`/`memf-windows`/`memf-carve`) for the publishable `memf-*` crates, dev toolchain
   pinned separately at 1.96.0; libraries publish via release-plz, the binary via a
   signed `v[0-9]*` tag (ADR 0010).
