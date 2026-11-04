@@ -100,7 +100,7 @@ ureq = "3"
 # Re-check `cargo deny check advisories` before moving to a newer minor.
 yara-x = "~1.22.1"
 # Pure-Rust ZIP reader (decodes deflate/deflate64/bzip2/zstd/lzma without C FFI).
-zip-forensic-core = "0.1"
+zip-forensic-core = "0.2"
 # zip-rs kept only for the test-fixture WRITER (zip-forensic-core is read-only),
 # slimmed to deflate-only so it pulls no bzip2-sys/zstd-sys/lzma-sys C libraries.
 zip = { version = "9", default-features = false, features = ["deflate"] }
